@@ -185,6 +185,8 @@ export const JobStateSchema = /*@__PURE__*/
   enumDesc(file_workers_v1_workers, 0);
 
 /**
+ * Lifecycle state of a durable Worker job.
+ *
  * @generated from enum acyclic.workers.v1.JobState
  */
 export const JobState = /*@__PURE__*/
@@ -197,13 +199,18 @@ export const ErrorCodeSchema = /*@__PURE__*/
   enumDesc(file_workers_v1_workers, 1);
 
 /**
+ * Stable error categories returned by the Workers service.
+ *
  * @generated from enum acyclic.workers.v1.ErrorCode
  */
 export const ErrorCode = /*@__PURE__*/
   tsEnum(ErrorCodeSchema);
 
 /**
+ * Publishes immutable Worker versions, selects deployments, and executes jobs.
+ *
  * @generated from service acyclic.workers.v1.WorkersService
  */
 export const WorkersService = /*@__PURE__*/
   serviceDesc(file_workers_v1_workers, 0);
+

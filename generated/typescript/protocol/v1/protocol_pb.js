@@ -44,3 +44,4 @@ export const HandshakeRequestSchema = /*@__PURE__*/
  */
 export const HandshakeResponseSchema = /*@__PURE__*/
   messageDesc(file_protocol_v1_protocol, 4);
+

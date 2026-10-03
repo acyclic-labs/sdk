@@ -12,8 +12,6 @@ import type { HandshakeRequest, HandshakeRequestSchema, HandshakeResponse, Hands
 export declare const file_harness_v2_harness: GenFile;
 
 /**
- * Release-candidate v2 contract types. Compatibility is bound to ProtocolIdentity.
- *
  * @generated from message acyclic.harness.v2.OperationIdentity
  */
 export declare type OperationIdentity = Message<"acyclic.harness.v2.OperationIdentity"> & {
@@ -242,8 +240,6 @@ export declare type Cursor = Message<"acyclic.harness.v2.Cursor"> & {
 export declare const CursorSchema: GenMessage<Cursor>;
 
 /**
- * Stable identity of one aggregate history.
- *
  * @generated from message acyclic.harness.v2.Authority
  */
 export declare type Authority = Message<"acyclic.harness.v2.Authority"> & {
@@ -265,8 +261,6 @@ export declare type Authority = Message<"acyclic.harness.v2.Authority"> & {
 export declare const AuthoritySchema: GenMessage<Authority>;
 
 /**
- * Exact causal predecessor in another aggregate.
- *
  * @generated from message acyclic.harness.v2.EventReference
  */
 export declare type EventReference = Message<"acyclic.harness.v2.EventReference"> & {
@@ -288,8 +282,6 @@ export declare type EventReference = Message<"acyclic.harness.v2.EventReference"
 export declare const EventReferenceSchema: GenMessage<EventReference>;
 
 /**
- * Bearer grant present only in command admission, never in durable events.
- *
  * @generated from message acyclic.harness.v2.Scope
  */
 export declare type Scope = Message<"acyclic.harness.v2.Scope"> & {
@@ -319,8 +311,6 @@ export declare type Scope = Message<"acyclic.harness.v2.Scope"> & {
   proof: Uint8Array;
 
   /**
-   * Host-attested acting agent; absent scopes cannot write agent-private files.
-   *
    * @generated from field: string agent_id = 6;
    */
   agentId: string;
@@ -333,9 +323,6 @@ export declare type Scope = Message<"acyclic.harness.v2.Scope"> & {
 export declare const ScopeSchema: GenMessage<Scope>;
 
 /**
- * Non-bearer metadata for a committed event. The event attestation is bound
- * to the complete event and cannot be reused as a command authorization.
- *
  * @generated from message acyclic.harness.v2.RecordedScope
  */
 export declare type RecordedScope = Message<"acyclic.harness.v2.RecordedScope"> & {
@@ -367,8 +354,6 @@ export declare type RecordedScope = Message<"acyclic.harness.v2.RecordedScope"> 
 export declare const RecordedScopeSchema: GenMessage<RecordedScope>;
 
 /**
- * Transport-neutral command whose canonical payload is interpreted by Rust.
- *
  * @generated from message acyclic.harness.v2.CommandEnvelope
  */
 export declare type CommandEnvelope = Message<"acyclic.harness.v2.CommandEnvelope"> & {
@@ -425,8 +410,6 @@ export declare type CommandEnvelope = Message<"acyclic.harness.v2.CommandEnvelop
 export declare const CommandEnvelopeSchema: GenMessage<CommandEnvelope>;
 
 /**
- * Canonical durable event carried identically by every transport.
- *
  * @generated from message acyclic.harness.v2.EventEnvelope
  */
 export declare type EventEnvelope = Message<"acyclic.harness.v2.EventEnvelope"> & {
@@ -509,8 +492,6 @@ export declare type ApplyResponse = Message<"acyclic.harness.v2.ApplyResponse"> 
 export declare const ApplyResponseSchema: GenMessage<ApplyResponse>;
 
 /**
- * Versioned restoration accelerator. Events remain authoritative.
- *
  * @generated from message acyclic.harness.v2.SnapshotEnvelope
  */
 export declare type SnapshotEnvelope = Message<"acyclic.harness.v2.SnapshotEnvelope"> & {
@@ -552,8 +533,6 @@ export declare type SnapshotEnvelope = Message<"acyclic.harness.v2.SnapshotEnvel
 export declare const SnapshotEnvelopeSchema: GenMessage<SnapshotEnvelope>;
 
 /**
- * Transport-independent resumable subscription cursor.
- *
  * @generated from message acyclic.harness.v2.ReplayCursor
  */
 export declare type ReplayCursor = Message<"acyclic.harness.v2.ReplayCursor"> & {
@@ -601,8 +580,6 @@ export declare type ResumeRequest = Message<"acyclic.harness.v2.ResumeRequest"> 
 export declare const ResumeRequestSchema: GenMessage<ResumeRequest>;
 
 /**
- * One fully validated contiguous authoritative delivery.
- *
  * @generated from message acyclic.harness.v2.Delivery
  */
 export declare type Delivery = Message<"acyclic.harness.v2.Delivery"> & {
@@ -670,8 +647,6 @@ export declare type Acknowledge = Message<"acyclic.harness.v2.Acknowledge"> & {
 export declare const AcknowledgeSchema: GenMessage<Acknowledge>;
 
 /**
- * Framing used unchanged by embedded, HTTP/SSE, WebSocket, JSONL/stdio and gRPC adapters.
- *
  * @generated from message acyclic.harness.v2.ClientFrame
  */
 export declare type ClientFrame = Message<"acyclic.harness.v2.ClientFrame"> & {
@@ -776,8 +751,6 @@ export declare type ServerFrame = Message<"acyclic.harness.v2.ServerFrame"> & {
 export declare const ServerFrameSchema: GenMessage<ServerFrame>;
 
 /**
- * Canonical record stored in the single logical distributed coordinator Stream.
- *
  * @generated from message acyclic.harness.v2.SchedulerEventEnvelope
  */
 export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v2.SchedulerEventEnvelope"> & {
@@ -810,11 +783,6 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v2.Schedul
    * @generated from field: bytes event_digest = 6;
    */
   eventDigest: Uint8Array;
-
-  /**
-   * @generated from field: optional uint64 committed_at_ms = 7;
-   */
-  committedAtMs?: bigint | undefined;
 };
 
 /**
@@ -824,8 +792,6 @@ export declare type SchedulerEventEnvelope = Message<"acyclic.harness.v2.Schedul
 export declare const SchedulerEventEnvelopeSchema: GenMessage<SchedulerEventEnvelope>;
 
 /**
- * Canonical ref-only conversation values. File bodies are never protocol events.
- *
  * @generated from message acyclic.harness.v2.ProviderRef
  */
 export declare type ProviderRef = Message<"acyclic.harness.v2.ProviderRef"> & {
@@ -1262,11 +1228,6 @@ export declare type InteractionTicket = Message<"acyclic.harness.v2.InteractionT
   request?: FileRef | undefined;
 
   /**
-   * @generated from field: optional uint64 deadline_unix_ms = 4;
-   */
-  deadlineUnixMs?: bigint | undefined;
-
-  /**
    * @generated from field: acyclic.harness.v2.ApprovalBinding approval = 5;
    */
   approval?: ApprovalBinding | undefined;
@@ -1428,11 +1389,6 @@ export declare type Attachment = Message<"acyclic.harness.v2.Attachment"> & {
    * @generated from field: acyclic.harness.v2.FileRef file = 1;
    */
   file?: FileRef | undefined;
-
-  /**
-   * @generated from field: optional string label = 2;
-   */
-  label?: string | undefined;
 };
 
 /**
@@ -1536,16 +1492,6 @@ export declare type ConversationMessage = Message<"acyclic.harness.v2.Conversati
   attachments?: ReferencedAttachments | undefined;
 
   /**
-   * @generated from field: optional string reply_to = 6;
-   */
-  replyTo?: string | undefined;
-
-  /**
-   * @generated from field: optional string tool_call_id = 7;
-   */
-  toolCallId?: string | undefined;
-
-  /**
    * @generated from field: map<string, acyclic.harness.v2.FileRef> extensions = 8;
    */
   extensions: { [key: string]: FileRef };
@@ -1572,11 +1518,6 @@ export declare type ResourceRef = Message<"acyclic.harness.v2.ResourceRef"> & {
   key: Uint8Array;
 
   /**
-   * @generated from field: optional string version = 3;
-   */
-  version?: string | undefined;
-
-  /**
    * @generated from field: acyclic.harness.v2.ResourceKind kind = 4;
    */
   kind: ResourceKind;
@@ -1589,9 +1530,6 @@ export declare type ResourceRef = Message<"acyclic.harness.v2.ResourceRef"> & {
 export declare const ResourceRefSchema: GenMessage<ResourceRef>;
 
 /**
- * Durable task and execution contracts. JSON fields are canonical bounded
- * schema/value documents, never file bodies, credentials, or event payloads.
- *
  * @generated from message acyclic.harness.v2.ComponentIdentity
  */
 export declare type ComponentIdentity = Message<"acyclic.harness.v2.ComponentIdentity"> & {
@@ -1644,9 +1582,6 @@ export declare type MachineIdentity = Message<"acyclic.harness.v2.MachineIdentit
 export declare const MachineIdentitySchema: GenMessage<MachineIdentity>;
 
 /**
- * A resumable tool is admitted before any transition or effect. Its exact
- * initial state and implementation pin survive a lost admission reply.
- *
  * @generated from message acyclic.harness.v2.MachineCheckpoint
  */
 export declare type MachineCheckpoint = Message<"acyclic.harness.v2.MachineCheckpoint"> & {
@@ -1729,16 +1664,6 @@ export declare const WorkflowCommandSchema: GenMessage<WorkflowCommand>;
  */
 export declare type WorkflowTransition = Message<"acyclic.harness.v2.WorkflowTransition"> & {
   /**
-   * @generated from field: bytes canonical_state_json = 1;
-   */
-  canonicalStateJson: Uint8Array;
-
-  /**
-   * @generated from field: repeated acyclic.harness.v2.WorkflowCommand commands = 2;
-   */
-  commands: WorkflowCommand[];
-
-  /**
    * @generated from oneof acyclic.harness.v2.WorkflowTransition.status
    */
   status: {
@@ -1760,6 +1685,16 @@ export declare type WorkflowTransition = Message<"acyclic.harness.v2.WorkflowTra
     value: string;
     case: "failureMessage";
   } | { case: undefined; value?: undefined };
+
+  /**
+   * @generated from field: bytes canonical_state_json = 1;
+   */
+  canonicalStateJson: Uint8Array;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.WorkflowCommand commands = 2;
+   */
+  commands: WorkflowCommand[];
 };
 
 /**
@@ -1869,20 +1804,6 @@ export declare const RuntimeLimitsSchema: GenMessage<RuntimeLimits>;
  * @generated from message acyclic.harness.v2.TaskRunLimits
  */
 export declare type TaskRunLimits = Message<"acyclic.harness.v2.TaskRunLimits"> & {
-  /**
-   * @generated from field: optional uint64 concurrency = 1;
-   */
-  concurrency?: bigint | undefined;
-
-  /**
-   * @generated from field: optional uint64 max_steps = 2;
-   */
-  maxSteps?: bigint | undefined;
-
-  /**
-   * @generated from field: optional uint64 deadline_epoch_ms = 3;
-   */
-  deadlineEpochMs?: bigint | undefined;
 };
 
 /**
@@ -1901,15 +1822,11 @@ export declare type ExecutionPlacement = Message<"acyclic.harness.v2.ExecutionPl
   provider?: ComponentIdentity | undefined;
 
   /**
-   * ARTIFACT
-   *
    * @generated from field: acyclic.harness.v2.ResourceRef build = 2;
    */
   build?: ResourceRef | undefined;
 
   /**
-   * SANDBOX when present
-   *
    * @generated from field: acyclic.harness.v2.ResourceRef environment = 3;
    */
   environment?: ResourceRef | undefined;
@@ -1959,11 +1876,6 @@ export declare type TaskAdmissionRecord = Message<"acyclic.harness.v2.TaskAdmiss
    * @generated from field: bytes canonical_output_schema_json = 6;
    */
   canonicalOutputSchemaJson: Uint8Array;
-
-  /**
-   * @generated from field: optional string parent_task_id = 7;
-   */
-  parentTaskId?: string | undefined;
 
   /**
    * @generated from field: repeated string grants = 8;
@@ -2047,11 +1959,6 @@ export declare type DurableBatchRequest = Message<"acyclic.harness.v2.DurableBat
   canonicalOutputSchemaJson: Uint8Array;
 
   /**
-   * @generated from field: optional string parent_task_id = 9;
-   */
-  parentTaskId?: string | undefined;
-
-  /**
    * @generated from field: repeated string grants = 10;
    */
   grants: string[];
@@ -2089,8 +1996,6 @@ export declare type DurableBatchRequest = Message<"acyclic.harness.v2.DurableBat
 export declare const DurableBatchRequestSchema: GenMessage<DurableBatchRequest>;
 
 /**
- * Narrows a provider-owned resource to an immutable Filesystem generation.
- *
  * @generated from message acyclic.harness.v2.GenerationRef
  */
 export declare type GenerationRef = Message<"acyclic.harness.v2.GenerationRef"> & {
@@ -2107,8 +2012,6 @@ export declare type GenerationRef = Message<"acyclic.harness.v2.GenerationRef"> 
 export declare const GenerationRefSchema: GenMessage<GenerationRef>;
 
 /**
- * One owner-authenticated lazy listing of an agent-private directory.
- *
  * @generated from message acyclic.harness.v2.PrivateDirectoryEntry
  */
 export declare type PrivateDirectoryEntry = Message<"acyclic.harness.v2.PrivateDirectoryEntry"> & {
@@ -2316,11 +2219,6 @@ export declare const CapturedResourceSchema: GenMessage<CapturedResource>;
  */
 export declare type ForkOmission = Message<"acyclic.harness.v2.ForkOmission"> & {
   /**
-   * @generated from field: acyclic.harness.v2.ResourceRevision selection = 1;
-   */
-  selection?: ResourceRevision | undefined;
-
-  /**
    * @generated from oneof acyclic.harness.v2.ForkOmission.outcome
    */
   outcome: {
@@ -2342,6 +2240,11 @@ export declare type ForkOmission = Message<"acyclic.harness.v2.ForkOmission"> & 
     value: string;
     case: "indeterminateOperationId";
   } | { case: undefined; value?: undefined };
+
+  /**
+   * @generated from field: acyclic.harness.v2.ResourceRevision selection = 1;
+   */
+  selection?: ResourceRevision | undefined;
 };
 
 /**
@@ -2729,9 +2632,6 @@ export declare type ForkSeed = Message<"acyclic.harness.v2.ForkSeed"> & {
 export declare const ForkSeedSchema: GenMessage<ForkSeed>;
 
 /**
- * One parent-authorized Filesystem join. The notice is admitted atomically
- * with the receipt; no private volume, model context, or child history merges.
- *
  * @generated from message acyclic.harness.v2.ProviderJoinProof
  */
 export declare type ProviderJoinProof = Message<"acyclic.harness.v2.ProviderJoinProof"> & {
@@ -2746,8 +2646,6 @@ export declare type ProviderJoinProof = Message<"acyclic.harness.v2.ProviderJoin
   format: string;
 
   /**
-   * bounded metadata, no file bodies
-   *
    * @generated from field: bytes canonical_json_statement = 3;
    */
   canonicalJsonStatement: Uint8Array;
@@ -2799,8 +2697,6 @@ export declare type ProjectMergeReceipt = Message<"acyclic.harness.v2.ProjectMer
   resultGeneration?: GenerationRef | undefined;
 
   /**
-   * bounded opaque provider retry identity
-   *
    * @generated from field: bytes provider_operation_id = 8;
    */
   providerOperationId: Uint8Array;
@@ -2963,8 +2859,6 @@ export enum CompletionState {
 export declare const CompletionStateSchema: GenEnum<CompletionState>;
 
 /**
- * Kind of independently ordered durable aggregate.
- *
  * @generated from enum acyclic.harness.v2.AggregateKind
  */
 export enum AggregateKind {
@@ -3334,3 +3228,4 @@ export declare const HarnessService: GenService<{
     output: typeof CancelResponseSchema;
   },
 }>;
+

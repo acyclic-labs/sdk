@@ -12,12 +12,14 @@ import type { Timestamp } from "@bufbuild/protobuf/wkt";
 export declare const file_objects_v2_objects: GenFile;
 
 /**
- * Tenant-scoped logical bucket name. Placement and storage identities are private.
+ * Identifies an object bucket by its logical tenant name.
  *
  * @generated from message acyclic.objects.v2.BucketRef
  */
 export declare type BucketRef = Message<"acyclic.objects.v2.BucketRef"> & {
   /**
+   * A logical tenant bucket name.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
@@ -30,15 +32,21 @@ export declare type BucketRef = Message<"acyclic.objects.v2.BucketRef"> & {
 export declare const BucketRefSchema: GenMessage<BucketRef>;
 
 /**
+ * A logical object bucket and its creation metadata.
+ *
  * @generated from message acyclic.objects.v2.Bucket
  */
 export declare type Bucket = Message<"acyclic.objects.v2.Bucket"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The bucket creation timestamp.
+   *
    * @generated from field: google.protobuf.Timestamp created_at = 2;
    */
   createdAt?: Timestamp | undefined;
@@ -51,40 +59,57 @@ export declare type Bucket = Message<"acyclic.objects.v2.Bucket"> & {
 export declare const BucketSchema: GenMessage<Bucket>;
 
 /**
+ * Metadata associated with an object representation.
+ *
  * @generated from message acyclic.objects.v2.ObjectMetadata
  */
 export declare type ObjectMetadata = Message<"acyclic.objects.v2.ObjectMetadata"> & {
   /**
+   * The object media type.
+   *
    * @generated from field: string content_type = 1;
    */
   contentType: string;
 
   /**
+   * One entry in the user metadata map.
+   * User-defined metadata entries.
+   *
    * @generated from field: map<string, string> user = 2;
    */
   user: { [key: string]: string };
 
   /**
+   * The object content encoding.
+   *
    * @generated from field: string content_encoding = 3;
    */
   contentEncoding: string;
 
   /**
+   * The object cache-control directive.
+   *
    * @generated from field: string cache_control = 4;
    */
   cacheControl: string;
 
   /**
+   * The object content-disposition directive.
+   *
    * @generated from field: string content_disposition = 5;
    */
   contentDisposition: string;
 
   /**
+   * The object content language.
+   *
    * @generated from field: string content_language = 6;
    */
   contentLanguage: string;
 
   /**
+   * Optional object expiry time in Unix seconds.
+   *
    * @generated from field: optional int64 expires_unix_seconds = 7;
    */
   expiresUnixSeconds?: bigint | undefined;
@@ -97,8 +122,7 @@ export declare type ObjectMetadata = Message<"acyclic.objects.v2.ObjectMetadata"
 export declare const ObjectMetadataSchema: GenMessage<ObjectMetadata>;
 
 /**
- * Evaluated atomically with single-object publication against the current value.
- * An eventual HEAD/GET may be stale and cause a safe precondition failure.
+ * Conditional requirements evaluated at publication.
  *
  * @generated from message acyclic.objects.v2.Preconditions
  */
@@ -108,12 +132,16 @@ export declare type Preconditions = Message<"acyclic.objects.v2.Preconditions"> 
    */
   condition: {
     /**
+     * Requires the current object to be absent.
+     *
      * @generated from field: bool if_absent = 1;
      */
     value: boolean;
     case: "ifAbsent";
   } | {
     /**
+     * Requires the current opaque ETag to match.
+     *
      * @generated from field: string if_match = 2;
      */
     value: string;
@@ -128,10 +156,14 @@ export declare type Preconditions = Message<"acyclic.objects.v2.Preconditions"> 
 export declare const PreconditionsSchema: GenMessage<Preconditions>;
 
 /**
+ * The idempotency identity for a mutation.
+ *
  * @generated from message acyclic.objects.v2.MutationIdentity
  */
 export declare type MutationIdentity = Message<"acyclic.objects.v2.MutationIdentity"> & {
   /**
+   * A client key that makes a mutation idempotent.
+   *
    * @generated from field: string idempotency_key = 1;
    */
   idempotencyKey: string;
@@ -144,27 +176,35 @@ export declare type MutationIdentity = Message<"acyclic.objects.v2.MutationIdent
 export declare const MutationIdentitySchema: GenMessage<MutationIdentity>;
 
 /**
- * One complete current representation, with an opaque ETag rather than history identity.
+ * The current object representation metadata.
  *
  * @generated from message acyclic.objects.v2.ObjectInfo
  */
 export declare type ObjectInfo = Message<"acyclic.objects.v2.ObjectInfo"> & {
   /**
+   * The opaque current representation ETag.
+   *
    * @generated from field: string etag = 1;
    */
   etag: string;
 
   /**
+   * The complete object size in bytes.
+   *
    * @generated from field: uint64 size = 2;
    */
   size: bigint;
 
   /**
+   * Metadata for the object representation.
+   *
    * @generated from field: acyclic.objects.v2.ObjectMetadata metadata = 3;
    */
   metadata?: ObjectMetadata | undefined;
 
   /**
+   * The last publication timestamp.
+   *
    * @generated from field: google.protobuf.Timestamp last_modified = 4;
    */
   lastModified?: Timestamp | undefined;
@@ -177,15 +217,21 @@ export declare type ObjectInfo = Message<"acyclic.objects.v2.ObjectInfo"> & {
 export declare const ObjectInfoSchema: GenMessage<ObjectInfo>;
 
 /**
+ * Creates a logical bucket.
+ *
  * @generated from message acyclic.objects.v2.CreateBucketRequest
  */
 export declare type CreateBucketRequest = Message<"acyclic.objects.v2.CreateBucketRequest"> & {
   /**
+   * A logical tenant bucket name.
+   *
    * @generated from field: string name = 1;
    */
   name: string;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 2;
    */
   mutation?: MutationIdentity | undefined;
@@ -198,10 +244,14 @@ export declare type CreateBucketRequest = Message<"acyclic.objects.v2.CreateBuck
 export declare const CreateBucketRequestSchema: GenMessage<CreateBucketRequest>;
 
 /**
+ * Reads logical bucket metadata.
+ *
  * @generated from message acyclic.objects.v2.HeadBucketRequest
  */
 export declare type HeadBucketRequest = Message<"acyclic.objects.v2.HeadBucketRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
@@ -214,15 +264,21 @@ export declare type HeadBucketRequest = Message<"acyclic.objects.v2.HeadBucketRe
 export declare const HeadBucketRequestSchema: GenMessage<HeadBucketRequest>;
 
 /**
+ * Deletes a logical bucket.
+ *
  * @generated from message acyclic.objects.v2.DeleteBucketRequest
  */
 export declare type DeleteBucketRequest = Message<"acyclic.objects.v2.DeleteBucketRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 2;
    */
   mutation?: MutationIdentity | undefined;
@@ -235,10 +291,14 @@ export declare type DeleteBucketRequest = Message<"acyclic.objects.v2.DeleteBuck
 export declare const DeleteBucketRequestSchema: GenMessage<DeleteBucketRequest>;
 
 /**
+ * Reports whether the bucket existed.
+ *
  * @generated from message acyclic.objects.v2.DeleteBucketResponse
  */
 export declare type DeleteBucketResponse = Message<"acyclic.objects.v2.DeleteBucketResponse"> & {
   /**
+   * Whether the target existed before deletion.
+   *
    * @generated from field: bool existed = 1;
    */
   existed: boolean;
@@ -251,30 +311,42 @@ export declare type DeleteBucketResponse = Message<"acyclic.objects.v2.DeleteBuc
 export declare const DeleteBucketResponseSchema: GenMessage<DeleteBucketResponse>;
 
 /**
+ * Headers for an object upload.
+ *
  * @generated from message acyclic.objects.v2.PutObjectHeader
  */
 export declare type PutObjectHeader = Message<"acyclic.objects.v2.PutObjectHeader"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * Metadata for the object representation.
+   *
    * @generated from field: acyclic.objects.v2.ObjectMetadata metadata = 3;
    */
   metadata?: ObjectMetadata | undefined;
 
   /**
+   * Conditions evaluated atomically at publication.
+   *
    * @generated from field: acyclic.objects.v2.Preconditions preconditions = 4;
    */
   preconditions?: Preconditions | undefined;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 5;
    */
   mutation?: MutationIdentity | undefined;
@@ -287,8 +359,7 @@ export declare type PutObjectHeader = Message<"acyclic.objects.v2.PutObjectHeade
 export declare const PutObjectHeaderSchema: GenMessage<PutObjectHeader>;
 
 /**
- * Header first, bounded body frames, then complete=true and EOF. Missing completion
- * never publishes bytes, even if transport cancellation appears as a clean EOF.
+ * Frames for an object upload.
  *
  * @generated from message acyclic.objects.v2.PutObjectRequest
  */
@@ -298,18 +369,24 @@ export declare type PutObjectRequest = Message<"acyclic.objects.v2.PutObjectRequ
    */
   frame: {
     /**
+     * The required first upload or download header frame.
+     *
      * @generated from field: acyclic.objects.v2.PutObjectHeader header = 1;
      */
     value: PutObjectHeader;
     case: "header";
   } | {
     /**
+     * A bounded object body frame.
+     *
      * @generated from field: bytes body = 2;
      */
     value: Uint8Array;
     case: "body";
   } | {
     /**
+     * Explicitly completes an upload stream.
+     *
      * @generated from field: bool complete = 3;
      */
     value: boolean;
@@ -324,15 +401,21 @@ export declare type PutObjectRequest = Message<"acyclic.objects.v2.PutObjectRequ
 export declare const PutObjectRequestSchema: GenMessage<PutObjectRequest>;
 
 /**
+ * An inclusive byte range selection.
+ *
  * @generated from message acyclic.objects.v2.InclusiveRange
  */
 export declare type InclusiveRange = Message<"acyclic.objects.v2.InclusiveRange"> & {
   /**
+   * The inclusive range start offset.
+   *
    * @generated from field: uint64 start = 1;
    */
   start: bigint;
 
   /**
+   * The inclusive range end offset.
+   *
    * @generated from field: optional uint64 end = 2;
    */
   end?: bigint | undefined;
@@ -345,6 +428,8 @@ export declare type InclusiveRange = Message<"acyclic.objects.v2.InclusiveRange"
 export declare const InclusiveRangeSchema: GenMessage<InclusiveRange>;
 
 /**
+ * A byte range or suffix selection for an object read.
+ *
  * @generated from message acyclic.objects.v2.ByteRange
  */
 export declare type ByteRange = Message<"acyclic.objects.v2.ByteRange"> & {
@@ -353,12 +438,16 @@ export declare type ByteRange = Message<"acyclic.objects.v2.ByteRange"> & {
    */
   selection: {
     /**
+     * An inclusive byte range selection.
+     *
      * @generated from field: acyclic.objects.v2.InclusiveRange bytes = 1;
      */
     value: InclusiveRange;
     case: "bytes";
   } | {
     /**
+     * The number of bytes selected from the end.
+     *
      * @generated from field: uint64 suffix_length = 2;
      */
     value: bigint;
@@ -373,30 +462,42 @@ export declare type ByteRange = Message<"acyclic.objects.v2.ByteRange"> & {
 export declare const ByteRangeSchema: GenMessage<ByteRange>;
 
 /**
+ * Reads an object representation.
+ *
  * @generated from message acyclic.objects.v2.GetObjectRequest
  */
 export declare type GetObjectRequest = Message<"acyclic.objects.v2.GetObjectRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * The requested object byte range.
+   *
    * @generated from field: acyclic.objects.v2.ByteRange range = 3;
    */
   range?: ByteRange | undefined;
 
   /**
+   * Requires the current opaque ETag to match.
+   *
    * @generated from field: string if_match = 4;
    */
   ifMatch: string;
 
   /**
+   * Requires the current ETag not to match.
+   *
    * @generated from field: string if_none_match = 5;
    */
   ifNoneMatch: string;
@@ -409,20 +510,28 @@ export declare type GetObjectRequest = Message<"acyclic.objects.v2.GetObjectRequ
 export declare const GetObjectRequestSchema: GenMessage<GetObjectRequest>;
 
 /**
+ * The byte range returned by an object read.
+ *
  * @generated from message acyclic.objects.v2.ContentRange
  */
 export declare type ContentRange = Message<"acyclic.objects.v2.ContentRange"> & {
   /**
+   * The inclusive range start offset.
+   *
    * @generated from field: uint64 start = 1;
    */
   start: bigint;
 
   /**
+   * The inclusive range end offset.
+   *
    * @generated from field: uint64 end = 2;
    */
   end: bigint;
 
   /**
+   * The complete size of the selected range in bytes.
+   *
    * @generated from field: uint64 total = 3;
    */
   total: bigint;
@@ -435,15 +544,21 @@ export declare type ContentRange = Message<"acyclic.objects.v2.ContentRange"> & 
 export declare const ContentRangeSchema: GenMessage<ContentRange>;
 
 /**
+ * Metadata headers for an object read.
+ *
  * @generated from message acyclic.objects.v2.GetObjectHeader
  */
 export declare type GetObjectHeader = Message<"acyclic.objects.v2.GetObjectHeader"> & {
   /**
+   * The complete current object metadata.
+   *
    * @generated from field: acyclic.objects.v2.ObjectInfo object = 1;
    */
   object?: ObjectInfo | undefined;
 
   /**
+   * The selected range and complete size.
+   *
    * @generated from field: acyclic.objects.v2.ContentRange content_range = 2;
    */
   contentRange?: ContentRange | undefined;
@@ -456,8 +571,7 @@ export declare type GetObjectHeader = Message<"acyclic.objects.v2.GetObjectHeade
 export declare const GetObjectHeaderSchema: GenMessage<GetObjectHeader>;
 
 /**
- * Exactly one metadata header first. The body belongs to that complete representation.
- * A terminal semantic error can follow the header when an HTTP stream is already open.
+ * Frames returned by an object read.
  *
  * @generated from message acyclic.objects.v2.GetObjectResponse
  */
@@ -467,18 +581,24 @@ export declare type GetObjectResponse = Message<"acyclic.objects.v2.GetObjectRes
    */
   frame: {
     /**
+     * The required first upload or download header frame.
+     *
      * @generated from field: acyclic.objects.v2.GetObjectHeader header = 1;
      */
     value: GetObjectHeader;
     case: "header";
   } | {
     /**
+     * A bounded object body frame.
+     *
      * @generated from field: bytes body = 2;
      */
     value: Uint8Array;
     case: "body";
   } | {
     /**
+     * A terminal semantic error frame.
+     *
      * @generated from field: acyclic.objects.v2.ErrorDetail error = 3;
      */
     value: ErrorDetail;
@@ -493,25 +613,35 @@ export declare type GetObjectResponse = Message<"acyclic.objects.v2.GetObjectRes
 export declare const GetObjectResponseSchema: GenMessage<GetObjectResponse>;
 
 /**
+ * Reads object metadata without its body.
+ *
  * @generated from message acyclic.objects.v2.HeadObjectRequest
  */
 export declare type HeadObjectRequest = Message<"acyclic.objects.v2.HeadObjectRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * Requires the current opaque ETag to match.
+   *
    * @generated from field: string if_match = 3;
    */
   ifMatch: string;
 
   /**
+   * Requires the current ETag not to match.
+   *
    * @generated from field: string if_none_match = 4;
    */
   ifNoneMatch: string;
@@ -524,10 +654,14 @@ export declare type HeadObjectRequest = Message<"acyclic.objects.v2.HeadObjectRe
 export declare const HeadObjectRequestSchema: GenMessage<HeadObjectRequest>;
 
 /**
+ * The object metadata response.
+ *
  * @generated from message acyclic.objects.v2.HeadObjectResponse
  */
 export declare type HeadObjectResponse = Message<"acyclic.objects.v2.HeadObjectResponse"> & {
   /**
+   * The complete current object metadata.
+   *
    * @generated from field: acyclic.objects.v2.ObjectInfo object = 1;
    */
   object?: ObjectInfo | undefined;
@@ -540,25 +674,35 @@ export declare type HeadObjectResponse = Message<"acyclic.objects.v2.HeadObjectR
 export declare const HeadObjectResponseSchema: GenMessage<HeadObjectResponse>;
 
 /**
+ * Deletes an object representation.
+ *
  * @generated from message acyclic.objects.v2.DeleteObjectRequest
  */
 export declare type DeleteObjectRequest = Message<"acyclic.objects.v2.DeleteObjectRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * Conditions evaluated atomically at publication.
+   *
    * @generated from field: acyclic.objects.v2.Preconditions preconditions = 3;
    */
   preconditions?: Preconditions | undefined;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 4;
    */
   mutation?: MutationIdentity | undefined;
@@ -571,10 +715,14 @@ export declare type DeleteObjectRequest = Message<"acyclic.objects.v2.DeleteObje
 export declare const DeleteObjectRequestSchema: GenMessage<DeleteObjectRequest>;
 
 /**
+ * Reports whether the object existed.
+ *
  * @generated from message acyclic.objects.v2.DeleteObjectResponse
  */
 export declare type DeleteObjectResponse = Message<"acyclic.objects.v2.DeleteObjectResponse"> & {
   /**
+   * Whether the target existed before deletion.
+   *
    * @generated from field: bool existed = 1;
    */
   existed: boolean;
@@ -587,33 +735,42 @@ export declare type DeleteObjectResponse = Message<"acyclic.objects.v2.DeleteObj
 export declare const DeleteObjectResponseSchema: GenMessage<DeleteObjectResponse>;
 
 /**
- * Lexicographic S3 ListObjectsV2 traversal of an eventual listing, never a captured view.
- * Concurrent insertions before the cursor can be missed. Tokens are opaque and query-bound.
+ * Lists objects in a bucket.
  *
  * @generated from message acyclic.objects.v2.ListObjectsRequest
  */
 export declare type ListObjectsRequest = Message<"acyclic.objects.v2.ListObjectsRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The lexical object-key prefix.
+   *
    * @generated from field: string prefix = 2;
    */
   prefix: string;
 
   /**
+   * The listing grouping delimiter.
+   *
    * @generated from field: string delimiter = 3;
    */
   delimiter: string;
 
   /**
+   * The requested bounded page size.
+   *
    * @generated from field: uint32 page_size = 4;
    */
   pageSize: number;
 
   /**
+   * An opaque query-bound listing cursor.
+   *
    * @generated from field: string continuation_token = 5;
    */
   continuationToken: string;
@@ -626,15 +783,21 @@ export declare type ListObjectsRequest = Message<"acyclic.objects.v2.ListObjects
 export declare const ListObjectsRequestSchema: GenMessage<ListObjectsRequest>;
 
 /**
+ * One object in a listing page.
+ *
  * @generated from message acyclic.objects.v2.ListEntry
  */
 export declare type ListEntry = Message<"acyclic.objects.v2.ListEntry"> & {
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 1;
    */
   objectKey: string;
 
   /**
+   * The complete current object metadata.
+   *
    * @generated from field: acyclic.objects.v2.ObjectInfo object = 2;
    */
   object?: ObjectInfo | undefined;
@@ -647,25 +810,35 @@ export declare type ListEntry = Message<"acyclic.objects.v2.ListEntry"> & {
 export declare const ListEntrySchema: GenMessage<ListEntry>;
 
 /**
+ * One page of an eventual object listing.
+ *
  * @generated from message acyclic.objects.v2.ListObjectsResponse
  */
 export declare type ListObjectsResponse = Message<"acyclic.objects.v2.ListObjectsResponse"> & {
   /**
+   * Objects in this listing page.
+   *
    * @generated from field: repeated acyclic.objects.v2.ListEntry entries = 1;
    */
   entries: ListEntry[];
 
   /**
+   * Grouped prefixes in this listing page.
+   *
    * @generated from field: repeated string common_prefixes = 2;
    */
   commonPrefixes: string[];
 
   /**
+   * An opaque query-bound listing cursor.
+   *
    * @generated from field: string continuation_token = 3;
    */
   continuationToken: string;
 
   /**
+   * Whether more entries remain after this page.
+   *
    * @generated from field: bool is_truncated = 4;
    */
   isTruncated: boolean;
@@ -678,25 +851,35 @@ export declare type ListObjectsResponse = Message<"acyclic.objects.v2.ListObject
 export declare const ListObjectsResponseSchema: GenMessage<ListObjectsResponse>;
 
 /**
+ * Starts a multipart upload.
+ *
  * @generated from message acyclic.objects.v2.CreateMultipartRequest
  */
 export declare type CreateMultipartRequest = Message<"acyclic.objects.v2.CreateMultipartRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * Metadata for the object representation.
+   *
    * @generated from field: acyclic.objects.v2.ObjectMetadata metadata = 3;
    */
   metadata?: ObjectMetadata | undefined;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 4;
    */
   mutation?: MutationIdentity | undefined;
@@ -709,10 +892,14 @@ export declare type CreateMultipartRequest = Message<"acyclic.objects.v2.CreateM
 export declare const CreateMultipartRequestSchema: GenMessage<CreateMultipartRequest>;
 
 /**
+ * An in-progress multipart upload.
+ *
  * @generated from message acyclic.objects.v2.MultipartUpload
  */
 export declare type MultipartUpload = Message<"acyclic.objects.v2.MultipartUpload"> & {
   /**
+   * The multipart upload identifier.
+   *
    * @generated from field: string upload_id = 1;
    */
   uploadId: string;
@@ -725,30 +912,42 @@ export declare type MultipartUpload = Message<"acyclic.objects.v2.MultipartUploa
 export declare const MultipartUploadSchema: GenMessage<MultipartUpload>;
 
 /**
+ * Headers for a multipart part upload.
+ *
  * @generated from message acyclic.objects.v2.UploadPartHeader
  */
 export declare type UploadPartHeader = Message<"acyclic.objects.v2.UploadPartHeader"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * The multipart upload identifier.
+   *
    * @generated from field: string upload_id = 3;
    */
   uploadId: string;
 
   /**
+   * The multipart part number.
+   *
    * @generated from field: uint32 part_number = 4;
    */
   partNumber: number;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 5;
    */
   mutation?: MutationIdentity | undefined;
@@ -761,28 +960,34 @@ export declare type UploadPartHeader = Message<"acyclic.objects.v2.UploadPartHea
 export declare const UploadPartHeaderSchema: GenMessage<UploadPartHeader>;
 
 /**
+ * Frames for a multipart part upload.
+ *
  * @generated from message acyclic.objects.v2.UploadPartRequest
  */
 export declare type UploadPartRequest = Message<"acyclic.objects.v2.UploadPartRequest"> & {
   /**
-   * Same header/body/complete=true/EOF discipline as PutObjectRequest.
-   *
    * @generated from oneof acyclic.objects.v2.UploadPartRequest.frame
    */
   frame: {
     /**
+     * The required first upload or download header frame.
+     *
      * @generated from field: acyclic.objects.v2.UploadPartHeader header = 1;
      */
     value: UploadPartHeader;
     case: "header";
   } | {
     /**
+     * A bounded object body frame.
+     *
      * @generated from field: bytes body = 2;
      */
     value: Uint8Array;
     case: "body";
   } | {
     /**
+     * Explicitly completes an upload stream.
+     *
      * @generated from field: bool complete = 3;
      */
     value: boolean;
@@ -797,20 +1002,28 @@ export declare type UploadPartRequest = Message<"acyclic.objects.v2.UploadPartRe
 export declare const UploadPartRequestSchema: GenMessage<UploadPartRequest>;
 
 /**
+ * A successfully uploaded multipart part receipt.
+ *
  * @generated from message acyclic.objects.v2.UploadedPart
  */
 export declare type UploadedPart = Message<"acyclic.objects.v2.UploadedPart"> & {
   /**
+   * The multipart part number.
+   *
    * @generated from field: uint32 part_number = 1;
    */
   partNumber: number;
 
   /**
+   * The opaque current representation ETag.
+   *
    * @generated from field: string etag = 2;
    */
   etag: string;
 
   /**
+   * The complete object size in bytes.
+   *
    * @generated from field: uint64 size = 3;
    */
   size: bigint;
@@ -823,30 +1036,42 @@ export declare type UploadedPart = Message<"acyclic.objects.v2.UploadedPart"> & 
 export declare const UploadedPartSchema: GenMessage<UploadedPart>;
 
 /**
+ * Lists parts for a multipart upload.
+ *
  * @generated from message acyclic.objects.v2.ListPartsRequest
  */
 export declare type ListPartsRequest = Message<"acyclic.objects.v2.ListPartsRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * The multipart upload identifier.
+   *
    * @generated from field: string upload_id = 3;
    */
   uploadId: string;
 
   /**
+   * Only parts after this number are returned.
+   *
    * @generated from field: uint32 after_part_number = 4;
    */
   afterPartNumber: number;
 
   /**
+   * The requested bounded page size.
+   *
    * @generated from field: uint32 page_size = 5;
    */
   pageSize: number;
@@ -859,20 +1084,28 @@ export declare type ListPartsRequest = Message<"acyclic.objects.v2.ListPartsRequ
 export declare const ListPartsRequestSchema: GenMessage<ListPartsRequest>;
 
 /**
+ * One page of uploaded multipart parts.
+ *
  * @generated from message acyclic.objects.v2.ListPartsResponse
  */
 export declare type ListPartsResponse = Message<"acyclic.objects.v2.ListPartsResponse"> & {
   /**
+   * Exact ordered multipart part receipts.
+   *
    * @generated from field: repeated acyclic.objects.v2.UploadedPart parts = 1;
    */
   parts: UploadedPart[];
 
   /**
+   * The next part number after this page.
+   *
    * @generated from field: uint32 next_part_number = 2;
    */
   nextPartNumber: number;
 
   /**
+   * Whether more entries remain after this page.
+   *
    * @generated from field: bool is_truncated = 3;
    */
   isTruncated: boolean;
@@ -885,38 +1118,49 @@ export declare type ListPartsResponse = Message<"acyclic.objects.v2.ListPartsRes
 export declare const ListPartsResponseSchema: GenMessage<ListPartsResponse>;
 
 /**
- * Ordered part numbers and exact part ETags select the staged bytes.
- * Non-final parts are at least 5 MiB. Publication and preconditions are atomic for this key.
+ * Publishes a multipart object from exact part receipts.
  *
  * @generated from message acyclic.objects.v2.CompleteMultipartRequest
  */
 export declare type CompleteMultipartRequest = Message<"acyclic.objects.v2.CompleteMultipartRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * The multipart upload identifier.
+   *
    * @generated from field: string upload_id = 3;
    */
   uploadId: string;
 
   /**
+   * Exact ordered multipart part receipts.
+   *
    * @generated from field: repeated acyclic.objects.v2.UploadedPart parts = 4;
    */
   parts: UploadedPart[];
 
   /**
+   * Conditions evaluated atomically at publication.
+   *
    * @generated from field: acyclic.objects.v2.Preconditions preconditions = 5;
    */
   preconditions?: Preconditions | undefined;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 6;
    */
   mutation?: MutationIdentity | undefined;
@@ -929,25 +1173,35 @@ export declare type CompleteMultipartRequest = Message<"acyclic.objects.v2.Compl
 export declare const CompleteMultipartRequestSchema: GenMessage<CompleteMultipartRequest>;
 
 /**
+ * Aborts a multipart upload.
+ *
  * @generated from message acyclic.objects.v2.AbortMultipartRequest
  */
 export declare type AbortMultipartRequest = Message<"acyclic.objects.v2.AbortMultipartRequest"> & {
   /**
+   * The logical object bucket.
+   *
    * @generated from field: acyclic.objects.v2.BucketRef bucket = 1;
    */
   bucket?: BucketRef | undefined;
 
   /**
+   * The logical object key.
+   *
    * @generated from field: string object_key = 2;
    */
   objectKey: string;
 
   /**
+   * The multipart upload identifier.
+   *
    * @generated from field: string upload_id = 3;
    */
   uploadId: string;
 
   /**
+   * The object mutation operation.
+   *
    * @generated from field: acyclic.objects.v2.MutationIdentity mutation = 4;
    */
   mutation?: MutationIdentity | undefined;
@@ -960,10 +1214,14 @@ export declare type AbortMultipartRequest = Message<"acyclic.objects.v2.AbortMul
 export declare const AbortMultipartRequestSchema: GenMessage<AbortMultipartRequest>;
 
 /**
+ * Reports whether the multipart upload existed.
+ *
  * @generated from message acyclic.objects.v2.AbortMultipartResponse
  */
 export declare type AbortMultipartResponse = Message<"acyclic.objects.v2.AbortMultipartResponse"> & {
   /**
+   * Whether the target existed before deletion.
+   *
    * @generated from field: bool existed = 1;
    */
   existed: boolean;
@@ -976,17 +1234,21 @@ export declare type AbortMultipartResponse = Message<"acyclic.objects.v2.AbortMu
 export declare const AbortMultipartResponseSchema: GenMessage<AbortMultipartResponse>;
 
 /**
- * Customer diagnostic identity; operator topology stays in protected evidence.
+ * A customer-visible typed Objects service error.
  *
  * @generated from message acyclic.objects.v2.ErrorDetail
  */
 export declare type ErrorDetail = Message<"acyclic.objects.v2.ErrorDetail"> & {
   /**
+   * The typed Objects service error code.
+   *
    * @generated from field: acyclic.objects.v2.ErrorCode code = 1;
    */
   code: ErrorCode;
 
   /**
+   * A customer-visible request diagnostic identifier.
+   *
    * @generated from field: string request_id = 2;
    */
   requestId: string;
@@ -999,6 +1261,8 @@ export declare type ErrorDetail = Message<"acyclic.objects.v2.ErrorDetail"> & {
 export declare const ErrorDetailSchema: GenMessage<ErrorDetail>;
 
 /**
+ * Fixed protocol limits for Objects operations.
+ *
  * @generated from enum acyclic.objects.v2.ObjectsLimit
  */
 export enum ObjectsLimit {
@@ -1044,6 +1308,8 @@ export enum ObjectsLimit {
 export declare const ObjectsLimitSchema: GenEnum<ObjectsLimit>;
 
 /**
+ * Stable customer-visible error categories returned by Objects services.
+ *
  * @generated from enum acyclic.objects.v2.ErrorCode
  */
 export enum ErrorCode {
@@ -1114,10 +1380,14 @@ export enum ErrorCode {
 export declare const ErrorCodeSchema: GenEnum<ErrorCode>;
 
 /**
+ * Creates, inspects, and deletes logical object buckets.
+ *
  * @generated from service acyclic.objects.v2.BucketsService
  */
 export declare const BucketsService: GenService<{
   /**
+   * Creates a logical bucket.
+   *
    * @generated from rpc acyclic.objects.v2.BucketsService.CreateBucket
    */
   createBucket: {
@@ -1126,6 +1396,8 @@ export declare const BucketsService: GenService<{
     output: typeof BucketSchema;
   },
   /**
+   * Returns logical bucket metadata.
+   *
    * @generated from rpc acyclic.objects.v2.BucketsService.HeadBucket
    */
   headBucket: {
@@ -1134,6 +1406,8 @@ export declare const BucketsService: GenService<{
     output: typeof BucketSchema;
   },
   /**
+   * Deletes a logical bucket when it is empty.
+   *
    * @generated from rpc acyclic.objects.v2.BucketsService.DeleteBucket
    */
   deleteBucket: {
@@ -1144,10 +1418,14 @@ export declare const BucketsService: GenService<{
 }>;
 
 /**
+ * Publishes, reads, lists, and deletes logical objects.
+ *
  * @generated from service acyclic.objects.v2.ObjectsService
  */
 export declare const ObjectsService: GenService<{
   /**
+   * Publishes one complete object after an explicit upload completion frame.
+   *
    * @generated from rpc acyclic.objects.v2.ObjectsService.PutObject
    */
   putObject: {
@@ -1156,6 +1434,8 @@ export declare const ObjectsService: GenService<{
     output: typeof ObjectInfoSchema;
   },
   /**
+   * Reads one complete object representation as bounded response frames.
+   *
    * @generated from rpc acyclic.objects.v2.ObjectsService.GetObject
    */
   getObject: {
@@ -1164,6 +1444,8 @@ export declare const ObjectsService: GenService<{
     output: typeof GetObjectResponseSchema;
   },
   /**
+   * Returns object metadata without its body.
+   *
    * @generated from rpc acyclic.objects.v2.ObjectsService.HeadObject
    */
   headObject: {
@@ -1172,6 +1454,8 @@ export declare const ObjectsService: GenService<{
     output: typeof HeadObjectResponseSchema;
   },
   /**
+   * Deletes the current object representation atomically.
+   *
    * @generated from rpc acyclic.objects.v2.ObjectsService.DeleteObject
    */
   deleteObject: {
@@ -1180,6 +1464,8 @@ export declare const ObjectsService: GenService<{
     output: typeof DeleteObjectResponseSchema;
   },
   /**
+   * Lists objects through an eventual lexical traversal.
+   *
    * @generated from rpc acyclic.objects.v2.ObjectsService.ListObjects
    */
   listObjects: {
@@ -1190,10 +1476,14 @@ export declare const ObjectsService: GenService<{
 }>;
 
 /**
+ * Stages and publishes multipart object uploads.
+ *
  * @generated from service acyclic.objects.v2.MultipartService
  */
 export declare const MultipartService: GenService<{
   /**
+   * Starts a multipart upload.
+   *
    * @generated from rpc acyclic.objects.v2.MultipartService.CreateMultipart
    */
   createMultipart: {
@@ -1202,6 +1492,8 @@ export declare const MultipartService: GenService<{
     output: typeof MultipartUploadSchema;
   },
   /**
+   * Uploads one multipart part after an explicit completion frame.
+   *
    * @generated from rpc acyclic.objects.v2.MultipartService.UploadPart
    */
   uploadPart: {
@@ -1210,6 +1502,8 @@ export declare const MultipartService: GenService<{
     output: typeof UploadedPartSchema;
   },
   /**
+   * Lists the uploaded parts for a multipart upload.
+   *
    * @generated from rpc acyclic.objects.v2.MultipartService.ListParts
    */
   listParts: {
@@ -1218,6 +1512,8 @@ export declare const MultipartService: GenService<{
     output: typeof ListPartsResponseSchema;
   },
   /**
+   * Publishes a multipart object from exact ordered part receipts.
+   *
    * @generated from rpc acyclic.objects.v2.MultipartService.CompleteMultipart
    */
   completeMultipart: {
@@ -1226,6 +1522,8 @@ export declare const MultipartService: GenService<{
     output: typeof ObjectInfoSchema;
   },
   /**
+   * Aborts a multipart upload.
+   *
    * @generated from rpc acyclic.objects.v2.MultipartService.AbortMultipart
    */
   abortMultipart: {
@@ -1234,3 +1532,4 @@ export declare const MultipartService: GenService<{
     output: typeof AbortMultipartResponseSchema;
   },
 }>;
+

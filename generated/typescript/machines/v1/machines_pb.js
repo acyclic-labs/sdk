@@ -346,6 +346,8 @@ export const ImageKindSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 0);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ImageKind
  */
 export const ImageKind = /*@__PURE__*/
@@ -358,6 +360,8 @@ export const CapabilitySchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 1);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.Capability
  */
 export const Capability = /*@__PURE__*/
@@ -370,6 +374,8 @@ export const CompatibilityModeSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 2);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.CompatibilityMode
  */
 export const CompatibilityMode = /*@__PURE__*/
@@ -382,6 +388,8 @@ export const ExpirationKindSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 3);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ExpirationKind
  */
 export const ExpirationKind = /*@__PURE__*/
@@ -394,6 +402,8 @@ export const OperationStatusSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 4);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.OperationStatus
  */
 export const OperationStatus = /*@__PURE__*/
@@ -406,6 +416,8 @@ export const MachineStatusSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 5);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.MachineStatus
  */
 export const MachineStatus = /*@__PURE__*/
@@ -418,6 +430,8 @@ export const ForkFidelitySchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 6);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.ForkFidelity
  */
 export const ForkFidelity = /*@__PURE__*/
@@ -430,6 +444,8 @@ export const PressureKindSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 7);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.PressureKind
  */
 export const PressureKind = /*@__PURE__*/
@@ -442,13 +458,18 @@ export const EventKindSchema = /*@__PURE__*/
   enumDesc(file_machines_v1_machines, 8);
 
 /**
+ * An enum in the Machines v1 wire contract.
+ *
  * @generated from enum acyclic.machines.v1.EventKind
  */
 export const EventKind = /*@__PURE__*/
   tsEnum(EventKindSchema);
 
 /**
+ * Qualifies images and manages machine, checkpoint, fork, operation, event, and usage lifecycles.
+ *
  * @generated from service acyclic.machines.v1.MachinesService
  */
 export const MachinesService = /*@__PURE__*/
   serviceDesc(file_machines_v1_machines, 0);
+

@@ -18,8 +18,6 @@ export const nonzero_fixed_bytes = /*@__PURE__*/
   extDesc(file_validation_v1_options, 0);
 
 /**
- * Presence required for a message that carries a replay or binding invariant.
- *
  * @generated from extension: optional bool required_message = 51002;
  */
 export const required_message = /*@__PURE__*/
@@ -44,8 +42,6 @@ export const max_items = /*@__PURE__*/
   extDesc(file_validation_v1_options, 4);
 
 /**
- * Nonempty UTF-8 string or bytes value, bounded by its encoded byte length.
- *
  * @generated from extension: optional uint32 nonempty_max_bytes = 51007;
  */
 export const nonempty_max_bytes = /*@__PURE__*/
@@ -86,3 +82,4 @@ export const required_oneof = /*@__PURE__*/
  */
 export const http_path = /*@__PURE__*/
   extDesc(file_validation_v1_options, 11);
+

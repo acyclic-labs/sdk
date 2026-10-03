@@ -11,6 +11,8 @@ import type { Message } from "@bufbuild/protobuf";
 export declare const file_inference_v1_inference: GenFile;
 
 /**
+ * Requests the model capabilities visible to the caller.
+ *
  * @generated from message inference.customer.v1.ListModelsRequest
  */
 export declare type ListModelsRequest = Message<"inference.customer.v1.ListModelsRequest"> & {
@@ -23,10 +25,14 @@ export declare type ListModelsRequest = Message<"inference.customer.v1.ListModel
 export declare const ListModelsRequestSchema: GenMessage<ListModelsRequest>;
 
 /**
+ * Returns model capabilities and their retention profiles.
+ *
  * @generated from message inference.customer.v1.ListModelsResponse
  */
 export declare type ListModelsResponse = Message<"inference.customer.v1.ListModelsResponse"> & {
   /**
+   * The model capabilities visible to the caller.
+   *
    * @generated from field: repeated inference.customer.v1.ModelCapability models = 1;
    */
   models: ModelCapability[];
@@ -39,41 +45,55 @@ export declare type ListModelsResponse = Message<"inference.customer.v1.ListMode
 export declare const ListModelsResponseSchema: GenMessage<ListModelsResponse>;
 
 /**
+ * Describes a model profile, limits, features, and warm-retention options.
+ *
  * @generated from message inference.customer.v1.ModelCapability
  */
 export declare type ModelCapability = Message<"inference.customer.v1.ModelCapability"> & {
   /**
+   * The model value carried by ModelCapability.
+   *
    * @generated from field: string model = 1;
    */
   model: string;
 
   /**
+   * The execution profile value carried by ModelCapability.
+   *
    * @generated from field: bytes execution_profile = 2;
    */
   executionProfile: Uint8Array;
 
   /**
+   * The maximum context value carried by ModelCapability.
+   *
    * @generated from field: uint64 maximum_context = 3;
    */
   maximumContext: bigint;
 
   /**
+   * The maximum output value carried by ModelCapability.
+   *
    * @generated from field: uint64 maximum_output = 4;
    */
   maximumOutput: bigint;
 
   /**
+   * The features value carried by ModelCapability.
+   *
    * @generated from field: repeated string features = 5;
    */
   features: string[];
 
   /**
+   * The retention profiles value carried by ModelCapability.
+   *
    * @generated from field: repeated inference.customer.v1.RetentionProfile retention_profiles = 6;
    */
   retentionProfiles: RetentionProfile[];
 
   /**
-   * Paid KV pin policies; duration bounds apply to idle_timeout_ms.
+   * The idle kv profiles value carried by ModelCapability.
    *
    * @generated from field: repeated inference.customer.v1.RetentionProfile idle_kv_profiles = 7;
    */
@@ -87,20 +107,28 @@ export declare type ModelCapability = Message<"inference.customer.v1.ModelCapabi
 export declare const ModelCapabilitySchema: GenMessage<ModelCapability>;
 
 /**
+ * Describes a bounded duration profile for retained context state.
+ *
  * @generated from message inference.customer.v1.RetentionProfile
  */
 export declare type RetentionProfile = Message<"inference.customer.v1.RetentionProfile"> & {
   /**
+   * The profile value carried by RetentionProfile.
+   *
    * @generated from field: bytes profile = 1;
    */
   profile: Uint8Array;
 
   /**
+   * The minimum duration ms value carried by RetentionProfile.
+   *
    * @generated from field: uint64 minimum_duration_ms = 2;
    */
   minimumDurationMs: bigint;
 
   /**
+   * The maximum duration ms value carried by RetentionProfile.
+   *
    * @generated from field: uint64 maximum_duration_ms = 3;
    */
   maximumDurationMs: bigint;
@@ -113,32 +141,42 @@ export declare type RetentionProfile = Message<"inference.customer.v1.RetentionP
 export declare const RetentionProfileSchema: GenMessage<RetentionProfile>;
 
 /**
+ * Requests a warm retention commitment for an existing context.
+ *
  * @generated from message inference.customer.v1.RetainWarmRequest
  */
 export declare type RetainWarmRequest = Message<"inference.customer.v1.RetainWarmRequest"> & {
   /**
+   * The identity value carried by RetainWarmRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The context value carried by RetainWarmRequest.
+   *
    * @generated from field: bytes context = 2;
    */
   context: Uint8Array;
 
   /**
-   * Legacy absolute-expiry policy. Mutually exclusive with idle_kv.
+   * The latency profile value carried by RetainWarmRequest.
    *
    * @generated from field: bytes latency_profile = 3;
    */
   latencyProfile: Uint8Array;
 
   /**
+   * The expires at ms value carried by RetainWarmRequest.
+   *
    * @generated from field: uint64 expires_at_ms = 4;
    */
   expiresAtMs: bigint;
 
   /**
+   * The idle kv value carried by RetainWarmRequest.
+   *
    * @generated from field: inference.customer.v1.IdleKvPolicy idle_kv = 5;
    */
   idleKv?: IdleKvPolicy | undefined;
@@ -151,20 +189,21 @@ export declare type RetainWarmRequest = Message<"inference.customer.v1.RetainWar
 export declare const RetainWarmRequestSchema: GenMessage<RetainWarmRequest>;
 
 /**
- * Paid retention of verified KV, without capacity, throughput or latency guarantees.
- * Only verified actual Run reuse of the pinned revision or descendant prefix
- * advances last-use. Fork, edit, admission, inspect and recovery do not move the
- * pin or reset its idle window. Retried identities return committed receipts.
+ * Describes the idle KV retention profile attached to a warm context.
  *
  * @generated from message inference.customer.v1.IdleKvPolicy
  */
 export declare type IdleKvPolicy = Message<"inference.customer.v1.IdleKvPolicy"> & {
   /**
+   * The profile value carried by IdleKvPolicy.
+   *
    * @generated from field: bytes profile = 1;
    */
   profile: Uint8Array;
 
   /**
+   * The idle timeout ms value carried by IdleKvPolicy.
+   *
    * @generated from field: uint64 idle_timeout_ms = 2;
    */
   idleTimeoutMs: bigint;
@@ -177,31 +216,34 @@ export declare type IdleKvPolicy = Message<"inference.customer.v1.IdleKvPolicy">
 export declare const IdleKvPolicySchema: GenMessage<IdleKvPolicy>;
 
 /**
+ * Records idle KV retention policy and the last observed use.
+ *
  * @generated from message inference.customer.v1.IdleKvRetention
  */
 export declare type IdleKvRetention = Message<"inference.customer.v1.IdleKvRetention"> & {
   /**
+   * The policy value carried by IdleKvRetention.
+   *
    * @generated from field: inference.customer.v1.IdleKvPolicy policy = 1;
    */
   policy?: IdleKvPolicy | undefined;
 
   /**
-   * Trusted service Unix milliseconds after verified initial KV pin.
+   * The retained at ms value carried by IdleKvRetention.
    *
    * @generated from field: uint64 retained_at_ms = 2;
    */
   retainedAtMs: bigint;
 
   /**
-   * Absent until verified actual reuse; never inferred from admission.
+   * The last used at ms value carried by IdleKvRetention.
    *
    * @generated from field: optional uint64 last_used_at_ms = 3;
    */
   lastUsedAtMs?: bigint | undefined;
 
   /**
-   * The authoritative Run that verified actual reuse of this pinned revision
-   * or its descendant prefix, in the same authenticated owner scope.
+   * The last run id value carried by IdleKvRetention.
    *
    * @generated from field: optional bytes last_run_id = 4;
    */
@@ -215,10 +257,14 @@ export declare type IdleKvRetention = Message<"inference.customer.v1.IdleKvReten
 export declare const IdleKvRetentionSchema: GenMessage<IdleKvRetention>;
 
 /**
+ * Identifies a warm retention commitment for inspection.
+ *
  * @generated from message inference.customer.v1.InspectWarmRequest
  */
 export declare type InspectWarmRequest = Message<"inference.customer.v1.InspectWarmRequest"> & {
   /**
+   * The commitment value carried by InspectWarmRequest.
+   *
    * @generated from field: bytes commitment = 1;
    */
   commitment: Uint8Array;
@@ -231,28 +277,34 @@ export declare type InspectWarmRequest = Message<"inference.customer.v1.InspectW
 export declare const InspectWarmRequestSchema: GenMessage<InspectWarmRequest>;
 
 /**
+ * Extends a warm retention commitment and its idle policy.
+ *
  * @generated from message inference.customer.v1.RenewWarmRequest
  */
 export declare type RenewWarmRequest = Message<"inference.customer.v1.RenewWarmRequest"> & {
   /**
+   * The identity value carried by RenewWarmRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The commitment value carried by RenewWarmRequest.
+   *
    * @generated from field: bytes commitment = 2;
    */
   commitment: Uint8Array;
 
   /**
+   * The expires at ms value carried by RenewWarmRequest.
+   *
    * @generated from field: uint64 expires_at_ms = 3;
    */
   expiresAtMs: bigint;
 
   /**
-   * Changes timeout from last actual use, or retained_at_ms before first use.
-   * Does not reset the idle window. Expired/released pins require a new Retain
-   * identity; renew/replay cannot resurrect them. Inspect reports current state.
+   * The idle timeout ms value carried by RenewWarmRequest.
    *
    * @generated from field: optional uint64 idle_timeout_ms = 4;
    */
@@ -266,15 +318,21 @@ export declare type RenewWarmRequest = Message<"inference.customer.v1.RenewWarmR
 export declare const RenewWarmRequestSchema: GenMessage<RenewWarmRequest>;
 
 /**
+ * Releases a warm retention commitment.
+ *
  * @generated from message inference.customer.v1.ReleaseWarmRequest
  */
 export declare type ReleaseWarmRequest = Message<"inference.customer.v1.ReleaseWarmRequest"> & {
   /**
+   * The identity value carried by ReleaseWarmRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The commitment value carried by ReleaseWarmRequest.
+   *
    * @generated from field: bytes commitment = 2;
    */
   commitment: Uint8Array;
@@ -287,57 +345,76 @@ export declare type ReleaseWarmRequest = Message<"inference.customer.v1.ReleaseW
 export declare const ReleaseWarmRequestSchema: GenMessage<ReleaseWarmRequest>;
 
 /**
+ * Reports the admitted warm commitment and its current state.
+ *
  * @generated from message inference.customer.v1.WarmView
  */
 export declare type WarmView = Message<"inference.customer.v1.WarmView"> & {
   /**
+   * The commitment value carried by WarmView.
+   *
    * @generated from field: bytes commitment = 1;
    */
   commitment: Uint8Array;
 
   /**
+   * The context value carried by WarmView.
+   *
    * @generated from field: bytes context = 2;
    */
   context: Uint8Array;
 
   /**
+   * The model profile value carried by WarmView.
+   *
    * @generated from field: bytes model_profile = 3;
    */
   modelProfile: Uint8Array;
 
   /**
+   * The latency profile value carried by WarmView.
+   *
    * @generated from field: bytes latency_profile = 4;
    */
   latencyProfile: Uint8Array;
 
   /**
+   * The expires at ms value carried by WarmView.
+   *
    * @generated from field: uint64 expires_at_ms = 5;
    */
   expiresAtMs: bigint;
 
   /**
+   * The state value carried by WarmView.
+   *
    * @generated from field: inference.customer.v1.WarmState state = 6;
    */
   state: WarmState;
 
   /**
+   * The evidence digest value carried by WarmView.
+   *
    * @generated from field: bytes evidence_digest = 7;
    */
   evidenceDigest: Uint8Array;
 
   /**
+   * The admission receipt id value carried by WarmView.
+   *
    * @generated from field: bytes admission_receipt_id = 8;
    */
   admissionReceiptId: Uint8Array;
 
   /**
+   * The sequence value carried by WarmView.
+   *
    * @generated from field: uint64 sequence = 9;
    */
   sequence: bigint;
 
   /**
-   * Present only for idle KV pins; latency_profile is then empty. expires_at_ms
-   * equals checked (last_used_at_ms or retained_at_ms) + idle_timeout_ms.
+   * The idle kv value carried by WarmView.
    *
    * @generated from field: inference.customer.v1.IdleKvRetention idle_kv = 10;
    */
@@ -351,20 +428,28 @@ export declare type WarmView = Message<"inference.customer.v1.WarmView"> & {
 export declare const WarmViewSchema: GenMessage<WarmView>;
 
 /**
+ * Identifies an evaluation input or output artifact by digest and size.
+ *
  * @generated from message inference.customer.v1.EvaluationArtifact
  */
 export declare type EvaluationArtifact = Message<"inference.customer.v1.EvaluationArtifact"> & {
   /**
+   * The digest value carried by EvaluationArtifact.
+   *
    * @generated from field: bytes digest = 1;
    */
   digest: Uint8Array;
 
   /**
+   * The media type value carried by EvaluationArtifact.
+   *
    * @generated from field: string media_type = 2;
    */
   mediaType: string;
 
   /**
+   * The logical size value carried by EvaluationArtifact.
+   *
    * @generated from field: uint64 logical_size = 3;
    */
   logicalSize: bigint;
@@ -377,20 +462,28 @@ export declare type EvaluationArtifact = Message<"inference.customer.v1.Evaluati
 export declare const EvaluationArtifactSchema: GenMessage<EvaluationArtifact>;
 
 /**
+ * Defines one evaluation input case and its optional artifact reference.
+ *
  * @generated from message inference.customer.v1.EvaluationCase
  */
 export declare type EvaluationCase = Message<"inference.customer.v1.EvaluationCase"> & {
   /**
+   * The case id value carried by EvaluationCase.
+   *
    * @generated from field: bytes case_id = 1;
    */
   caseId: Uint8Array;
 
   /**
+   * The input value carried by EvaluationCase.
+   *
    * @generated from field: bytes input = 2;
    */
   input: Uint8Array;
 
   /**
+   * The input artifact digest value carried by EvaluationCase.
+   *
    * @generated from field: optional bytes input_artifact_digest = 3;
    */
   inputArtifactDigest?: Uint8Array | undefined;
@@ -403,20 +496,28 @@ export declare type EvaluationCase = Message<"inference.customer.v1.EvaluationCa
 export declare const EvaluationCaseSchema: GenMessage<EvaluationCase>;
 
 /**
+ * Groups evaluation cases under an immutable suite identity.
+ *
  * @generated from message inference.customer.v1.EvaluationSuite
  */
 export declare type EvaluationSuite = Message<"inference.customer.v1.EvaluationSuite"> & {
   /**
+   * The identity value carried by EvaluationSuite.
+   *
    * @generated from field: string identity = 1;
    */
   identity: string;
 
   /**
+   * The digest value carried by EvaluationSuite.
+   *
    * @generated from field: bytes digest = 2;
    */
   digest: Uint8Array;
 
   /**
+   * The cases value carried by EvaluationSuite.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationCase cases = 3;
    */
   cases: EvaluationCase[];
@@ -429,15 +530,21 @@ export declare type EvaluationSuite = Message<"inference.customer.v1.EvaluationS
 export declare const EvaluationSuiteSchema: GenMessage<EvaluationSuite>;
 
 /**
+ * Identifies the grader used to observe an evaluation case.
+ *
  * @generated from message inference.customer.v1.EvaluationGrader
  */
 export declare type EvaluationGrader = Message<"inference.customer.v1.EvaluationGrader"> & {
   /**
+   * The handle value carried by EvaluationGrader.
+   *
    * @generated from field: bytes handle = 1;
    */
   handle: Uint8Array;
 
   /**
+   * The artifact digest value carried by EvaluationGrader.
+   *
    * @generated from field: bytes artifact_digest = 2;
    */
   artifactDigest: Uint8Array;
@@ -450,15 +557,21 @@ export declare type EvaluationGrader = Message<"inference.customer.v1.Evaluation
 export declare const EvaluationGraderSchema: GenMessage<EvaluationGrader>;
 
 /**
+ * Defines a named aggregation applied to evaluation observations.
+ *
  * @generated from message inference.customer.v1.EvaluationMetric
  */
 export declare type EvaluationMetric = Message<"inference.customer.v1.EvaluationMetric"> & {
   /**
+   * The identity value carried by EvaluationMetric.
+   *
    * @generated from field: string identity = 1;
    */
   identity: string;
 
   /**
+   * The aggregation value carried by EvaluationMetric.
+   *
    * @generated from field: inference.customer.v1.EvaluationAggregation aggregation = 2;
    */
   aggregation: EvaluationAggregation;
@@ -471,35 +584,49 @@ export declare type EvaluationMetric = Message<"inference.customer.v1.Evaluation
 export declare const EvaluationMetricSchema: GenMessage<EvaluationMetric>;
 
 /**
+ * Defines candidates, cases, grader, metrics, limits, and specification digest.
+ *
  * @generated from message inference.customer.v1.EvaluationSpec
  */
 export declare type EvaluationSpec = Message<"inference.customer.v1.EvaluationSpec"> & {
   /**
+   * The candidates value carried by EvaluationSpec.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationArtifact candidates = 1;
    */
   candidates: EvaluationArtifact[];
 
   /**
+   * The suite value carried by EvaluationSpec.
+   *
    * @generated from field: inference.customer.v1.EvaluationSuite suite = 2;
    */
   suite?: EvaluationSuite | undefined;
 
   /**
+   * The grader value carried by EvaluationSpec.
+   *
    * @generated from field: inference.customer.v1.EvaluationGrader grader = 3;
    */
   grader?: EvaluationGrader | undefined;
 
   /**
+   * The metrics value carried by EvaluationSpec.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationMetric metrics = 4;
    */
   metrics: EvaluationMetric[];
 
   /**
+   * The maximum case results value carried by EvaluationSpec.
+   *
    * @generated from field: uint64 maximum_case_results = 5;
    */
   maximumCaseResults: bigint;
 
   /**
+   * The spec digest value carried by EvaluationSpec.
+   *
    * @generated from field: bytes spec_digest = 6;
    */
   specDigest: Uint8Array;
@@ -512,15 +639,21 @@ export declare type EvaluationSpec = Message<"inference.customer.v1.EvaluationSp
 export declare const EvaluationSpecSchema: GenMessage<EvaluationSpec>;
 
 /**
+ * Requests admission of an immutable evaluation specification.
+ *
  * @generated from message inference.customer.v1.CreateEvaluationRequest
  */
 export declare type CreateEvaluationRequest = Message<"inference.customer.v1.CreateEvaluationRequest"> & {
   /**
+   * The identity value carried by CreateEvaluationRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The spec value carried by CreateEvaluationRequest.
+   *
    * @generated from field: inference.customer.v1.EvaluationSpec spec = 2;
    */
   spec?: EvaluationSpec | undefined;
@@ -533,10 +666,14 @@ export declare type CreateEvaluationRequest = Message<"inference.customer.v1.Cre
 export declare const CreateEvaluationRequestSchema: GenMessage<CreateEvaluationRequest>;
 
 /**
+ * Identifies an evaluation to inspect.
+ *
  * @generated from message inference.customer.v1.InspectEvaluationRequest
  */
 export declare type InspectEvaluationRequest = Message<"inference.customer.v1.InspectEvaluationRequest"> & {
   /**
+   * The evaluation id value carried by InspectEvaluationRequest.
+   *
    * @generated from field: bytes evaluation_id = 1;
    */
   evaluationId: Uint8Array;
@@ -549,15 +686,21 @@ export declare type InspectEvaluationRequest = Message<"inference.customer.v1.In
 export declare const InspectEvaluationRequestSchema: GenMessage<InspectEvaluationRequest>;
 
 /**
+ * Represents a rational value without floating-point rounding.
+ *
  * @generated from message inference.customer.v1.ExactRational
  */
 export declare type ExactRational = Message<"inference.customer.v1.ExactRational"> & {
   /**
+   * The numerator value carried by ExactRational.
+   *
    * @generated from field: sint64 numerator = 1;
    */
   numerator: bigint;
 
   /**
+   * The denominator value carried by ExactRational.
+   *
    * @generated from field: uint64 denominator = 2;
    */
   denominator: bigint;
@@ -570,15 +713,21 @@ export declare type ExactRational = Message<"inference.customer.v1.ExactRational
 export declare const ExactRationalSchema: GenMessage<ExactRational>;
 
 /**
+ * Associates a metric identity with an exact value.
+ *
  * @generated from message inference.customer.v1.EvaluationMetricValue
  */
 export declare type EvaluationMetricValue = Message<"inference.customer.v1.EvaluationMetricValue"> & {
   /**
+   * The metric identity value carried by EvaluationMetricValue.
+   *
    * @generated from field: string metric_identity = 1;
    */
   metricIdentity: string;
 
   /**
+   * The value value carried by EvaluationMetricValue.
+   *
    * @generated from field: inference.customer.v1.ExactRational value = 2;
    */
   value?: ExactRational | undefined;
@@ -591,30 +740,42 @@ export declare type EvaluationMetricValue = Message<"inference.customer.v1.Evalu
 export declare const EvaluationMetricValueSchema: GenMessage<EvaluationMetricValue>;
 
 /**
+ * Records one candidate result, observation, metrics, and outcome.
+ *
  * @generated from message inference.customer.v1.EvaluationCaseResult
  */
 export declare type EvaluationCaseResult = Message<"inference.customer.v1.EvaluationCaseResult"> & {
   /**
+   * The candidate digest value carried by EvaluationCaseResult.
+   *
    * @generated from field: bytes candidate_digest = 1;
    */
   candidateDigest: Uint8Array;
 
   /**
+   * The case id value carried by EvaluationCaseResult.
+   *
    * @generated from field: bytes case_id = 2;
    */
   caseId: Uint8Array;
 
   /**
+   * The observation value carried by EvaluationCaseResult.
+   *
    * @generated from field: inference.customer.v1.EvaluationGraderObservation observation = 3;
    */
   observation?: EvaluationGraderObservation | undefined;
 
   /**
+   * The metrics value carried by EvaluationCaseResult.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationMetricValue metrics = 4;
    */
   metrics: EvaluationMetricValue[];
 
   /**
+   * The outcome value carried by EvaluationCaseResult.
+   *
    * @generated from field: inference.customer.v1.EvaluationCaseOutcome outcome = 5;
    */
   outcome: EvaluationCaseOutcome;
@@ -627,24 +788,28 @@ export declare type EvaluationCaseResult = Message<"inference.customer.v1.Evalua
 export declare const EvaluationCaseResultSchema: GenMessage<EvaluationCaseResult>;
 
 /**
- * The binding is SHA-256("acyclic.inference.grader-observation.v1\0" ||
- * native_output_digest || observation_digest). It proves which exact native
- * device output the grader observed without exposing either payload.
+ * Records grader output and binding digests for a case.
  *
  * @generated from message inference.customer.v1.EvaluationGraderObservation
  */
 export declare type EvaluationGraderObservation = Message<"inference.customer.v1.EvaluationGraderObservation"> & {
   /**
+   * The native output digest value carried by EvaluationGraderObservation.
+   *
    * @generated from field: bytes native_output_digest = 1;
    */
   nativeOutputDigest: Uint8Array;
 
   /**
+   * The observation digest value carried by EvaluationGraderObservation.
+   *
    * @generated from field: bytes observation_digest = 2;
    */
   observationDigest: Uint8Array;
 
   /**
+   * The binding digest value carried by EvaluationGraderObservation.
+   *
    * @generated from field: bytes binding_digest = 3;
    */
   bindingDigest: Uint8Array;
@@ -657,25 +822,35 @@ export declare type EvaluationGraderObservation = Message<"inference.customer.v1
 export declare const EvaluationGraderObservationSchema: GenMessage<EvaluationGraderObservation>;
 
 /**
+ * Records an aggregate metric value for one candidate.
+ *
  * @generated from message inference.customer.v1.EvaluationAggregate
  */
 export declare type EvaluationAggregate = Message<"inference.customer.v1.EvaluationAggregate"> & {
   /**
+   * The candidate digest value carried by EvaluationAggregate.
+   *
    * @generated from field: bytes candidate_digest = 1;
    */
   candidateDigest: Uint8Array;
 
   /**
+   * The metric identity value carried by EvaluationAggregate.
+   *
    * @generated from field: string metric_identity = 2;
    */
   metricIdentity: string;
 
   /**
+   * The aggregation value carried by EvaluationAggregate.
+   *
    * @generated from field: inference.customer.v1.EvaluationAggregation aggregation = 3;
    */
   aggregation: EvaluationAggregation;
 
   /**
+   * The value value carried by EvaluationAggregate.
+   *
    * @generated from field: inference.customer.v1.ExactRational value = 4;
    */
   value?: ExactRational | undefined;
@@ -688,25 +863,35 @@ export declare type EvaluationAggregate = Message<"inference.customer.v1.Evaluat
 export declare const EvaluationAggregateSchema: GenMessage<EvaluationAggregate>;
 
 /**
+ * Contains case results, aggregates, and the immutable result digest.
+ *
  * @generated from message inference.customer.v1.EvaluationResult
  */
 export declare type EvaluationResult = Message<"inference.customer.v1.EvaluationResult"> & {
   /**
+   * The spec digest value carried by EvaluationResult.
+   *
    * @generated from field: bytes spec_digest = 1;
    */
   specDigest: Uint8Array;
 
   /**
+   * The case results value carried by EvaluationResult.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationCaseResult case_results = 2;
    */
   caseResults: EvaluationCaseResult[];
 
   /**
+   * The aggregates value carried by EvaluationResult.
+   *
    * @generated from field: repeated inference.customer.v1.EvaluationAggregate aggregates = 3;
    */
   aggregates: EvaluationAggregate[];
 
   /**
+   * The result digest value carried by EvaluationResult.
+   *
    * @generated from field: bytes result_digest = 4;
    */
   resultDigest: Uint8Array;
@@ -719,30 +904,42 @@ export declare type EvaluationResult = Message<"inference.customer.v1.Evaluation
 export declare const EvaluationResultSchema: GenMessage<EvaluationResult>;
 
 /**
+ * Reports an admitted evaluation, its state, result, and sequence.
+ *
  * @generated from message inference.customer.v1.EvaluationView
  */
 export declare type EvaluationView = Message<"inference.customer.v1.EvaluationView"> & {
   /**
+   * The evaluation id value carried by EvaluationView.
+   *
    * @generated from field: bytes evaluation_id = 1;
    */
   evaluationId: Uint8Array;
 
   /**
+   * The spec value carried by EvaluationView.
+   *
    * @generated from field: inference.customer.v1.EvaluationSpec spec = 2;
    */
   spec?: EvaluationSpec | undefined;
 
   /**
+   * The state value carried by EvaluationView.
+   *
    * @generated from field: inference.customer.v1.EvaluationState state = 3;
    */
   state: EvaluationState;
 
   /**
+   * The result value carried by EvaluationView.
+   *
    * @generated from field: optional inference.customer.v1.EvaluationResult result = 4;
    */
   result?: EvaluationResult | undefined;
 
   /**
+   * The sequence value carried by EvaluationView.
+   *
    * @generated from field: uint64 sequence = 5;
    */
   sequence: bigint;
@@ -755,15 +952,21 @@ export declare type EvaluationView = Message<"inference.customer.v1.EvaluationVi
 export declare const EvaluationViewSchema: GenMessage<EvaluationView>;
 
 /**
+ * Binds a mutation or run request to a caller-supplied identity.
+ *
  * @generated from message inference.customer.v1.RequestIdentity
  */
 export declare type RequestIdentity = Message<"inference.customer.v1.RequestIdentity"> & {
   /**
+   * The caller instance identity.
+   *
    * @generated from field: bytes client_instance = 1;
    */
   clientInstance: Uint8Array;
 
   /**
+   * The caller request identity.
+   *
    * @generated from field: bytes request_id = 2;
    */
   requestId: Uint8Array;
@@ -776,33 +979,41 @@ export declare type RequestIdentity = Message<"inference.customer.v1.RequestIden
 export declare const RequestIdentitySchema: GenMessage<RequestIdentity>;
 
 /**
+ * Represents one typed item in an immutable context revision.
+ *
  * @generated from message inference.customer.v1.Item
  */
 export declare type Item = Message<"inference.customer.v1.Item"> & {
   /**
+   * The id value carried by Item.
+   *
    * @generated from field: bytes id = 1;
    */
   id: Uint8Array;
 
   /**
+   * The kind value carried by Item.
+   *
    * @generated from field: inference.customer.v1.ItemKind kind = 2;
    */
   kind: ItemKind;
 
   /**
+   * The payload value carried by Item.
+   *
    * @generated from field: bytes payload = 3;
    */
   payload: Uint8Array;
 
   /**
-   * Exactly one logical link for tool call/result; absent for all other kinds.
+   * The link value carried by Item.
    *
    * @generated from field: bytes link = 4;
    */
   link: Uint8Array;
 
   /**
-   * Only a continuation may contain its exact originating execution profile.
+   * The continuation profile value carried by Item.
    *
    * @generated from field: bytes continuation_profile = 5;
    */
@@ -816,20 +1027,28 @@ export declare type Item = Message<"inference.customer.v1.Item"> & {
 export declare const ItemSchema: GenMessage<Item>;
 
 /**
+ * Requests creation of an immutable context revision.
+ *
  * @generated from message inference.customer.v1.CreateContextRequest
  */
 export declare type CreateContextRequest = Message<"inference.customer.v1.CreateContextRequest"> & {
   /**
+   * The identity value carried by CreateContextRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The model value carried by CreateContextRequest.
+   *
    * @generated from field: string model = 2;
    */
   model: string;
 
   /**
+   * The items value carried by CreateContextRequest.
+   *
    * @generated from field: repeated inference.customer.v1.Item items = 3;
    */
   items: Item[];
@@ -842,10 +1061,14 @@ export declare type CreateContextRequest = Message<"inference.customer.v1.Create
 export declare const CreateContextRequestSchema: GenMessage<CreateContextRequest>;
 
 /**
+ * Identifies a context revision to inspect.
+ *
  * @generated from message inference.customer.v1.InspectContextRequest
  */
 export declare type InspectContextRequest = Message<"inference.customer.v1.InspectContextRequest"> & {
   /**
+   * The revision value carried by InspectContextRequest.
+   *
    * @generated from field: bytes revision = 1;
    */
   revision: Uint8Array;
@@ -858,6 +1081,8 @@ export declare type InspectContextRequest = Message<"inference.customer.v1.Inspe
 export declare const InspectContextRequestSchema: GenMessage<InspectContextRequest>;
 
 /**
+ * An empty context mutation operation.
+ *
  * @generated from message inference.customer.v1.Empty
  */
 export declare type Empty = Message<"inference.customer.v1.Empty"> & {
@@ -870,15 +1095,21 @@ export declare type Empty = Message<"inference.customer.v1.Empty"> & {
 export declare const EmptySchema: GenMessage<Empty>;
 
 /**
+ * Inserts an item at a target position.
+ *
  * @generated from message inference.customer.v1.Insert
  */
 export declare type Insert = Message<"inference.customer.v1.Insert"> & {
   /**
+   * The target value carried by Insert.
+   *
    * @generated from field: bytes target = 1;
    */
   target: Uint8Array;
 
   /**
+   * The item value carried by Insert.
+   *
    * @generated from field: inference.customer.v1.Item item = 2;
    */
   item?: Item | undefined;
@@ -891,15 +1122,21 @@ export declare type Insert = Message<"inference.customer.v1.Insert"> & {
 export declare const InsertSchema: GenMessage<Insert>;
 
 /**
+ * Replaces the payload at a target position.
+ *
  * @generated from message inference.customer.v1.Replace
  */
 export declare type Replace = Message<"inference.customer.v1.Replace"> & {
   /**
+   * The target value carried by Replace.
+   *
    * @generated from field: bytes target = 1;
    */
   target: Uint8Array;
 
   /**
+   * The payload value carried by Replace.
+   *
    * @generated from field: bytes payload = 2;
    */
   payload: Uint8Array;
@@ -912,6 +1149,8 @@ export declare type Replace = Message<"inference.customer.v1.Replace"> & {
 export declare const ReplaceSchema: GenMessage<Replace>;
 
 /**
+ * Describes one append, insert, replace, or delete edit.
+ *
  * @generated from message inference.customer.v1.Edit
  */
 export declare type Edit = Message<"inference.customer.v1.Edit"> & {
@@ -920,30 +1159,40 @@ export declare type Edit = Message<"inference.customer.v1.Edit"> & {
    */
   action: {
     /**
+     * The append value carried by Edit.
+     *
      * @generated from field: inference.customer.v1.Item append = 1;
      */
     value: Item;
     case: "append";
   } | {
     /**
+     * The insert before value carried by Edit.
+     *
      * @generated from field: inference.customer.v1.Insert insert_before = 2;
      */
     value: Insert;
     case: "insertBefore";
   } | {
     /**
+     * The insert after value carried by Edit.
+     *
      * @generated from field: inference.customer.v1.Insert insert_after = 3;
      */
     value: Insert;
     case: "insertAfter";
   } | {
     /**
+     * The replace value carried by Edit.
+     *
      * @generated from field: inference.customer.v1.Replace replace = 4;
      */
     value: Replace;
     case: "replace";
   } | {
     /**
+     * The delete value carried by Edit.
+     *
      * @generated from field: bytes delete = 5;
      */
     value: Uint8Array;
@@ -958,10 +1207,14 @@ export declare type Edit = Message<"inference.customer.v1.Edit"> & {
 export declare const EditSchema: GenMessage<Edit>;
 
 /**
+ * Groups ordered edits into one context mutation.
+ *
  * @generated from message inference.customer.v1.Edits
  */
 export declare type Edits = Message<"inference.customer.v1.Edits"> & {
   /**
+   * The edits value carried by Edits.
+   *
    * @generated from field: repeated inference.customer.v1.Edit edits = 1;
    */
   edits: Edit[];
@@ -974,10 +1227,14 @@ export declare type Edits = Message<"inference.customer.v1.Edits"> & {
 export declare const EditsSchema: GenMessage<Edits>;
 
 /**
+ * Truncates a context through a selected position.
+ *
  * @generated from message inference.customer.v1.Truncate
  */
 export declare type Truncate = Message<"inference.customer.v1.Truncate"> & {
   /**
+   * The through value carried by Truncate.
+   *
    * @generated from field: optional bytes through = 1;
    */
   through?: Uint8Array | undefined;
@@ -990,15 +1247,21 @@ export declare type Truncate = Message<"inference.customer.v1.Truncate"> & {
 export declare const TruncateSchema: GenMessage<Truncate>;
 
 /**
+ * Compacts selected context content into a replacement item.
+ *
  * @generated from message inference.customer.v1.Compact
  */
 export declare type Compact = Message<"inference.customer.v1.Compact"> & {
   /**
+   * The selected value carried by Compact.
+   *
    * @generated from field: repeated bytes selected = 1;
    */
   selected: Uint8Array[];
 
   /**
+   * The replacement value carried by Compact.
+   *
    * @generated from field: repeated inference.customer.v1.Item replacement = 2;
    */
   replacement: Item[];
@@ -1011,10 +1274,14 @@ export declare type Compact = Message<"inference.customer.v1.Compact"> & {
 export declare const CompactSchema: GenMessage<Compact>;
 
 /**
+ * Transfers a context to a selected model profile.
+ *
  * @generated from message inference.customer.v1.Transfer
  */
 export declare type Transfer = Message<"inference.customer.v1.Transfer"> & {
   /**
+   * The model value carried by Transfer.
+   *
    * @generated from field: string model = 1;
    */
   model: string;
@@ -1027,15 +1294,21 @@ export declare type Transfer = Message<"inference.customer.v1.Transfer"> & {
 export declare const TransferSchema: GenMessage<Transfer>;
 
 /**
+ * Requests one immutable context mutation or release operation.
+ *
  * @generated from message inference.customer.v1.MutateContextRequest
  */
 export declare type MutateContextRequest = Message<"inference.customer.v1.MutateContextRequest"> & {
   /**
+   * The identity value carried by MutateContextRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The source value carried by MutateContextRequest.
+   *
    * @generated from field: bytes source = 2;
    */
   source: Uint8Array;
@@ -1045,36 +1318,48 @@ export declare type MutateContextRequest = Message<"inference.customer.v1.Mutate
    */
   action: {
     /**
+     * The edit value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Edits edit = 3;
      */
     value: Edits;
     case: "edit";
   } | {
     /**
+     * The fork value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Empty fork = 4;
      */
     value: Empty;
     case: "fork";
   } | {
     /**
+     * The truncate value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Truncate truncate = 5;
      */
     value: Truncate;
     case: "truncate";
   } | {
     /**
+     * The compact value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Compact compact = 6;
      */
     value: Compact;
     case: "compact";
   } | {
     /**
+     * The release value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Empty release = 7;
      */
     value: Empty;
     case: "release";
   } | {
     /**
+     * The transfer value carried by MutateContextRequest.
+     *
      * @generated from field: inference.customer.v1.Transfer transfer = 8;
      */
     value: Transfer;
@@ -1089,26 +1374,34 @@ export declare type MutateContextRequest = Message<"inference.customer.v1.Mutate
 export declare const MutateContextRequestSchema: GenMessage<MutateContextRequest>;
 
 /**
+ * Confirms an admitted context revision and its command digest.
+ *
  * @generated from message inference.customer.v1.MutationReceipt
  */
 export declare type MutationReceipt = Message<"inference.customer.v1.MutationReceipt"> & {
   /**
+   * The revision value carried by MutationReceipt.
+   *
    * @generated from field: bytes revision = 1;
    */
   revision: Uint8Array;
 
   /**
+   * The command digest value carried by MutationReceipt.
+   *
    * @generated from field: bytes command_digest = 2;
    */
   commandDigest: Uint8Array;
 
   /**
+   * The sequence value carried by MutationReceipt.
+   *
    * @generated from field: uint64 sequence = 3;
    */
   sequence: bigint;
 
   /**
-   * The recorded command's effect, not a promise of current or warm retention.
+   * The retained value carried by MutationReceipt.
    *
    * @generated from field: bool retained = 4;
    */
@@ -1122,45 +1415,63 @@ export declare type MutationReceipt = Message<"inference.customer.v1.MutationRec
 export declare const MutationReceiptSchema: GenMessage<MutationReceipt>;
 
 /**
+ * Reports an immutable context revision and its provenance.
+ *
  * @generated from message inference.customer.v1.ContextView
  */
 export declare type ContextView = Message<"inference.customer.v1.ContextView"> & {
   /**
+   * The revision value carried by ContextView.
+   *
    * @generated from field: bytes revision = 1;
    */
   revision: Uint8Array;
 
   /**
+   * The parent value carried by ContextView.
+   *
    * @generated from field: optional bytes parent = 2;
    */
   parent?: Uint8Array | undefined;
 
   /**
+   * The lineage value carried by ContextView.
+   *
    * @generated from field: bytes lineage = 3;
    */
   lineage: Uint8Array;
 
   /**
+   * The execution profile value carried by ContextView.
+   *
    * @generated from field: bytes execution_profile = 4;
    */
   executionProfile: Uint8Array;
 
   /**
+   * The content digest value carried by ContextView.
+   *
    * @generated from field: bytes content_digest = 5;
    */
   contentDigest: Uint8Array;
 
   /**
+   * The items value carried by ContextView.
+   *
    * @generated from field: repeated inference.customer.v1.Item items = 6;
    */
   items: Item[];
 
   /**
+   * The model value carried by ContextView.
+   *
    * @generated from field: string model = 7;
    */
   model: string;
 
   /**
+   * The provenance value carried by ContextView.
+   *
    * @generated from field: inference.customer.v1.ContextProvenance provenance = 8;
    */
   provenance?: ContextProvenance | undefined;
@@ -1173,6 +1484,8 @@ export declare type ContextView = Message<"inference.customer.v1.ContextView"> &
 export declare const ContextViewSchema: GenMessage<ContextView>;
 
 /**
+ * Records how a context revision was created or derived.
+ *
  * @generated from message inference.customer.v1.ContextProvenance
  */
 export declare type ContextProvenance = Message<"inference.customer.v1.ContextProvenance"> & {
@@ -1181,36 +1494,48 @@ export declare type ContextProvenance = Message<"inference.customer.v1.ContextPr
    */
   origin: {
     /**
+     * The created value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.Empty created = 1;
      */
     value: Empty;
     case: "created";
   } | {
     /**
+     * The derived value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.ProvenanceSource derived = 2;
      */
     value: ProvenanceSource;
     case: "derived";
   } | {
     /**
+     * The forked value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.ProvenanceSource forked = 3;
      */
     value: ProvenanceSource;
     case: "forked";
   } | {
     /**
+     * The transferred value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.TransferProvenance transferred = 4;
      */
     value: TransferProvenance;
     case: "transferred";
   } | {
     /**
+     * The generated value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.GenerationProvenance generated = 5;
      */
     value: GenerationProvenance;
     case: "generated";
   } | {
     /**
+     * The run input value carried by ContextProvenance.
+     *
      * @generated from field: inference.customer.v1.RunInputProvenance run_input = 6;
      */
     value: RunInputProvenance;
@@ -1225,10 +1550,14 @@ export declare type ContextProvenance = Message<"inference.customer.v1.ContextPr
 export declare const ContextProvenanceSchema: GenMessage<ContextProvenance>;
 
 /**
+ * Identifies the source revision for a derived context.
+ *
  * @generated from message inference.customer.v1.ProvenanceSource
  */
 export declare type ProvenanceSource = Message<"inference.customer.v1.ProvenanceSource"> & {
   /**
+   * The source value carried by ProvenanceSource.
+   *
    * @generated from field: bytes source = 1;
    */
   source: Uint8Array;
@@ -1241,15 +1570,21 @@ export declare type ProvenanceSource = Message<"inference.customer.v1.Provenance
 export declare const ProvenanceSourceSchema: GenMessage<ProvenanceSource>;
 
 /**
+ * Records a model transfer and compatible-state reuse.
+ *
  * @generated from message inference.customer.v1.TransferProvenance
  */
 export declare type TransferProvenance = Message<"inference.customer.v1.TransferProvenance"> & {
   /**
+   * The source value carried by TransferProvenance.
+   *
    * @generated from field: bytes source = 1;
    */
   source: Uint8Array;
 
   /**
+   * The reused compatible state value carried by TransferProvenance.
+   *
    * @generated from field: bool reused_compatible_state = 2;
    */
   reusedCompatibleState: boolean;
@@ -1262,15 +1597,21 @@ export declare type TransferProvenance = Message<"inference.customer.v1.Transfer
 export declare const TransferProvenanceSchema: GenMessage<TransferProvenance>;
 
 /**
+ * Records the run and terminal receipt that generated a revision.
+ *
  * @generated from message inference.customer.v1.GenerationProvenance
  */
 export declare type GenerationProvenance = Message<"inference.customer.v1.GenerationProvenance"> & {
   /**
+   * The run id value carried by GenerationProvenance.
+   *
    * @generated from field: bytes run_id = 1;
    */
   runId: Uint8Array;
 
   /**
+   * The terminal receipt digest value carried by GenerationProvenance.
+   *
    * @generated from field: bytes terminal_receipt_digest = 2;
    */
   terminalReceiptDigest: Uint8Array;
@@ -1283,25 +1624,35 @@ export declare type GenerationProvenance = Message<"inference.customer.v1.Genera
 export declare const GenerationProvenanceSchema: GenMessage<GenerationProvenance>;
 
 /**
+ * Records the context and run inputs used for generation.
+ *
  * @generated from message inference.customer.v1.RunInputProvenance
  */
 export declare type RunInputProvenance = Message<"inference.customer.v1.RunInputProvenance"> & {
   /**
+   * The source value carried by RunInputProvenance.
+   *
    * @generated from field: bytes source = 1;
    */
   source: Uint8Array;
 
   /**
+   * The run id value carried by RunInputProvenance.
+   *
    * @generated from field: bytes run_id = 2;
    */
   runId: Uint8Array;
 
   /**
+   * The maximum output value carried by RunInputProvenance.
+   *
    * @generated from field: uint64 maximum_output = 3;
    */
   maximumOutput: bigint;
 
   /**
+   * The seed value carried by RunInputProvenance.
+   *
    * @generated from field: optional uint64 seed = 4;
    */
   seed?: bigint | undefined;
@@ -1314,30 +1665,42 @@ export declare type RunInputProvenance = Message<"inference.customer.v1.RunInput
 export declare const RunInputProvenanceSchema: GenMessage<RunInputProvenance>;
 
 /**
+ * Requests a recoverable generation run from a context revision.
+ *
  * @generated from message inference.customer.v1.GenerateRunRequest
  */
 export declare type GenerateRunRequest = Message<"inference.customer.v1.GenerateRunRequest"> & {
   /**
+   * The identity value carried by GenerateRunRequest.
+   *
    * @generated from field: inference.customer.v1.RequestIdentity identity = 1;
    */
   identity?: RequestIdentity | undefined;
 
   /**
+   * The context value carried by GenerateRunRequest.
+   *
    * @generated from field: bytes context = 2;
    */
   context: Uint8Array;
 
   /**
+   * The input value carried by GenerateRunRequest.
+   *
    * @generated from field: inference.customer.v1.Item input = 3;
    */
   input?: Item | undefined;
 
   /**
+   * The maximum output value carried by GenerateRunRequest.
+   *
    * @generated from field: uint64 maximum_output = 4;
    */
   maximumOutput: bigint;
 
   /**
+   * The seed value carried by GenerateRunRequest.
+   *
    * @generated from field: optional uint64 seed = 5;
    */
   seed?: bigint | undefined;
@@ -1350,10 +1713,14 @@ export declare type GenerateRunRequest = Message<"inference.customer.v1.Generate
 export declare const GenerateRunRequestSchema: GenMessage<GenerateRunRequest>;
 
 /**
+ * Returns the admitted generation run.
+ *
  * @generated from message inference.customer.v1.GenerateRunResponse
  */
 export declare type GenerateRunResponse = Message<"inference.customer.v1.GenerateRunResponse"> & {
   /**
+   * The run value carried by GenerateRunResponse.
+   *
    * @generated from field: inference.customer.v1.RunView run = 1;
    */
   run?: RunView | undefined;
@@ -1366,10 +1733,14 @@ export declare type GenerateRunResponse = Message<"inference.customer.v1.Generat
 export declare const GenerateRunResponseSchema: GenMessage<GenerateRunResponse>;
 
 /**
+ * Identifies a generation run to inspect.
+ *
  * @generated from message inference.customer.v1.InspectRunRequest
  */
 export declare type InspectRunRequest = Message<"inference.customer.v1.InspectRunRequest"> & {
   /**
+   * The run id value carried by InspectRunRequest.
+   *
    * @generated from field: bytes run_id = 1;
    */
   runId: Uint8Array;
@@ -1382,16 +1753,20 @@ export declare type InspectRunRequest = Message<"inference.customer.v1.InspectRu
 export declare const InspectRunRequestSchema: GenMessage<InspectRunRequest>;
 
 /**
+ * Identifies a run and starting event sequence to watch.
+ *
  * @generated from message inference.customer.v1.WatchRunRequest
  */
 export declare type WatchRunRequest = Message<"inference.customer.v1.WatchRunRequest"> & {
   /**
+   * The run id value carried by WatchRunRequest.
+   *
    * @generated from field: bytes run_id = 1;
    */
   runId: Uint8Array;
 
   /**
-   * Inclusive, zero-based public cursor.
+   * The from sequence value carried by WatchRunRequest.
    *
    * @generated from field: uint64 from_sequence = 2;
    */
@@ -1405,44 +1780,34 @@ export declare type WatchRunRequest = Message<"inference.customer.v1.WatchRunReq
 export declare const WatchRunRequestSchema: GenMessage<WatchRunRequest>;
 
 /**
+ * Reports bounded logical usage counters for a run.
+ *
  * @generated from message inference.customer.v1.LogicalUsage
  */
 export declare type LogicalUsage = Message<"inference.customer.v1.LogicalUsage"> & {
   /**
-   * Prompt tokens newly computed at this Run's first verified execution.
-   * Frozen with effective_context_reads as a partition of the exact rendered
-   * prompt-token total, bound by native tokenizer/render/model/runtime/KV proof.
-   * Recovery, retry and replay never reclassify or add to this input partition.
+   * The new prefill value carried by LogicalUsage.
    *
    * @generated from field: uint64 new_prefill = 1;
    */
   newPrefill: bigint;
 
   /**
-   * Uniquely committed native output-token records, counted once. Decoded UTF-8
-   * bytes or re-tokenization cannot establish this count. A non-output EOS
-   * sentinel is excluded; persisted special/stop output records require explicit
-   * meter-revision semantics. Failed/discarded pre-checkpoint device work has no
-   * agreed eligibility rule here and must not be inferred as zero eligible work.
+   * The generated output value carried by LogicalUsage.
    *
    * @generated from field: uint64 generated_output = 2;
    */
   generatedOutput: bigint;
 
   /**
-   * Prompt tokens actually served from verified KV reuse in the same frozen
-   * first-execution partition. Together with new_prefill this equals the exact
-   * rendered prompt-token total; repeated admission/watch adds no new units.
+   * The effective context reads value carried by LogicalUsage.
    *
    * @generated from field: uint64 effective_context_reads = 3;
    */
   effectiveContextReads: bigint;
 
   /**
-   * Logical Context retention measure. Logical custody identity,
-   * interval events, pending-intent eligibility and dedup scope remain unagreed.
-   * Neither device/cache allocations nor Objects physical storage establish
-   * this measure; absent lifecycle evidence must not imply zero eligible work.
+   * The retained byte millis value carried by LogicalUsage.
    *
    * @generated from field: uint64 retained_byte_millis = 4;
    */
@@ -1456,33 +1821,42 @@ export declare type LogicalUsage = Message<"inference.customer.v1.LogicalUsage">
 export declare const LogicalUsageSchema: GenMessage<LogicalUsage>;
 
 /**
+ * Reports metered usage and the receipt revision for a run.
+ *
  * @generated from message inference.customer.v1.UsageReceipt
  */
 export declare type UsageReceipt = Message<"inference.customer.v1.UsageReceipt"> & {
   /**
+   * The receipt id value carried by UsageReceipt.
+   *
    * @generated from field: bytes receipt_id = 1;
    */
   receiptId: Uint8Array;
 
   /**
+   * The model profile value carried by UsageReceipt.
+   *
    * @generated from field: bytes model_profile = 2;
    */
   modelProfile: Uint8Array;
 
   /**
+   * The meter revision value carried by UsageReceipt.
+   *
    * @generated from field: bytes meter_revision = 3;
    */
   meterRevision: Uint8Array;
 
   /**
-   * Immutable final totals for this receipt, never an incremental charge delta.
-   * Meter semantics are independent of pricing or charging authorization.
+   * The usage value carried by UsageReceipt.
    *
    * @generated from field: inference.customer.v1.LogicalUsage usage = 4;
    */
   usage?: LogicalUsage | undefined;
 
   /**
+   * The rate card revision value carried by UsageReceipt.
+   *
    * @generated from field: bytes rate_card_revision = 5;
    */
   rateCardRevision: Uint8Array;
@@ -1495,25 +1869,35 @@ export declare type UsageReceipt = Message<"inference.customer.v1.UsageReceipt">
 export declare const UsageReceiptSchema: GenMessage<UsageReceipt>;
 
 /**
+ * Reports generation output, terminal state, context, and usage receipt.
+ *
  * @generated from message inference.customer.v1.RunResult
  */
 export declare type RunResult = Message<"inference.customer.v1.RunResult"> & {
   /**
+   * The output value carried by RunResult.
+   *
    * @generated from field: bytes output = 1;
    */
   output: Uint8Array;
 
   /**
+   * The context value carried by RunResult.
+   *
    * @generated from field: optional inference.customer.v1.ContextView context = 2;
    */
   context?: ContextView | undefined;
 
   /**
+   * The terminal value carried by RunResult.
+   *
    * @generated from field: inference.customer.v1.RunTerminal terminal = 3;
    */
   terminal: RunTerminal;
 
   /**
+   * The receipt value carried by RunResult.
+   *
    * @generated from field: optional inference.customer.v1.UsageReceipt receipt = 4;
    */
   receipt?: UsageReceipt | undefined;
@@ -1526,35 +1910,49 @@ export declare type RunResult = Message<"inference.customer.v1.RunResult"> & {
 export declare const RunResultSchema: GenMessage<RunResult>;
 
 /**
+ * Reports the current recoverable run state and latest result.
+ *
  * @generated from message inference.customer.v1.RunView
  */
 export declare type RunView = Message<"inference.customer.v1.RunView"> & {
   /**
+   * The run id value carried by RunView.
+   *
    * @generated from field: bytes run_id = 1;
    */
   runId: Uint8Array;
 
   /**
+   * The input value carried by RunView.
+   *
    * @generated from field: bytes input = 2;
    */
   input: Uint8Array;
 
   /**
+   * The model value carried by RunView.
+   *
    * @generated from field: string model = 3;
    */
   model: string;
 
   /**
+   * The last sequence value carried by RunView.
+   *
    * @generated from field: uint64 last_sequence = 4;
    */
   lastSequence: bigint;
 
   /**
+   * The cancellation requested value carried by RunView.
+   *
    * @generated from field: bool cancellation_requested = 5;
    */
   cancellationRequested: boolean;
 
   /**
+   * The result value carried by RunView.
+   *
    * @generated from field: optional inference.customer.v1.RunResult result = 6;
    */
   result?: RunResult | undefined;
@@ -1567,10 +1965,14 @@ export declare type RunView = Message<"inference.customer.v1.RunView"> & {
 export declare const RunViewSchema: GenMessage<RunView>;
 
 /**
+ * Reports one ordered output, usage, progress, or terminal event.
+ *
  * @generated from message inference.customer.v1.RunEvent
  */
 export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
   /**
+   * The sequence value carried by RunEvent.
+   *
    * @generated from field: uint64 sequence = 1;
    */
   sequence: bigint;
@@ -1580,14 +1982,15 @@ export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
    */
   event: {
     /**
+     * The output value carried by RunEvent.
+     *
      * @generated from field: bytes output = 2;
      */
     value: Uint8Array;
     case: "output";
   } | {
     /**
-     * Authoritative cumulative snapshot for this Run. Recovered/replayed watch
-     * events are snapshots of the same units, never incremental charge deltas.
+     * The usage value carried by RunEvent.
      *
      * @generated from field: inference.customer.v1.LogicalUsage usage = 3;
      */
@@ -1595,12 +1998,16 @@ export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
     case: "usage";
   } | {
     /**
+     * The terminal value carried by RunEvent.
+     *
      * @generated from field: inference.customer.v1.RunTerminal terminal = 4;
      */
     value: RunTerminal;
     case: "terminal";
   } | {
     /**
+     * The progress value carried by RunEvent.
+     *
      * @generated from field: inference.customer.v1.RunProgress progress = 5;
      */
     value: RunProgress;
@@ -1615,10 +2022,14 @@ export declare type RunEvent = Message<"inference.customer.v1.RunEvent"> & {
 export declare const RunEventSchema: GenMessage<RunEvent>;
 
 /**
+ * Reports progress classification for a generation run.
+ *
  * @generated from message inference.customer.v1.RunProgress
  */
 export declare type RunProgress = Message<"inference.customer.v1.RunProgress"> & {
   /**
+   * The kind value carried by RunProgress.
+   *
    * @generated from field: string kind = 1;
    */
   kind: string;
@@ -1631,6 +2042,8 @@ export declare type RunProgress = Message<"inference.customer.v1.RunProgress"> &
 export declare const RunProgressSchema: GenMessage<RunProgress>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.WarmState
  */
 export enum WarmState {
@@ -1666,6 +2079,8 @@ export enum WarmState {
 export declare const WarmStateSchema: GenEnum<WarmState>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationAggregation
  */
 export enum EvaluationAggregation {
@@ -1701,6 +2116,8 @@ export enum EvaluationAggregation {
 export declare const EvaluationAggregationSchema: GenEnum<EvaluationAggregation>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationCaseOutcome
  */
 export enum EvaluationCaseOutcome {
@@ -1731,6 +2148,8 @@ export enum EvaluationCaseOutcome {
 export declare const EvaluationCaseOutcomeSchema: GenEnum<EvaluationCaseOutcome>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.EvaluationState
  */
 export enum EvaluationState {
@@ -1771,6 +2190,8 @@ export enum EvaluationState {
 export declare const EvaluationStateSchema: GenEnum<EvaluationState>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.ItemKind
  */
 export enum ItemKind {
@@ -1846,6 +2267,8 @@ export enum ItemKind {
 export declare const ItemKindSchema: GenEnum<ItemKind>;
 
 /**
+ * An enum in the Inference customer v1 wire contract.
+ *
  * @generated from enum inference.customer.v1.RunTerminal
  */
 export enum RunTerminal {
@@ -1896,10 +2319,14 @@ export enum RunTerminal {
 export declare const RunTerminalSchema: GenEnum<RunTerminal>;
 
 /**
+ * Lists model capabilities and retention profiles.
+ *
  * @generated from service inference.customer.v1.ModelsService
  */
 export declare const ModelsService: GenService<{
   /**
+   * Lists model capabilities and retention profiles.
+   *
    * @generated from rpc inference.customer.v1.ModelsService.List
    */
   list: {
@@ -1910,13 +2337,14 @@ export declare const ModelsService: GenService<{
 }>;
 
 /**
- * Immutable canonical content operations. Execution/retention guarantees are
- * advertised separately; these methods do not admit a Run or a warm promise.
+ * Creates, inspects, and mutates immutable context revisions.
  *
  * @generated from service inference.customer.v1.ContextsService
  */
 export declare const ContextsService: GenService<{
   /**
+   * Creates an immutable context revision.
+   *
    * @generated from rpc inference.customer.v1.ContextsService.Create
    */
   create: {
@@ -1925,6 +2353,8 @@ export declare const ContextsService: GenService<{
     output: typeof MutationReceiptSchema;
   },
   /**
+   * Reads an immutable context revision by digest.
+   *
    * @generated from rpc inference.customer.v1.ContextsService.Inspect
    */
   inspect: {
@@ -1933,6 +2363,8 @@ export declare const ContextsService: GenService<{
     output: typeof ContextViewSchema;
   },
   /**
+   * Admits one immutable context mutation or release.
+   *
    * @generated from rpc inference.customer.v1.ContextsService.Mutate
    */
   mutate: {
@@ -1943,13 +2375,14 @@ export declare const ContextsService: GenService<{
 }>;
 
 /**
- * Customer warm-retention commitments. Placement, workers, allocations,
- * migration, rebalancing, and cleanup mechanics remain private.
+ * Admits and manages explicit warm-retention commitments.
  *
  * @generated from service inference.customer.v1.WarmContextsService
  */
 export declare const WarmContextsService: GenService<{
   /**
+   * Admits an explicit warm-retention commitment.
+   *
    * @generated from rpc inference.customer.v1.WarmContextsService.Retain
    */
   retain: {
@@ -1958,6 +2391,8 @@ export declare const WarmContextsService: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
+   * Reads the current warm-retention commitment.
+   *
    * @generated from rpc inference.customer.v1.WarmContextsService.Inspect
    */
   inspect: {
@@ -1966,6 +2401,8 @@ export declare const WarmContextsService: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
+   * Extends a warm-retention commitment.
+   *
    * @generated from rpc inference.customer.v1.WarmContextsService.Renew
    */
   renew: {
@@ -1974,6 +2411,8 @@ export declare const WarmContextsService: GenService<{
     output: typeof WarmViewSchema;
   },
   /**
+   * Releases a warm-retention commitment.
+   *
    * @generated from rpc inference.customer.v1.WarmContextsService.Release
    */
   release: {
@@ -1984,13 +2423,14 @@ export declare const WarmContextsService: GenService<{
 }>;
 
 /**
- * Recoverable logical generation. Distribution, placement, migration, cache,
- * and worker identities are intentionally absent.
+ * Admits, inspects, watches, and cancels recoverable generation runs.
  *
  * @generated from service inference.customer.v1.RunsService
  */
 export declare const RunsService: GenService<{
   /**
+   * Admits a recoverable generation run.
+   *
    * @generated from rpc inference.customer.v1.RunsService.Generate
    */
   generate: {
@@ -1999,6 +2439,8 @@ export declare const RunsService: GenService<{
     output: typeof GenerateRunResponseSchema;
   },
   /**
+   * Reads the current generation run view.
+   *
    * @generated from rpc inference.customer.v1.RunsService.Inspect
    */
   inspect: {
@@ -2007,6 +2449,8 @@ export declare const RunsService: GenService<{
     output: typeof RunViewSchema;
   },
   /**
+   * Streams ordered run events from a sequence cursor.
+   *
    * @generated from rpc inference.customer.v1.RunsService.Watch
    */
   watch: {
@@ -2015,6 +2459,8 @@ export declare const RunsService: GenService<{
     output: typeof RunEventSchema;
   },
   /**
+   * Requests cancellation of a generation run.
+   *
    * @generated from rpc inference.customer.v1.RunsService.Cancel
    */
   cancel: {
@@ -2025,14 +2471,14 @@ export declare const RunsService: GenService<{
 }>;
 
 /**
- * Immutable, recoverable evaluation admissions. Candidate execution and grader
- * placement remain private; the customer contract contains only exact artifacts,
- * bounded suite inputs, metric semantics, and content-addressed observations.
+ * Admits and inspects immutable evaluation results.
  *
  * @generated from service inference.customer.v1.EvaluationsService
  */
 export declare const EvaluationsService: GenService<{
   /**
+   * Admits an immutable evaluation specification.
+   *
    * @generated from rpc inference.customer.v1.EvaluationsService.Create
    */
   create: {
@@ -2041,6 +2487,8 @@ export declare const EvaluationsService: GenService<{
     output: typeof EvaluationViewSchema;
   },
   /**
+   * Reads an immutable evaluation view.
+   *
    * @generated from rpc inference.customer.v1.EvaluationsService.Inspect
    */
   inspect: {
@@ -2049,3 +2497,4 @@ export declare const EvaluationsService: GenService<{
     output: typeof EvaluationViewSchema;
   },
 }>;
+
