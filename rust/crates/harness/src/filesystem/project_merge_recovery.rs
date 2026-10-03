@@ -175,7 +175,6 @@ impl<'a> ProjectMergeRecovery<'a> {
     {
         use crate::merge::ProjectMergeVerifier;
 
-        verifier.verify(&receipt).await?;
         let records = self.journal.replay(self.operation_id).await?;
         let Some((_, reference)) = latest_started(&records) else {
             return Err(Error::Conflict("project merge intent is missing".into()));
@@ -198,6 +197,16 @@ impl<'a> ProjectMergeRecovery<'a> {
             // treating the durable result as a missing pending operation.
             return Ok(());
         }
+        // Check the receipt against the immutable intent before invoking the
+        // provider verifier, whose successful verification may retain
+        // generations. Invalid or mis-scoped records therefore produce no
+        // provider-side mutation.
+        let candidate = ProjectMergeRecoveryEntry {
+            intent: entry.intent.clone(),
+            receipt: Some(receipt.clone()),
+        };
+        candidate.validate()?;
+        verifier.verify(&receipt).await?;
         entry.receipt = Some(receipt);
         entry.validate()?;
         self.append_entry("project-merge:applied", 1, &entry).await
