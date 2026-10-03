@@ -10,6 +10,7 @@ use prost::Message;
 
 pub mod bindings;
 pub mod credential;
+pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
 pub mod harness;
@@ -27,14 +28,13 @@ pub use bindings::{
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
-pub use family_registry::{
-    explicit_http_family_views, family_view, FamilyModel, FamilyView, HttpProjection, FAMILY_VIEWS,
+pub use facades::{
+    all_facade_operations, facade_operations, generate_remote_facade, generate_remote_facades,
+    CancellationKind, FacadeLanguage, FacadeOperationPolicy, FacadeOutput, FacadeSelectionPolicy,
+    FACADE_SELECTION_POLICY,
 };
-pub use transport::{
-    select_transport, select_transport_by_name, ClientRuntime, FamilyTransportPolicy,
-    RuntimeTransportPolicy, TransportAvailability, TransportKind, TransportOption,
-    TransportRequirements,
-    TransportSelection, TransportSelectionError, TransportSelectionRequest,
+pub use family_registry::{
+    FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, explicit_http_family_views, family_view,
 };
 pub use filesystem::{
     FILESYSTEM, FILESYSTEM_OPERATION_POLICIES, FILESYSTEM_SERVICE_AVAILABILITY,
@@ -48,6 +48,11 @@ pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
+pub use transport::{
+    ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
+    TransportKind, TransportOption, TransportRequirements, TransportSelection,
+    TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
+};
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
