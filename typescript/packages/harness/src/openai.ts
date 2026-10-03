@@ -1,5 +1,5 @@
 import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "./runtime.js";
-import { assertPublicModelOptions, type ModelContentPart } from "./model.js";
+import type { ModelContentPart, ModelOptionPolicy } from "./model.js";
 import type { FileRef } from "./conversation.js";
 import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
@@ -10,6 +10,21 @@ export type OpenAiContentPart = ModelContentPart;
 type OpenAiProjectedPart =
   | Readonly<{ type: "text"; text: string }>
   | Readonly<{ type: "image_url"; image_url: Readonly<{ url: string }> }>;
+
+const openAiModelOptions = {
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      stream: { type: "boolean" }, temperature: { type: "number" }, top_p: { type: "number" },
+      n: { type: "integer" }, stop: {}, presence_penalty: { type: "number" }, frequency_penalty: { type: "number" },
+      logprobs: { type: "boolean" }, top_logprobs: { type: "integer" }, response_format: {}, seed: { type: "integer" },
+      user: { type: "string" }, service_tier: { type: "string" }, parallel_tool_calls: { type: "boolean" },
+      reasoning_effort: { type: "string" }, verbosity: { type: "string" }, modalities: {}, prediction: {},
+      store: { type: "boolean" }, metadata: {},
+    },
+  },
+} as const satisfies ModelOptionPolicy;
 
 export interface OpenAiCompatibleOptions {
   readonly baseUrl: string;
@@ -26,6 +41,7 @@ export interface OpenAiCompatibleOptions {
 
 /** Native dependency-free adapter for OpenAI-compatible chat-completions streams. */
 export class OpenAiCompatibleProvider implements ModelProvider {
+  readonly modelOptions = openAiModelOptions;
   readonly #endpoint: string;
   readonly #headers: Readonly<Record<string, string>>;
   readonly #fetcher: HttpFetcher;
@@ -60,8 +76,8 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   async *generate(request: ModelRequest): AsyncIterable<ModelEvent> {
-    assertPublicModelOptions(request.model.options);
     const contracts = await NativeContracts.create();
+    contracts.validateToolValue(this.modelOptions.schema, request.model.options);
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const messages = await Promise.all(request.messages.map(async message => {

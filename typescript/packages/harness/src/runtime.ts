@@ -1,4 +1,4 @@
-import { assertPublicModelOptions, validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
@@ -148,6 +148,20 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
     throw new TypeError("model provider requires generate and reconcile");
   }
   return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider });
+}
+function validateModelBinding(contracts: NativeContracts, identity: Model, provider: ModelProvider): void {
+  const policy = provider.modelOptions;
+  if (policy === undefined) {
+    if (identity.options === null || typeof identity.options !== "object"
+      || Array.isArray(identity.options) || Object.keys(identity.options).length !== 0) {
+      throw new TypeError("model options require a registered provider option policy");
+    }
+    contracts.encodeCanonicalJson(identity.options);
+    return;
+  }
+  contracts.encodeCanonicalJson(policy.schema);
+  contracts.validateToolValue(policy.schema as ToolJsonSchema, identity.options);
+  contracts.encodeCanonicalJson(identity.options);
 }
 export type ResumableTaskOptions<Input, Output> = TaskDefinitionOptions<Input, Output> & Readonly<{
   input: RuntimeSchema<Input>;
@@ -1656,8 +1670,7 @@ export class HarnessBuilder {
     return this;
   }
   model(identity: Model, provider: ModelProvider): this {
-    assertPublicModelOptions(identity.options);
-    this.contracts.encodeCanonicalJson(identity.options);
+    validateModelBinding(this.contracts, identity, provider);
     this.#model = bindModel(identity, provider);
     return this;
   }
@@ -1770,6 +1783,8 @@ export class AgentHarness {
     this.#selectedTools = new Map(selectedTools);
     this.#toolSources = new Map(toolSources);
     this.#contentLimits = contracts.validate("limits", components.limits ?? DEFAULT_LIMITS);
+    if (components.model) validateModelBinding(contracts, components.model.identity, components.model.provider);
+    if (scope.modelBinding) validateModelBinding(contracts, scope.modelBinding.identity, scope.modelBinding.provider);
     this.components = Object.freeze({ ...components, limits: this.#contentLimits });
     this.#policyIdentity = validatePolicyIdentity((scope.policyProvider ?? components.policy)?.identity() ?? null);
     if (components.host && !samePolicyIdentity(this.#policyIdentity,
