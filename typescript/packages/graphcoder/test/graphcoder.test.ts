@@ -43,6 +43,10 @@ describe("GraphCoder UI transport boundary", () => {
     expect(ui.state().changeBody?.path).toBe("README.md");
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readActivity", "readMessages", "listApprovals", "listChanges", "readChange"]);
     expect(id as string).toBe("session-1");
+
+    await ui.dispatch({ kind: "read_file", path: "README.md" });
+    expect(ui.state().fileBody?.mediaType).toBe("text/markdown");
+    expect(transport.calls.map(call => call.method).at(-1)).toBe("readFile");
   });
 
   test("requires an explicit matching approval before root writeback", async () => {

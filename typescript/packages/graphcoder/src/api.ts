@@ -76,6 +76,13 @@ export interface ChangeBody {
   readonly generation: bigint;
 }
 
+export interface FileBody {
+  readonly path: string;
+  readonly mediaType: string;
+  readonly bytes: Uint8Array;
+  readonly generation: bigint;
+}
+
 export interface SessionSnapshot {
   readonly summary: SessionSummary;
   readonly agents: readonly AgentSummary[];
@@ -141,6 +148,8 @@ export interface GraphCoderTransport {
   cancelSession(sessionId: SessionId): Promise<SessionSnapshot>;
   listChanges(sessionId: SessionId): Promise<{ readonly generation: bigint; readonly items: readonly ChangeSummary[] }>;
   readChange(sessionId: SessionId, path: string, generation: bigint): Promise<ChangeBody>;
+  /** Reads one body on demand; implementations must not hydrate a workspace page eagerly. */
+  readFile(sessionId: SessionId, path: string, generation: bigint): Promise<FileBody>;
   approveWriteback(input: WritebackApproval): Promise<WritebackReceipt>;
 }
 
@@ -165,6 +174,7 @@ export interface GraphCoderUiState {
   readonly changes: readonly ChangeSummary[];
   readonly changesGeneration: bigint | undefined;
   readonly changeBody: ChangeBody | undefined;
+  readonly fileBody: FileBody | undefined;
   readonly writeback: WritebackReceipt | undefined;
   readonly pending: boolean;
   readonly error: GraphCoderError | undefined;
@@ -183,12 +193,13 @@ export type GraphCoderUiCommand =
   | { readonly kind: "cancel_session" }
   | { readonly kind: "list_changes" }
   | { readonly kind: "read_change"; readonly path: string; readonly generation?: bigint }
+  | { readonly kind: "read_file"; readonly path: string; readonly generation?: bigint }
   | { readonly kind: "approve_writeback"; readonly operationId: string; readonly expectedGeneration: bigint; readonly approved: boolean };
 
 const initialState: GraphCoderUiState = {
   sessions: [], sessionsNext: undefined, selectedSession: undefined,
   activity: [], activityNext: undefined, messages: [], messagesNext: undefined,
-  approvals: [], approvalsNext: undefined, changes: [], changesGeneration: undefined, changeBody: undefined, writeback: undefined, pending: false, error: undefined,
+  approvals: [], approvalsNext: undefined, changes: [], changesGeneration: undefined, changeBody: undefined, fileBody: undefined, writeback: undefined, pending: false, error: undefined,
 };
 
 function checkedId(value: string, label: string): string {
@@ -304,7 +315,7 @@ export class GraphCoderUi {
       case "list_changes": {
         const session = this.#requireSelected();
         const changes = await this.transport.listChanges(session.summary.id);
-        this.#state = { ...this.#state, changes: changes.items, changesGeneration: changes.generation, changeBody: undefined };
+        this.#state = { ...this.#state, changes: changes.items, changesGeneration: changes.generation, changeBody: undefined, fileBody: undefined };
         return;
       }
       case "read_change": {
@@ -313,6 +324,14 @@ export class GraphCoderUi {
         if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a diff");
         const changeBody = await this.transport.readChange(session.summary.id, checkedId(command.path, "change path"), generation);
         this.#state = { ...this.#state, changeBody };
+        return;
+      }
+      case "read_file": {
+        const session = this.#requireSelected();
+        const generation = command.generation ?? this.#state.changesGeneration;
+        if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a file");
+        const fileBody = await this.transport.readFile(session.summary.id, checkedId(command.path, "file path"), generation);
+        this.#state = { ...this.#state, fileBody };
         return;
       }
       case "approve_writeback": {
@@ -331,7 +350,7 @@ export class GraphCoderUi {
   }
 
   #select(snapshot: SessionSnapshot): void {
-    this.#state = { ...this.#state, selectedSession: snapshot, activity: [], activityNext: undefined, messages: [], messagesNext: undefined, approvals: [], approvalsNext: undefined, changes: [], changesGeneration: undefined, changeBody: undefined, writeback: undefined };
+    this.#state = { ...this.#state, selectedSession: snapshot, activity: [], activityNext: undefined, messages: [], messagesNext: undefined, approvals: [], approvalsNext: undefined, changes: [], changesGeneration: undefined, changeBody: undefined, fileBody: undefined, writeback: undefined };
   }
 }
 

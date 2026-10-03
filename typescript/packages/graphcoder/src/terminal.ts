@@ -16,7 +16,11 @@ export interface TerminalOptions {
 
 function writeLine(io: TerminalIO, value: unknown): void {
   const output = io.output ?? stdout;
-  output.write(`${JSON.stringify(value, (_key, item) => typeof item === "bigint" ? String(item) : item)}\n`);
+  output.write(`${JSON.stringify(value, (_key, item) => {
+    if (typeof item === "bigint") return String(item);
+    if (item instanceof Uint8Array) return Array.from(item);
+    return item;
+  })}\n`);
 }
 
 function words(line: string): string[] {
@@ -36,6 +40,7 @@ function stateProjection(state: GraphCoderUiState): Record<string, unknown> {
     changes: state.changes,
     changesGeneration: state.changesGeneration,
     changeBody: state.changeBody,
+    fileBody: state.fileBody,
     writeback: state.writeback,
   };
 }
@@ -61,7 +66,7 @@ export class GraphCoderTerminal {
     const command = parts[0];
     if (command === undefined || command === "") return;
     if (command === "help") {
-      writeLine(this.#io, { ok: true, commands: ["list", "start <prompt>", "open <id>", "resume <id>", "activity", "messages", "approvals", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
+      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
       return;
     }
     if (command === "quit" || command === "exit") {
@@ -126,6 +131,13 @@ export class GraphCoderTerminal {
       if (path === undefined) throw new GraphCoderError("invalid_input", "diff requires a path");
       await this.#ui.dispatch({ kind: "read_change", path });
       writeLine(this.#io, { ok: true, value: this.#ui.state().changeBody });
+      return;
+    }
+    if (command === "file") {
+      const path = parts[1];
+      if (path === undefined) throw new GraphCoderError("invalid_input", "file requires a path");
+      await this.#ui.dispatch({ kind: "read_file", path });
+      writeLine(this.#io, { ok: true, value: this.#ui.state().fileBody });
       return;
     }
     if (command === "writeback") {
