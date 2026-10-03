@@ -56,7 +56,7 @@ export type GitFilesystemAction =
   | { readonly Diff: { readonly from: GitTreeRef | undefined; readonly to: GitTreeRef; readonly tracked_paths: readonly string[] } }
   | { readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined; readonly expected_workspace_tree: GitTreeRef | undefined } }
   | { readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }
-  | { readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }
+  | { readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly source_tree: GitTreeRef | undefined; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }
   | { readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }
   | { readonly Blame: { readonly path: string; readonly commits: readonly GitCommit[] } }
   | { readonly Grep: { readonly pattern: string; readonly path: string | undefined; readonly tree: GitTreeRef } }
