@@ -35,14 +35,16 @@ test("installed package lanes have no ambient cache or newest artifact fallback"
   expect(php).toContain('attach_artifact(&mut receipt, "php-package-tree"');
 });
 
-test("Rust installed package receipts bind a real package archive to locked consumer resolution", async () => {
+test("Rust installed package receipts bind exact installed bytes to locked consumer resolution", async () => {
   const main = await source("rust/crates/sdk-examples/src/main.rs");
   const rust = functionBody(main, "run_rust", ["add_snippet_binding", "portable_output_path"]);
 
-  // The receipt must come from Cargo's package operation.  A hand-written
-  // text file that merely mentions the package tree is not an installable
-  // package artifact and does not prove what the consumer resolved.
-  expect(rust).toMatch(/\.args\(\[\s*"package"/);
+  // The package receipt must contain bytes copied from the installed output.
+  // A hand-written text record that merely mentions the package tree is not
+  // evidence for the artifact consumed by the qualification.
+  expect(rust).toContain("fs::copy(&installed, &package_path)");
+  expect(rust).not.toContain("let package_archive = format!(");
+  expect(rust).toContain("let package_digest = hash(&fs::read(&package_path");
   expect(rust).toContain('"package_artifact_sha256": package_digest');
   expect(rust).toContain('"package_tree_sha256": package_tree_digest');
   expect(rust).toContain('"source_revision": source_revision');
