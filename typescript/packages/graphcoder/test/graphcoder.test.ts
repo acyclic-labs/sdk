@@ -3,11 +3,11 @@ import { GraphCoderError, GraphCoderUi, agentId, approvalId, sessionId, type Ses
 import { createMockTransport } from "../src/mock.js";
 import { GraphCoderTerminal, runCli } from "../src/terminal.js";
 
-function writable(): { readonly stream: NodeJS.WritableStream; readonly lines: () => unknown[] } {
+function writable(): { readonly stream: NodeJS.WritableStream; readonly lines: () => Array<{ readonly ok?: boolean; readonly [key: string]: unknown }> } {
   const values: string[] = [];
   return {
     stream: { write(value: string): boolean { values.push(value); return true; } } as unknown as NodeJS.WritableStream,
-    lines: () => values.filter(value => value.trim() !== "").map(value => JSON.parse(value)),
+    lines: () => values.filter(value => value.trim() !== "").map(value => JSON.parse(value) as { readonly ok?: boolean; readonly [key: string]: unknown }),
   };
 }
 
@@ -40,7 +40,7 @@ describe("GraphCoder UI transport boundary", () => {
     await ui.dispatch({ kind: "read_change", path: "README.md" });
     expect(ui.state().changeBody?.path).toBe("README.md");
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "readActivity", "readMessages", "listApprovals", "listChanges", "readChange"]);
-    expect(id).toBe("session-1");
+    expect(id as string).toBe("session-1");
   });
 
   test("requires an explicit matching approval before root writeback", async () => {
@@ -85,7 +85,7 @@ describe("GraphCoder UI transport boundary", () => {
       ui.dispatch({ kind: "list_sessions" }),
     ]);
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "listSessions"]);
-    expect(ui.state().sessions.map(session => session.id)).toEqual(["session-1"]);
+    expect(ui.state().sessions.map(session => session.id as string)).toEqual(["session-1"]);
   });
 });
 
