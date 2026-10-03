@@ -4,7 +4,6 @@
 
 use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
 use acyclic_harness::{
-    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
         ContentResidencyVerifier, ConversationMessage, Limits, MessageKind, VolumeClass,
@@ -15,13 +14,13 @@ use acyclic_harness::{
     },
     executor::ExecutionEvent,
     filesystem::{
-        DurableHarnessStorage, FilesystemContentVerifier, FilesystemForkPreparer,
+        workspace_ref, DurableHarnessStorage, FilesystemContentVerifier, FilesystemForkPreparer,
         FilesystemForkVerifier, FilesystemHost, FilesystemProjectMergeVerifier, HarnessStorage,
-        workspace_ref,
+        WorkspaceMutation,
     },
     fork::{
-        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision,
-        StreamHistoryForkVerifier,
+        AttestedBoundary, CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
+        ResourceRevision, StreamHistoryForkVerifier,
     },
     model::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -31,16 +30,17 @@ use acyclic_harness::{
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
+    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::sync::{
-    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
 };
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
@@ -49,6 +49,7 @@ struct CapturedModel {
     calls: AtomicUsize,
     requests: Mutex<Vec<ModelRequest>>,
     root: bool,
+    read_first: bool,
 }
 impl ModelProvider for CapturedModel {
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
@@ -57,7 +58,35 @@ impl ModelProvider for CapturedModel {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request);
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
-        let events = if self.root && first {
+        let events = if !self.root && self.read_first && first {
+            let file = self.requests.lock().unwrap().last().and_then(|request| {
+                request
+                    .messages
+                    .iter()
+                    .find_map(|message| match &message.content {
+                        ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
+                            ModelContentPart::File { file, .. } => Some(file.clone()),
+                            _ => None,
+                        }),
+                        _ => None,
+                    })
+            });
+            let Some(file) = file else {
+                return Box::pin(stream::iter(vec![Err(Error::Invalid(
+                    "recursive fixture request has no readable file reference".into(),
+                ))]));
+            };
+            vec![
+                ModelEvent::ToolCall {
+                    call_id: "read-inherited".into(),
+                    name: "acyclic.read_file".into(),
+                    arguments: json!({"file": file}),
+                },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            ]
+        } else if self.root && first {
             vec![
                 ModelEvent::Content {
                     delta: " \nα🦀\t retained\n".into(),
@@ -100,7 +129,8 @@ struct ForkAtBatch {
     project: VolumeRef,
     issuer: AuthorityIssuer,
     stream_provider: ProviderRef,
-    children: Arc<CapturedModel>,
+    children: Vec<Arc<CapturedModel>>,
+    grandchild: Arc<CapturedModel>,
     limits: Limits,
     publications: AtomicUsize,
     paused: bool,
@@ -407,16 +437,6 @@ impl ForkAtBatch {
                 VolumeClass::Project,
                 self.project.owner().clone(),
             )?;
-            let child_scope = child_issuer.root_for_agent(
-                child_agent,
-                "child",
-                Capabilities::new([
-                    "conversation:bind".to_owned(),
-                    "conversation:append".to_owned(),
-                    private.capability(VolumeOperation::Read)?,
-                    private.capability(VolumeOperation::Write)?,
-                ]),
-            );
             let resolver = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
                 self.issuer.verifier(),
@@ -440,7 +460,7 @@ impl ForkAtBatch {
                 child_agent,
                 attached_agents: vec![AgentId::from_bytes([220; 16])],
                 preparation: ForkPreparation {
-                    child_project_volume: project,
+                    child_project_volume: project.clone(),
                     child_private_volume: private.clone(),
                     inherited_through_sequence: parent
                         .reducer()
@@ -513,6 +533,25 @@ impl ForkAtBatch {
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;
 
+            let preview_seed = report.clone().into_seed()?;
+            let reference_capabilities = preview_seed.reference_capabilities(child_agent)?;
+            let mut child_capabilities = vec![
+                "conversation:bind".to_owned(),
+                "conversation:append".to_owned(),
+                "fork:publish".to_owned(),
+                private.capability(VolumeOperation::Read)?,
+                private.capability(VolumeOperation::Write)?,
+                // A child must be able to inspect its captured project when it
+                // prepares the next recursive fork. This is an explicit
+                // source-project grant, never an implicit transcript grant.
+                project.capability(VolumeOperation::Read)?,
+            ];
+            child_capabilities.extend(reference_capabilities.iter().map(str::to_owned));
+            let child_scope = child_issuer.root_for_agent(
+                child_agent,
+                "child",
+                Capabilities::new(child_capabilities),
+            );
             let mut child = StreamAggregate::open(
                 &self.stream,
                 child_authority.clone(),
@@ -531,7 +570,12 @@ impl ForkAtBatch {
                 self.host.clone(),
             )));
             let seed = child
-                .spawn_from_report(&mut parent, report, parent_scope.clone(), child_scope)
+                .spawn_from_report(
+                    &mut parent,
+                    report,
+                    parent_scope.clone(),
+                    child_scope.clone(),
+                )
                 .await?;
             let storage = self
                 .verified_child_storage(&parent, &seed, child_issuer, &boundary, &admission, index)
@@ -542,17 +586,273 @@ impl ForkAtBatch {
                     "fork child {index}; task: verify; workspace: project-{index}; fresh scratch"
                 )),
             }];
+            let child_model = self
+                .children
+                .get(index as usize)
+                .cloned()
+                .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
             let bundle = storage
-                .inherited_builder(boundary.clone(), suffix, self.children.clone(), self.limits)?
+                .inherited_builder(boundary.clone(), suffix, child_model, self.limits)?
                 .tools(storage.default_tools(self.limits)?)
                 .grant("tool:call:acyclic.read_file")
                 .grant("tool:call:acyclic.stage_file")
                 .grant("tool:call:acyclic.list_files")
                 .limits(self.limits)
                 .build()?;
-            storage.run_prompt(&bundle, "explicit child input").await?;
+            let child_operation = OperationId::from_bytes([index + 60; 16]);
+            let child_input = storage
+                .stage(
+                    child_operation,
+                    &format!("input/child-{index}.txt"),
+                    format!("explicit recursive child input {index}").as_bytes(),
+                    "text/plain",
+                    &format!("child-{index}.txt"),
+                )
+                .await?;
+            storage
+                .run_conversation(&bundle, child_operation, child_input, Vec::new(), 3)
+                .await?;
+            if index == 0 {
+                let child_boundary = storage
+                    .completed_model_boundary(child_operation, 0, self.limits)
+                    .await?
+                    .ok_or_else(|| Error::Storage("recursive child boundary missing".into()))?;
+                // Reconstruct the direct parent's authoritative post-turn
+                // conversation. The aggregate used for spawn is intentionally
+                // only the pre-turn binding and must not become a stale fork
+                // parent after the child model exchange.
+                let child_parent = storage
+                    .completed_conversation(child_operation, 0, self.limits)
+                    .await?;
+                self.publish_grandchild(
+                    child_parent,
+                    child_authority,
+                    child_issuer,
+                    child_scope,
+                    project,
+                    child_boundary,
+                )
+                .await?;
+            }
         }
         self.publications.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn publish_grandchild(
+        &self,
+        mut parent: StreamAggregate<LocalStream>,
+        parent_authority: Authority,
+        parent_issuer: AuthorityIssuer,
+        parent_scope: acyclic_harness::core::Scope,
+        parent_project: VolumeRef,
+        boundary: CompletedModelBoundary,
+    ) -> Result<()> {
+        let provider = parent_project.provider().clone();
+        let forks = Arc::new(CompositeForkVerifier::new(vec![
+            Arc::new(FilesystemForkVerifier::new(
+                self.host.clone(),
+                self.limits.file_bytes,
+            )?),
+            Arc::new(StreamHistoryForkVerifier::new(
+                self.stream_provider.clone(),
+            )?),
+        ])?);
+        parent = parent.with_fork_verifier(forks.clone());
+        let project_head = self.host.create_volume(&parent_project).await?;
+        let grandchild_agent = AgentId::from_bytes([90; 16]);
+        let grandchild_authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: "grandchild-0".into(),
+        };
+        let grandchild_issuer =
+            AuthorityIssuer::new("model-fork-e2e", [7; 32], grandchild_authority.clone());
+        let private = VolumeRef::new(
+            provider.clone(),
+            "grandchild-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(grandchild_agent),
+        )?;
+        let project = VolumeRef::new(
+            provider.clone(),
+            "grandchild-project",
+            VolumeClass::Project,
+            parent_project.owner().clone(),
+        )?;
+        let resolver = Arc::new(FilesystemContentVerifier::new(
+            self.host.clone(),
+            parent_issuer.verifier(),
+            parent_scope.clone(),
+            self.limits.file_bytes,
+        )?);
+        let preparer = FilesystemForkPreparer::new(
+            self.host.clone(),
+            parent.reducer().clone(),
+            parent_issuer.verifier(),
+            parent_scope.clone(),
+            parent_project.clone(),
+            self.stream_provider.clone(),
+            resolver,
+        )?;
+        let request = ForkRequest {
+            operation_id: OperationId::from_bytes([91; 16]),
+            parent: parent_authority.clone(),
+            parent_revision: parent.reducer().revision(),
+            child: grandchild_authority.clone(),
+            child_agent: grandchild_agent,
+            attached_agents: Vec::new(),
+            preparation: ForkPreparation {
+                child_project_volume: project.clone(),
+                child_private_volume: private.clone(),
+                inherited_through_sequence: parent.reducer().conversation().unwrap().messages.len()
+                    as u64,
+                maximum_inherited_messages: 64,
+                maximum_inherited_bytes: self.limits.file_bytes,
+                maximum_inherited_references: 128,
+            },
+            selections: vec![
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::History(StreamRef::new(
+                        self.stream_provider.clone(),
+                        parent.reducer().authority().stream_path()?.into_bytes(),
+                        Some(parent.reducer().revision().to_string()),
+                    )?),
+                },
+                ForkSelection {
+                    required: true,
+                    revision: ResourceRevision::Project {
+                        volume: parent_project.clone(),
+                        generation: project_head.generation.clone(),
+                    },
+                },
+            ],
+            boundary: None,
+        };
+
+        // A provider-shaped boundary without an attestation from the bound
+        // provider must be refused before the child aggregate is visible.
+        let mut forged = request.clone();
+        forged.boundary = Some(AttestedBoundary {
+            provider: self.stream_provider.clone(),
+            evidence: b"forged recursive boundary".to_vec(),
+        });
+        assert!(parent.prepare_fork(&preparer, forged).await.is_err());
+
+        let report = parent.prepare_fork(&preparer, request).await?;
+        let preview_seed = report.clone().into_seed()?;
+        let reference_capabilities = preview_seed.reference_capabilities(grandchild_agent)?;
+        let mut capabilities = vec![
+            "conversation:bind".to_owned(),
+            "conversation:append".to_owned(),
+            private.capability(VolumeOperation::Read)?,
+            private.capability(VolumeOperation::Write)?,
+            project.capability(VolumeOperation::Read)?,
+        ];
+        capabilities.extend(reference_capabilities.iter().map(str::to_owned));
+        let child_scope = grandchild_issuer.root_for_agent(
+            grandchild_agent,
+            "grandchild",
+            Capabilities::new(capabilities),
+        );
+        let mut child = StreamAggregate::open(
+            &self.stream,
+            grandchild_authority.clone(),
+            grandchild_issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?
+        .with_fork_verifier(forks)
+        .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
+            self.host.clone(),
+            grandchild_issuer.verifier(),
+            child_scope.clone(),
+            self.limits.file_bytes,
+        )?))
+        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(
+            self.host.clone(),
+        )));
+        child
+            .spawn_from_report(&mut parent, report, parent_scope, child_scope.clone())
+            .await?;
+
+        // Mutating the source path after capture advances its generation. A
+        // stale reopen is denied, while the already pinned fork remains valid.
+        let source = self.host.resolve(&project_head.workspace).await?;
+        self.host
+            .apply(
+                &source.workspace,
+                Some(&source.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/recursive-same-path.txt".into(),
+                    bytes: b"new parent generation".to_vec(),
+                }],
+                &IdempotencyKey::new("recursive-parent-mutation")?,
+            )
+            .await?;
+        assert!(self
+            .host
+            .read(
+                &source.workspace,
+                Some(&source.generation),
+                "/recursive-same-path.txt",
+                self.limits.file_bytes,
+            )
+            .await
+            .is_err());
+
+        let storage = HarnessStorage::from_providers(
+            grandchild_agent,
+            self.limits.file_bytes,
+            self.host.clone(),
+            self.stream.clone(),
+            private,
+            grandchild_authority,
+            grandchild_issuer,
+        )
+        .await?;
+        let suffix = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(
+                "grandchild task: read the inherited file and verify the pinned workspace".into(),
+            ),
+        }];
+        let bundle = storage
+            .inherited_builder(
+                boundary.clone(),
+                suffix,
+                self.grandchild.clone(),
+                self.limits,
+            )?
+            .tools(storage.default_tools(self.limits)?)
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(self.limits)
+            .build()?;
+        let operation = OperationId::from_bytes([92; 16]);
+        let input = storage
+            .stage(
+                operation,
+                "input/grandchild.txt",
+                "grandchild explicit UTF-8 input α🦀\n".as_bytes(),
+                "text/plain",
+                "grandchild.txt",
+            )
+            .await?;
+        storage
+            .run_conversation(&bundle, operation, input, Vec::new(), 3)
+            .await?;
+        let records = storage.journal().replay(operation).await?;
+        assert!(records.iter().any(|record| matches!(
+            &record.event,
+            ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "read-inherited"
+        )));
+        let captured = self.grandchild.requests.lock().unwrap();
+        assert!(captured.len() >= 2);
+        let actual = PreparedModelInput::prepare(captured[0].clone(), self.limits)?;
+        let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
+        assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
         Ok(())
     }
 }
@@ -634,11 +934,23 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
     let model = Model::new("test", "frozen", "1", Value::Null)?;
     let root_model = Arc::new(CapturedModel {
         root: true,
+        read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
-    let children = Arc::new(CapturedModel {
+    let children = (0..2)
+        .map(|_| {
+            Arc::new(CapturedModel {
+                root: false,
+                read_first: true,
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let grandchild = Arc::new(CapturedModel {
         root: false,
+        read_first: true,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
@@ -650,6 +962,7 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         issuer,
         stream_provider,
         children: children.clone(),
+        grandchild,
         limits,
         publications: AtomicUsize::new(0),
         paused: false,
@@ -685,12 +998,14 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         .await?
         .ok_or_else(|| Error::Storage("test completed boundary missing".into()))?;
     let captured = children
-        .requests
-        .lock()
-        .map_err(|error| Error::Storage(error.to_string()))?
-        .clone();
-    assert_eq!(captured.len(), 2);
-    for request in captured.iter() {
+        .iter()
+        .flat_map(|child| child.requests.lock().unwrap().clone())
+        .collect::<Vec<_>>();
+    // Each sibling receives one read_file turn followed by its terminal
+    // continuation. The first request for each sibling is the exact fork
+    // boundary; the continuation is allowed to contain the paired result.
+    assert_eq!(captured.len(), 4);
+    for request in captured.iter().step_by(2) {
         assert_eq!(
             request.messages.get(..boundary.request.messages.len()),
             Some(boundary.request.messages.as_slice())
@@ -808,11 +1123,23 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
     let model = Model::new("test", "frozen", "1", Value::Null)?;
     let root_model = Arc::new(CapturedModel {
         root: true,
+        read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
-    let children = Arc::new(CapturedModel {
+    let children = (0..2)
+        .map(|_| {
+            Arc::new(CapturedModel {
+                root: false,
+                read_first: false,
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            })
+        })
+        .collect::<Vec<_>>();
+    let grandchild = Arc::new(CapturedModel {
         root: false,
+        read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
@@ -824,6 +1151,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         issuer: issuer.clone(),
         stream_provider,
         children: children.clone(),
+        grandchild,
         limits,
         publications: AtomicUsize::new(0),
         paused: true,
