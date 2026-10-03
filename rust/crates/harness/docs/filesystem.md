@@ -76,6 +76,14 @@ capability. Mutating commands require project write, and merge/rebase
 transitions additionally require `project:merge`. `resume` uses the same
 durable pending transition and executor identity after restart.
 
+The same facade exposes typed project lifecycle methods for fork, merge-plan
+inspection, conflict description, side or driver resolution, publication, and
+merge-receipt construction. Each method creates a `ParentProjectController`
+against the caller's reducer and exact project volume, so direct-parent
+lineage, signed scope ownership, generation pinning, and provider CAS checks
+remain in Filesystem. Applications do not need a second model-facing schema
+for these operations.
+
 Root writeback is a separate explicit boundary. `RootWritebackApproval` binds
 one operation ID to the inspected child generation and expected root target,
 and requires the parent scope's `project:writeback` grant. The approval is

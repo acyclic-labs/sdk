@@ -39,7 +39,9 @@ const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod git_facade;
-pub use git_facade::{FilesystemGitFacade, RootWritebackApproval, RootWritebackRequest};
+pub use git_facade::{
+    FilesystemGitFacade, ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
+};
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;

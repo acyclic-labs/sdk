@@ -2,17 +2,24 @@
 #![cfg(feature = "filesystem")]
 
 use acyclic_fs::{
-    Digest, GenerationId, GitCommand, GitFilesystemAction, GitFilesystemExecutor,
+    Digest, Fs, GenerationId, GitCommand, GitFilesystemAction, GitFilesystemExecutor,
     GitFilesystemResult, GitTreeRef, MemoryGitCompatStore, OperationId as FsOperationId,
     WorkspaceId,
 };
+use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
+use acyclic_harness::resources::GenerationRef;
 use acyclic_harness::{
     AgentId, Capabilities, Error, Result,
-    conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer},
-    filesystem::FilesystemGitFacade,
+    conversation::{
+        ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
+        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    },
+    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry},
+    filesystem::{FilesystemGitFacade, FilesystemHost},
+    merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan},
     resources::ProviderRef,
 };
+use futures::future::BoxFuture;
 
 #[derive(Debug, thiserror::Error)]
 #[error("test executor failed")]
@@ -32,6 +39,32 @@ impl GitFilesystemExecutor for NoopExecutor {
             tree: None,
             tracked_paths: None,
         })
+    }
+}
+
+struct ApprovalPlan {
+    source: GenerationRef,
+    target: GenerationRef,
+}
+
+impl ProjectJoinPlan for ApprovalPlan {
+    fn source_generation(&self) -> &GenerationRef {
+        &self.source
+    }
+
+    fn expected_target_generation(&self) -> &GenerationRef {
+        &self.target
+    }
+
+    fn apply<'a>(
+        &'a self,
+        _scope: &'a acyclic_harness::core::Scope,
+        _operation_id: acyclic_harness::OperationId,
+        _child: &'a Authority,
+        _notice: &'a ConversationMessage,
+        _selections: &'a [ProjectConflictSelection],
+    ) -> BoxFuture<'a, Result<ProjectJoinOutcome>> {
+        Box::pin(async { Err(Error::Conflict("approval guard was bypassed".into())) })
     }
 }
 
@@ -109,7 +142,8 @@ async fn mutating_commands_require_the_exact_volume_write_capability() -> Result
             &NoopExecutor,
         )
         .await
-        .expect_err("read-only scope must not execute a commit");
+        .err()
+        .ok_or_else(|| Error::Invalid("read-only scope executed a commit".into()))?;
     assert!(matches!(error, Error::Unauthorized(_)));
     Ok(())
 }
@@ -127,7 +161,167 @@ async fn branch_workspace_transitions_require_parent_fork_authority() -> Result<
             &NoopExecutor,
         )
         .await
-        .expect_err("a project writer without fork authority cannot switch workspaces");
+        .err()
+        .ok_or_else(|| Error::Invalid("project writer switched without fork authority".into()))?;
     assert!(matches!(error, Error::Unsupported(value) if value == "fork:publish"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
+    let provider = ProviderRef::new("git-facade-approval", "filesystem", "2")?;
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "root".into(),
+    };
+    let issuer = AuthorityIssuer::new("git-facade-approval", [11; 32], authority.clone());
+    let agent = AgentId::from_bytes([12; 16]);
+    let capabilities = Capabilities::new([
+        volume.capability(VolumeOperation::Read)?,
+        volume.capability(VolumeOperation::Write)?,
+        "project:writeback".into(),
+    ]);
+    let scope = issuer.root_for_agent(agent, "root", capabilities.clone());
+    let facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([13; 16]),
+        MemoryGitCompatStore::new(),
+        volume.clone(),
+        issuer.verifier(),
+        scope.clone(),
+    )?;
+    let source = GenerationRef::new(provider.clone(), [1; 32], Some("source".into()))?;
+    let target = GenerationRef::new(provider, [2; 32], Some("target".into()))?;
+    let operation_id = acyclic_harness::OperationId::from_bytes([14; 16]);
+    let approval = RootWritebackApproval::issue(
+        &issuer.verifier(),
+        &scope,
+        operation_id,
+        source.clone(),
+        target.clone(),
+    )?;
+    let other_scope = issuer.root_for_agent(agent, "different-approval", capabilities);
+    let request = RootWritebackRequest::new(approval, other_scope);
+    let notice_file = FileRef::new(
+        volume.clone(),
+        "notice.txt",
+        "notice",
+        FileDescriptor::from_bytes(b"notice", "text/plain")?,
+        "notice.txt",
+    )?;
+    let notice = ConversationMessage {
+        id: uuid::Uuid::from_bytes([15; 16]),
+        sequence: 1,
+        kind: MessageKind::Merge,
+        content: notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: Default::default(),
+    };
+    let plan = ApprovalPlan { source, target };
+    let error = facade
+        .apply_root_writeback(&request, &plan, &authority, &notice, &[])
+        .await
+        .err()
+        .ok_or_else(|| Error::Invalid("approval data authorized a different scope".into()))?;
+    assert!(matches!(error, Error::Unauthorized(_)));
+
+    let no_writeback = issuer.root_for_agent(
+        agent,
+        "without-writeback",
+        Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let error = RootWritebackApproval::issue(
+        &issuer.verifier(),
+        &no_writeback,
+        operation_id,
+        GenerationRef::new(
+            ProviderRef::new("git-facade-approval", "filesystem", "2")?,
+            [3; 32],
+            Some("source".into()),
+        )?,
+        GenerationRef::new(
+            ProviderRef::new("git-facade-approval", "filesystem", "2")?,
+            [4; 32],
+            Some("target".into()),
+        )?,
+    )
+    .err()
+    .ok_or_else(|| Error::Invalid("writeback approval omitted explicit capability".into()))?;
+    assert!(matches!(error, Error::Unsupported(value) if value == "project:writeback"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn lifecycle_fork_uses_parent_controller_and_real_filesystem_state() -> Result<()> {
+    let provider = ProviderRef::new("git-facade-native", "filesystem", "2")?;
+    let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
+    let project = VolumeRef::new(
+        provider.clone(),
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let child = VolumeRef::new(
+        provider,
+        "child-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "root".into(),
+    };
+    let issuer = AuthorityIssuer::new("git-facade-native", [21; 32], authority.clone());
+    let agent = AgentId::from_bytes([22; 16]);
+    let scope = issuer.root_for_agent(
+        agent,
+        "root",
+        Capabilities::new([
+            "conversation:bind".into(),
+            "fork:publish".into(),
+            project.capability(VolumeOperation::Read)?,
+            project.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([23; 16]),
+        MemoryGitCompatStore::new(),
+        project.clone(),
+        issuer.verifier(),
+        scope.clone(),
+    )?;
+    let parent_head = host.create_volume(&project).await?;
+    let mut reducer = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    reducer.apply(Command {
+        operation_id: acyclic_harness::OperationId::from_bytes([24; 16]),
+        idempotency_key: acyclic_harness::IdempotencyKey::new("bind")?,
+        expected_revision: 0,
+        scope,
+        causal_parent: None,
+        action: Action::BindConversation { agent },
+    })?;
+    let child_head = facade
+        .fork_project(
+            &host,
+            &reducer,
+            &parent_head.generation,
+            &child,
+            &acyclic_harness::IdempotencyKey::new("fork")?,
+        )
+        .await?;
+    assert_eq!(
+        host.resolve(&child_head.workspace).await?.generation,
+        child_head.generation
+    );
     Ok(())
 }
