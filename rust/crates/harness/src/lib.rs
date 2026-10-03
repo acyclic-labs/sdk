@@ -31,6 +31,7 @@ pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
 mod handles;
+pub mod host_execution;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
