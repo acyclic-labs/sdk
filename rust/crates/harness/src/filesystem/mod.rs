@@ -50,6 +50,13 @@ pub use workflow_journal::FilesystemWorkflowJournal;
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{DurableHarnessStorage, PersistentLocalHarness};
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod swarm_local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use swarm_local::{
+    LocalForkOutcome, LocalForkRequest, LocalSessionPhase, LocalSwarmConfig,
+    LocalSwarmSession, PersistentLocalSwarm,
+};
 
 mod memory;
 pub use memory::{HarnessStorage, LocalHarness, MemoryHarnessStorage};
