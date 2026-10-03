@@ -63,6 +63,9 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
         "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+        "ruby/generated/acyclic_sdk/generated_remote_policy.rb",
+        "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+        "dart/lib/src/generated_remote_policy.dart",
     ] {
         let path = root.join(relative);
         let mut bytes = fs::read(&path).expect("generated product fixture");
@@ -89,6 +92,44 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
             restored.status.success(),
             "product regeneration failed for {relative}: {}",
             String::from_utf8_lossy(&restored.stderr)
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
+    let root = temporary_root();
+    let generated = run_product_command("generate-products", &root);
+    assert!(
+        generated.status.success(),
+        "generator failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    for relative in [
+        "ruby/generated/acyclic_sdk/generated_remote_policy.rb",
+        "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+        "dart/lib/src/generated_remote_policy.dart",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).expect("generated facade source");
+        assert!(
+            source.contains("rust_policy_source_binding"),
+            "Rust source binding missing from {relative}"
+        );
+        assert!(
+            source.contains("acyclic.stream.v2.StreamService/Read"),
+            "streaming Read policy missing from {relative}"
+        );
+        assert!(
+            source.contains("post_failure_fallback")
+                || source.contains("postFailureFallback"),
+            "post-failure fallback policy missing from {relative}"
+        );
+        assert!(
+            source.contains("replay"),
+            "replay policy missing from {relative}"
         );
     }
 
