@@ -219,7 +219,7 @@ struct WasmTaskAdmissionInput {
     parent: Option<TaskId>,
     #[serde(default)]
     #[tsify(type = "readonly string[]")]
-    dependencies: BTreeSet<OperationId>,
+    dependencies: Vec<OperationId>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
     limits: WasmLimitsInput,
@@ -929,6 +929,13 @@ pub fn admit_task_wasm(
     #[wasm_bindgen(unchecked_param_type = "WasmTaskAdmissionInput")] value: JsValue,
 ) -> Result<JsValue, JsValue> {
     let input: WasmTaskAdmissionInput = from_js(value)?;
+    let dependency_count = input.dependencies.len();
+    let dependencies = input.dependencies.into_iter().collect::<BTreeSet<_>>();
+    if dependencies.len() != dependency_count {
+        return Err(js_error(crate::Error::Invalid(
+            "task admission dependencies must be unique".into(),
+        )));
+    }
     let record = TaskAdmissionRecord::from_parts(
         input.operation_id,
         &input.name,
@@ -947,7 +954,7 @@ pub fn admit_task_wasm(
         input.execution,
     )
     .map_err(js_error)?
-    .with_dependencies(input.dependencies)
+    .with_dependencies(dependencies)
     .map_err(js_error)?;
     to_js_admitted(&record.canonical_value())
 }

@@ -122,6 +122,50 @@ test("Rust and TypeScript share strict v2 task admission and execution placement
   expect(() => contracts.validate("execution_placement", { ...placement, readiness_revision: [] })).toThrow();
 });
 
+test("Rust and WASM share the canonical v3 prerequisite admission fixture", async () => {
+  const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission-v3.json", import.meta.url)).text()).trim();
+  const admission = JSON.parse(admissionText) as TaskAdmissionWire;
+  const validated = contracts.validate("task_admission", admission);
+  expect(validated.contract).toBe("harness.task-admission.v3");
+  expect(validated.dependencies).toEqual([
+    "22345678-1234-4234-8234-123456789abc",
+    "32345678-1234-4234-8234-123456789abc",
+  ]);
+  expect(new TextDecoder().decode(contracts.encodeCanonicalJson(validated))).toBe(admissionText);
+  const projection = {
+    operation_id: admission.operation_id,
+    name: admission.task.name,
+    version: admission.task.version,
+    input: admission.input,
+    input_schema: admission.input_schema,
+    output_schema: admission.output_schema,
+    requirements: [],
+    machine_digest: admission.machine.digest,
+    parent: admission.parent,
+    dependencies: admission.dependencies,
+    grants: admission.grants,
+    limits: {
+      file_bytes: BigInt(admission.limits.file_bytes),
+      path_bytes: BigInt(admission.limits.path_bytes),
+      attachments: BigInt(admission.limits.attachments),
+      render_bytes: BigInt(admission.limits.render_bytes),
+      model_steps: BigInt(admission.limits.model_steps),
+      model_events_per_step: BigInt(admission.limits.model_events_per_step),
+      tool_calls_per_step: BigInt(admission.limits.tool_calls_per_step),
+      context_messages: BigInt(admission.limits.context_messages),
+    },
+    run_limits: {
+      concurrency: admission.run_limits.concurrency === null ? null : BigInt(admission.run_limits.concurrency),
+      max_steps: admission.run_limits.max_steps === null ? null : BigInt(admission.run_limits.max_steps),
+      deadline_epoch_ms: admission.run_limits.deadline_epoch_ms === null ? null : BigInt(admission.run_limits.deadline_epoch_ms),
+    },
+    policy: admission.policy,
+    extensions: admission.extensions,
+    execution: admission.execution,
+  };
+  expect(contracts.admitTask(projection)).toEqual(validated);
+});
+
 test("Rust and TypeScript share the pinned v2 workflow admission fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/workflow-admission.json", import.meta.url)).text()).trim();
   const admission = JSON.parse(fixture) as WorkflowAdmissionWire;
@@ -198,6 +242,10 @@ test("Rust owns durable task and batch projection identities", () => {
   })).toThrow();
   expect(() => contracts.validate("task_admission", {
     ...deferred, contract: "harness.task-admission.v2",
+  })).toThrow();
+  expect(() => contracts.admitTask({
+    ...common, operation_id: task.operation_id, input: 4,
+    dependencies: [prerequisites[0], prerequisites[0]],
   })).toThrow();
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4, dependencies: [task.operation_id],
