@@ -33,6 +33,32 @@ The bridge owns session journals, recursive workers, approvals, workspace
 generations, and recovery. The TypeScript adapter does not open workers while
 listing sessions or hydrate files while reading summaries.
 
+The wire envelope is:
+
+```json
+{"request_id":"graphcoder-1","method":"list_sessions","params":{"query":{"limit":32}}}
+{"request_id":"graphcoder-1","ok":true,"result":{"items":[],"next":"cursor"}}
+```
+
+The runtime methods and parameter names are fixed: `list_sessions(query)`,
+`start_session(prompt, model_fixture?)`, `open_session(session_id)`,
+`resume_session(session_id)`, `read_activity(session_id, query?)`,
+`read_messages(session_id, query?)`, `send_message(session_id, sender_id,
+recipient_id, body)`, `list_approvals(session_id, query?)`,
+`resolve_approval(approval_id, approved)`, `cancel_session(session_id)`,
+`list_changes(session_id)`, `read_change(session_id, path, generation)`,
+`read_file(session_id, path, generation)`, and
+`approve_writeback(session_id, operation_id, expected_generation, approved)`.
+Generations and activity sequences are unsigned decimal strings; file bodies
+use an array of octets. A failed response is
+`{"request_id":"...","ok":false,"error":{"code":"denied","message":"..."}}`.
+
+Hosts consume it by constructing `new HarnessGraphCoderTransport(bridge)` and
+passing that transport to `new GraphCoderTerminal(transport, io)` or
+`new GraphCoderUi(transport)`. The host may implement `bridge.request` over a
+JSON-lines process, native callback, or WASM binding; the package does not
+choose or start that execution provider.
+
 After building, the Windows PTY qualification can be run when Python's
 `winpty` binding is installed:
 
