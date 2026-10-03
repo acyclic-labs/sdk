@@ -27,8 +27,11 @@ use std::{
         Arc,
     },
 };
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+#[cfg(test)]
+use tokio::io::AsyncReadExt;
 
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 

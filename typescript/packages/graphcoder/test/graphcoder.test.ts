@@ -93,6 +93,9 @@ describe("GraphCoder UI transport boundary", () => {
     const wrongBody = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { session_id: "other", path: "README.md", unified_diff: "", generation: "7" } }) });
     await expect(wrongBody.readChange(sessionId("session-1"), "README.md", 7n)).rejects.toMatchObject({ code: "transport" });
 
+    const wrongApproval = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { id: "approval-1", session_id: "other", agent_id: "agent-1", operation_id: "op-1", action_digest: "digest", description: "approve", state: "approved", created_at: "2026-01-01T00:00:00.000Z" } }) });
+    await expect(wrongApproval.resolveApproval({ approvalId: approvalId("approval-1"), sessionId: sessionId("session-1"), approved: true })).rejects.toMatchObject({ code: "transport" });
+
     const wrongReceipt = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { operation_id: "other", session_id: "session-1", generation: "7", applied: "yes" } }) });
     await expect(wrongReceipt.approveWriteback({ sessionId: sessionId("session-1"), operationId: "op-1", expectedGeneration: 7n, approved: true })).rejects.toMatchObject({ code: "transport" });
   });
