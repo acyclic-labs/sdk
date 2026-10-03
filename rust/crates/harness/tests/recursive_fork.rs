@@ -1587,51 +1587,25 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.resolve(&root_head.workspace).await?.generation,
         root_head.generation
     );
-    let first = facade
-        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[0])
-        .await?;
-    let stale = facade
-        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[1])
-        .await?;
+    let first = controller.prepare_project_merge(&siblings[0]).await?;
+    let stale = controller.prepare_project_merge(&siblings[1]).await?;
     assert!(
-        ungranted_facade
-            .apply_project_merge(
-                host.as_ref(),
-                &parent_reducer,
-                &first,
-                OperationId::from_bytes([100; 16]),
-            )
+        ungranted_controller
+            .apply_project_merge(&first, OperationId::from_bytes([100; 16]))
             .await
             .is_err()
     );
-    let first_outcome = facade
-        .apply_project_merge(
-            host.as_ref(),
-            &parent_reducer,
-            &first,
-            OperationId::from_bytes([101; 16]),
-        )
+    let first_outcome = controller
+        .apply_project_merge(&first, OperationId::from_bytes([101; 16]))
         .await?;
     assert!(matches!(first_outcome, JoinOutcome::Applied(_)));
-    let stale_outcome = facade
-        .apply_project_merge(
-            host.as_ref(),
-            &parent_reducer,
-            &stale,
-            OperationId::from_bytes([102; 16]),
-        )
+    let stale_outcome = controller
+        .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
-    let inspected = facade
-        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[1])
-        .await?;
-    let conflict = facade
-        .apply_project_merge(
-            host.as_ref(),
-            &parent_reducer,
-            &inspected,
-            OperationId::from_bytes([103; 16]),
-        )
+    let inspected = controller.prepare_project_merge(&siblings[1]).await?;
+    let conflict = controller
+        .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
         .await?;
     let JoinOutcome::Conflicted {
         conflicts,
@@ -1675,14 +1649,8 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .map(|conflict| (conflict, ConflictSide::Theirs))
         .collect();
     assert!(
-        ungranted_facade
-            .apply_project_merge_sides(
-                host.as_ref(),
-                &parent_reducer,
-                &inspected,
-                OperationId::from_bytes([104; 16]),
-                selections.clone(),
-            )
+        ungranted_controller
+            .apply_project_merge_sides(&inspected, OperationId::from_bytes([104; 16]), selections.clone())
             .await
             .is_err()
     );

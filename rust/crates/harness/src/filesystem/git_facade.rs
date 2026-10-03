@@ -265,7 +265,7 @@ impl<S> FilesystemGitFacade<S> {
     }
 
     /// Inspects a direct child's changes under the authenticated parent.
-    pub async fn prepare_project_merge<A, O>(
+    pub(crate) async fn prepare_project_merge<A, O>(
         &self,
         host: &super::FilesystemHost<A, O>,
         parent: &Reducer,
@@ -305,7 +305,7 @@ impl<S> FilesystemGitFacade<S> {
     }
 
     /// Publishes a previously inspected direct-child plan under parent authority.
-    pub async fn apply_project_merge<A, O>(
+    pub(crate) async fn apply_project_merge<A, O>(
         &self,
         host: &super::FilesystemHost<A, O>,
         parent: &Reducer,
@@ -471,7 +471,7 @@ impl<S> FilesystemGitFacade<S> {
     }
 
     /// Applies explicit conflict-side choices through the provider's typed join.
-    pub async fn apply_project_merge_sides<A, O>(
+    pub(crate) async fn apply_project_merge_sides<A, O>(
         &self,
         host: &super::FilesystemHost<A, O>,
         parent: &Reducer,
@@ -520,7 +520,7 @@ impl<S> FilesystemGitFacade<S> {
         clippy::too_many_arguments,
         reason = "driver resolution keeps the inspected plan and retry inputs explicit"
     )]
-    pub async fn apply_project_merge_with_drivers<A, O, C>(
+    pub(crate) async fn apply_project_merge_with_drivers<A, O, C>(
         &self,
         host: &super::FilesystemHost<A, O>,
         parent: &Reducer,
@@ -694,6 +694,45 @@ impl<S> FilesystemGitFacade<S> {
         validate_merge_receipt_inputs(child, notice)?;
         self.apply_root_writeback_plan(request, host, parent, plan, selections)
             .await
+    }
+
+    /// Applies approved native writeback and constructs the receipt from the
+    /// same child, notice, operation, and generation approval. This is the
+    /// model-facing boundary for callers that must publish the resulting
+    /// conversation event after the provider join.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "receipt-bound writeback keeps approval, parent, child, plan, selections, and notice explicit"
+    )]
+    pub async fn apply_root_writeback_plan_for_child_with_receipt<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+        notice: ConversationMessage,
+    ) -> Result<ProjectMergeReceipt>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
+        validate_merge_receipt_inputs(&child, &notice)?;
+        let outcome = self
+            .apply_root_writeback_plan(request, host, parent, plan, selections)
+            .await?;
+        self.merge_receipt(
+            host,
+            parent,
+            plan,
+            &outcome,
+            child,
+            request.approval.operation_id,
+            notice,
+        )
     }
 
     fn verify_root_writeback(
