@@ -6,7 +6,7 @@
 //! claim that a workspace route confines a process.
 
 use crate::{
-    EffectAttemptId, EffectId, Error, OperationId, Result,
+    EffectAttemptId, EffectId, Error, InteractionId, OperationId, Result, SessionId,
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
     core::{EffectGuarantee, EffectStatus},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
@@ -36,6 +36,7 @@ const MAX_ENVIRONMENT_ENTRIES: usize = 256;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FAILURE_BYTES: usize = 4096;
 const READER_GRACE: Duration = Duration::from_millis(250);
+const MAX_TIMEOUT_MS: u64 = i64::MAX as u64;
 
 /// Environment values admitted for a process.
 ///
@@ -150,8 +151,15 @@ impl ExecutionSpec {
                 "execution working directory must be absolute".into(),
             ));
         }
-        if self.timeout_ms == Some(0) {
-            return Err(Error::Invalid("execution timeout must be positive".into()));
+        if let Some(timeout_ms) = self.timeout_ms {
+            if timeout_ms == 0 {
+                return Err(Error::Invalid("execution timeout must be positive".into()));
+            }
+            // Keep Instant arithmetic fallible below.  A serialized u64 must
+            // never be able to panic the host adapter after admission.
+            if timeout_ms > MAX_TIMEOUT_MS {
+                return Err(Error::Invalid("execution timeout is too large".into()));
+            }
         }
         if self.max_output_bytes == 0 || self.max_output_bytes as usize > MAX_OUTPUT_BYTES {
             return Err(Error::Invalid("execution output limit is invalid".into()));
@@ -171,6 +179,10 @@ impl ExecutionSpec {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionApproval {
+    /// Session whose authenticated owner made this decision.
+    pub session_id: SessionId,
+    /// Durable approval interaction resolved by the owner.
+    pub interaction_id: InteractionId,
     /// Operation identity allocated before admission.
     pub operation_id: OperationId,
     /// Exact approved command.
@@ -186,8 +198,27 @@ pub struct ExecutionApproval {
 impl ExecutionApproval {
     /// Creates an approval for one exact command.
     pub fn approve(operation_id: OperationId, request: ExecutionSpec) -> Result<Self> {
+        Self::approve_for(
+            SessionId::new(),
+            InteractionId::new(),
+            operation_id,
+            request,
+        )
+    }
+
+    /// Creates an approval explicitly bound to an authenticated session and
+    /// durable owner interaction. Production callers should use this form so
+    /// the verifier can compare these identities with its journal record.
+    pub fn approve_for(
+        session_id: SessionId,
+        interaction_id: InteractionId,
+        operation_id: OperationId,
+        request: ExecutionSpec,
+    ) -> Result<Self> {
         let request_digest = request.digest()?;
         Ok(Self {
+            session_id,
+            interaction_id,
             operation_id,
             request,
             request_digest,
@@ -202,12 +233,32 @@ impl ExecutionApproval {
         request: ExecutionSpec,
         reason: impl Into<String>,
     ) -> Result<Self> {
+        Self::deny_for(
+            SessionId::new(),
+            InteractionId::new(),
+            operation_id,
+            request,
+            reason,
+        )
+    }
+
+    /// Creates a durable denial bound to an authenticated session and owner
+    /// interaction.
+    pub fn deny_for(
+        session_id: SessionId,
+        interaction_id: InteractionId,
+        operation_id: OperationId,
+        request: ExecutionSpec,
+        reason: impl Into<String>,
+    ) -> Result<Self> {
         let request_digest = request.digest()?;
         let denial_reason = reason.into();
         if denial_reason.is_empty() || denial_reason.len() > MAX_FAILURE_BYTES {
             return Err(Error::Invalid("execution denial reason is invalid".into()));
         }
         Ok(Self {
+            session_id,
+            interaction_id,
             operation_id,
             request,
             request_digest,
@@ -218,6 +269,11 @@ impl ExecutionApproval {
 
     /// Checks that persisted approval bytes still name the exact request.
     pub fn validate(&self) -> Result<()> {
+        if self.session_id.into_bytes() == [0; 16] || self.interaction_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid(
+                "execution approval must identify its session and interaction".into(),
+            ));
+        }
         let digest = self.request.digest()?;
         if digest != self.request_digest {
             return Err(Error::Conflict(
@@ -331,6 +387,81 @@ impl ExecutionReceipt {
     }
 }
 
+/// Immutable identity of one host receipt slot. Implementations must resolve
+/// this key through host-owned storage; a model-visible or workspace-relative
+/// path is not an authority for a receipt.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionReceiptKey {
+    /// Operation identity allocated before admission.
+    pub operation_id: OperationId,
+    /// Effect identity under which the operation was dispatched.
+    pub effect_id: EffectId,
+    /// Unique dispatch attempt identity.
+    pub attempt_id: EffectAttemptId,
+    /// Provider identity.
+    pub provider: String,
+    /// Provider operation kind.
+    pub effect_kind: String,
+    /// Pinned delivery guarantee.
+    pub guarantee: EffectGuarantee,
+    /// Digest of the immutable request content.
+    pub request_digest: [u8; 32],
+}
+
+/// Durable receipt plus its host-owned result artifact.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionReceiptRecord {
+    /// Identity of the dispatch that produced this receipt.
+    pub key: ExecutionReceiptKey,
+    /// Verified JSON result artifact exposed to Harness.
+    pub result: FileRef,
+    /// Typed host outcome.
+    pub receipt: ExecutionReceipt,
+}
+
+impl ExecutionReceiptRecord {
+    /// Validates the typed record against a dispatch before replay.
+    pub fn validate_for(&self, dispatch: &EffectDispatch) -> Result<()> {
+        if self.key.operation_id.into_bytes() != dispatch.effect_id.into_bytes()
+            || self.key.effect_id != dispatch.effect_id
+            || self.key.attempt_id != dispatch.attempt_id
+            || self.key.provider != dispatch.provider
+            || self.key.effect_kind != dispatch.effect_kind
+            || self.key.guarantee != dispatch.guarantee
+            || self.key.request_digest != dispatch.request_digest
+        {
+            return Err(Error::Conflict(
+                "execution receipt identity does not match dispatch".into(),
+            ));
+        }
+        self.result.validate()?;
+        if self.result.descriptor().media_type() != "application/json" {
+            return Err(Error::Invalid("execution result must be JSON content".into()));
+        }
+        self.receipt.validate()
+    }
+}
+
+/// Host-owned receipt persistence boundary.
+///
+/// The provider never accepts an arbitrary workspace path as a receipt store.
+/// Native integrations should implement this with a private system journal
+/// whose records bind the full key and are inaccessible to model tools.
+pub trait ExecutionReceiptStore: Send + Sync {
+    /// Resolves an existing immutable receipt for exactly this dispatch.
+    fn load<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+    ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>>;
+
+    /// Persists a receipt before exposing its observation to Harness.
+    fn publish<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        receipt: &'a ExecutionReceipt,
+    ) -> BoxFuture<'a, Result<FileRef>>;
+}
+
 /// Provider-neutral runner outcome, useful for deterministic fault injection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RunnerOutcome {
@@ -430,6 +561,20 @@ impl ExecutionRunner for NativeExecutionRunner {
                 stderr: Vec::new(),
             });
         }
+        // Compute the deadline before spawning. An admitted timeout must not
+        // discover an unrepresentable clock instant after a child exists.
+        let deadline = request
+            .timeout_ms
+            .map(|ms| {
+                Instant::now()
+                    .checked_add(Duration::from_millis(ms))
+                    .ok_or_else(|| {
+                        Error::Invalid(
+                            "execution timeout cannot be represented by the host clock".into(),
+                        )
+                    })
+            })
+            .transpose()?;
         let mut command = Command::new(&request.executable);
         command
             .args(&request.arguments)
@@ -455,9 +600,6 @@ impl ExecutionRunner for NativeExecutionRunner {
         ));
         let stdout_thread = spawn_reader(stdout, Arc::clone(&remaining), Arc::clone(&overflow));
         let stderr_thread = spawn_reader(stderr, Arc::clone(&remaining), Arc::clone(&overflow));
-        let deadline = request
-            .timeout_ms
-            .map(|ms| Instant::now() + Duration::from_millis(ms));
         let termination;
         loop {
             if overflow.load(Ordering::Acquire) {
@@ -574,6 +716,33 @@ fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>
     }
 }
 
+/// Immutable dispatch identity presented to the approval authority.
+///
+/// The serialized `approved` bit is request data. A production verifier must
+/// resolve the interaction in its authenticated session journal and compare
+/// every field here before allowing the process to run.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionApprovalContext<'a> {
+    /// Session claimed by the persisted approval.
+    pub session_id: SessionId,
+    /// Durable interaction claimed by the persisted approval.
+    pub interaction_id: InteractionId,
+    /// Operation identity allocated before admission.
+    pub operation_id: OperationId,
+    /// Effect identity under which the process is dispatched.
+    pub effect_id: EffectId,
+    /// Dispatch attempt identity.
+    pub attempt_id: EffectAttemptId,
+    /// Provider identity selected by durable effect state.
+    pub provider: &'a str,
+    /// Provider operation kind.
+    pub effect_kind: &'a str,
+    /// Pinned delivery guarantee.
+    pub guarantee: EffectGuarantee,
+    /// Digest of the exact immutable approval request content.
+    pub request_digest: [u8; 32],
+}
+
 /// Verifies that an execution request was approved by the durable owner.
 ///
 /// The serialized `approved` flag is request data and is never sufficient on
@@ -583,6 +752,7 @@ pub trait ExecutionApprovalVerifier: Send + Sync {
     /// Authenticates the persisted approval or denial record.
     fn verify<'a>(
         &'a self,
+        context: ExecutionApprovalContext<'a>,
         approval: &'a ExecutionApproval,
     ) -> BoxFuture<'a, Result<()>>;
 }
@@ -590,10 +760,19 @@ pub trait ExecutionApprovalVerifier: Send + Sync {
 /// Host-bound provider that adapts approved processes to Harness effects.
 pub struct NativeExecutionProvider {
     resolver: Arc<dyn ContentResidencyVerifier>,
-    publisher: Arc<dyn ContentPublisher>,
+    /// Legacy content publisher retained for compatibility with existing
+    /// tests and callers. Production composition should provide
+    /// `receipt_store`, which is host-owned and request-bound.
+    publisher: Option<Arc<dyn ContentPublisher>>,
+    receipt_store: Option<Arc<dyn ExecutionReceiptStore>>,
     runner: Arc<dyn ExecutionRunner>,
     approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
-    active: Mutex<BTreeMap<OperationId, ExecutionCancellation>>,
+    /// In-process reservation for an admitted operation.  A single semantic
+    /// operation may have many durable attempts over its lifetime, but only
+    /// one attempt can be dispatched by this provider at a time.  Keeping the
+    /// attempt identity with the cancellation signal prevents a late cleanup
+    /// from deleting a newer reservation.
+    active: Mutex<BTreeMap<OperationId, (EffectAttemptId, ExecutionCancellation)>>,
     provider_id: String,
 }
 
@@ -612,7 +791,28 @@ impl NativeExecutionProvider {
         }
         Ok(Self {
             resolver,
-            publisher,
+            publisher: Some(publisher),
+            receipt_store: None,
+            runner,
+            approval_verifier,
+            active: Mutex::new(BTreeMap::new()),
+            provider_id: "harness.native-execution.v1".into(),
+        })
+    }
+
+    /// Binds a host-owned, request-bound receipt journal. This is the
+    /// production constructor: receipt records are not resolved through a
+    /// model-writable workspace path.
+    pub fn new_with_receipt_store(
+        resolver: Arc<dyn ContentResidencyVerifier>,
+        receipt_store: Arc<dyn ExecutionReceiptStore>,
+        runner: Arc<dyn ExecutionRunner>,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
+    ) -> Result<Self> {
+        Ok(Self {
+            resolver,
+            publisher: None,
+            receipt_store: Some(receipt_store),
             runner,
             approval_verifier,
             active: Mutex::new(BTreeMap::new()),
@@ -634,6 +834,20 @@ impl NativeExecutionProvider {
         )
     }
 
+    /// Uses the native runner with a host-owned receipt journal.
+    pub fn native_with_receipt_store(
+        resolver: Arc<dyn ContentResidencyVerifier>,
+        receipt_store: Arc<dyn ExecutionReceiptStore>,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
+    ) -> Result<Self> {
+        Self::new_with_receipt_store(
+            resolver,
+            receipt_store,
+            Arc::new(NativeExecutionRunner),
+            approval_verifier,
+        )
+    }
+
     /// Requests cancellation of a currently running operation.
     ///
     /// Durable cancellation admission remains the Harness owner's job; this
@@ -642,24 +856,82 @@ impl NativeExecutionProvider {
         let Ok(active) = self.active.lock() else {
             return false;
         };
-        let Some(cancellation) = active.get(&operation_id).cloned() else {
+        let Some((_, cancellation)) = active.get(&operation_id).cloned() else {
             return false;
         };
         cancellation.cancel();
         true
     }
 
+    fn reserve_attempt(
+        &self,
+        operation_id: OperationId,
+        attempt_id: EffectAttemptId,
+    ) -> Result<ExecutionCancellation> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?;
+        if active.contains_key(&operation_id) {
+            return Err(Error::Conflict(
+                "execution operation already has an active attempt".into(),
+            ));
+        }
+        let cancellation = ExecutionCancellation::new();
+        active.insert(operation_id, (attempt_id, cancellation.clone()));
+        Ok(cancellation)
+    }
+
+    fn release_attempt(&self, operation_id: OperationId, attempt_id: EffectAttemptId) -> Result<()> {
+        let mut active = self
+            .active
+            .lock()
+            .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?;
+        if active
+            .get(&operation_id)
+            .is_some_and(|(active_attempt, _)| *active_attempt == attempt_id)
+        {
+            active.remove(&operation_id);
+        }
+        Ok(())
+    }
+
     async fn persisted_receipt(
         &self,
-        path: &str,
+        dispatch: &EffectDispatch,
+        operation_id: OperationId,
     ) -> Result<Option<(FileRef, ExecutionReceipt)>> {
+        let key = ExecutionReceiptKey {
+            operation_id,
+            effect_id: dispatch.effect_id,
+            attempt_id: dispatch.attempt_id,
+            provider: dispatch.provider.clone(),
+            effect_kind: dispatch.effect_kind.clone(),
+            guarantee: dispatch.guarantee,
+            request_digest: dispatch.request_digest,
+        };
+        if let Some(store) = &self.receipt_store {
+            let record = store.load(&key).await?;
+            if let Some(record) = record {
+                record.validate_for(dispatch)?;
+                return Ok(Some((record.result, record.receipt)));
+            }
+            return Ok(None);
+        }
+        let publisher = self.publisher.as_ref().ok_or_else(|| {
+            Error::Unsupported("host execution receipt store is not configured".into())
+        })?;
+        let path = format!(
+            ".harness/execution/{}/attempt-{}.json",
+            operation_id, dispatch.attempt_id
+        );
         let resolved = match self
             .resolver
-            .read_private_path(self.publisher.volume(), "", path, None)
+            .read_private_path(publisher.volume(), "", &path, None)
             .await
         {
             Ok(resolved) => resolved,
-            Err(Error::NotFound(_) | Error::Unsupported(_)) => return Ok(None),
+            Err(Error::NotFound(_)) => return Ok(None),
             Err(error) => return Err(error),
         };
         let (reference, bytes) = resolved;
@@ -700,7 +972,11 @@ impl NativeExecutionProvider {
             reason = "host execution outcome is unknown".into();
         }
         if reason.chars().count() > MAX_FAILURE_BYTES {
-            reason = reason.chars().take(MAX_FAILURE_BYTES).collect();
+            let mut end = MAX_FAILURE_BYTES.min(reason.len());
+            while end > 0 && !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason.truncate(end);
         }
         ExecutionReceipt::Unknown { reason }
     }
@@ -752,37 +1028,51 @@ impl NativeExecutionProvider {
                 "execution approval operation does not match effect identity".into(),
             ));
         }
-        self.approval_verifier.verify(&approval).await?;
-        let path = format!(
-            ".harness/execution/{}/attempt-{}.json",
-            approval.operation_id, request.attempt_id
-        );
-        if let Some((result, receipt)) = self.persisted_receipt(&path).await? {
-            return Ok(EffectObservation {
-                provider: request.provider,
-                effect_id: request.effect_id,
-                attempt_id: request.attempt_id,
-                request_digest: request.request_digest,
-                guarantee: request.guarantee,
-                status: Self::status_for_receipt(receipt, result),
-            });
+        self.approval_verifier
+            .verify(
+                ExecutionApprovalContext {
+                    session_id: approval.session_id,
+                    interaction_id: approval.interaction_id,
+                    operation_id: approval.operation_id,
+                    effect_id: request.effect_id,
+                    attempt_id: request.attempt_id,
+                    provider: &request.provider,
+                    effect_kind: &request.effect_kind,
+                    guarantee: request.guarantee,
+                    request_digest: request.request_digest,
+                },
+                &approval,
+            )
+            .await?;
+        // Reserve before looking up the receipt so two concurrent dispatches
+        // cannot both observe a miss and run the same host command.
+        let cancellation = self.reserve_attempt(approval.operation_id, request.attempt_id)?;
+        match self.persisted_receipt(&request, approval.operation_id).await {
+            Ok(Some((result, receipt))) => {
+                self.release_attempt(approval.operation_id, request.attempt_id)?;
+                return Ok(EffectObservation {
+                    provider: request.provider,
+                    effect_id: request.effect_id,
+                    attempt_id: request.attempt_id,
+                    request_digest: request.request_digest,
+                    guarantee: request.guarantee,
+                    status: Self::status_for_receipt(receipt, result),
+                });
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.release_attempt(approval.operation_id, request.attempt_id)?;
+                return Err(error);
+            }
         }
         let receipt = if approval.approved {
-            let cancellation = ExecutionCancellation::new();
-            self.active
-                .lock()
-                .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
-                .insert(approval.operation_id, cancellation.clone());
             let runner = Arc::clone(&self.runner);
             let execution_request = approval.request.clone();
             let outcome = tokio::task::spawn_blocking(move || {
                 runner.run_with_cancellation(&execution_request, &cancellation)
             })
             .await;
-            self.active
-                .lock()
-                .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
-                .remove(&approval.operation_id);
+            self.release_attempt(approval.operation_id, request.attempt_id)?;
             match outcome {
                 Err(error) => Self::bounded_unknown(format!(
                     "approved process task failed before its outcome was durable: {error}"
@@ -817,6 +1107,7 @@ impl NativeExecutionProvider {
                 Ok(Ok(RunnerOutcome::Unknown { reason })) => Self::bounded_unknown(reason),
             }
         } else {
+            self.release_attempt(approval.operation_id, request.attempt_id)?;
             ExecutionReceipt::Denied {
                 reason: approval
                     .denial_reason
@@ -826,16 +1117,35 @@ impl NativeExecutionProvider {
         receipt.validate()?;
         let receipt_bytes =
             serde_json::to_vec(&receipt).map_err(|error| Error::Invalid(error.to_string()))?;
-        let result = self
-            .publisher
-            .stage(
-                approval.operation_id,
-                &path,
-                &receipt_bytes,
-                "application/json",
-                "execution-result.json",
-            )
-            .await?;
+        let key = ExecutionReceiptKey {
+            operation_id: approval.operation_id,
+            effect_id: request.effect_id,
+            attempt_id: request.attempt_id,
+            provider: request.provider.clone(),
+            effect_kind: request.effect_kind.clone(),
+            guarantee: request.guarantee,
+            request_digest: request.request_digest,
+        };
+        let result = if let Some(store) = &self.receipt_store {
+            store.publish(&key, &receipt).await?
+        } else {
+            let publisher = self.publisher.as_ref().ok_or_else(|| {
+                Error::Unsupported("host execution receipt store is not configured".into())
+            })?;
+            let path = format!(
+                ".harness/execution/{}/attempt-{}.json",
+                approval.operation_id, request.attempt_id
+            );
+            publisher
+                .stage(
+                    approval.operation_id,
+                    &path,
+                    &receipt_bytes,
+                    "application/json",
+                    "execution-result.json",
+                )
+                .await?
+        };
         let status = Self::status_for_receipt(receipt, result);
         Ok(EffectObservation {
             provider: request.provider,
@@ -917,6 +1227,33 @@ mod tests {
             }
             .boxed()
         }
+
+        fn read_private_path<'a>(
+            &'a self,
+            volume: &'a VolumeRef,
+            _granted_prefix: &'a str,
+            path: &'a str,
+            _expected_generation: Option<&'a crate::conversation::GenerationRef>,
+        ) -> crate::conversation::ContentFuture<'a, Result<(FileRef, Vec<u8>)>> {
+            Box::pin(async move {
+                let bytes = self
+                    .staged
+                    .lock()
+                    .map_err(|_| Error::Storage("test staged content lock poisoned".into()))?
+                    .last()
+                    .cloned()
+                    .ok_or_else(|| Error::NotFound(path.into()))?;
+                let descriptor = FileDescriptor::from_bytes(&bytes, "application/json")?;
+                let reference = FileRef::new(
+                    volume.clone(),
+                    path,
+                    "replayed-generation",
+                    descriptor,
+                    "execution-result.json",
+                )?;
+                Ok((reference, bytes))
+            })
+        }
     }
 
     impl ContentPublisher for MemoryContent {
@@ -945,11 +1282,69 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct MemoryReceiptStore {
+        volume: Option<VolumeRef>,
+        records: Mutex<Vec<ExecutionReceiptRecord>>,
+    }
+
+    impl ExecutionReceiptStore for MemoryReceiptStore {
+        fn load<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            Box::pin(async move {
+                Ok(self
+                    .records
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .iter()
+                    .find(|record| record.key == *key)
+                    .cloned())
+            })
+        }
+
+        fn publish<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+            receipt: &'a ExecutionReceipt,
+        ) -> futures::future::BoxFuture<'a, Result<FileRef>> {
+            Box::pin(async move {
+                receipt.validate()?;
+                let volume = self
+                    .volume
+                    .as_ref()
+                    .ok_or_else(|| Error::Storage("test receipt volume missing".into()))?
+                    .clone();
+                let bytes = serde_json::to_vec(receipt)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let descriptor = FileDescriptor::from_bytes(&bytes, "application/json")?;
+                let result = FileRef::new(
+                    volume,
+                    format!("system-receipts/{}", key.attempt_id),
+                    "receipt-generation",
+                    descriptor,
+                    "execution-result.json",
+                )?;
+                self.records
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .push(ExecutionReceiptRecord {
+                        key: key.clone(),
+                        result: result.clone(),
+                        receipt: receipt.clone(),
+                    });
+                Ok(result)
+            })
+        }
+    }
+
+    #[derive(Default)]
     struct TestApprovalVerifier;
 
     impl ExecutionApprovalVerifier for TestApprovalVerifier {
         fn verify<'a>(
             &'a self,
+            _context: ExecutionApprovalContext<'a>,
             _approval: &'a ExecutionApproval,
         ) -> futures::future::BoxFuture<'a, Result<()>> {
             async { Ok(()) }.boxed()
@@ -965,6 +1360,7 @@ mod tests {
     impl ExecutionApprovalVerifier for RejectApprovalVerifier {
         fn verify<'a>(
             &'a self,
+            _context: ExecutionApprovalContext<'a>,
             _: &'a ExecutionApproval,
         ) -> futures::future::BoxFuture<'a, Result<()>> {
             async { Err(Error::Unauthorized("durable owner approval is absent".into())) }.boxed()
@@ -980,6 +1376,19 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct CountingFixedRunner {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        outcome: RunnerOutcome,
+    }
+
+    impl ExecutionRunner for CountingFixedRunner {
+        fn run(&self, _request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.outcome.clone())
+        }
+    }
+
     struct FaultAfterExitRunner;
 
     impl ExecutionRunner for FaultAfterExitRunner {
@@ -988,6 +1397,25 @@ mod tests {
             Err(Error::Storage(
                 "fault injected after child exit before receipt persistence".into(),
             ))
+        }
+    }
+
+    struct BlockingRunner {
+        started: std::sync::mpsc::Sender<()>,
+        release: Arc<AtomicBool>,
+    }
+
+    impl ExecutionRunner for BlockingRunner {
+        fn run(&self, _request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            let _ = self.started.send(());
+            while !self.release.load(Ordering::Acquire) {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(RunnerOutcome::Exited {
+                status_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })
         }
     }
 
@@ -1074,6 +1502,23 @@ mod tests {
         let mut relative = request;
         relative.executable = "cmd.exe".into();
         assert!(relative.digest().is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn timeout_and_unknown_reasons_are_bounded_without_unicode_corruption() -> Result<()> {
+        let mut request = spec();
+        request.timeout_ms = Some(u64::MAX);
+        assert!(matches!(request.validate(), Err(Error::Invalid(message)) if message.contains("timeout")));
+
+        let receipt = NativeExecutionProvider::bounded_unknown("🦀".repeat(MAX_FAILURE_BYTES));
+        receipt.validate()?;
+        if let ExecutionReceipt::Unknown { reason } = receipt {
+            assert!(reason.len() <= MAX_FAILURE_BYTES);
+            assert!(std::str::from_utf8(reason.as_bytes()).is_ok());
+        } else {
+            unreachable!("bounded unknown must preserve its receipt kind");
+        }
         Ok(())
     }
 
@@ -1438,6 +1883,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_receipt_store_replays_only_the_bound_dispatch() -> Result<()> {
+        let operation = OperationId::from_bytes([55; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let store = Arc::new(MemoryReceiptStore {
+            volume: Some(content.volume.clone()),
+            records: Mutex::new(Vec::new()),
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = NativeExecutionProvider::new_with_receipt_store(
+            content.clone(),
+            store.clone(),
+            Arc::new(CountingFixedRunner {
+                calls: Arc::clone(&calls),
+                outcome: RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: b"typed".to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+            approval_verifier(),
+        )?;
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([56; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file.clone(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        assert!(matches!(
+            provider.dispatch(dispatch.clone()).await?.status,
+            EffectStatus::Succeeded { .. }
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        let replay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let restarted = NativeExecutionProvider::new_with_receipt_store(
+            content,
+            store,
+            Arc::new(CountingFixedRunner {
+                calls: Arc::clone(&replay_calls),
+                outcome: RunnerOutcome::Unknown {
+                    reason: "must not rerun".into(),
+                },
+            }),
+            approval_verifier(),
+        )?;
+        let replay = restarted.dispatch(dispatch).await?;
+        assert!(matches!(replay.status, EffectStatus::Succeeded { .. }));
+        assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn provider_cancellation_is_nonblocking_and_persisted_as_a_receipt() -> Result<()> {
         let operation = OperationId::from_bytes([31; 16]);
         let mut request = spec();
@@ -1493,6 +2000,55 @@ mod tests {
             EffectStatus::FailedWithReceipt { ref message, .. } if message.contains("cancelled")
         ));
         assert_eq!(content.staged.lock().unwrap().len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_rejects_concurrent_attempts_for_one_operation() -> Result<()> {
+        let operation = OperationId::from_bytes([61; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let release = Arc::new(AtomicBool::new(false));
+        let provider = Arc::new(NativeExecutionProvider::new(
+            content.clone(),
+            content.clone(),
+            Arc::new(BlockingRunner {
+                started: started_sender,
+                release: Arc::clone(&release),
+            }),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let first = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([62; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file.clone(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let second = EffectDispatch {
+            attempt_id: EffectAttemptId::from_bytes([63; 16]),
+            ..first.clone()
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.dispatch(first).await }
+        });
+        started_receiver
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(provider.dispatch(second).await, Err(Error::Conflict(message)) if message.contains("active attempt")));
+        release.store(true, Ordering::Release);
+        task.await
+            .map_err(|error| Error::Storage(error.to_string()))??;
         Ok(())
     }
 
@@ -1556,6 +2112,7 @@ mod local_provider_tests {
     impl ExecutionApprovalVerifier for LocalApprovalVerifier {
         fn verify<'a>(
             &'a self,
+            _context: ExecutionApprovalContext<'a>,
             _: &'a ExecutionApproval,
         ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async { Ok(()) })
