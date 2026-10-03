@@ -4,8 +4,7 @@
 qualification, machine lifecycle mutations, checkpoints, forks, operation
 recovery, event pages, and usage receipts. `MachinesProvider` is the provider
 boundary. `SimulatedMachines` is a deterministic process-local implementation
-for bounded tests; it does not execute an operating system, isolate tenants,
-provide durability, or establish hosted availability.
+for bounded tests.
 
 ## Package and source qualification
 
@@ -18,13 +17,11 @@ git rev-parse HEAD
 cargo metadata --locked --no-deps --format-version 1 --manifest-path rust/crates/machines/Cargo.toml
 cargo check --locked --all-targets --manifest-path rust/crates/machines/Cargo.toml
 cargo test --locked -p acyclic-machines
-cargo test --locked -p acyclic-machines --no-default-features
 ```
 
-The command block is the maintainer qualification matrix. The
-`--no-default-features` command is a developer-only portability check. The
-supported caller profile enables the native gRPC client by default, so a
-consumer uses one dependency declaration:
+The command block is the maintainer qualification matrix. The supported caller
+profile enables the native gRPC client by default, so a consumer uses one
+dependency declaration:
 
 ```toml
 [dependencies]
@@ -64,13 +61,13 @@ and indeterminate outcomes. `IdempotencyKey` binds a mutation intent;
 current public model does not emit a shared `OperationPolicy` message; these
 typed Rust APIs are the source-owned operation policy.
 
-Remote Machines clients default to gRPC over HTTPS with mandatory mutual TLS through `Machines::connect` or `Machines::from_env`; an endpoint beginning with `unix:` is the explicit local socket override. The native policy has no alternate Machines transport and no browser transport is claimed. Machines exposes one gRPC service with 19 RPC methods when the `grpc` feature
-is enabled. It has no HTTP route table. gRPC binding generation is transport
-support only and does not prove that a managed endpoint is deployed.
-`ProviderAssurance::ProcessLocalSimulation` proves only deterministic
-in-process behavior; `CustomerHosted` and `ManagedService` are declarations
-an actual provider implementation must return, not claims made by this
-crate's simulator or package metadata.
+Remote Machines clients default to gRPC over HTTPS with mandatory mutual TLS
+through `Machines::connect` or `Machines::from_env`; an endpoint beginning
+with `unix:` is the explicit local socket override. The native policy has no
+alternate Machines transport or browser transport. Machines exposes one gRPC
+service with 19 RPC methods and no HTTP route table.
+`ProviderAssurance` records whether an implementation is process-local,
+customer-hosted, or managed.
 
 ## Run a bounded local lifecycle
 
@@ -164,8 +161,6 @@ and `security-limits`. Rust sources map them as follows:
 | security and assurance | `ProviderAssurance`, `ProviderError`, provider implementation boundary |
 
 The generated `FILE_DESCRIPTOR_SET` and `wire` module describe the protocol;
-Machines has no HTTP route table in this crate. gRPC transport support is
-feature-gated and does not establish that a managed endpoint is deployed.
-Keep process-local simulation, customer-hosted providers, and managed service
-claims visibly separate in any generated website page.
+Machines exposes its gRPC transport through the client API. Process-local
+simulation and provider implementations use the same contract types.
 
