@@ -186,3 +186,7 @@ strict complexity checks prompted the helper separation.
 This is not full recursive qualification. Ancestor grant propagation at deeper levels,
 declared suffix/authoritative replay consistency, real swarm integration, fault injection,
 WASM/package/platform lanes, and production terminal qualification remain required.
+
+## Canonical fork and terminal checkpoint
+
+checkpoint-canonical-fork-terminal.json binds focused Windows native, actual WASM, captured TypeScript model-dispatch, and GraphCoder package checks to listed source/suite/artifact digests. It does not qualify the full production swarm or final packaged matrix.

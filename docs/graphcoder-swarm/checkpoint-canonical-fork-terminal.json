@@ -1,0 +1,149 @@
+{
+  "kind": "focused-checkpoint",
+  "complete": false,
+  "source_commit": "080ccbaddefdb6367f7ce75476b0c17862fdc36d",
+  "source_scope": "Listed source/suite/artifact files only; no full-tree or final packaged qualification claim.",
+  "platform": "Windows native and actual generated WASM execution on Windows",
+  "suites": [
+    {
+      "command": [
+        "cargo",
+        "test",
+        "-p",
+        "acyclic-harness",
+        "--features",
+        "filesystem-local",
+        "--test",
+        "model_fork_boundary",
+        "-j",
+        "2"
+      ],
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 10.33
+    },
+    {
+      "command": [
+        "bun",
+        "test",
+        "test/model-validation.test.ts"
+      ],
+      "cwd": "typescript/packages/harness",
+      "passed": 12,
+      "failed": 0,
+      "assertions": 48
+    },
+    {
+      "command": [
+        "bun",
+        "test",
+        "test/runtime.test.ts",
+        "--test-name-pattern",
+        "canonical request admission|model context tool values|model context"
+      ],
+      "cwd": "typescript/packages/harness",
+      "passed": 4,
+      "failed": 0,
+      "filtered_out": 68,
+      "assertions": 7
+    },
+    {
+      "command": [
+        "bun",
+        "run",
+        "build"
+      ],
+      "cwd": "typescript/packages/graphcoder",
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "bun",
+        "test",
+        "test"
+      ],
+      "cwd": "typescript/packages/graphcoder",
+      "passed": 24,
+      "failed": 0,
+      "assertions": 93
+    }
+  ],
+  "sources": [
+    {
+      "path": "rust/crates/harness/src/filesystem/model_fork.rs",
+      "sha256": "3c097d8fd5fba4703e9bcdf31159808e76353a32db77201dc97ec1d49fa2c2c4"
+    },
+    {
+      "path": "rust/crates/harness/src/filesystem/fork_preparer.rs",
+      "sha256": "04f29086cbd1e416fef68170b90d4b10f1ccdd02f76ff165fa09886968503538"
+    },
+    {
+      "path": "rust/crates/harness/src/fork.rs",
+      "sha256": "4969b526f38c356a0127412ce07644f0fb3ea1cd44f3f76974563a4cd449bd4c"
+    },
+    {
+      "path": "rust/crates/harness/src/wasm.rs",
+      "sha256": "34b6b1dc08aa51e62dd11c0cf78aaa1767d7be433f95b67daa0952048520527f"
+    },
+    {
+      "path": "rust/crates/harness/tests/model_fork_boundary.rs",
+      "sha256": "c9b9d5c36264fe2ae2f729387b459914200dc4e12f6fec590a9070f5ca9269d0"
+    },
+    {
+      "path": "typescript/packages/harness/src/runtime.ts",
+      "sha256": "deac6d36d86cdb962d87515c9c67015f936565ad0ea04228ddb9f4cf6763d8c3"
+    },
+    {
+      "path": "typescript/packages/harness/src/native-contracts.ts",
+      "sha256": "f5a2ba230915b5d7ae6f4a457e11c601ea2a5c71aafe45870bd73476e341edae"
+    },
+    {
+      "path": "typescript/packages/harness/test/model-validation.test.ts",
+      "sha256": "8246b7bd2ca3a33dbeece5829258d4f92c13c51036103e6fd2afc0ec9ba6a42f"
+    },
+    {
+      "path": "typescript/packages/harness/test/runtime.test.ts",
+      "sha256": "1f38d0e1545e69732344eb135c45f433503a5f195db7988a30dc61fb6ac39e91"
+    },
+    {
+      "path": "typescript/packages/graphcoder/src/bridge.ts",
+      "sha256": "20311183df079723469e9607a2201438e6b1d7bee0ac674617a9b9910cbe6210"
+    },
+    {
+      "path": "typescript/packages/graphcoder/src/process.ts",
+      "sha256": "e1f2dc064fefb2ae2845227d005c6944f73fd952326f54da0c250a3e323971aa"
+    },
+    {
+      "path": "typescript/packages/graphcoder/test/graphcoder.test.ts",
+      "sha256": "09d85cf1bdf7b89c7e7407dba02347425c8aef4780627ff4cf3ef39276ed97ed"
+    },
+    {
+      "path": "typescript/packages/graphcoder/test/process.test.ts",
+      "sha256": "9b0dee3b0ac6d0590d714769db3d8958379dedcbe8890088428327c6413a1911"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "target/debug/deps/model_fork_boundary-6a2b9ef46d1107ad.exe",
+      "sha256": "d47e7b15c5b7422ab139223143e2ee3140b74cccbc968be077bf13e4ade0544e"
+    },
+    {
+      "path": "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
+      "sha256": "2ec4c23c56166d200b10201ab4c7e949efd57d69c7dfab166dffe3d019cea18b"
+    },
+    {
+      "path": "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm",
+      "sha256": "d94c29a66bc38995bb1cc5519ede1793eff139fed11b842992b53ca914cbeb58"
+    },
+    {
+      "path": "typescript/packages/graphcoder/dist/cli.js",
+      "sha256": "6f486f696268e7a660e5de2b8cd4c688f8e3bb31f6df37d1765acac92c1f9bbd"
+    }
+  ],
+  "boundaries": [
+    "Mock models; no sandbox.",
+    "Terminal tests use protocol fixtures, not a qualified production swarm backend.",
+    "Production recursive tools, execution approvals, crash recovery, coordinator budgets and full qualification remain open."
+  ]
+}

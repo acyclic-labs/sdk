@@ -179,3 +179,9 @@ Its old recursion loop creates independent child stores then inherits references
 without published seed grants. The new final-context verifier exposes this gap.
 No bypass or skip was introduced; replacement with typed published recursion and
 ancestor reference propagation remains an unmet acceptance gate.
+
+## Current integrated checkpoint
+
+Exact model-bound references are signed only against the verified parent revision and checked before fork allocation. Final provider admission rejects incomplete tool exchanges. The generated WASM export returns canonical request and manifest bytes with typed digest octets. TypeScript dispatch invokes this shared admission path; undefined transport fields are omitted.
+
+Focused fresh checks: native model fork 2 passed; actual generated WASM 12 passed; captured TypeScript dispatch 4 passed; GraphCoder build and package tests 24 passed. See checkpoint-canonical-fork-terminal.json for scoped digests and commands. Production recursive tool routing, durable outcome replay, protected receipt/approval composition, coordinator budget enforcement, cold merge recovery, and full installed production PTY qualification remain required gates.
