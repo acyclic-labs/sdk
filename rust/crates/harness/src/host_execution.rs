@@ -241,7 +241,7 @@ impl ExecutionApproval {
     }
 }
 
-/// Typed result persisted as the successful effect artifact.
+/// Typed receipt persisted as the effect artifact.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionReceipt {
@@ -282,6 +282,53 @@ pub enum ExecutionReceipt {
         /// Bounded owner or policy reason.
         reason: String,
     },
+    /// The host cannot determine whether the process completed.
+    ///
+    /// This receipt is durable so a retry after a crash observes uncertainty
+    /// again instead of dispatching the command a second time.
+    Unknown {
+        /// Bounded diagnostic retained for recovery.
+        reason: String,
+    },
+}
+
+impl ExecutionReceipt {
+    /// Validates the bounded receipt persisted by a host adapter before it is
+    /// exposed to Harness recovery.
+    pub fn validate(&self) -> Result<()> {
+        let validate_output = |stdout: &[u8], stderr: &[u8]| {
+            if stdout.len().saturating_add(stderr.len()) > MAX_OUTPUT_BYTES {
+                return Err(Error::Invalid(
+                    "execution receipt output exceeds its bound".into(),
+                ));
+            }
+            Ok(())
+        };
+        match self {
+            Self::Succeeded {
+                status_code,
+                stdout,
+                stderr,
+            } if *status_code == 0 => validate_output(stdout, stderr),
+            Self::Succeeded { .. } => Err(Error::Invalid(
+                "successful execution receipt has a nonzero status".into(),
+            )),
+            Self::Failed {
+                status_code: Some(0), ..
+            } => Err(Error::Invalid(
+                "failed execution receipt has a successful status".into(),
+            )),
+            Self::Failed { stdout, stderr, .. }
+            | Self::TimedOut { stdout, stderr }
+            | Self::Cancelled { stdout, stderr } => validate_output(stdout, stderr),
+            Self::Denied { reason } | Self::Unknown { reason }
+                if reason.is_empty() || reason.len() > MAX_FAILURE_BYTES =>
+            {
+                Err(Error::Invalid("execution receipt reason is invalid".into()))
+            }
+            Self::Denied { .. } | Self::Unknown { .. } => Ok(()),
+        }
+    }
 }
 
 /// Provider-neutral runner outcome, useful for deterministic fault injection.
@@ -620,6 +667,7 @@ impl NativeExecutionProvider {
         let receipt = serde_json::from_slice(&bytes).map_err(|error| {
             Error::Invalid(format!("persisted execution receipt is invalid: {error}"))
         })?;
+        receipt.validate()?;
         Ok(Some((reference, receipt)))
     }
 
@@ -642,7 +690,19 @@ impl NativeExecutionProvider {
                 message: format!("execution denied: {reason}"),
                 result,
             },
+            ExecutionReceipt::Unknown { .. } => EffectStatus::Indeterminate,
         }
+    }
+
+    fn bounded_unknown(reason: impl Into<String>) -> ExecutionReceipt {
+        let mut reason = reason.into();
+        if reason.is_empty() {
+            reason = "host execution outcome is unknown".into();
+        }
+        if reason.chars().count() > MAX_FAILURE_BYTES {
+            reason = reason.chars().take(MAX_FAILURE_BYTES).collect();
+        }
+        ExecutionReceipt::Unknown { reason }
     }
 
     #[allow(
@@ -718,47 +778,43 @@ impl NativeExecutionProvider {
             let outcome = tokio::task::spawn_blocking(move || {
                 runner.run_with_cancellation(&execution_request, &cancellation)
             })
-            .await
-            .map_err(|error| Error::Storage(format!("approved process task failed: {error}")));
+            .await;
             self.active
                 .lock()
                 .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
                 .remove(&approval.operation_id);
-            match outcome?? {
-                RunnerOutcome::Exited {
+            match outcome {
+                Err(error) => Self::bounded_unknown(format!(
+                    "approved process task failed before its outcome was durable: {error}"
+                )),
+                Ok(Err(error)) => Self::bounded_unknown(format!(
+                    "approved process runner failed before its outcome was durable: {error}"
+                )),
+                Ok(Ok(RunnerOutcome::Exited {
                     status_code: Some(0),
                     stdout,
                     stderr,
-                } => ExecutionReceipt::Succeeded {
+                })) => ExecutionReceipt::Succeeded {
                     status_code: 0,
                     stdout,
                     stderr,
                 },
-                RunnerOutcome::Exited {
+                Ok(Ok(RunnerOutcome::Exited {
                     status_code,
                     stdout,
                     stderr,
-                } => ExecutionReceipt::Failed {
+                })) => ExecutionReceipt::Failed {
                     status_code,
                     stdout,
                     stderr,
                 },
-                RunnerOutcome::TimedOut { stdout, stderr } => {
+                Ok(Ok(RunnerOutcome::TimedOut { stdout, stderr })) => {
                     ExecutionReceipt::TimedOut { stdout, stderr }
                 }
-                RunnerOutcome::Cancelled { stdout, stderr } => {
+                Ok(Ok(RunnerOutcome::Cancelled { stdout, stderr })) => {
                     ExecutionReceipt::Cancelled { stdout, stderr }
                 }
-                RunnerOutcome::Unknown { reason: _ } => {
-                    return Ok(EffectObservation {
-                        provider: request.provider,
-                        effect_id: request.effect_id,
-                        attempt_id: request.attempt_id,
-                        request_digest: request.request_digest,
-                        guarantee: request.guarantee,
-                        status: EffectStatus::Indeterminate,
-                    });
-                }
+                Ok(Ok(RunnerOutcome::Unknown { reason })) => Self::bounded_unknown(reason),
             }
         } else {
             ExecutionReceipt::Denied {
@@ -767,6 +823,7 @@ impl NativeExecutionProvider {
                     .unwrap_or_else(|| "owner denied execution".into()),
             }
         };
+        receipt.validate()?;
         let receipt_bytes =
             serde_json::to_vec(&receipt).map_err(|error| Error::Invalid(error.to_string()))?;
         let result = self
@@ -923,6 +980,17 @@ mod tests {
         }
     }
 
+    struct FaultAfterExitRunner;
+
+    impl ExecutionRunner for FaultAfterExitRunner {
+        fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            let _ = NativeExecutionRunner.run(request)?;
+            Err(Error::Storage(
+                "fault injected after child exit before receipt persistence".into(),
+            ))
+        }
+    }
+
     fn content_fixture(approval: &ExecutionApproval) -> Result<(Arc<MemoryContent>, FileRef)> {
         let volume = VolumeRef::new(
             ProviderRef::new("test", "filesystem", "2")?,
@@ -973,12 +1041,36 @@ mod tests {
     #[test]
     fn approval_digest_binds_every_process_field() -> Result<()> {
         let operation = OperationId::from_bytes([1; 16]);
-        let request = spec();
+        let mut request = spec();
+        let mut environment = BTreeMap::new();
+        environment.insert("GRAPH_CODER_APPROVAL_KEY".into(), "exact".into());
+        request.environment = ExecutionEnvironment::explicit(environment)?;
         let approval = ExecutionApproval::approve(operation, request.clone())?;
         approval.validate()?;
         let mut changed = approval.clone();
         changed.request.arguments.push("changed".into());
         assert!(matches!(changed.validate(), Err(Error::Conflict(_))));
+        let mut changed_environment = approval.clone();
+        if let ExecutionEnvironment::Explicit { variables } = &mut changed_environment.request.environment
+        {
+            variables.insert("GRAPH_CODER_APPROVAL_KEY".into(), "changed".into());
+        }
+        assert!(matches!(
+            changed_environment.validate(),
+            Err(Error::Conflict(_))
+        ));
+        let mut changed_timeout = approval.clone();
+        changed_timeout.request.timeout_ms = Some(1);
+        assert!(matches!(changed_timeout.validate(), Err(Error::Conflict(_))));
+        let mut changed_output = approval.clone();
+        changed_output.request.max_output_bytes = 1;
+        assert!(matches!(changed_output.validate(), Err(Error::Conflict(_))));
+        let mut changed_directory = approval.clone();
+        changed_directory.request.working_directory.push('x');
+        assert!(matches!(
+            changed_directory.validate(),
+            Err(Error::Conflict(_))
+        ));
         let mut relative = request;
         relative.executable = "cmd.exe".into();
         assert!(relative.digest().is_err());
@@ -1194,13 +1286,23 @@ mod tests {
                 effect_id: EffectId::from_bytes(operation.into_bytes()),
                 attempt_id: EffectAttemptId::from_bytes([16; 16]),
                 effect_kind: "host.process".into(),
-                request: unknown_request,
+                request: unknown_request.clone(),
                 guarantee: EffectGuarantee::AtMostOnce,
                 request_digest: unknown_request_digest,
             })
             .await?;
         assert_eq!(observation.status, EffectStatus::Indeterminate);
-        assert!(unknown_content.staged.lock().unwrap().is_empty());
+        let unknown_staged = unknown_content.staged.lock().unwrap();
+        assert_eq!(unknown_staged.len(), 1);
+        let unknown_receipt: ExecutionReceipt =
+            serde_json::from_slice(unknown_staged.first().unwrap()).unwrap();
+        assert_eq!(
+            unknown_receipt,
+            ExecutionReceipt::Unknown {
+                reason: "host restarted".into()
+            }
+        );
+        drop(unknown_staged);
         assert!(
             unknown
                 .reconcile(EffectAttemptId::from_bytes([16; 16]))
@@ -1284,6 +1386,54 @@ mod tests {
             .await;
         assert!(matches!(result, Err(Error::Unauthorized(_))));
         assert!(content.staged.lock().unwrap().is_empty());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_persists_unknown_runner_failure_without_redispatch() -> Result<()> {
+        let operation = OperationId::from_bytes([53; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let provider = NativeExecutionProvider::new(
+            content.clone(),
+            content.clone(),
+            Arc::new(FaultAfterExitRunner),
+            approval_verifier(),
+        )?;
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([54; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file.clone(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let first = provider.dispatch(dispatch.clone()).await?;
+        assert_eq!(first.status, EffectStatus::Indeterminate);
+        let receipt: ExecutionReceipt =
+            serde_json::from_slice(content.staged.lock().unwrap().first().unwrap()).unwrap();
+        assert!(matches!(receipt, ExecutionReceipt::Unknown { .. }));
+
+        let restarted = NativeExecutionProvider::new(
+            content.clone(),
+            content.clone(),
+            Arc::new(FixedRunner(RunnerOutcome::Exited {
+                status_code: Some(0),
+                stdout: b"must not rerun".to_vec(),
+                stderr: Vec::new(),
+            })),
+            approval_verifier(),
+        )?;
+        let second = restarted.dispatch(dispatch).await?;
+        assert_eq!(second.status, EffectStatus::Indeterminate);
+        assert_eq!(content.staged.lock().unwrap().len(), 1);
         Ok(())
     }
 
@@ -1553,6 +1703,68 @@ mod local_provider_tests {
         let second = restarted.dispatch(dispatch).await?;
         assert!(matches!(second.status, EffectStatus::Succeeded { .. }));
         assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+
+        let unknown_operation = OperationId::from_bytes([43; 16]);
+        let unknown_approval = ExecutionApproval::approve(unknown_operation, local_spec())?;
+        let unknown_bytes = serde_json::to_vec(&unknown_approval)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let unknown_request = session
+            .storage()
+            .stage(
+                unknown_operation,
+                "requests/unknown.json",
+                &unknown_bytes,
+                "application/json",
+                "unknown.json",
+            )
+            .await?;
+        let unknown_calls = Arc::new(AtomicUsize::new(0));
+        let unknown_provider = NativeExecutionProvider::new(
+            session.storage().content_verifier(),
+            session.storage().content_publisher(),
+            Arc::new(CountingRunner {
+                calls: Arc::clone(&unknown_calls),
+                outcome: RunnerOutcome::Unknown {
+                    reason: "native host restarted".into(),
+                },
+            }),
+            Arc::new(LocalApprovalVerifier),
+        )?;
+        let unknown_digest = crate::core::effect_request_digest(
+            unknown_provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &unknown_request,
+        )?;
+        let unknown_dispatch = EffectDispatch {
+            provider: unknown_provider.id().into(),
+            effect_id: EffectId::from_bytes(unknown_operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([44; 16]),
+            effect_kind: "host.process".into(),
+            request: unknown_request.clone(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: unknown_digest,
+        };
+        let unknown_observation = unknown_provider.dispatch(unknown_dispatch.clone()).await?;
+        assert_eq!(unknown_observation.status, EffectStatus::Indeterminate);
+        assert_eq!(unknown_calls.load(Ordering::SeqCst), 1);
+        let unknown_restarted_calls = Arc::new(AtomicUsize::new(0));
+        let unknown_restarted = NativeExecutionProvider::new(
+            session.storage().content_verifier(),
+            session.storage().content_publisher(),
+            Arc::new(CountingRunner {
+                calls: Arc::clone(&unknown_restarted_calls),
+                outcome: RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: b"must not rerun".to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+            Arc::new(LocalApprovalVerifier),
+        )?;
+        let unknown_replay = unknown_restarted.dispatch(unknown_dispatch).await?;
+        assert_eq!(unknown_replay.status, EffectStatus::Indeterminate);
+        assert_eq!(unknown_restarted_calls.load(Ordering::SeqCst), 0);
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
