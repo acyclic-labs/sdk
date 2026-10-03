@@ -8,6 +8,7 @@ use crate::{
     executor::{ExecutionEvent, ExecutionJournal, load_json, stage_json},
     merge::ProjectMergeReceipt,
 };
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
 
 /// Immutable inputs retained before a provider join is dispatched.
@@ -26,6 +27,12 @@ pub struct ProjectMergeIntent {
     pub target_project: VolumeRef,
     /// Exact target generation required by the join CAS.
     pub expected_target_generation: crate::resources::GenerationRef,
+    /// Exact authority head used by the provider's publication fingerprint.
+    pub expected_target_head: acyclic_fs::Head,
+    /// Exact provider resolution digest retained before dispatch.
+    pub resolutions_digest: [u8; 32],
+    /// Authenticated approval scope retained with the operation claim.
+    pub approval_scope_id: String,
     /// Merge notice that will be published with the receipt.
     pub notice: ConversationMessage,
 }
@@ -48,6 +55,16 @@ impl ProjectMergeIntent {
         self.target_project.validate()?;
         self.source_generation.validate()?;
         self.expected_target_generation.validate()?;
+        if self.resolutions_digest == [0; 32] {
+            return Err(Error::Invalid(
+                "project merge intent resolution digest is empty".into(),
+            ));
+        }
+        if self.approval_scope_id.is_empty() {
+            return Err(Error::Invalid(
+                "project merge approval scope is empty".into(),
+            ));
+        }
         self.notice.validate()?;
         if self.notice.kind != crate::conversation::MessageKind::Merge {
             return Err(Error::Invalid(
@@ -82,6 +99,10 @@ impl ProjectMergeRecoveryEntry {
                 || receipt.source_generation != self.intent.source_generation
                 || receipt.target_project != self.intent.target_project
                 || receipt.expected_target_generation != self.intent.expected_target_generation
+                || receipt.provider_operation_id
+                    != super::project_join_key(self.intent.operation_id)?
+                        .into_bytes()
+                        .to_vec()
                 || receipt.notice != self.intent.notice
             {
                 return Err(Error::Conflict(
@@ -121,6 +142,17 @@ impl<'a> ProjectMergeRecovery<'a> {
                 "project merge operation identity changed".into(),
             ));
         }
+        let records = self.journal.replay(self.operation_id).await?;
+        if let Some((_, reference)) = latest_started(&records) {
+            let existing: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
+            existing.validate()?;
+            if existing.intent == intent {
+                return Ok(());
+            }
+            return Err(Error::Conflict(
+                "project merge recovery claim changed".into(),
+            ));
+        }
         let entry = ProjectMergeRecoveryEntry {
             intent,
             receipt: None,
@@ -132,15 +164,39 @@ impl<'a> ProjectMergeRecovery<'a> {
     /// Retains the exact provider receipt before attempting Stream
     /// publication. A restart can now retry publication without reapplying a
     /// join or consulting mutable workspace heads.
-    pub async fn record_applied(&self, receipt: ProjectMergeReceipt) -> Result<()> {
-        let mut entry = self
-            .pending_entry()
-            .await?
-            .ok_or_else(|| Error::Conflict("project merge intent is missing".into()))?;
+    pub async fn record_applied<A, O>(
+        &self,
+        receipt: ProjectMergeReceipt,
+        verifier: &super::FilesystemProjectMergeVerifier<A, O>,
+    ) -> Result<()>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
+        use crate::merge::ProjectMergeVerifier;
+
+        verifier.verify(&receipt).await?;
+        let records = self.journal.replay(self.operation_id).await?;
+        let Some((_, reference)) = latest_started(&records) else {
+            return Err(Error::Conflict("project merge intent is missing".into()));
+        };
+        let mut entry: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
+        entry.validate()?;
         if entry.intent.operation_id != receipt.operation_id {
             return Err(Error::Conflict(
                 "project merge receipt operation changed".into(),
             ));
+        }
+        if let Some(existing) = &entry.receipt {
+            if existing != &receipt {
+                return Err(Error::Conflict(
+                    "project merge provider receipt changed".into(),
+                ));
+            }
+            // A completed publication retains its applied receipt. This makes
+            // a lost reply after completion safely idempotent instead of
+            // treating the durable result as a missing pending operation.
+            return Ok(());
         }
         entry.receipt = Some(receipt);
         entry.validate()?;
@@ -179,16 +235,33 @@ impl<'a> ProjectMergeRecovery<'a> {
         }
         let bytes = crate::contract::canonical_json_bytes(&entry)?;
         let digest = *blake3::hash(&bytes).as_bytes();
-        self.journal
-            .append(
+        if records.iter().any(|record| {
+            matches!(
+                &record.event,
+                ExecutionEvent::BatchPublicationCompleted {
+                    step: 2,
+                    publication_digest,
+                } if *publication_digest == digest
+            )
+        }) {
+            return Ok(());
+        }
+        if !self
+            .journal
+            .append_if_tail(
                 self.operation_id,
+                records.len() as u64,
                 "project-merge:completed".into(),
                 ExecutionEvent::BatchPublicationCompleted {
                     step: 2,
                     publication_digest: digest,
                 },
             )
-            .await
+            .await?
+        {
+            return Err(Error::Indeterminate(self.operation_id));
+        }
+        Ok(())
     }
 
     async fn pending_entry(&self) -> Result<Option<ProjectMergeRecoveryEntry>> {
@@ -202,11 +275,11 @@ impl<'a> ProjectMergeRecovery<'a> {
         let digest = *blake3::hash(&bytes).as_bytes();
         if records.iter().any(|record| {
             matches!(
-                record.event,
+                &record.event,
                 ExecutionEvent::BatchPublicationCompleted {
                     step: 2,
                     publication_digest,
-                } if publication_digest == digest
+                } if *publication_digest == digest
             )
         }) {
             return Ok(None);
@@ -220,17 +293,36 @@ impl<'a> ProjectMergeRecovery<'a> {
         step: u32,
         entry: &ProjectMergeRecoveryEntry,
     ) -> Result<()> {
+        let records = self.journal.replay(self.operation_id).await?;
+        if let Some((existing_step, reference)) = latest_started(&records)
+            && existing_step == step
+        {
+            let existing: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
+            existing.validate()?;
+            if existing == *entry {
+                return Ok(());
+            }
+            return Err(Error::Conflict(
+                "project merge recovery claim changed".into(),
+            ));
+        }
         let reference = stage_json(self.journal, self.operation_id, key, entry).await?;
-        self.journal
-            .append(
+        if !self
+            .journal
+            .append_if_tail(
                 self.operation_id,
+                records.len() as u64,
                 key.into(),
                 ExecutionEvent::BatchPublicationStarted {
                     step,
                     publication: reference,
                 },
             )
-            .await
+            .await?
+        {
+            return Err(Error::Indeterminate(self.operation_id));
+        }
+        Ok(())
     }
 }
 

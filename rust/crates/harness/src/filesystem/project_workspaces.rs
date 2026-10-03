@@ -194,6 +194,10 @@ where
         &self.target
     }
 
+    fn target_project(&self) -> Option<&VolumeRef> {
+        Some(self.binding.project())
+    }
+
     fn apply<'a>(
         &'a self,
         scope: &'a Scope,

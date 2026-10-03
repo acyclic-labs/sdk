@@ -2086,6 +2086,20 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         pending: GitPendingTransition,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
+        // Re-read the durable transition immediately before dispatch. The
+        // caller may have authorized a snapshot that another actor replaced;
+        // executing that stale action would bypass the newer transition's
+        // authority and could publish an unrelated result. Completion still
+        // fences the transition after execution, while this check closes the
+        // snapshot/reload gap before any executor effect is started.
+        let current = self
+            .pending_transition()
+            .await
+            .map_err(GitCompatRunError::Compat)?
+            .ok_or(GitCompatError::StaleTransition)?;
+        if current != pending {
+            return Err(GitCompatError::StaleTransition.into());
+        }
         // Recovery is still a fresh effect dispatch. Validate the executor
         // lease before invoking the retained action, then validate it again
         // before publishing the observed result.

@@ -8,8 +8,12 @@
 
 use super::super::merge::{
     ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan, ProjectMergeReceipt,
+    ProjectMergeVerifier,
 };
-use super::{ParentMergePlan, ParentProjectController, WorkspaceObservation};
+use super::{
+    ParentMergePlan, ParentProjectController, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
+    WorkspaceObservation,
+};
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ConversationMessage, VolumeClass, VolumeOperation, VolumeRef},
@@ -17,11 +21,12 @@ use crate::{
     resources::GenerationRef,
 };
 use acyclic_fs::{
-    AsyncAuthorityStore, AsyncObjectStore, ConflictSide, GitCommand, GitCommandOutput,
+    AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, GitCommand, GitCommandOutput,
     GitCompatRepository, GitCompatRunError, GitCompatStore, GitFilesystemExecutor,
     GitPendingMutation, IntoGitTreeRef, JoinOutcome, MergeConflict, MergeDriverRegistry, MergePlan,
     MergeResolutionCache, WorkspaceId,
 };
+use std::sync::Arc;
 
 /// Capability required to authorize an exact root writeback approval.
 pub const ROOT_WRITEBACK_CAPABILITY: &str = "project:writeback";
@@ -35,6 +40,7 @@ pub const ROOT_WRITEBACK_CAPABILITY: &str = "project:writeback";
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RootWritebackApproval {
     operation_id: OperationId,
+    target_project: VolumeRef,
     source_generation: GenerationRef,
     expected_target_generation: GenerationRef,
     scope_id: String,
@@ -45,6 +51,7 @@ impl RootWritebackApproval {
     pub fn issue(
         verifier: &AuthorityVerifier,
         scope: &Scope,
+        target_project: VolumeRef,
         operation_id: OperationId,
         source_generation: GenerationRef,
         expected_target_generation: GenerationRef,
@@ -53,10 +60,13 @@ impl RootWritebackApproval {
         if !scope.capabilities().contains(ROOT_WRITEBACK_CAPABILITY) {
             return Err(Error::Unsupported(ROOT_WRITEBACK_CAPABILITY.into()));
         }
-        if operation_id.into_bytes().iter().all(|byte| *byte == 0)
+        target_project.validate()?;
+        if target_project.class() != VolumeClass::Project
+            || operation_id.into_bytes().iter().all(|byte| *byte == 0)
             || source_generation == expected_target_generation
             || source_generation.as_resource().provider()
                 != expected_target_generation.as_resource().provider()
+            || source_generation.as_resource().provider() != target_project.provider()
         {
             return Err(Error::Invalid(
                 "root writeback approval is inconsistent".into(),
@@ -66,6 +76,7 @@ impl RootWritebackApproval {
         expected_target_generation.validate()?;
         Ok(Self {
             operation_id,
+            target_project,
             source_generation,
             expected_target_generation,
             scope_id: scope.id().to_owned(),
@@ -76,6 +87,18 @@ impl RootWritebackApproval {
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
         self.operation_id
+    }
+
+    /// Authenticated scope identity bound to this approval.
+    #[must_use]
+    pub fn scope_id(&self) -> &str {
+        &self.scope_id
+    }
+
+    /// Parent project bound to this approval.
+    #[must_use]
+    pub const fn target_project(&self) -> &VolumeRef {
+        &self.target_project
     }
 }
 
@@ -214,7 +237,7 @@ impl<S> FilesystemGitFacade<S> {
             match pending.mutation {
                 GitPendingMutation::ForkBranch { .. } => self.require_fork()?,
                 GitPendingMutation::Join { .. } => self.require_capability("project:merge")?,
-                GitPendingMutation::SwitchWorkspace { .. } => self.require_fork()?,
+                GitPendingMutation::Switch { .. } => self.require_fork()?,
                 _ => {}
             }
             return self
@@ -601,6 +624,11 @@ impl<S> FilesystemGitFacade<S> {
             plan.source_generation(),
             plan.expected_target_generation(),
         )?;
+        if plan.target_project() != Some(&self.volume) {
+            return Err(Error::Unauthorized(
+                "root writeback plan is bound to another project".into(),
+            ));
+        }
         validate_merge_receipt_inputs(child, notice)?;
         plan.apply(
             &request.scope,
@@ -616,7 +644,7 @@ impl<S> FilesystemGitFacade<S> {
     /// approval used by the model-facing writeback boundary.  This keeps the
     /// durable provider plan behind the facade while still binding approval
     /// to immutable source and target generations.
-    pub async fn apply_root_writeback_plan<A, O>(
+    pub(crate) async fn apply_root_writeback_plan<A, O>(
         &self,
         request: &RootWritebackRequest,
         host: &super::FilesystemHost<A, O>,
@@ -735,6 +763,153 @@ impl<S> FilesystemGitFacade<S> {
         )
     }
 
+    /// Applies an approved native writeback while retaining the immutable
+    /// provider inputs before dispatch and the receipt before publication.
+    /// A caller that is interrupted after the provider join can reopen the
+    /// durable ledger and use [`Self::recover_root_writeback_receipt`] without
+    /// reapplying the join.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery-bound writeback keeps approval, parent, child, plan, selections, notice, and journal explicit"
+    )]
+    pub async fn apply_root_writeback_plan_for_child_with_recovery<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+        notice: ConversationMessage,
+        recovery: &ProjectMergeRecovery<'_>,
+    ) -> Result<ProjectMergeReceipt>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
+        validate_merge_receipt_inputs(&child, &notice)?;
+        // Authenticate the approval before claiming durable recovery state.
+        // Otherwise a forged or stale request could leave an intent behind
+        // that recovery would later launder into a synthetic approval.
+        self.verify_root_writeback(
+            request,
+            &host.generation_ref_id(plan.source_head())?,
+            &host.generation_ref_id(plan.target_head())?,
+        )?;
+        let intent = super::ProjectMergeIntent {
+            operation_id: request.approval.operation_id,
+            child: child.clone(),
+            source_project: child_project.clone(),
+            source_generation: host.generation_ref_id(plan.source_head())?,
+            target_project: self.volume.clone(),
+            expected_target_generation: host.generation_ref_id(plan.target_head())?,
+            expected_target_head: plan.target_authority_head(),
+            resolutions_digest: plan.resolution_digest(&selections).into_bytes(),
+            approval_scope_id: request.approval.scope_id.clone(),
+            notice: notice.clone(),
+        };
+        recovery.prepare(intent).await?;
+        let outcome = self
+            .apply_root_writeback_plan(request, host, parent, plan, selections)
+            .await?;
+        let receipt = self.merge_receipt(
+            host,
+            parent,
+            plan,
+            &outcome,
+            child,
+            request.approval.operation_id,
+            notice,
+        )?;
+        let verifier = super::FilesystemProjectMergeVerifier::new(Arc::new(host.clone()));
+        recovery.record_applied(receipt.clone(), &verifier).await?;
+        Ok(receipt)
+    }
+
+    /// Reconstructs the provider receipt after a crash between the provider
+    /// join and the journal's applied-receipt record. The retained intent is
+    /// the only source for child, generations, notice, and resolution digest.
+    pub async fn recover_root_writeback_receipt<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        entry: &ProjectMergeRecoveryEntry,
+    ) -> Result<ProjectMergeReceipt>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        entry.validate()?;
+        if entry.intent.target_project != self.volume {
+            return Err(Error::Unauthorized(
+                "recovery target is outside this Git facade".into(),
+            ));
+        }
+        if entry.intent.approval_scope_id != self.scope.id() {
+            return Err(Error::Unauthorized(
+                "recovery approval belongs to another scope".into(),
+            ));
+        }
+        let approval = RootWritebackApproval {
+            operation_id: entry.intent.operation_id,
+            target_project: entry.intent.target_project.clone(),
+            source_generation: entry.intent.source_generation.clone(),
+            expected_target_generation: entry.intent.expected_target_generation.clone(),
+            scope_id: entry.intent.approval_scope_id.clone(),
+        };
+        self.verify_root_writeback(
+            &RootWritebackRequest::new(approval, self.scope.clone()),
+            &entry.intent.source_generation,
+            &entry.intent.expected_target_generation,
+        )?;
+        self.authorize_direct_child(parent, &entry.intent.child, &entry.intent.source_project)?;
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        let plan = controller
+            .prepare_project_merge_at(
+                &entry.intent.source_project,
+                &entry.intent.source_generation,
+                &entry.intent.expected_target_generation,
+                entry.intent.expected_target_head,
+            )
+            .await?;
+        if plan.child_project() != &entry.intent.source_project {
+            return Err(Error::Conflict(
+                "reopened merge plan changed its source project".into(),
+            ));
+        }
+        let witness = controller
+            .recover_project_merge_witness(
+                &plan,
+                entry.intent.operation_id,
+                Digest::from_bytes(entry.intent.resolutions_digest),
+            )
+            .await?
+            .ok_or_else(|| Error::Conflict("provider join result is not durable".into()))?;
+        let receipt = controller
+            .merge_receipt_from_witness(
+                &plan,
+                &witness,
+                entry.intent.child.clone(),
+                entry.intent.operation_id,
+                entry.intent.notice.clone(),
+            )
+            .await?;
+        // Keep reconstruction behind the same provider-bound verifier used
+        // before journal persistence. A structurally valid witness from a
+        // different target or operation must never become a recovered receipt.
+        let verifier = super::FilesystemProjectMergeVerifier::new(Arc::new(host.clone()));
+        verifier.verify(&receipt).await?;
+        Ok(receipt)
+    }
+
     fn verify_root_writeback(
         &self,
         request: &RootWritebackRequest,
@@ -744,6 +919,7 @@ impl<S> FilesystemGitFacade<S> {
         self.verifier.verify(&request.scope)?;
         if request.scope.id() != request.approval.scope_id
             || request.scope != self.scope
+            || request.approval.target_project != self.volume
             || !request
                 .scope
                 .capabilities()

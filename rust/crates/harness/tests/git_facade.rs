@@ -109,6 +109,7 @@ impl GitFilesystemExecutor for FaultExecutor {
 struct ApprovalPlan {
     source: GenerationRef,
     target: GenerationRef,
+    project: VolumeRef,
 }
 
 impl ProjectJoinPlan for ApprovalPlan {
@@ -118,6 +119,10 @@ impl ProjectJoinPlan for ApprovalPlan {
 
     fn expected_target_generation(&self) -> &GenerationRef {
         &self.target
+    }
+
+    fn target_project(&self) -> Option<&VolumeRef> {
+        Some(&self.project)
     }
 
     fn apply<'a>(
@@ -301,6 +306,7 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
     let approval = RootWritebackApproval::issue(
         &issuer.verifier(),
         &scope,
+        volume.clone(),
         operation_id,
         source.clone(),
         target.clone(),
@@ -324,7 +330,11 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         tool_call_id: None,
         extensions: Default::default(),
     };
-    let plan = ApprovalPlan { source, target };
+    let plan = ApprovalPlan {
+        source,
+        target,
+        project: volume.clone(),
+    };
     let mut malformed_notice = notice.clone();
     malformed_notice.kind = MessageKind::User;
     let valid_request = RootWritebackRequest::new(approval.clone(), scope.clone());
@@ -352,6 +362,7 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
     let error = RootWritebackApproval::issue(
         &issuer.verifier(),
         &no_writeback,
+        volume.clone(),
         operation_id,
         GenerationRef::new(
             ProviderRef::new("git-facade-approval", "filesystem", "2")?,

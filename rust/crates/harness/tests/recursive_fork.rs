@@ -1650,7 +1650,11 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .collect();
     assert!(
         ungranted_controller
-            .apply_project_merge_sides(&inspected, OperationId::from_bytes([104; 16]), selections.clone())
+            .apply_project_merge_sides(
+                &inspected,
+                OperationId::from_bytes([104; 16]),
+                selections.clone()
+            )
             .await
             .is_err()
     );
@@ -1658,16 +1662,22 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     let approval = RootWritebackApproval::issue(
         &parent_issuer.verifier(),
         &parent_scope,
+        root.clone(),
         resolved_operation,
         host.generation_ref_id(inspected.source_head())?,
         host.generation_ref_id(inspected.target_head())?,
     )?;
     let request = RootWritebackRequest::new(approval, parent_scope.clone());
     let resolved = facade
-        .apply_root_writeback_plan(
+        .apply_root_writeback_plan_for_child(
             &request,
             host.as_ref(),
             &parent_reducer,
+            &Authority {
+                kind: AggregateKind::Conversation,
+                id: "wide-child-2".into(),
+            },
+            &siblings[1],
             &inspected,
             selections,
         )
@@ -2061,6 +2071,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let approval = RootWritebackApproval::issue(
         &root_issuer.verifier(),
         &root_scope,
+        root_project.clone(),
         operation_id,
         host.generation_ref_id(root_plan.source_head())?,
         host.generation_ref_id(root_plan.target_head())?,
@@ -2083,6 +2094,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let mismatched_approval = RootWritebackApproval::issue(
         &root_issuer.verifier(),
         &root_scope,
+        root_project.clone(),
         OperationId::from_bytes([195; 16]),
         host.generation_ref_id(root_plan.source_head())?,
         GenerationRef::new(provider.clone(), [199; 32], Some("stale-target".into()))?,
@@ -2137,6 +2149,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let retry_approval = RootWritebackApproval::issue(
         &root_issuer.verifier(),
         &root_scope,
+        root_project.clone(),
         retry_operation_id,
         host.generation_ref_id(root_plan.source_head())?,
         host.generation_ref_id(root_plan.target_head())?,
