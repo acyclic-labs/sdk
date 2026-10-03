@@ -54,15 +54,15 @@ export type GitFilesystemAction =
   | { readonly ForkBranch: { readonly branch: string; readonly source_tree: GitTreeRef; readonly head: GitCommitIdentity | undefined; readonly switch: boolean } }
   | { readonly SwitchWorkspace: { readonly workspace_id: WorkspaceIdentity } }
   | { readonly Diff: { readonly from: GitTreeRef | undefined; readonly to: GitTreeRef; readonly tracked_paths: readonly string[] } }
-  | { readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined } }
-  | { readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[] } }
+  | { readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined; readonly expected_workspace_tree: GitTreeRef | undefined } }
+  | { readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }
   | { readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }
-  | { readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[] } }
+  | { readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }
   | { readonly Blame: { readonly path: string; readonly commits: readonly GitCommit[] } }
   | { readonly Grep: { readonly pattern: string; readonly path: string | undefined; readonly tree: GitTreeRef } }
   | { readonly Clean: { readonly dry_run: boolean; readonly tree: GitTreeRef; readonly tracked_paths: readonly string[] } }
   | { readonly Archive: { readonly tree: GitTreeRef } }
-  | { readonly ApplyPatch: { readonly patch: Uint8Array } }
+  | { readonly ApplyPatch: { readonly patch: Uint8Array; readonly expected_workspace_tree: GitTreeRef | undefined } }
   | { readonly CheckIgnore: { readonly paths: readonly string[]; readonly tree: GitTreeRef } };
 export type GitFilesystemResult =
   | { readonly Captured: { readonly tree: GitTreeRef; readonly tracked_paths: readonly string[]; readonly proof: GitCaptureProof | undefined } }

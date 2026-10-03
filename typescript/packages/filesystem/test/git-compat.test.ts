@@ -96,12 +96,14 @@ describe("Git compatibility command codec", () => {
     const action: GitFilesystemAction = { RestoreGeneration: {
       tree: exactTree,
       paths: undefined,
+      expected_workspace_tree: undefined,
     } };
     const pending = parseGitPendingTransitionJson(JSON.stringify({
       id: workspaceUuid,
       action: { RestoreGeneration: {
         tree: exactTreeJson,
         paths: null,
+        expected_workspace_tree: null,
       } },
       mutation: "NoOp",
     }));
@@ -240,11 +242,124 @@ describe("Git compatibility command codec", () => {
       mutation: "NoOp",
     }))).toThrow(TypeError);
   });
+
+  test("round-trips workspace generation fences for every fenced action", () => {
+    const actions = [
+      {
+        RestoreGeneration: {
+          tree: exactTree,
+          paths: undefined,
+          expected_workspace_tree: exactTree,
+        },
+      },
+      {
+        RestorePaths: {
+          tree: exactTree,
+          paths: ["src/index.ts"],
+          expected_workspace_tree: exactTree,
+        },
+      },
+      {
+        ApplyCommit: {
+          commit,
+          reverse: false,
+          base: exactTree,
+          source: undefined,
+          paths: ["src/index.ts"],
+          tracked_paths: ["src/index.ts"],
+          expected_workspace_tree: exactTree,
+        },
+      },
+      {
+        ApplyPatch: {
+          patch: Uint8Array.from([1, 2]),
+          expected_workspace_tree: exactTree,
+        },
+      },
+    ] satisfies readonly GitFilesystemAction[];
+
+    const wireActions = [
+      {
+        RestoreGeneration: {
+          tree: exactTreeJson,
+          paths: null,
+          expected_workspace_tree: exactTreeJson,
+        },
+      },
+      {
+        RestorePaths: {
+          tree: exactTreeJson,
+          paths: ["src/index.ts"],
+          expected_workspace_tree: exactTreeJson,
+        },
+      },
+      {
+        ApplyCommit: {
+          commit,
+          reverse: false,
+          base: exactTreeJson,
+          source: null,
+          paths: ["src/index.ts"],
+          tracked_paths: ["src/index.ts"],
+          expected_workspace_tree: exactTreeJson,
+        },
+      },
+      {
+        ApplyPatch: {
+          patch: [1, 2],
+          expected_workspace_tree: exactTreeJson,
+        },
+      },
+    ] as const;
+
+    for (const [index, action] of actions.entries()) {
+      const variant = Object.keys(action)[0]!;
+      const parsed = parseGitPendingTransitionJson(JSON.stringify({
+        id: workspaceUuid,
+        action: wireActions[index],
+        mutation: "NoOp",
+      }));
+      expect(parsed.action).toEqual(action);
+      expect(parsed.action).toHaveProperty(`${variant}.expected_workspace_tree`, exactTree);
+    }
+
+    const nullWireActions = [
+      { RestoreGeneration: { tree: exactTreeJson, paths: null, expected_workspace_tree: null } },
+      { RestorePaths: { tree: exactTreeJson, paths: ["src/index.ts"], expected_workspace_tree: null } },
+      { ApplyCommit: {
+        commit,
+        reverse: false,
+        base: exactTreeJson,
+        source: null,
+        paths: ["src/index.ts"],
+        tracked_paths: ["src/index.ts"],
+        expected_workspace_tree: null,
+      } },
+      { ApplyPatch: { patch: [1, 2], expected_workspace_tree: null } },
+    ] as const;
+
+    for (const action of nullWireActions) {
+      const variant = Object.keys(action)[0]!;
+      const parsed = parseGitPendingTransitionJson(JSON.stringify({
+        id: workspaceUuid,
+        action,
+        mutation: "NoOp",
+      }));
+      const parsedVariant = (parsed.action as Record<string, Record<string, unknown>>)[variant];
+      expect(parsedVariant).toBeDefined();
+      expect(parsedVariant?.expected_workspace_tree).toBeUndefined();
+    }
+  });
 });
 
 describe("Git compatibility durable execution", () => {
   test("returns the filesystem result when a no-op transition completes", async () => {
-    const action: GitFilesystemAction = { ApplyPatch: { patch: Uint8Array.from([1, 2, 3]) } };
+    const action: GitFilesystemAction = {
+      ApplyPatch: {
+        patch: Uint8Array.from([1, 2, 3]),
+        expected_workspace_tree: exactTree,
+      },
+    };
     const result: GitFilesystemResult = { Applied: { tree: exactTree, tracked_paths: undefined } };
     let completed: Uint8Array | undefined;
     const output = await finishGitCompatOutput(
@@ -267,7 +382,9 @@ describe("Git compatibility durable execution", () => {
   });
 
   test("rejects a non-durable action", async () => {
-    const output: GitCompatOutput = { Action: { ApplyPatch: { patch: Uint8Array.from([1]) } } };
+    const output: GitCompatOutput = {
+      Action: { ApplyPatch: { patch: Uint8Array.from([1]), expected_workspace_tree: undefined } },
+    };
     await expect(finishGitCompatOutput(
       { async completeTransitionResult() { return "NoOp"; } },
       output,
