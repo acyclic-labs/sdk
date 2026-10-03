@@ -9,12 +9,13 @@ test("installed transport fault scenarios map to exact requirements and diagnost
   assert.equal(scenario.protocol, "acyclic.graphcoder.transport-fault-scenarios.v1");
   assert.equal(scenario.execution_kind, "package");
   assert.equal(scenario.driver, "scripts/graphcoder-installed-transport-faults.mjs");
-  assert.deepEqual(scenario.requirements, ["INPUT-04", "API-07", "EFFECT-06", "FAULT-01", "FAULT-02", "QUAL-01", "QUAL-03"]);
+  assert.equal(scenario.coverage_scope, "transport-adapter checkpoint only; this evidence cannot satisfy a full matrix case");
+  assert.deepEqual(scenario.related_matrix_rows, ["INPUT-04", "API-07", "EFFECT-06", "FAULT-01", "FAULT-02", "QUAL-01", "QUAL-03"]);
   const lockedIds = new Set(requirements.entries.map(entry => entry.id));
-  assert.equal(scenario.requirements.every(id => lockedIds.has(id)), true);
+  assert.equal(scenario.related_matrix_rows.every(id => lockedIds.has(id)), true);
   assert.equal(new Set(scenario.cases.map(item => item.id)).size, scenario.cases.length);
   assert.deepEqual(scenario.cases.map(item => item.id), ["malformed-framing", "correlation-rejection", "cancelled-response"]);
   assert.deepEqual(scenario.cases.map(item => item.expected_diagnostic), ["malformed_line", "unmatched_response", "cancelled_response"]);
   assert.match(scenario.evidence, /installed package export/u);
-  assert.match(scenario.evidence, /does not qualify native runtime effects/u);
+  assert.match(scenario.evidence, /does not qualify the related matrix rows/u);
 });
