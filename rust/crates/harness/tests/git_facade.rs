@@ -7,7 +7,11 @@ use acyclic_fs::{
     WorkspaceId,
 };
 use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
+use acyclic_harness::model::ModelToolContext;
 use acyclic_harness::resources::GenerationRef;
+use acyclic_harness::tool::{
+    ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult,
+};
 use acyclic_harness::{
     AgentId, Capabilities, Error, Result,
     conversation::{
@@ -20,6 +24,8 @@ use acyclic_harness::{
     resources::ProviderRef,
 };
 use futures::future::BoxFuture;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::sync::{
     Arc, Mutex,
@@ -44,6 +50,79 @@ impl GitFilesystemExecutor for NoopExecutor {
             tree: None,
             tracked_paths: None,
         })
+    }
+}
+
+/// Minimal model-facing adapter used by the black-box facade tests.
+///
+/// Production composition owns registration and policy, but every adapter must
+/// keep the model-facing surface small: argv is schema-bound, the live tree is
+/// supplied by the host, and execution is delegated to the authenticated
+/// facade. No shell or process boundary is introduced here.
+struct ModelGitFacadeTool {
+    facade: FilesystemGitFacade<MemoryGitCompatStore>,
+    workspace_id: WorkspaceId,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelGitArguments {
+    argv: Vec<String>,
+}
+
+impl ToolExecutor for ModelGitFacadeTool {
+    fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            let arguments: ModelGitArguments = serde_json::from_value(invocation.arguments)
+                .map_err(|error| Error::Invalid(format!("invalid git tool arguments: {error}")))?;
+            let output = self
+                .facade
+                .run_argv(
+                    &arguments.argv,
+                    live_tree(self.workspace_id),
+                    "root",
+                    100,
+                    &NoopExecutor,
+                )
+                .await?;
+            Ok(ToolResult {
+                value: serde_json::to_value(output).map_err(|error| {
+                    Error::Storage(format!("git output encoding failed: {error}"))
+                })?,
+            })
+        })
+    }
+
+    fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+impl ToolProjection for ModelGitFacadeTool {
+    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        Ok(result.value.clone())
+    }
+}
+
+fn model_git_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: "filesystem.git".into(),
+        revision: "1".into(),
+        description: "Run one typed acyclic git command in the caller's workspace.".into(),
+        input_schema: json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["argv"],
+            "properties": {
+                "argv": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 32,
+                    "items": {"type": "string", "maxLength": 255}
+                }
+            }
+        }),
+        output_schema: json!({"type": "object"}),
     }
 }
 
@@ -230,6 +309,47 @@ async fn read_commands_delegate_to_durable_compat_repository() -> Result<()> {
         )
         .await?;
     assert!(matches!(output, acyclic_fs::GitCommandOutput::Status(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_facing_git_tool_routes_through_pinned_facade_and_provenance() -> Result<()> {
+    let (facade, workspace_id, _) = fixture(false)?;
+    let tool = ModelGitFacadeTool {
+        facade,
+        workspace_id,
+    };
+    let definition = model_git_definition();
+    definition.validate()?;
+    let definition_digest = definition.digest()?;
+    assert_eq!(definition_digest, definition.digest()?);
+
+    let parent_operation = acyclic_harness::OperationId::from_bytes([61; 16]);
+    let context = ModelToolContext {
+        parent_operation,
+        step: 0,
+    };
+    let invocation = ToolInvocation::for_model_call(
+        parent_operation,
+        0,
+        "git-status-1".into(),
+        definition.name.clone(),
+        json!({"argv": ["status"]}),
+    );
+    context.validate_invocation(&invocation)?;
+    let result = tool
+        .execute_in_model_batch(context, invocation.clone())
+        .await?;
+    let projected = tool.project(&invocation, &result)?;
+    assert!(projected.get("Status").is_some());
+
+    // Model provenance is part of the admission boundary. A forged operation
+    // identity must fail before the facade sees a command.
+    let forged = ToolInvocation {
+        operation_id: acyclic_harness::OperationId::from_bytes([62; 16]),
+        ..invocation
+    };
+    assert!(tool.execute_in_model_batch(context, forged).await.is_err());
     Ok(())
 }
 
