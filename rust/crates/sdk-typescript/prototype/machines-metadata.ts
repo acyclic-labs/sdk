@@ -24,7 +24,31 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76", sourceModelSha256: "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76", modeledOperations: 19, httpProjection: false } as const;
+export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
+
+export const MACHINES_OPERATIONS = {
+  "acyclic.machines.v1.MachinesService/QualifyImage": { rpc: "acyclic.machines.v1.MachinesService/QualifyImage", capabilities: ["machines.qualify"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["image.immutable_digest", "capabilities.proven"] },
+  "acyclic.machines.v1.MachinesService/Create": { rpc: "acyclic.machines.v1.MachinesService/Create", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["idempotency_key.nonzero", "contract.valid", "limits.valid"] },
+  "acyclic.machines.v1.MachinesService/Checkpoint": { rpc: "acyclic.machines.v1.MachinesService/Checkpoint", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/Fork": { rpc: "acyclic.machines.v1.MachinesService/Fork", capabilities: ["machines.fork", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["checkpoint_id.nonzero", "count.bounded", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/ForkMachine": { rpc: "acyclic.machines.v1.MachinesService/ForkMachine", capabilities: ["machines.fork", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "fidelity.declared", "count.bounded"] },
+  "acyclic.machines.v1.MachinesService/Suspend": { rpc: "acyclic.machines.v1.MachinesService/Suspend", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/Wake": { rpc: "acyclic.machines.v1.MachinesService/Wake", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/SetSuspensionPolicy": { rpc: "acyclic.machines.v1.MachinesService/SetSuspensionPolicy", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "policy.valid", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/DestroyMachine": { rpc: "acyclic.machines.v1.MachinesService/DestroyMachine", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/DestroyCheckpoint": { rpc: "acyclic.machines.v1.MachinesService/DestroyCheckpoint", capabilities: ["machines.write", "machines.idempotent_mutation"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["checkpoint_id.nonzero", "idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/Recover": { rpc: "acyclic.machines.v1.MachinesService/Recover", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["idempotency_key.nonzero"] },
+  "acyclic.machines.v1.MachinesService/InspectMachine": { rpc: "acyclic.machines.v1.MachinesService/InspectMachine", capabilities: ["machines.read"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero"] },
+  "acyclic.machines.v1.MachinesService/InspectCheckpoint": { rpc: "acyclic.machines.v1.MachinesService/InspectCheckpoint", capabilities: ["machines.read"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["checkpoint_id.nonzero"] },
+  "acyclic.machines.v1.MachinesService/ListMachines": { rpc: "acyclic.machines.v1.MachinesService/ListMachines", capabilities: ["machines.read"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["page_limit.bounded", "cursor.valid"] },
+  "acyclic.machines.v1.MachinesService/Events": { rpc: "acyclic.machines.v1.MachinesService/Events", capabilities: ["machines.read"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "page_limit.bounded", "cursor.valid"] },
+  "acyclic.machines.v1.MachinesService/Usage": { rpc: "acyclic.machines.v1.MachinesService/Usage", capabilities: ["machines.read"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["machine_id.nonzero", "time_range.valid"] },
+  "acyclic.machines.v1.MachinesService/Cancel": { rpc: "acyclic.machines.v1.MachinesService/Cancel", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero"] },
+  "acyclic.machines.v1.MachinesService/InspectOperation": { rpc: "acyclic.machines.v1.MachinesService/InspectOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero"] },
+  "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
+} as const satisfies Record<string, RustOwnedOperationMetadata>;
+
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c", sourceModelSha256: "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_METHODS = {
 
@@ -42,8 +66,14 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+}
+
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
-  if (method.credentialPolicy === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);
 }
 
 export type MachinesMethod = keyof typeof MACHINES_METHODS;
@@ -52,7 +82,7 @@ export interface RustOwnedInvoker {
   invoke<TRequest, TResponse>(method: RustOwnedMethodMetadata, request: TRequest): Promise<TResponse>;
 }
 
-export function createMachinesClient(invoker: RustOwnedInvoker) {
+export function createMachinesClient(_invoker: RustOwnedInvoker) {
   return {
   } as const;
 }

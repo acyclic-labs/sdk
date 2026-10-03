@@ -26,7 +26,9 @@ pub use bindings::{
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
-pub use family_registry::{FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, family_view};
+pub use family_registry::{
+    explicit_http_family_views, family_view, FamilyModel, FamilyView, HttpProjection, FAMILY_VIEWS,
+};
 pub use filesystem::{
     FILESYSTEM, FILESYSTEM_OPERATION_POLICIES, FILESYSTEM_SERVICE_AVAILABILITY,
     ServiceAvailability as FilesystemServiceAvailability, filesystem_descriptor, filesystem_proto,

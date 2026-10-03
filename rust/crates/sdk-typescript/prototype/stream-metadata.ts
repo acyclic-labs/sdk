@@ -27,7 +27,22 @@ export interface RustOwnedMethodMetadata {
 export interface RustOwnedRemotePolicy { readonly protocol: "https-or-loopback-http"; readonly auth: "bearer"; readonly credentialPolicy: "bearer-no-crlf"; readonly requestEncoding: "protobuf-json"; readonly responseEncoding: "protobuf-json"; readonly responseLimitPolicy: "bounded-cumulative-utf8"; readonly behaviorBinding: "native-wasm"; }
 
 export const STREAM_REMOTE_POLICY: RustOwnedRemotePolicy = { protocol: "https-or-loopback-http", auth: "bearer", credentialPolicy: "bearer-no-crlf", requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", responseLimitPolicy: "bounded-cumulative-utf8", behaviorBinding: "native-wasm" };
-export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb", sourceModelSha256: "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb", modeledOperations: 10, httpProjection: true } as const;
+export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
+
+export const STREAM_OPERATIONS = {
+  "acyclic.stream.v2.StreamService/InspectIdempotency": { rpc: "acyclic.stream.v2.StreamService/InspectIdempotency", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["idempotency_key.non_empty_bytes"] },
+  "acyclic.stream.v2.StreamService/Append": { rpc: "acyclic.stream.v2.StreamService/Append", capabilities: ["stream.write"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["path.non_empty_utf8", "records.max_bytes"] },
+  "acyclic.stream.v2.StreamService/Tail": { rpc: "acyclic.stream.v2.StreamService/Tail", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["path.non_empty_utf8"] },
+  "acyclic.stream.v2.StreamService/Fork": { rpc: "acyclic.stream.v2.StreamService/Fork", capabilities: ["stream.write"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["source.non_empty_utf8", "destination.non_empty_utf8"] },
+  "acyclic.stream.v2.StreamService/Read": { rpc: "acyclic.stream.v2.StreamService/Read", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["path.non_empty_utf8", "limit.max_stream_items"] },
+  "acyclic.stream.v2.StreamService/Follow": { rpc: "acyclic.stream.v2.StreamService/Follow", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["path.non_empty_utf8"] },
+  "acyclic.stream.v2.StreamService/Children": { rpc: "acyclic.stream.v2.StreamService/Children", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["limit.max_stream_items"] },
+  "acyclic.stream.v2.StreamService/ChildrenPage": { rpc: "acyclic.stream.v2.StreamService/ChildrenPage", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["limit.max_stream_items"] },
+  "acyclic.stream.v2.StreamService/Commit": { rpc: "acyclic.stream.v2.StreamService/Commit", capabilities: ["stream.write"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["mutations.max_command_bytes"] },
+  "acyclic.stream.v2.StreamService/ReadCommit": { rpc: "acyclic.stream.v2.StreamService/ReadCommit", capabilities: ["stream.read"], errors: ["INVALID_ARGUMENT", "TAIL_CONFLICT", "COMMIT_CONFLICT", "IDEMPOTENCY_MISMATCH"], validations: ["commit_id.non_empty_bytes"] }
+} as const satisfies Record<string, RustOwnedOperationMetadata>;
+
+export const STREAM_SOURCE = { family: "stream", rustCrate: "acyclic-stream", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::stream::stream_descriptor", descriptorSha256: "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c", sourceContentSha256: "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f", sourceModelSha256: "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f", modeledOperations: 10, httpProjection: true } as const;
 
 export const STREAM_METHODS = {
   inspectIdempotency: { operationId: "inspectIdempotency", rpc: "acyclic.stream.v2.StreamService/InspectIdempotency", docs: "Returns the admitted outcome for an idempotency key, when present.", path: "v1/stream/idempotency/inspect", pathParameters: [], httpMethod: "POST", requestType: "acyclic.stream.v2.InspectIdempotencyRequest", responseType: "acyclic.stream.v2.InspectIdempotencyResponse", clientStreaming: false, serverStreaming: false, requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", auth: "bearer", credentialPolicy: "bearer-no-crlf", responseLimitPolicy: "bounded-cumulative-utf8", requestFields: [{ name: "idempotency_key", jsonName: "idempotencyKey", number: 1, wireType: "bytes", repeated: false, optional: false, oneof: undefined, proto3Optional: false }], responseFields: [{ name: "observation", jsonName: "observation", number: 1, wireType: "message", repeated: false, optional: true, oneof: "_observation", proto3Optional: true }] },
@@ -56,8 +71,14 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+}
+
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
-  if (method.credentialPolicy === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);
 }
 
 export type StreamMethod = keyof typeof STREAM_METHODS;

@@ -1,6 +1,6 @@
 use acyclic_sdk_contract_validation::compare_bytes;
 use acyclic_sdk_contract_wire::{
-    actors_descriptor, family_view, filesystem::filesystem_descriptor,
+    actors_descriptor, explicit_http_family_views, family_view, filesystem::filesystem_descriptor,
     filesystem::filesystem_file_descriptor, filesystem::FILESYSTEM, harness::harness_descriptor,
     harness::harness_file_descriptor, harness::HARNESS, inference::inference_descriptor,
     machines::machines_descriptor, objects::objects_descriptor, stream::stream_descriptor,
@@ -47,6 +47,30 @@ fn fixture(path: &str) -> &'static [u8] {
         )),
         _ => panic!("unknown family fixture {path}"),
     }
+}
+
+#[test]
+fn explicit_http_inventory_is_derived_from_the_family_registry() {
+    let inventory = explicit_http_family_views().collect::<Vec<_>>();
+    assert_eq!(
+        inventory.len(),
+        FAMILY_VIEWS
+            .iter()
+            .filter(|family| family.has_http_projection())
+            .count()
+    );
+    assert!(inventory.iter().all(|family| {
+        family.has_http_projection()
+            && !family.routes().is_empty()
+            && family
+                .operation_policies
+                .iter()
+                .all(|policy| !policy.rpc.is_empty())
+    }));
+    assert!(FAMILY_VIEWS
+        .iter()
+        .filter(|family| !family.has_http_projection())
+        .all(|family| family.routes().is_empty()));
 }
 
 fn without_source_info(bytes: &[u8]) -> FileDescriptorSet {

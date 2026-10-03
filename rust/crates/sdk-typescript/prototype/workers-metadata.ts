@@ -24,7 +24,19 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
-export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05", sourceModelSha256: "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05", modeledOperations: 7, httpProjection: true } as const;
+export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
+
+export const WORKERS_OPERATIONS = {
+  "acyclic.workers.v1.WorkersService/PublishVersion": { rpc: "acyclic.workers.v1.WorkersService/PublishVersion", capabilities: ["workers.write", "workers.idempotent_mutation"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["javascript_module.non_empty_bytes", "expected_sha256.length_32"] },
+  "acyclic.workers.v1.WorkersService/SelectDeployment": { rpc: "acyclic.workers.v1.WorkersService/SelectDeployment", capabilities: ["workers.write", "workers.idempotent_mutation"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["alias.non_empty_utf8", "version_sha256.length_32"] },
+  "acyclic.workers.v1.WorkersService/SubmitJob": { rpc: "acyclic.workers.v1.WorkersService/SubmitJob", capabilities: ["workers.write", "workers.idempotent_mutation"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["idempotency_key.non_empty_utf8"] },
+  "acyclic.workers.v1.WorkersService/InspectJob": { rpc: "acyclic.workers.v1.WorkersService/InspectJob", capabilities: ["workers.read"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["job_id.non_empty_utf8"] },
+  "acyclic.workers.v1.WorkersService/CancelJob": { rpc: "acyclic.workers.v1.WorkersService/CancelJob", capabilities: ["workers.write", "workers.idempotent_mutation"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["job_id.non_empty_utf8"] },
+  "acyclic.workers.v1.WorkersService/InvokeVersion": { rpc: "acyclic.workers.v1.WorkersService/InvokeVersion", capabilities: ["workers.invoke"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["version_sha256.length_32", "method.non_empty_utf8"] },
+  "acyclic.workers.v1.WorkersService/InvokeDeployment": { rpc: "acyclic.workers.v1.WorkersService/InvokeDeployment", capabilities: ["workers.invoke"], errors: ["INVALID_ARGUMENT", "VERSION_NOT_FOUND", "DEPLOYMENT_NOT_FOUND", "JOB_NOT_FOUND", "REVISION_CONFLICT", "TERMINAL_JOB_FAILURE"], validations: ["alias.non_empty_utf8", "method.non_empty_utf8"] }
+} as const satisfies Record<string, RustOwnedOperationMetadata>;
+
+export const WORKERS_SOURCE = { family: "workers", rustCrate: "acyclic-workers", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::workers::workers_descriptor", descriptorSha256: "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128", sourceContentSha256: "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051", sourceModelSha256: "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051", modeledOperations: 7, httpProjection: true } as const;
 
 export const WORKERS_METHODS = {
   publishVersion: { operationId: "publishVersion", rpc: "acyclic.workers.v1.WorkersService/PublishVersion", docs: "Publishes an immutable JavaScript module version.", path: "v1/workers/versions/publish", pathParameters: [], httpMethod: "POST", requestType: "acyclic.workers.v1.PublishVersionRequest", responseType: "acyclic.workers.v1.PublishVersionResponse", clientStreaming: false, serverStreaming: false, requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", auth: "bearer", credentialPolicy: "bearer-no-crlf", responseLimitPolicy: "bounded-cumulative-utf8", requestFields: [{ name: "javascript_module", jsonName: "javascriptModule", number: 1, wireType: "bytes", repeated: false, optional: false, oneof: undefined, proto3Optional: false }, { name: "expected_sha256", jsonName: "expectedSha256", number: 2, wireType: "bytes", repeated: false, optional: false, oneof: undefined, proto3Optional: false }, { name: "idempotency_key", jsonName: "idempotencyKey", number: 3, wireType: "string", repeated: false, optional: false, oneof: undefined, proto3Optional: false }], responseFields: [{ name: "version", jsonName: "version", number: 1, wireType: "message", repeated: false, optional: false, oneof: undefined, proto3Optional: false }] },
@@ -48,8 +60,14 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+}
+
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
-  if (method.credentialPolicy === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);
 }
 
 export type WorkersMethod = keyof typeof WORKERS_METHODS;

@@ -11,11 +11,197 @@
       "package": "acyclic.actors.v1",
       "service": "ActorsService",
       "descriptor_sha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf",
-      "source_content_sha256": "b100ee7c4430d74e7c22f07a11bcd30b065afea6b70252368d73ef548d9bace8",
-      "source_model_sha256": "b100ee7c4430d74e7c22f07a11bcd30b065afea6b70252368d73ef548d9bace8",
+      "source_content_sha256": "9521f271f01acce7da5023fbe769647c387b2f1835d6f09dc1d2c4070195f815",
+      "source_model_sha256": "9521f271f01acce7da5023fbe769647c387b2f1835d6f09dc1d2c4070195f815",
       "modeled_operations": 8,
       "http_projection": true,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "actor_id.non_empty_utf8",
+            "expected_configuration_revision.non_negative"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
+          "capabilities": [
+            "actors.read"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "actor_id.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+          "capabilities": [
+            "actors.write",
+            "actors.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "actor_id.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+          "capabilities": [
+            "actors.invoke"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_CAPABILITY_DENIED",
+            "ERROR_CODE_CAPABILITY_EXPIRED",
+            "ERROR_CODE_ACTOR_NOT_FOUND",
+            "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_ADMISSION_DENIED",
+            "ERROR_CODE_CHECKPOINT_FAILED",
+            "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+          ],
+          "validations": [
+            "actor_id.non_empty_utf8",
+            "method.non_empty_utf8"
+          ]
+        }
+      ],
       "methods": [
         {
           "operation_id": "createActor",
@@ -593,11 +779,140 @@
       "package": "acyclic.workers.v1",
       "service": "WorkersService",
       "descriptor_sha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128",
-      "source_content_sha256": "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05",
-      "source_model_sha256": "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05",
+      "source_content_sha256": "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051",
+      "source_model_sha256": "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051",
       "modeled_operations": 7,
       "http_projection": true,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+          "capabilities": [
+            "workers.write",
+            "workers.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "javascript_module.non_empty_bytes",
+            "expected_sha256.length_32"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+          "capabilities": [
+            "workers.write",
+            "workers.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "alias.non_empty_utf8",
+            "version_sha256.length_32"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+          "capabilities": [
+            "workers.write",
+            "workers.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+          "capabilities": [
+            "workers.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "job_id.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+          "capabilities": [
+            "workers.write",
+            "workers.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "job_id.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+          "capabilities": [
+            "workers.invoke"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "version_sha256.length_32",
+            "method.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+          "capabilities": [
+            "workers.invoke"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "VERSION_NOT_FOUND",
+            "DEPLOYMENT_NOT_FOUND",
+            "JOB_NOT_FOUND",
+            "REVISION_CONFLICT",
+            "TERMINAL_JOB_FAILURE"
+          ],
+          "validations": [
+            "alias.non_empty_utf8",
+            "method.non_empty_utf8"
+          ]
+        }
+      ],
       "methods": [
         {
           "operation_id": "publishVersion",
@@ -1167,8 +1482,8 @@
       "package": "acyclic.objects.v2",
       "service": "BucketsService",
       "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
-      "source_content_sha256": "a2d26f8af6bcc5312883141862150407785c33fe92e1f9db83893fe97ded063b",
-      "source_model_sha256": "a2d26f8af6bcc5312883141862150407785c33fe92e1f9db83893fe97ded063b",
+      "source_content_sha256": "1bf75b864c0a235232316a85484a7e135af90018cf7d03dba2a0cab46800ddc8",
+      "source_model_sha256": "1bf75b864c0a235232316a85484a7e135af90018cf7d03dba2a0cab46800ddc8",
       "modeled_operations": 13,
       "http_projection": true,
       "remote_policy": {
@@ -1180,6 +1495,325 @@
         "response_limit_policy": "bounded-cumulative-utf8",
         "behavior_binding": "native-wasm"
       },
+      "operations": [
+        {
+          "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+          "capabilities": [
+            "objects.bucket.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "idempotency_key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+          "capabilities": [
+            "objects.bucket.read"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+          "capabilities": [
+            "objects.bucket.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "bucket.empty",
+            "idempotency_key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+          "capabilities": [
+            "objects.object.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "preconditions.atomic",
+            "idempotency_key.non_empty",
+            "upload.completion_frame"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+          "capabilities": [
+            "objects.object.read"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "range.valid",
+            "response.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+          "capabilities": [
+            "objects.object.read"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "object.key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+          "capabilities": [
+            "objects.object.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "preconditions.atomic",
+            "idempotency_key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+          "capabilities": [
+            "objects.object.read"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "pagination.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+          "capabilities": [
+            "objects.multipart.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "idempotency_key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+          "capabilities": [
+            "objects.multipart.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "upload_id.non_empty",
+            "part_number.positive",
+            "upload.completion_frame"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+          "capabilities": [
+            "objects.multipart.read"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "upload_id.non_empty",
+            "pagination.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+          "capabilities": [
+            "objects.multipart.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "upload_id.non_empty",
+            "parts.ordered_exact",
+            "idempotency_key.non_empty"
+          ]
+        },
+        {
+          "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+          "capabilities": [
+            "objects.multipart.write",
+            "objects.idempotent_mutation"
+          ],
+          "errors": [
+            "ERROR_CODE_INVALID_ARGUMENT",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_ALREADY_EXISTS",
+            "ERROR_CODE_PRECONDITION_FAILED",
+            "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+            "ERROR_CODE_QUOTA_EXCEEDED",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_UNAVAILABLE",
+            "ERROR_CODE_ACCESS_DENIED",
+            "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+            "ERROR_CODE_NOT_MODIFIED"
+          ],
+          "validations": [
+            "upload_id.non_empty",
+            "idempotency_key.non_empty"
+          ]
+        }
+      ],
       "methods": [
         {
           "operation_id": "createBucket",
@@ -2257,8 +2891,8 @@
       "package": "acyclic.stream.v2",
       "service": "StreamService",
       "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
-      "source_content_sha256": "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb",
-      "source_model_sha256": "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb",
+      "source_content_sha256": "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f",
+      "source_model_sha256": "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f",
       "modeled_operations": 10,
       "http_projection": true,
       "remote_policy": {
@@ -2270,6 +2904,161 @@
         "response_limit_policy": "bounded-cumulative-utf8",
         "behavior_binding": "native-wasm"
       },
+      "operations": [
+        {
+          "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "idempotency_key.non_empty_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Append",
+          "capabilities": [
+            "stream.write"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "path.non_empty_utf8",
+            "records.max_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Tail",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "path.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Fork",
+          "capabilities": [
+            "stream.write"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "source.non_empty_utf8",
+            "destination.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Read",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "path.non_empty_utf8",
+            "limit.max_stream_items"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Follow",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "path.non_empty_utf8"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Children",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "limit.max_stream_items"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "limit.max_stream_items"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/Commit",
+          "capabilities": [
+            "stream.write"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "mutations.max_command_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+          "capabilities": [
+            "stream.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "TAIL_CONFLICT",
+            "COMMIT_CONFLICT",
+            "IDEMPOTENCY_MISMATCH"
+          ],
+          "validations": [
+            "commit_id.non_empty_bytes"
+          ]
+        }
+      ],
       "methods": [
         {
           "operation_id": "inspectIdempotency",
@@ -2981,11 +3770,239 @@
       "package": "inference.customer.v1",
       "service": "ModelsService",
       "descriptor_sha256": "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea",
-      "source_content_sha256": "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9",
-      "source_model_sha256": "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9",
+      "source_content_sha256": "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404",
+      "source_model_sha256": "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404",
       "modeled_operations": 14,
       "http_projection": true,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "inference.customer.v1.ModelsService/List",
+          "capabilities": [
+            "inference.models.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "model_capabilities.bounded",
+            "retention_profiles.valid"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.ContextsService/Create",
+          "capabilities": [
+            "inference.context.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "model.non_empty",
+            "items.bounded",
+            "message.bounded"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.ContextsService/Inspect",
+          "capabilities": [
+            "inference.context.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "revision.length_32"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.ContextsService/Mutate",
+          "capabilities": [
+            "inference.context.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "source.present",
+            "action.present",
+            "message.bounded"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.WarmContextsService/Retain",
+          "capabilities": [
+            "inference.warm.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "context.length_32",
+            "policy.valid"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.WarmContextsService/Inspect",
+          "capabilities": [
+            "inference.warm.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "commitment.length_32"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.WarmContextsService/Renew",
+          "capabilities": [
+            "inference.warm.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "commitment.length_32",
+            "policy.valid"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.WarmContextsService/Release",
+          "capabilities": [
+            "inference.warm.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "commitment.length_32"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.RunsService/Generate",
+          "capabilities": [
+            "inference.runs.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "context.length_32",
+            "maximum_output.positive",
+            "message.bounded"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.RunsService/Inspect",
+          "capabilities": [
+            "inference.runs.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "run_id.length_16"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.RunsService/Watch",
+          "capabilities": [
+            "inference.runs.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "run_id.length_16",
+            "cursor.monotonic",
+            "terminal.required"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.RunsService/Cancel",
+          "capabilities": [
+            "inference.runs.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "run_id.length_16"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.EvaluationsService/Create",
+          "capabilities": [
+            "inference.evaluations.write",
+            "inference.idempotent_mutation"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "request_identity.nonzero",
+            "candidates.bounded",
+            "cases.bounded",
+            "metrics.bounded",
+            "spec_digest.length_32",
+            "message.bounded"
+          ]
+        },
+        {
+          "rpc": "inference.customer.v1.EvaluationsService/Inspect",
+          "capabilities": [
+            "inference.evaluations.read"
+          ],
+          "errors": [
+            "inference.invalid",
+            "inference.transport",
+            "inference.observation"
+          ],
+          "validations": [
+            "evaluation_id.length_16"
+          ]
+        }
+      ],
       "methods": [
         {
           "operation_id": "modelsList",
@@ -4514,11 +5531,441 @@
       "package": "acyclic.machines.v1",
       "service": "MachinesService",
       "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
-      "source_content_sha256": "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76",
-      "source_model_sha256": "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76",
+      "source_content_sha256": "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c",
+      "source_model_sha256": "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c",
       "modeled_operations": 19,
       "http_projection": false,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/QualifyImage",
+          "capabilities": [
+            "machines.qualify"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "image.immutable_digest",
+            "capabilities.proven"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Create",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "idempotency_key.nonzero",
+            "contract.valid",
+            "limits.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Checkpoint",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Fork",
+          "capabilities": [
+            "machines.fork",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "checkpoint_id.nonzero",
+            "count.bounded",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/ForkMachine",
+          "capabilities": [
+            "machines.fork",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "fidelity.declared",
+            "count.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Suspend",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Wake",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "policy.valid",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/DestroyMachine",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+          "capabilities": [
+            "machines.write",
+            "machines.idempotent_mutation"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "checkpoint_id.nonzero",
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Recover",
+          "capabilities": [
+            "machines.operations"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "idempotency_key.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/InspectMachine",
+          "capabilities": [
+            "machines.read"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+          "capabilities": [
+            "machines.read"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "checkpoint_id.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/ListMachines",
+          "capabilities": [
+            "machines.read"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "page_limit.bounded",
+            "cursor.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Events",
+          "capabilities": [
+            "machines.read"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "page_limit.bounded",
+            "cursor.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Usage",
+          "capabilities": [
+            "machines.read"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "machine_id.nonzero",
+            "time_range.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/Cancel",
+          "capabilities": [
+            "machines.operations"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "operation_id.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/InspectOperation",
+          "capabilities": [
+            "machines.operations"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "operation_id.nonzero"
+          ]
+        },
+        {
+          "rpc": "acyclic.machines.v1.MachinesService/WatchOperation",
+          "capabilities": [
+            "machines.operations"
+          ],
+          "errors": [
+            "invalid",
+            "not_found",
+            "conflict",
+            "unsupported",
+            "rejected",
+            "unavailable",
+            "operation_indeterminate",
+            "operation_observation_indeterminate",
+            "operation_failed",
+            "operation_cancelled"
+          ],
+          "validations": [
+            "operation_id.nonzero",
+            "cursor.monotonic",
+            "terminal.required"
+          ]
+        }
+      ],
       "methods": []
     },
     {
@@ -4529,11 +5976,643 @@
       "package": "acyclic.filesystem.v2",
       "service": "FilesystemService",
       "descriptor_sha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
-      "source_content_sha256": "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3",
-      "source_model_sha256": "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3",
+      "source_content_sha256": "d9c5d66c6d6dc87d4290af10046cb621cb4172da9c0a7e4749e00f171476c060",
+      "source_model_sha256": "d9c5d66c6d6dc87d4290af10046cb621cb4172da9c0a7e4749e00f171476c060",
       "modeled_operations": 30,
       "http_projection": false,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Handshake",
+          "capabilities": [
+            "filesystem"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "protocol.version.exact",
+            "descriptor_digest.matches",
+            "request.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "operation.idempotency_key.16_bytes",
+            "workspace_name.valid",
+            "profile.supported"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.selector.required",
+            "workspace.identity.matches"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/GetHead",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "workspace.identity.matches"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "generation_id.32_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Read",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "path.valid",
+            "maximum_bytes.bounded",
+            "range.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Stat",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "path.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "page.maximum_items.bounded",
+            "cursor.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "path.valid",
+            "maximum_bytes.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "path.valid",
+            "range.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "operation.idempotency_key.16_bytes",
+            "mutation.oneof",
+            "transaction.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "operation.idempotency_key.16_bytes",
+            "transaction.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "generation.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Diff",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.references.required",
+            "diff.bounds.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Rebase",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "generation.reference.required",
+            "rebase.bounds.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.references.required",
+            "join.history.valid",
+            "join.bounds.bounded"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "join.plan_identity.matches",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Pin",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+          "capabilities": [
+            "filesystem.read"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "generation.reference.required",
+            "export.bounds.bounded",
+            "cursor.valid"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+          "capabilities": [
+            "filesystem.write",
+            "filesystem.idempotent_mutation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "import.stream.nonempty",
+            "object.order.exact",
+            "cursor.valid",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+          "capabilities": [
+            "filesystem.credentials.mount"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "generation.reference.required",
+            "credential.expiry.bounded",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+          "capabilities": [
+            "filesystem.credentials.s3"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "generation.reference.required",
+            "credential.expiry.bounded",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+          "capabilities": [
+            "filesystem.source"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+          "capabilities": [
+            "filesystem.source"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+          "capabilities": [
+            "filesystem.source"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/SealSource",
+          "capabilities": [
+            "filesystem.source"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "workspace.reference.required",
+            "operation.idempotency_key.16_bytes"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Observe",
+          "capabilities": [
+            "filesystem.operation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "operation_id.16_bytes",
+            "response.identity.matches"
+          ]
+        },
+        {
+          "rpc": "acyclic.filesystem.v2.FilesystemService/Cancel",
+          "capabilities": [
+            "filesystem.operation"
+          ],
+          "errors": [
+            "INVALID_ARGUMENT",
+            "NOT_FOUND",
+            "FAILED_PRECONDITION",
+            "CANCELLED",
+            "RESOURCE_EXHAUSTED",
+            "UNAVAILABLE",
+            "UNIMPLEMENTED",
+            "DATA_LOSS"
+          ],
+          "validations": [
+            "operation_id.16_bytes",
+            "operation.idempotency_key.16_bytes",
+            "response.identity.matches"
+          ]
+        }
+      ],
       "methods": []
     },
     {
@@ -4544,11 +6623,146 @@
       "package": "acyclic.harness.v2",
       "service": "HarnessService",
       "descriptor_sha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
-      "source_content_sha256": "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8",
-      "source_model_sha256": "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8",
+      "source_content_sha256": "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021",
+      "source_model_sha256": "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021",
       "modeled_operations": 5,
       "http_projection": false,
       "remote_policy": null,
+      "operations": [
+        {
+          "rpc": "acyclic.harness.v2.HarnessService/Handshake",
+          "capabilities": [
+            "harness"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_INVALID",
+            "ERROR_CODE_UNAUTHORIZED",
+            "ERROR_CODE_STORAGE",
+            "ERROR_CODE_INDETERMINATE",
+            "ERROR_CODE_INTERACTION_DECLINED",
+            "ERROR_CODE_INTERACTION_CANCELLED",
+            "ERROR_CODE_INTERACTION_EXPIRED",
+            "ERROR_CODE_INTERACTION_DENIED"
+          ],
+          "validations": [
+            "protocol.identity.exact",
+            "required_capability.nonempty",
+            "required_capability.supported"
+          ]
+        },
+        {
+          "rpc": "acyclic.harness.v2.HarnessService/Submit",
+          "capabilities": [
+            "operation:declare"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_INVALID",
+            "ERROR_CODE_UNAUTHORIZED",
+            "ERROR_CODE_STORAGE",
+            "ERROR_CODE_INDETERMINATE",
+            "ERROR_CODE_INTERACTION_DECLINED",
+            "ERROR_CODE_INTERACTION_CANCELLED",
+            "ERROR_CODE_INTERACTION_EXPIRED",
+            "ERROR_CODE_INTERACTION_DENIED"
+          ],
+          "validations": [
+            "protocol.identity.exact",
+            "operation_id.nonempty",
+            "idempotency_key.nonempty",
+            "admission.identity.matches"
+          ]
+        },
+        {
+          "rpc": "acyclic.harness.v2.HarnessService/Replay",
+          "capabilities": [
+            "harness.replay"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_INVALID",
+            "ERROR_CODE_UNAUTHORIZED",
+            "ERROR_CODE_STORAGE",
+            "ERROR_CODE_INDETERMINATE",
+            "ERROR_CODE_INTERACTION_DECLINED",
+            "ERROR_CODE_INTERACTION_CANCELLED",
+            "ERROR_CODE_INTERACTION_EXPIRED",
+            "ERROR_CODE_INTERACTION_DENIED"
+          ],
+          "validations": [
+            "protocol.identity.exact",
+            "resume_cursor.contiguous",
+            "delivery.identity.preserving"
+          ]
+        },
+        {
+          "rpc": "acyclic.harness.v2.HarnessService/Observe",
+          "capabilities": [
+            "operation:observe"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_INVALID",
+            "ERROR_CODE_UNAUTHORIZED",
+            "ERROR_CODE_STORAGE",
+            "ERROR_CODE_INDETERMINATE",
+            "ERROR_CODE_INTERACTION_DECLINED",
+            "ERROR_CODE_INTERACTION_CANCELLED",
+            "ERROR_CODE_INTERACTION_EXPIRED",
+            "ERROR_CODE_INTERACTION_DENIED"
+          ],
+          "validations": [
+            "protocol.identity.exact",
+            "owner.required",
+            "operation_id.nonempty",
+            "scope.required",
+            "scope.capability.operation_observe",
+            "status.identity.matches"
+          ]
+        },
+        {
+          "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+          "capabilities": [
+            "operation:cancel"
+          ],
+          "errors": [
+            "ERROR_CODE_UNSPECIFIED",
+            "ERROR_CODE_NOT_FOUND",
+            "ERROR_CODE_CONFLICT",
+            "ERROR_CODE_UNSUPPORTED",
+            "ERROR_CODE_INVALID",
+            "ERROR_CODE_UNAUTHORIZED",
+            "ERROR_CODE_STORAGE",
+            "ERROR_CODE_INDETERMINATE",
+            "ERROR_CODE_INTERACTION_DECLINED",
+            "ERROR_CODE_INTERACTION_CANCELLED",
+            "ERROR_CODE_INTERACTION_EXPIRED",
+            "ERROR_CODE_INTERACTION_DENIED"
+          ],
+          "validations": [
+            "protocol.identity.exact",
+            "owner.required",
+            "operation_id.nonempty",
+            "idempotency_key.nonempty",
+            "scope.required",
+            "scope.capability.operation_cancel",
+            "status.identity.matches"
+          ]
+        }
+      ],
       "methods": []
     }
   ]

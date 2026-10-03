@@ -173,3 +173,13 @@ pub const FAMILY_VIEWS: &[FamilyView] = &[
 pub fn family_view(name: &str) -> Option<&'static FamilyView> {
     FAMILY_VIEWS.iter().find(|family| family.name == name)
 }
+
+/// Return the HTTP families directly from the unified registry.
+///
+/// Consumers that need an OpenAPI or hosted-route inventory must derive it
+/// from this projection instead of maintaining a second family-name list.
+pub fn explicit_http_family_views() -> impl Iterator<Item = &'static FamilyView> {
+    FAMILY_VIEWS
+        .iter()
+        .filter(|family| family.has_http_projection())
+}

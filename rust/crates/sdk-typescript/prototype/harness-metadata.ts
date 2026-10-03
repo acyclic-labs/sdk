@@ -24,7 +24,17 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
-export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8", sourceModelSha256: "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8", modeledOperations: 5, httpProjection: false } as const;
+export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
+
+export const HARNESS_OPERATIONS = {
+  "acyclic.harness.v2.HarnessService/Handshake": { rpc: "acyclic.harness.v2.HarnessService/Handshake", capabilities: ["harness"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "required_capability.nonempty", "required_capability.supported"] },
+  "acyclic.harness.v2.HarnessService/Submit": { rpc: "acyclic.harness.v2.HarnessService/Submit", capabilities: ["operation:declare"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "operation_id.nonempty", "idempotency_key.nonempty", "admission.identity.matches"] },
+  "acyclic.harness.v2.HarnessService/Replay": { rpc: "acyclic.harness.v2.HarnessService/Replay", capabilities: ["harness.replay"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "resume_cursor.contiguous", "delivery.identity.preserving"] },
+  "acyclic.harness.v2.HarnessService/Observe": { rpc: "acyclic.harness.v2.HarnessService/Observe", capabilities: ["operation:observe"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "owner.required", "operation_id.nonempty", "scope.required", "scope.capability.operation_observe", "status.identity.matches"] },
+  "acyclic.harness.v2.HarnessService/Cancel": { rpc: "acyclic.harness.v2.HarnessService/Cancel", capabilities: ["operation:cancel"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "owner.required", "operation_id.nonempty", "idempotency_key.nonempty", "scope.required", "scope.capability.operation_cancel", "status.identity.matches"] }
+} as const satisfies Record<string, RustOwnedOperationMetadata>;
+
+export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021", sourceModelSha256: "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021", modeledOperations: 5, httpProjection: false } as const;
 
 export const HARNESS_METHODS = {
 
@@ -42,8 +52,14 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+}
+
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
-  if (method.credentialPolicy === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);
 }
 
 export type HarnessMethod = keyof typeof HARNESS_METHODS;
@@ -52,7 +68,7 @@ export interface RustOwnedInvoker {
   invoke<TRequest, TResponse>(method: RustOwnedMethodMetadata, request: TRequest): Promise<TResponse>;
 }
 
-export function createHarnessClient(invoker: RustOwnedInvoker) {
+export function createHarnessClient(_invoker: RustOwnedInvoker) {
   return {
   } as const;
 }

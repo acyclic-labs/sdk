@@ -24,7 +24,26 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
-export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9", sourceModelSha256: "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9", modeledOperations: 14, httpProjection: true } as const;
+export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
+
+export const INFERENCE_OPERATIONS = {
+  "inference.customer.v1.ModelsService/List": { rpc: "inference.customer.v1.ModelsService/List", capabilities: ["inference.models.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["model_capabilities.bounded", "retention_profiles.valid"] },
+  "inference.customer.v1.ContextsService/Create": { rpc: "inference.customer.v1.ContextsService/Create", capabilities: ["inference.context.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "model.non_empty", "items.bounded", "message.bounded"] },
+  "inference.customer.v1.ContextsService/Inspect": { rpc: "inference.customer.v1.ContextsService/Inspect", capabilities: ["inference.context.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["revision.length_32"] },
+  "inference.customer.v1.ContextsService/Mutate": { rpc: "inference.customer.v1.ContextsService/Mutate", capabilities: ["inference.context.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "source.present", "action.present", "message.bounded"] },
+  "inference.customer.v1.WarmContextsService/Retain": { rpc: "inference.customer.v1.WarmContextsService/Retain", capabilities: ["inference.warm.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "context.length_32", "policy.valid"] },
+  "inference.customer.v1.WarmContextsService/Inspect": { rpc: "inference.customer.v1.WarmContextsService/Inspect", capabilities: ["inference.warm.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["commitment.length_32"] },
+  "inference.customer.v1.WarmContextsService/Renew": { rpc: "inference.customer.v1.WarmContextsService/Renew", capabilities: ["inference.warm.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "commitment.length_32", "policy.valid"] },
+  "inference.customer.v1.WarmContextsService/Release": { rpc: "inference.customer.v1.WarmContextsService/Release", capabilities: ["inference.warm.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "commitment.length_32"] },
+  "inference.customer.v1.RunsService/Generate": { rpc: "inference.customer.v1.RunsService/Generate", capabilities: ["inference.runs.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "context.length_32", "maximum_output.positive", "message.bounded"] },
+  "inference.customer.v1.RunsService/Inspect": { rpc: "inference.customer.v1.RunsService/Inspect", capabilities: ["inference.runs.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["run_id.length_16"] },
+  "inference.customer.v1.RunsService/Watch": { rpc: "inference.customer.v1.RunsService/Watch", capabilities: ["inference.runs.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["run_id.length_16", "cursor.monotonic", "terminal.required"] },
+  "inference.customer.v1.RunsService/Cancel": { rpc: "inference.customer.v1.RunsService/Cancel", capabilities: ["inference.runs.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["run_id.length_16"] },
+  "inference.customer.v1.EvaluationsService/Create": { rpc: "inference.customer.v1.EvaluationsService/Create", capabilities: ["inference.evaluations.write", "inference.idempotent_mutation"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["request_identity.nonzero", "candidates.bounded", "cases.bounded", "metrics.bounded", "spec_digest.length_32", "message.bounded"] },
+  "inference.customer.v1.EvaluationsService/Inspect": { rpc: "inference.customer.v1.EvaluationsService/Inspect", capabilities: ["inference.evaluations.read"], errors: ["inference.invalid", "inference.transport", "inference.observation"], validations: ["evaluation_id.length_16"] }
+} as const satisfies Record<string, RustOwnedOperationMetadata>;
+
+export const INFERENCE_SOURCE = { family: "inference", rustCrate: "acyclic-inference", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::inference::inference_descriptor", descriptorSha256: "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea", sourceContentSha256: "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404", sourceModelSha256: "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404", modeledOperations: 14, httpProjection: true } as const;
 
 export const INFERENCE_METHODS = {
   modelsList: { operationId: "modelsList", rpc: "inference.customer.v1.ModelsService/List", docs: "Lists model capabilities and retention profiles.", path: "v1/inference/models/list", pathParameters: [], httpMethod: "POST", requestType: "inference.customer.v1.ListModelsRequest", responseType: "inference.customer.v1.ListModelsResponse", clientStreaming: false, serverStreaming: false, requestEncoding: "protobuf-json", responseEncoding: "protobuf-json", auth: "bearer", credentialPolicy: "bearer-no-crlf", responseLimitPolicy: "bounded-cumulative-utf8", requestFields: [], responseFields: [{ name: "models", jsonName: "models", number: 1, wireType: "message", repeated: true, optional: false, oneof: undefined, proto3Optional: false }] },
@@ -55,8 +74,14 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
+export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+
+export function validateRustOwnedCredentialPolicy(token: string): void {
+  if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+}
+
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
-  if (method.credentialPolicy === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
+  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);
 }
 
 export type InferenceMethod = keyof typeof INFERENCE_METHODS;

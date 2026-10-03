@@ -41,6 +41,17 @@ struct MethodMetadata {
     response_fields: Vec<FieldMetadata>,
 }
 
+/// Rust-owned capability, error, and validation policy for one public RPC.
+/// This remains separate from `MethodMetadata` because families without an
+/// HTTP projection still expose their complete operation policy here.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct OperationMetadata {
+    rpc: String,
+    capabilities: Vec<String>,
+    errors: Vec<String>,
+    validations: Vec<String>,
+}
+
 /// A lossless enough field projection for target runtimes.  Keeping this in
 /// the generated manifest makes JSON policy reviewable without asking a
 /// TypeScript generator to infer protobuf semantics from JavaScript objects.
@@ -71,6 +82,7 @@ struct ServiceMetadata {
     modeled_operations: usize,
     http_projection: bool,
     remote_policy: Option<RemotePolicyMetadata>,
+    operations: Vec<OperationMetadata>,
     methods: Vec<MethodMetadata>,
 }
 
@@ -137,6 +149,7 @@ struct RustService<'a> {
     source_content: Vec<u8>,
     descriptor: Vec<u8>,
     routes: Vec<(&'a str, &'a str, &'a str)>,
+    operations: &'a [acyclic_sdk_contract_wire::OperationPolicy],
 }
 
 fn lower_camel(name: &str) -> String {
@@ -336,6 +349,28 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    let operations = spec
+        .operations
+        .iter()
+        .map(|policy| OperationMetadata {
+            rpc: policy.rpc.to_owned(),
+            capabilities: policy
+                .capabilities
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            errors: policy
+                .errors
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            validations: policy
+                .validations
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+        })
+        .collect();
     Ok(ServiceMetadata {
         family: spec.family.to_owned(),
         rust_crate: spec.rust_crate.to_owned(),
@@ -369,6 +404,7 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
             }),
             _ => None,
         },
+        operations,
         methods,
     })
 }
@@ -537,6 +573,7 @@ fn rust_service(view: &'static acyclic_sdk_contract_wire::FamilyView) -> RustSer
         source_content: source_content_for_family(view.name),
         descriptor: view.model.descriptor(),
         routes: contract_routes(view.routes()),
+        operations: view.operation_policies,
     }
 }
 
@@ -614,6 +651,26 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
             policy.behavior_binding,
         ));
     }
+    output.push_str("export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }\n\n");
+    let operations = service
+        .operations
+        .iter()
+        .map(|operation| {
+            format!(
+                "  {:?}: {{ rpc: {:?}, capabilities: {:?}, errors: {:?}, validations: {:?} }}",
+                operation.rpc,
+                operation.rpc,
+                operation.capabilities,
+                operation.errors,
+                operation.validations,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    output.push_str(&format!(
+        "export const {}_OPERATIONS = {{\n{operations}\n}} as const satisfies Record<string, RustOwnedOperationMetadata>;\n\n",
+        service.family.to_ascii_uppercase(),
+    ));
     output.push_str(&format!(
         "export const {}_SOURCE = {{ family: {:?}, rustCrate: {:?}, sourceKind: {:?}, sourceArtifact: {:?}, descriptorSha256: {:?}, sourceContentSha256: {:?}, sourceModelSha256: {:?}, modeledOperations: {}, httpProjection: {} }} as const;\n\n",
         service.family.to_ascii_uppercase(), service.family, service.rust_crate,
@@ -640,13 +697,16 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         ));
     }
     output.push_str("export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, request: unknown): string {\n  let path = method.path;\n  for (const parameter of method.pathParameters) {\n    const key = parameter === \"sha256hex\" ? \"versionSha256\" : parameter;\n    const value = (request as Record<string, unknown>)[key];\n    if (value === undefined || value === null) throw new TypeError(`missing path parameter ${key}`);\n    const rendered = value instanceof Uint8Array ? Array.from(value, byte => byte.toString(16).padStart(2, \"0\")).join(\"\") : typeof value === \"bigint\" ? value.toString() : encodeURIComponent(String(value));\n    path = path.replace(`{${parameter}}`, rendered);\n  }\n  return path;\n}\n\n");
-    output.push_str("export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {\n  if (method.credentialPolicy === \"bearer-no-crlf\" && (!token.trim() || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n");
+    output.push_str("export const RUST_OWNED_CREDENTIAL_POLICY = \"bearer-no-crlf\" as const;\n\n");
+    output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if (RUST_OWNED_CREDENTIAL_POLICY === \"bearer-no-crlf\" && (!token.trim() || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n");
+    output.push_str("export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {\n  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);\n}\n\n");
     output.push_str(&format!(
         "export type {title}Method = keyof typeof {constant};\n\n"
     ));
     output.push_str("export interface RustOwnedInvoker {\n  invoke<TRequest, TResponse>(method: RustOwnedMethodMetadata, request: TRequest): Promise<TResponse>;\n}\n\n");
+    let invoker_parameter = if service.methods.is_empty() { "_invoker" } else { "invoker" };
     output.push_str(&format!(
-        "export function create{title}Client(invoker: RustOwnedInvoker) {{\n  return {{\n"
+        "export function create{title}Client({invoker_parameter}: RustOwnedInvoker) {{\n  return {{\n"
     ));
     for method in &service.methods {
         output.push_str(&format!(
@@ -838,16 +898,39 @@ mod tests {
         {
             assert_eq!(service.family, view.name);
             assert_eq!(service.modeled_operations, view.operation_policies.len());
+            assert_eq!(service.operations.len(), view.operation_policies.len());
+            for (operation, policy) in service.operations.iter().zip(view.operation_policies) {
+                assert_eq!(operation.rpc, policy.rpc);
+                assert!(!operation.capabilities.is_empty());
+                assert!(!operation.errors.is_empty());
+                assert!(!operation.validations.is_empty());
+            }
             assert_eq!(service.http_projection, view.has_http_projection());
             assert!(!service.source_artifact.is_empty());
             assert!(!service.package.is_empty());
             if view.has_http_projection() {
                 assert_eq!(service.methods.len(), view.routes().len());
-                assert!(service.methods.iter().all(|method| !method.docs.is_empty()));
+                assert!(service.methods.iter().all(|method| {
+                    !method.docs.is_empty()
+                        && service
+                            .operations
+                            .iter()
+                            .any(|operation| operation.rpc == method.rpc)
+                }));
             } else {
                 assert!(service.methods.is_empty());
             }
         }
+        let registry_http_families = acyclic_sdk_contract_wire::explicit_http_family_views()
+            .map(|view| view.name)
+            .collect::<Vec<_>>();
+        let manifest_http_families = manifest
+            .services
+            .iter()
+            .filter(|service| service.http_projection)
+            .map(|service| service.family.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(manifest_http_families, registry_http_families);
         assert_eq!(manifest.services[0].family, "actors");
         assert_eq!(manifest.services[0].methods.len(), 8);
         assert_eq!(manifest.services[1].family, "workers");
@@ -908,6 +991,14 @@ mod tests {
             .services
             .iter()
             .all(|service| { service.source_content_sha256 == service.source_model_sha256 }));
+        let machines = generated_files(&manifest)
+            .expect("generated files")
+            .into_iter()
+            .find(|(name, _)| name == "machines-metadata.ts")
+            .expect("Machines metadata");
+        assert!(machines.1.contains("MACHINES_OPERATIONS"));
+        assert!(machines.1.contains("capabilities"));
+        assert!(machines.1.contains("validations"));
     }
 
     #[test]
@@ -922,5 +1013,7 @@ mod tests {
         let bytes = source_content_for_family("actors");
         let source = String::from_utf8_lossy(&bytes);
         assert!(source.contains("BEARER_NO_CRLF"));
+        assert!(source.contains("FAMILY_VIEWS"));
+        assert!(source.contains("ActorsService/CreateActor"));
     }
 }
