@@ -209,12 +209,16 @@ test("parent-controlled fork seed pins exact history and isolates project/privat
 
 test("fork reports and seeds reject inherited prefixes above the protocol hard cap", async () => {
   await expect(validateForkReport(report())).resolves.toBeUndefined();
+  await expect(validateForkReport({ ...report(), inherited_parent_revision: 4n }))
+    .rejects.toThrow();
   const oversized = MAX_FORK_INHERITED_MESSAGES + 1n;
   await expect(validateForkReport({ ...report(), inherited_through_sequence: oversized }))
     .rejects.toThrow("inherited message limit");
   await expect(forkSeed({ ...report(), inherited_through_sequence: oversized }))
     .rejects.toThrow("inherited message limit");
   const seed = await forkSeed(report());
+  await expect(validateForkSeed({ ...seed, inherited_parent_revision: 4n }))
+    .rejects.toThrow();
   await expect(validateForkSeed({ ...seed, inherited_through_sequence: oversized }))
     .rejects.toThrow("protocol limits");
 });
