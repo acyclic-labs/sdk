@@ -23,6 +23,7 @@ members = [
   "rust/crates/sdk-contract-options",
   "rust/crates/sdk-contract-validation",
   "rust/crates/sdk-contract-wire",
+  "rust/crates/sdk-stream-native",
   "rust/crates/stream",
   "rust/crates/stream-wasm",
   "rust/crates/workers",

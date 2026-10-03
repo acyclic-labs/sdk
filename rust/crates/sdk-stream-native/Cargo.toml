@@ -1,0 +1,30 @@
+[package]
+name = "acyclic-stream-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "N-API native remote Stream transport over the canonical Rust gRPC client"
+publish = false
+build = "build.rs"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
+bytes.workspace = true
+futures.workspace = true
+napi.workspace = true
+napi-derive.workspace = true
+tokio.workspace = true
+
+[build-dependencies]
+napi-build = "2.3.1"
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true
