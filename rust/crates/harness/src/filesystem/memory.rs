@@ -72,19 +72,6 @@ fn validate_storage_owner(
     Ok(())
 }
 
-fn derive_session_id(volume: &VolumeRef) -> Result<SessionId> {
-    let bytes = crate::contract::canonical_json_bytes(volume)?;
-    let mut input = Vec::with_capacity(32 + bytes.len());
-    input.extend_from_slice(b"acyclic:harness:local-session:v1");
-    input.extend_from_slice(&bytes);
-    let digest = blake3::hash(&input);
-    Ok(SessionId::from_bytes(
-        digest.as_bytes()[..16]
-            .try_into()
-            .map_err(|_| Error::Invalid("derived session identity has an invalid length".into()))?,
-    ))
-}
-
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
 pub type MemoryHarnessStorage =
@@ -711,7 +698,10 @@ where
         conversation: Authority,
         issuer: AuthorityIssuer,
     ) -> Result<Self> {
-        let session_id = derive_session_id(&volume)?;
+        // Generic composition has no durable session descriptor to reopen.
+        // Allocate a fresh identity so two callers sharing a volume and stream
+        // cannot observe or resolve one another's execution receipts.
+        let session_id = SessionId::new();
         Self::from_providers_with_session(
             agent,
             maximum_file_bytes,

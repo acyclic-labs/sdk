@@ -140,6 +140,14 @@ impl Scope {
             proof,
         }
     }
+
+    /// Returns the issuer proof for host-only capability derivation.
+    ///
+    /// This remains crate-private so model or application wire values cannot
+    /// mint capabilities from a public scope identity.
+    pub(crate) const fn proof(&self) -> &[u8; 32] {
+        &self.proof
+    }
 }
 
 /// Explicit host authority capable of issuing unforgeable scopes.

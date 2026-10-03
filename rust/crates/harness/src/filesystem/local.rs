@@ -79,6 +79,7 @@ where
         volume: VolumeRef,
         session_id: SessionId,
         resolution: &ExecutionResolutionCapability,
+        owner_scope: &crate::core::Scope,
         read: ContentGrant,
         write: ContentGrant,
         maximum_bytes: u64,
@@ -93,7 +94,8 @@ where
         }
         write.require(&volume, VolumeOperation::Write)?;
         read.require(&volume, VolumeOperation::Read)?;
-        let expected_resolution = ExecutionResolutionCapability::issue(session_id, &volume)?;
+        let expected_resolution =
+            ExecutionResolutionCapability::issue(session_id, &volume, owner_scope)?;
         if resolution != &expected_resolution {
             return Err(Error::Unauthorized(
                 "execution receipt resolver is not bound to this session and volume".into(),
@@ -135,11 +137,11 @@ where
                 events.push(event);
             }
         }
-        Self::validate_events(&events)?;
+        self.validate_events(&events).await?;
         Ok((replay.cursor(), events))
     }
 
-    fn validate_events(events: &[ExecutionReceiptEvent]) -> Result<()> {
+    async fn validate_events(&self, events: &[ExecutionReceiptEvent]) -> Result<()> {
         let mut pending = Vec::<(ExecutionReceiptKey, [u8; 32], u64)>::new();
         let mut finalized = Vec::<ExecutionReceiptKey>::new();
         for event in events {
@@ -163,12 +165,22 @@ where
                     result,
                     owner_token,
                     generation,
-                    operator_resolution: _,
+                    operator_resolution,
                 } => {
-                    result.validate()?;
-                    if result.descriptor().media_type() != "application/json" {
-                        return Err(Error::Storage(
-                            "execution receipt result is not JSON content".into(),
+                    self.validate_result_ref(key, result)?;
+                    let bytes = self
+                        .host
+                        .read_content(result, &self.read, self.maximum_bytes)
+                        .await?
+                        .to_vec();
+                    result.descriptor().verify(&bytes)?;
+                    let receipt: ExecutionReceipt = serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    receipt.validate()?;
+                    if *operator_resolution != matches!(receipt, ExecutionReceipt::Unknown { .. }) {
+                        return Err(Error::Conflict(
+                            "execution receipt operator marker does not match its typed outcome"
+                                .into(),
                         ));
                     }
                     if finalized.iter().any(|candidate| candidate == key) {
@@ -253,7 +265,7 @@ where
                     }
                 }
                 ExecutionReceiptEvent::Completed { key, result, .. } => {
-                    result.validate()?;
+                    self.validate_result_ref(&key, &result)?;
                     pending.retain(|(candidate, _)| candidate != key);
                 }
             }
@@ -443,6 +455,11 @@ where
             if handle.is_operator() && !matches!(receipt, ExecutionReceipt::Unknown { .. }) {
                 return Err(Error::Unauthorized(
                     "operator handles may only resolve execution as unknown".into(),
+                ));
+            }
+            if !handle.is_operator() && matches!(receipt, ExecutionReceipt::Unknown { .. }) {
+                return Err(Error::Unauthorized(
+                    "unknown execution outcomes require operator resolution".into(),
                 ));
             }
             loop {
@@ -744,6 +761,7 @@ impl PersistentLocalHarness {
             self.storage.volume().clone(),
             self.storage.session_id(),
             &resolution,
+            self.storage.owner_scope(),
             read,
             write,
             maximum_bytes,
@@ -753,7 +771,11 @@ impl PersistentLocalHarness {
     /// Returns the host application's separately authenticated authority for
     /// resolving uncertain process attempts after review.
     pub fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
-        ExecutionResolutionCapability::issue(self.storage.session_id(), self.storage.volume())
+        ExecutionResolutionCapability::issue(
+            self.storage.session_id(),
+            self.storage.volume(),
+            self.storage.owner_scope(),
+        )
     }
 
     /// Composes the production native provider around this session's
@@ -931,6 +953,52 @@ mod tests {
             );
         }
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receipt_store_rejects_resolution_capability_from_another_session() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("harness-receipt-capability-{}", OperationId::new()));
+        let other_root = std::env::temp_dir().join(format!(
+            "harness-receipt-capability-other-{}",
+            OperationId::new()
+        ));
+        let model = Model::new("mock", "capability", "1", serde_json::json!({}))?;
+        let first = PersistentLocalHarness::open(
+            &root,
+            model.clone(),
+            Arc::new(Mock(AtomicUsize::new(0))),
+            Limits::default(),
+        )
+        .await?;
+        let second = PersistentLocalHarness::open(
+            &other_root,
+            model,
+            Arc::new(Mock(AtomicUsize::new(0))),
+            Limits::default(),
+        )
+        .await?;
+        let forged = second.execution_resolution_capability()?;
+        let (host, stream, read, write, maximum_bytes) = first.storage().execution_binding();
+        assert!(
+            FilesystemExecutionReceiptStore::new(
+                stream,
+                host,
+                first.storage().volume().clone(),
+                first.storage().session_id(),
+                &forged,
+                first.storage().owner_scope(),
+                read,
+                write,
+                maximum_bytes,
+            )
+            .is_err()
+        );
+        drop(second);
+        drop(first);
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        std::fs::remove_dir_all(other_root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
 

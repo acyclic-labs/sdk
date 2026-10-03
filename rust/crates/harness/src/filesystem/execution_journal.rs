@@ -384,6 +384,7 @@ where
                 || context.interaction_id != approval.interaction_id
                 || context.operation_id != approval.operation_id
                 || self.session_id != Some(context.session_id)
+                || approval.request_locator_digest != Some(context.request_locator_digest)
             {
                 return Err(Error::Unauthorized(
                     "execution approval is not bound to the authenticated owner session".into(),
