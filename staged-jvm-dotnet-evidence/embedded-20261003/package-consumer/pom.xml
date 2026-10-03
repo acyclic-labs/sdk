@@ -4,18 +4,17 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
   <groupId>dev.acyclic.embedded</groupId>
-  <artifactId>acyclic-embedded-jna</artifactId>
+  <artifactId>acyclic-embedded-installed-consumer</artifactId>
   <version>0.1.0</version>
   <properties>
     <maven.compiler.release>17</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <jna.version>5.15.0</jna.version>
   </properties>
   <dependencies>
     <dependency>
-      <groupId>net.java.dev.jna</groupId>
-      <artifactId>jna</artifactId>
-      <version>${jna.version}</version>
+      <groupId>dev.acyclic.embedded</groupId>
+      <artifactId>acyclic-embedded-jna</artifactId>
+      <version>0.1.0</version>
     </dependency>
   </dependencies>
   <build>
@@ -25,17 +24,6 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.13.0</version>
       </plugin>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.5.3</version>
-      </plugin>
     </plugins>
   </build>
 </project>
-
-
-
-
-
-

@@ -27,7 +27,7 @@
     "source": "java/src/main/java/dev/acyclic/embedded/EmbeddedJnaConsumer.java",
     "source_sha256": "65779475D265530E5995149670EFA53F649302841FB1E502880935CE90D87F39",
     "pom": "java/pom.xml",
-    "pom_sha256": "10D2FA81C75D7270A1C80D845575829D8C846A8CECA3255A0BA5D0002A02C7C3",
+    "pom_sha256": "EB4935D76CA19A06C56B70F638562FE96C89CE7D5D379F6BC89E3A340D157AE9",
     "jna_jar": "java/lib/jna-5.15.0.jar",
     "jna_jar_sha256": "A564158D28AB5127FC6A958028ED54279FE0999662C46425B6A3B09A2A52094D",
     "license_evidence": "JNA offers LGPL-2.1-or-later or Apache-2.0; URLs are recorded in tooling-license-evidence.txt",
@@ -41,7 +41,18 @@
       "follow cancellation",
       "stale buffer rejection"
     ],
-    "output": "JNA Rust embedded ABI checks passed: append/read/release/recovery/cancel"
+    "output": "JNA Rust embedded ABI checks passed: append/read/release/recovery/cancel",
+    "facade": {
+      "source": "java/src/main/java/dev/acyclic/embedded/RustEmbedded.java",
+      "source_sha256": "34D0B233237207ED966A0A06017316EDFF095590EDF752FEE03AC399BBA4412C",
+      "packaged_native_resource": "java/src/main/resources/native/win-x86_64/acyclic_sdk_embedded_prototype.dll",
+      "packaged_header_resource": "java/src/main/resources/native/win-x86_64/acyclic_embedded_prototype.h"
+    },
+    "package": {
+      "coordinates": "dev.acyclic.embedded:acyclic-embedded-jna:0.1.0",
+      "artifact": "acyclic-embedded-jna-0.1.0.jar",
+      "artifact_sha256": "89823E02037FEB59CA030A3FA49E8927AA74FA33EBC9391600D1102D5C277019"
+    }
   },
   "dotnet_consumer": {
     "binding": "standard DllImport/PInvoke",
@@ -49,7 +60,7 @@
     "source_sha256": "0584CB75E5986B6411314D5DF165EE62B1C1EAF6D9A3DCD1E46F600B33674F4C",
     "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
     "project_sha256": "0E84BF4B1BCABBE2DB38093355D306E4D24765F04B23D412C967148F55642853",
-    "result": "source staged; build not executed",
+    "result": "net8 project source staged; compatibility DllImport run passed",
     "blocker": "available .NET hosts report no installed SDK; the retained portable target bundle contains Roslyn assemblies but no SDK toolchain",
     "checks_planned": [
       "ABI version",
@@ -59,7 +70,17 @@
       "second append recovery",
       "follow cancellation",
       "stale buffer rejection"
-    ]
+    ],
+    "compatibility_run": {
+      "source": "dotnet/Program.Framework.cs",
+      "source_sha256": "E9583E6DC1E3BDE128A1F8FEBBCFA4258F82D834B86445637E98782E0CA7E556",
+      "compiler": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64",
+      "output": "dotnet/EmbeddedPInvokeConsumer.Framework.exe",
+      "output_sha256": "D262266535C7EAE25510AFBC65AD9C6E2845F6BF14C601278560B9CFF3D425E8",
+      "result": "pass",
+      "output_text": ".NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel",
+      "scope": "same standard DllImport mapping; net8 project remains unbuilt because portable host has no full SDK"
+    }
   },
   "tooling": {
     "java": "OpenJDK 17.0.14",
@@ -70,7 +91,7 @@
   },
   "run_receipt": {
     "path": "run-receipt.txt",
-    "sha256": "67650AFF44027824FD0D3F35C82A76DF488EA5A504A939891F6E392CEB73D42A"
+    "sha256": "0A80BA53F54FFC447A50A8A392E2BD3FD47663E69DFB8B801E5BE5E1A808FA51"
   },
   "license_evidence": {
     "path": "tooling-license-evidence.txt",

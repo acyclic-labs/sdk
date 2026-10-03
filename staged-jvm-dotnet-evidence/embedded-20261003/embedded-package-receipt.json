@@ -1,0 +1,73 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.embedded-package.v1",
+  "qualification": "bounded installed-package consumer evidence against the retained Rust C ABI; not a release or publication claim",
+  "source_neutral": false,
+  "source_closure": {
+    "crate": "rust/crates/sdk-embedded-prototype",
+    "manifest_sha256": "5D4251D11D381EFF86C9F7A8405AFE097EB04C8D9C9CFB4CD501CF27C70BD316",
+    "lock_sha256": "DE2979BE9D7CE21CC6AC26589C8874784A7419CFDE2A2812CE50F7BD16468EF1",
+    "source_sha256": "1CB79011293038BACA31ACCBB060205CA18007F38A72CE4942F44CFAE634D37A",
+    "build_script_sha256": "7F57007E1E4ADB82CB34517692F2EE05E250A37B8289E89282AE67C41FC8A052",
+    "generated_header": {
+      "path": "native/acyclic_embedded_prototype.h",
+      "sha256": "64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109"
+    },
+    "windows_x64_dll": {
+      "path": "native/acyclic_sdk_embedded_prototype.dll",
+      "sha256": "ABEB82529044925B1FCDF51B9F308A3964ED82DCAA60D7F6A41B5BEFF0A83211"
+    }
+  },
+  "package": {
+    "ecosystem": "Maven",
+    "groupId": "dev.acyclic.embedded",
+    "artifactId": "acyclic-embedded-jna",
+    "version": "0.1.0",
+    "artifact": "acyclic-embedded-jna-0.1.0.jar",
+    "artifact_sha256": "89823E02037FEB59CA030A3FA49E8927AA74FA33EBC9391600D1102D5C277019",
+    "pom": "java/pom.xml",
+    "pom_sha256": "EB4935D76CA19A06C56B70F638562FE96C89CE7D5D379F6BC89E3A340D157AE9",
+    "native_resource": "native/win-x86_64/acyclic_sdk_embedded_prototype.dll",
+    "native_resource_sha256": "ABEB82529044925B1FCDF51B9F308A3964ED82DCAA60D7F6A41B5BEFF0A83211",
+    "generated_header_resource": "native/win-x86_64/acyclic_embedded_prototype.h",
+    "generated_header_resource_sha256": "64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109",
+    "dependency_lock": {
+      "jna": "5.15.0",
+      "jna_jar": "java/lib/jna-5.15.0.jar",
+      "jna_jar_sha256": "A564158D28AB5127FC6A958028ED54279FE0999662C46425B6A3B09A2A52094D"
+    },
+    "install_command": "mvn -Dmaven.repo.local=Q:\\sdk\\.tmp-m2 -o install -DskipTests"
+  },
+  "facade": {
+    "source": "java/src/main/java/dev/acyclic/embedded/RustEmbedded.java",
+    "source_sha256": "34D0B233237207ED966A0A06017316EDFF095590EDF752FEE03AC399BBA4412C",
+    "behavior": "maps the generated header ABI, extracts the packaged win-x86_64 DLL, copies result bytes, and releases returned buffers"
+  },
+  "installed_consumer": {
+    "source": "package-consumer/src/main/java/dev/acyclic/embedded/InstalledPackageConsumer.java",
+    "source_sha256": "987B672732B3842D64ED7943E77524C43AB56F54000630913B5F1E2B3E95F360",
+    "pom": "package-consumer/pom.xml",
+    "pom_sha256": "503187380FC3CD8F21757384E052354A7EED31EBA005FA50257DFD9F2FC6FB80",
+    "locked_dependency": "dev.acyclic.embedded:acyclic-embedded-jna:0.1.0 plus transitive net.java.dev.jna:jna:5.15.0",
+    "compile": "mvn -Dmaven.repo.local=Q:\\sdk\\.tmp-m2 -o clean compile",
+    "run": "java -cp <consumer-classes>;<installed-artifact-jar>;<jna-5.15.0.jar> dev.acyclic.embedded.InstalledPackageConsumer",
+    "result": "pass",
+    "output": "installed Java package checks passed: append/read/release/recovery/cancel"
+  },
+  "dotnet_compatibility": {
+    "source": "dotnet/Program.Framework.cs",
+    "source_sha256": "E9583E6DC1E3BDE128A1F8FEBBCFA4258F82D834B86445637E98782E0CA7E556",
+    "compiler": "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe /platform:x64",
+    "output": "dotnet/EmbeddedPInvokeConsumer.Framework.exe",
+    "output_sha256": "D262266535C7EAE25510AFBC65AD9C6E2845F6BF14C601278560B9CFF3D425E8",
+    "run": "dotnet/EmbeddedPInvokeConsumer.Framework.exe with native/acyclic_sdk_embedded_prototype.dll beside it",
+    "result": "pass",
+    "output_text": ".NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel",
+    "scope": "same standard DllImport ABI mapping; compatibility compiler evidence while the retained portable net8 host exposes no full SDK"
+  },
+  "gaps": [
+    "Only Windows x64 native placement is packaged; Linux and macOS RID variants remain unqualified.",
+    "The package is installed and consumed locally; nothing is published or deployed.",
+    "The net8 project remains source-staged and was not built because the portable host has no full SDK; the compatibility DllImport run is separately identified above.",
+    "JNA license policy evidence remains in tooling-license-evidence.txt."
+  ]
+}

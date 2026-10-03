@@ -1,25 +1,42 @@
-Embedded JVM/.NET feasibility run — 2026-10-03
+Embedded JVM/.NET feasibility and installable-package run — 2026-10-03
 
-Rust ABI source:
+Rust ABI source closure:
   crate=rust/crates/sdk-embedded-prototype
   build=cargo build --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --release
   target=Windows x64 cdylib plus generated cbindgen header
+  header_sha256=64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109
+  dll_sha256=ABEB82529044925B1FCDF51B9F308A3964ED82DCAA60D7F6A41B5BEFF0A83211
 
-JVM:
+JVM prototype:
   binding=JNA 5.15.0
-  compile=mvn -s Q:\sdk\.tmp-maven-settings.xml -f embedded-20261003/java/pom.xml -o compile
-  run=java -Djna.library.path=embedded-20261003/native -cp target/classes;jna-5.15.0.jar dev.acyclic.embedded.EmbeddedJnaConsumer
   result=pass
   output=JNA Rust embedded ABI checks passed: append/read/release/recovery/cancel
 
+JVM installable package:
+  coordinates=dev.acyclic.embedded:acyclic-embedded-jna:0.1.0
+  artifact=acyclic-embedded-jna-0.1.0.jar
+  artifact_sha256=89823E02037FEB59CA030A3FA49E8927AA74FA33EBC9391600D1102D5C277019
+  native_resource=native/win-x86_64/acyclic_sdk_embedded_prototype.dll
+  generated_header_resource=native/win-x86_64/acyclic_embedded_prototype.h
+  install=mvn -Dmaven.repo.local=Q:\sdk\.tmp-m2 -o install -DskipTests
+  consumer=package-consumer/src/main/java/dev/acyclic/embedded/InstalledPackageConsumer.java
+  consumer_result=pass
+  consumer_output=installed Java package checks passed: append/read/release/recovery/cancel
+  package_scope=the facade extracts the packaged Windows x64 DLL, maps the generated header ABI, and explicitly releases returned buffers
+
 .NET:
-  binding=standard DllImport/PInvoke
-  source=embedded-20261003/dotnet/Program.cs
-  result=not run
-  reason=available .NET hosts report no installed SDK; the retained portable target bundle has no SDK toolchain
+  modern_source=dotnet/Program.cs
+  modern_project=dotnet/EmbeddedPInvokeConsumer.csproj
+  modern_project_result=not built
+  modern_project_reason=retained portable dotnet host reports no full SDK; sdk/8.0.425 contains only Roslyn assemblies and no dotnet.dll/MSBuild/csc driver
+  compatibility_source=dotnet/Program.Framework.cs
+  compatibility_compiler=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /platform:x64
+  compatibility_output=dotnet/EmbeddedPInvokeConsumer.Framework.exe
+  compatibility_result=pass
+  compatibility_output=.NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel
+  compatibility_scope=same standard DllImport mappings against the retained Rust ABI; this does not relabel the unavailable net8 SDK build
 
 Scope:
-  The JVM run exercised the retained Rust ABI's real MemoryStream through append, finite read,
-  explicit returned-buffer release, second append recovery, follow cancellation, and stale-buffer
-  rejection. No Rust ABI source was changed. The .NET source maps the same ABI but has no binary
-  result until a .NET SDK is available.
+  Both bindings exercised the retained Rust MemoryStream through append, finite read/end,
+  explicit returned-buffer release, second append recovery, follow cancellation, and stale-buffer rejection.
+  No Rust ABI source was changed, and no package publication or deployment is claimed.
