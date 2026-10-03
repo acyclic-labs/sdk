@@ -234,8 +234,15 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(deferred.contract).toBe("harness.task-admission.v3");
   expect(deferred.dependencies).toEqual([...prerequisites].sort());
   expect(contracts.validate("task_admission", deferred)).toEqual(deferred);
+  expect(contracts.admitTask({
+    ...common, operation_id: task.operation_id, input: 4,
+    dependencies: [...prerequisites].reverse(),
+  }).dependencies).toEqual(deferred.dependencies);
   expect(() => contracts.validate("task_admission", {
     ...deferred, dependencies: [prerequisites[0], prerequisites[0]],
+  })).toThrow();
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, dependencies: [...deferred.dependencies!].reverse(),
   })).toThrow();
   expect(() => contracts.validate("task_admission", {
     ...deferred, dependencies: [],
@@ -250,6 +257,12 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4, dependencies: [task.operation_id],
   })).toThrow();
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, dependencies: [task.operation_id],
+  })).toThrow();
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, unexpected: true,
+  } as never)).toThrow();
 
   const batchInput = {
     ...common,
