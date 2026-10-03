@@ -578,7 +578,7 @@ impl ForkAtBatch {
                 )
                 .await?;
             let storage = self
-                .verified_child_storage(&parent, &seed, child_issuer, &boundary, &admission, index)
+                .verified_child_storage(&parent, &seed, child_issuer.clone(), &boundary, &admission, index)
                 .await?;
             let suffix = vec![ModelMessage {
                 role: ModelRole::System,
@@ -660,6 +660,7 @@ impl ForkAtBatch {
         ])?);
         parent = parent.with_fork_verifier(forks.clone());
         let project_head = self.host.create_volume(&parent_project).await?;
+        let pinned_generation = project_head.generation.clone();
         let grandchild_agent = AgentId::from_bytes([90; 16]);
         let grandchild_authority = Authority {
             kind: AggregateKind::Conversation,
@@ -723,11 +724,12 @@ impl ForkAtBatch {
                     required: true,
                     revision: ResourceRevision::Project {
                         volume: parent_project.clone(),
-                        generation: project_head.generation.clone(),
+                        generation: pinned_generation.clone(),
                     },
                 },
             ],
             boundary: None,
+            model_boundary: None,
         };
 
         // A provider-shaped boundary without an attestation from the bound
@@ -790,11 +792,12 @@ impl ForkAtBatch {
                 &IdempotencyKey::new("recursive-parent-mutation")?,
             )
             .await?;
+        assert_ne!(source.generation, pinned_generation);
         assert!(self
             .host
             .read(
                 &source.workspace,
-                Some(&source.generation),
+                Some(&pinned_generation),
                 "/recursive-same-path.txt",
                 self.limits.file_bytes,
             )
@@ -844,10 +847,35 @@ impl ForkAtBatch {
             .run_conversation(&bundle, operation, input, Vec::new(), 3)
             .await?;
         let records = storage.journal().replay(operation).await?;
-        assert!(records.iter().any(|record| matches!(
-            &record.event,
-            ExecutionEvent::ToolCompleted { call_id, .. } if call_id == "read-inherited"
-        )));
+        let read_started = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolStarted { call_id, .. } if call_id == "read-inherited" => {
+                Some(call_id.clone())
+            }
+            _ => None,
+        });
+        let read_completed = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                call_id,
+                result,
+                projection,
+                ..
+            } if call_id == "read-inherited" => {
+                Some((call_id.clone(), result.clone(), projection.clone()))
+            }
+            _ => None,
+        });
+        let (completed_call, result, projection) = read_completed
+            .ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
+        assert_eq!(read_started.as_deref(), Some(completed_call.as_str()));
+        let result: Value = serde_json::from_slice(&storage.journal().load(&result).await?)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            result.get("text").and_then(Value::as_str),
+            Some("root request")
+        );
+        let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(projection, Value::String("root request".into()));
         let captured = self.grandchild.requests.lock().unwrap();
         assert!(captured.len() >= 2);
         let actual = PreparedModelInput::prepare(captured[0].clone(), self.limits)?;
@@ -997,15 +1025,42 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         .completed_model_boundary(operation, 0, limits)
         .await?
         .ok_or_else(|| Error::Storage("test completed boundary missing".into()))?;
-    let captured = children
-        .iter()
-        .flat_map(|child| child.requests.lock().unwrap().clone())
-        .collect::<Vec<_>>();
     // Each sibling receives one read_file turn followed by its terminal
     // continuation. The first request for each sibling is the exact fork
     // boundary; the continuation is allowed to contain the paired result.
-    assert_eq!(captured.len(), 4);
-    for request in captured.iter().step_by(2) {
+    let child_requests = children
+        .iter()
+        .map(|child| child.requests.lock().unwrap().clone())
+        .collect::<Vec<_>>();
+    assert_eq!(child_requests.len(), 2);
+    assert!(child_requests.iter().all(|requests| requests.len() == 2));
+    let first_sibling = &child_requests[0][0];
+    let second_sibling = &child_requests[1][0];
+    assert_eq!(
+        &first_sibling.messages[..boundary.request.messages.len()],
+        boundary.request.messages
+    );
+    assert_eq!(
+        &second_sibling.messages[..boundary.request.messages.len()],
+        boundary.request.messages
+    );
+    let first_prepared = PreparedModelInput::prepare(first_sibling.clone(), limits)?;
+    let second_prepared = PreparedModelInput::prepare(second_sibling.clone(), limits)?;
+    let first_prefix =
+        FrozenModelPrefix::capture(&first_prepared, boundary.request.messages.len())?;
+    let second_prefix =
+        FrozenModelPrefix::capture(&second_prepared, boundary.request.messages.len())?;
+    assert_eq!(
+        first_prefix.message_bytes(),
+        boundary.prefix.message_bytes()
+    );
+    assert_eq!(
+        second_prefix.message_bytes(),
+        boundary.prefix.message_bytes()
+    );
+    assert_eq!(first_prefix.digest(), second_prefix.digest());
+    for requests in &child_requests {
+        let request = &requests[0];
         assert_eq!(
             request.messages.get(..boundary.request.messages.len()),
             Some(boundary.request.messages.as_slice())
@@ -1015,7 +1070,6 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
         assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
     }
-    drop(captured);
     storage
         .run_conversation(&bundle, operation, input, Vec::new(), 3)
         .await?;
