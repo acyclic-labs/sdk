@@ -1,0 +1,1195 @@
+//! Session-wide swarm admission and resource accounting.
+//!
+//! The projection in this module is deliberately independent of a storage
+//! provider. A host persists the event returned by an admission operation
+//! before dispatching a fork, then applies the same event while projecting its
+//! durable coordinator log. This keeps admission-before-dispatch and replay
+//! semantics in one place while allowing Stream, memory, and local providers
+//! to share the contract.
+
+use crate::{
+    Error, IdempotencyKey, OperationId, Result, contract::canonical_json_bytes,
+    runtime::TaskAdmissionRecord,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+/// Maximum number of agents one budget projection may retain.
+pub const MAX_SWARM_AGENTS: u64 = 1_000_000;
+/// Maximum recursion depth accepted by one projection.
+pub const MAX_SWARM_DEPTH: u32 = 1_024;
+/// Maximum model steps admitted by one session.
+pub const MAX_SWARM_MODEL_STEPS: u64 = 1_000_000_000;
+/// Maximum output bytes admitted by one session.
+pub const MAX_SWARM_OUTPUT_BYTES: u64 = 1_u64 << 50;
+/// Maximum execution time in milliseconds admitted by one session.
+pub const MAX_SWARM_EXECUTION_TIME_MS: u64 = 31_536_000_000;
+
+/// Session-wide limits shared by the root and every descendant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmBudgetLimits {
+    /// Maximum simultaneously reserved or running agents, including the root.
+    pub max_active_agents: u64,
+    /// Maximum agents admitted over the lifetime of the session, including root.
+    pub max_total_agents: u64,
+    /// Maximum child depth below the root. The root is depth zero.
+    pub max_recursion_depth: u32,
+    /// Maximum model steps consumed or reserved by the complete session.
+    pub max_model_steps: u64,
+    /// Maximum model output bytes consumed or reserved by the complete session.
+    pub max_output_bytes: u64,
+    /// Maximum execution time in milliseconds consumed or reserved by the session.
+    pub max_execution_time_ms: u64,
+}
+
+impl SwarmBudgetLimits {
+    /// Validates bounds before a session can be opened.
+    pub fn validate(self) -> Result<()> {
+        if self.max_active_agents == 0
+            || self.max_active_agents > MAX_SWARM_AGENTS
+            || self.max_total_agents == 0
+            || self.max_total_agents > MAX_SWARM_AGENTS
+            || self.max_active_agents > self.max_total_agents
+            || self.max_recursion_depth > MAX_SWARM_DEPTH
+            || self.max_model_steps == 0
+            || self.max_model_steps > MAX_SWARM_MODEL_STEPS
+            || self.max_output_bytes == 0
+            || self.max_output_bytes > MAX_SWARM_OUTPUT_BYTES
+            || self.max_execution_time_ms == 0
+            || self.max_execution_time_ms > MAX_SWARM_EXECUTION_TIME_MS
+        {
+            return Err(Error::Invalid("swarm budget limits are invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+impl Default for SwarmBudgetLimits {
+    fn default() -> Self {
+        Self {
+            max_active_agents: 8,
+            max_total_agents: 64,
+            max_recursion_depth: 8,
+            max_model_steps: 512,
+            max_output_bytes: 64 * 1024 * 1024,
+            max_execution_time_ms: 60 * 60 * 1_000,
+        }
+    }
+}
+
+/// Monotonic owner identity used to fence stale workers after recovery.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmOwnerFence {
+    /// Durable host or process owner identity.
+    pub owner: String,
+    /// Generation advanced on every takeover.
+    pub generation: u64,
+}
+
+impl SwarmOwnerFence {
+    /// Creates and validates one owner fence.
+    pub fn new(owner: impl Into<String>, generation: u64) -> Result<Self> {
+        let value = Self {
+            owner: owner.into(),
+            generation,
+        };
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Rejects empty, control-bearing, or exhausted owner identities.
+    pub fn validate(&self) -> Result<()> {
+        if self.owner.is_empty()
+            || self.owner.len() > 255
+            || self.owner.chars().any(char::is_control)
+        {
+            return Err(Error::Invalid("swarm owner identity is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Budget requested for one child model invocation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmResourceRequest {
+    /// Maximum model steps this child may consume.
+    pub model_steps: u64,
+    /// Maximum model output bytes this child may emit.
+    pub output_bytes: u64,
+    /// Maximum execution time in milliseconds for this child.
+    pub execution_time_ms: u64,
+}
+
+impl SwarmResourceRequest {
+    /// Validates nonzero per-child requests.
+    pub fn validate(self) -> Result<()> {
+        if self.model_steps == 0 || self.output_bytes == 0 || self.execution_time_ms == 0 {
+            return Err(Error::Invalid(
+                "swarm child resource request is empty".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Measured usage reported by one child. Values are cumulative per report.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmUsage {
+    /// Model steps consumed so far.
+    pub model_steps: u64,
+    /// Output bytes emitted so far.
+    pub output_bytes: u64,
+    /// Execution time in milliseconds consumed so far.
+    pub execution_time_ms: u64,
+}
+
+impl SwarmUsage {
+    fn checked_delta(self, previous: Self) -> Result<Self> {
+        Ok(Self {
+            model_steps: self
+                .model_steps
+                .checked_sub(previous.model_steps)
+                .ok_or_else(|| Error::Conflict("child usage moved backwards".into()))?,
+            output_bytes: self
+                .output_bytes
+                .checked_sub(previous.output_bytes)
+                .ok_or_else(|| Error::Conflict("child usage moved backwards".into()))?,
+            execution_time_ms: self
+                .execution_time_ms
+                .checked_sub(previous.execution_time_ms)
+                .ok_or_else(|| Error::Conflict("child usage moved backwards".into()))?,
+        })
+    }
+}
+
+/// Parent and child identity submitted before a model fork is dispatched.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmForkRequest {
+    /// Stable operation identity assigned before admission.
+    pub operation_id: OperationId,
+    /// Caller-retained retry identity.
+    pub idempotency_key: IdempotencyKey,
+    /// Direct parent operation, or `None` for a root child at depth one.
+    pub parent_operation_id: Option<OperationId>,
+    /// Child depth below the root.
+    pub depth: u32,
+    /// Requested child resources.
+    pub resources: SwarmResourceRequest,
+}
+
+impl SwarmForkRequest {
+    /// Validates identity and request bounds independent of session state.
+    pub fn validate(&self) -> Result<()> {
+        if self.operation_id.into_bytes() == [0; 16]
+            || self
+                .parent_operation_id
+                .is_some_and(|id| id.into_bytes() == [0; 16])
+            || self.depth == 0
+        {
+            return Err(Error::Invalid(
+                "swarm fork identity or depth is invalid".into(),
+            ));
+        }
+        IdempotencyKey::new(self.idempotency_key.0.clone())?;
+        self.resources.validate()
+    }
+
+    /// Builds a fork request from the canonical durable task admission.
+    ///
+    /// The task admission remains the source of operation identity and
+    /// prerequisite dependencies; this request only adds the session-wide
+    /// resource reservation and parent operation binding.
+    pub fn from_task_admission(
+        admission: &TaskAdmissionRecord,
+        idempotency_key: IdempotencyKey,
+        parent_operation_id: Option<OperationId>,
+        depth: u32,
+        resources: SwarmResourceRequest,
+    ) -> Result<Self> {
+        let request = Self {
+            operation_id: admission.operation_id,
+            idempotency_key,
+            parent_operation_id,
+            depth,
+            resources,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+}
+
+/// Evidence that a complete model exchange and workspace publication finished.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ForkPublication {
+    /// Child operation whose fork was published.
+    pub operation_id: OperationId,
+    /// Direct parent operation used for admission.
+    pub parent_operation_id: Option<OperationId>,
+    /// Digest of the completed authoritative model boundary.
+    pub completed_boundary_digest: [u8; 32],
+    /// Digest of the published child workspace generation.
+    pub workspace_generation_digest: [u8; 32],
+}
+
+impl ForkPublication {
+    /// Validates publication evidence before a child can obtain a dispatch token.
+    pub fn validate(&self) -> Result<()> {
+        if self.operation_id.into_bytes() == [0; 16]
+            || self.completed_boundary_digest == [0; 32]
+            || self.workspace_generation_digest == [0; 32]
+            || self
+                .parent_operation_id
+                .is_some_and(|id| id.into_bytes() == [0; 16])
+        {
+            return Err(Error::Invalid(
+                "fork publication evidence is invalid".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Lifecycle of an admitted child reservation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SwarmReservationState {
+    /// Admission is persisted but fork publication is incomplete.
+    Reserved,
+    /// Fork publication completed and dispatch may proceed.
+    Active,
+    /// Child completed and no longer consumes active capacity.
+    Completed,
+    /// Child was cancelled and no longer consumes active capacity.
+    Cancelled,
+}
+
+/// Durable reservation held for one child operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmForkReservation {
+    /// Stable child operation identity.
+    pub operation_id: OperationId,
+    /// Direct parent operation identity.
+    pub parent_operation_id: Option<OperationId>,
+    /// Child depth below the root.
+    pub depth: u32,
+    /// Owner fence at the last mutation.
+    pub owner: SwarmOwnerFence,
+    /// Held child resource ceiling.
+    pub resources: SwarmResourceRequest,
+    /// Caller-retained retry identity bound to this reservation.
+    pub idempotency_key: IdempotencyKey,
+    /// Cumulative measured child usage.
+    pub usage: SwarmUsage,
+    /// Current reservation lifecycle.
+    pub state: SwarmReservationState,
+    /// Publication evidence, present before activation.
+    pub publication: Option<ForkPublication>,
+    /// Digest of the exact request and retry identity.
+    pub request_digest: [u8; 32],
+}
+
+/// Session usage projection, including resources held by admitted children.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmBudgetUsage {
+    /// Currently reserved or active agents, including the root.
+    pub active_agents: u64,
+    /// Lifetime admitted agents, including the root.
+    pub total_agents: u64,
+    /// Consumption already observed and never refunded.
+    pub consumed: SwarmUsage,
+    /// Unconsumed ceilings held by live reservations.
+    pub reserved: SwarmUsage,
+}
+
+/// Durable changes to a budget projection.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SwarmBudgetEvent {
+    /// Starts a session with one root agent at depth zero.
+    Started {
+        /// Stable root/session operation identity.
+        session_id: OperationId,
+        /// Owner fence retained by the session.
+        owner: SwarmOwnerFence,
+        /// Immutable session budget.
+        limits: SwarmBudgetLimits,
+    },
+    /// Persists an admission before a fork is dispatched.
+    ChildReserved {
+        /// Exact child reservation.
+        reservation: SwarmForkReservation,
+    },
+    /// Publishes complete fork evidence and enables child model dispatch.
+    ChildActivated {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for activation.
+        owner: SwarmOwnerFence,
+        /// Complete model/workspace publication evidence.
+        publication: ForkPublication,
+    },
+    /// Adds cumulative measured usage to a live child.
+    UsageReported {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for reporting.
+        owner: SwarmOwnerFence,
+        /// Cumulative measured child usage.
+        usage: SwarmUsage,
+    },
+    /// Marks a child complete and releases only its unconsumed reservation.
+    ChildCompleted {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for completion.
+        owner: SwarmOwnerFence,
+        /// Final cumulative child usage.
+        usage: SwarmUsage,
+    },
+    /// Cancels a child and releases active/unconsumed resources without refunding usage.
+    ChildCancelled {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for cancellation.
+        owner: SwarmOwnerFence,
+    },
+    /// Takes ownership after restart and fences all prior mutations.
+    OwnerTakenOver {
+        /// New owner fence; generation must advance by one.
+        owner: SwarmOwnerFence,
+    },
+}
+
+/// Result of one atomic child admission.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwarmAdmissionReceipt {
+    /// Exact reservation to retain for later publication and dispatch.
+    pub reservation: SwarmForkReservation,
+    /// Whether the request was an exact idempotent replay.
+    pub replayed: bool,
+}
+
+impl SwarmAdmissionReceipt {
+    /// Returns the durable event that must be persisted before fork dispatch.
+    #[must_use]
+    pub fn durable_event(&self) -> SwarmBudgetEvent {
+        SwarmBudgetEvent::ChildReserved {
+            reservation: self.reservation.clone(),
+        }
+    }
+}
+
+/// Token authorizing model dispatch after publication.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SwarmDispatchToken {
+    /// Child operation identity.
+    pub operation_id: OperationId,
+    /// Direct parent operation identity.
+    pub parent_operation_id: Option<OperationId>,
+    /// Current owner fence.
+    pub owner: SwarmOwnerFence,
+    /// Exact model boundary published for this child.
+    pub completed_boundary_digest: [u8; 32],
+    /// Exact workspace generation published for this child.
+    pub workspace_generation_digest: [u8; 32],
+}
+
+impl SwarmDispatchToken {
+    /// Returns the publication evidence bound to this dispatch authorization.
+    #[must_use]
+    pub fn publication(&self) -> ForkPublication {
+        ForkPublication {
+            operation_id: self.operation_id,
+            parent_operation_id: self.parent_operation_id,
+            completed_boundary_digest: self.completed_boundary_digest,
+            workspace_generation_digest: self.workspace_generation_digest,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct SwarmBudgetState {
+    session_id: OperationId,
+    limits: SwarmBudgetLimits,
+    owner: SwarmOwnerFence,
+    usage: SwarmBudgetUsage,
+    reservations: BTreeMap<OperationId, SwarmForkReservation>,
+    idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
+}
+
+/// Thread-safe, atomically updated budget projection for one session.
+#[derive(Clone, Debug)]
+pub struct SwarmBudget {
+    state: Arc<Mutex<SwarmBudgetState>>,
+}
+
+impl SwarmBudget {
+    /// Opens a new session and accounts for its root agent.
+    pub fn new(
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+    ) -> Result<Self> {
+        if session_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("swarm session identity is empty".into()));
+        }
+        owner.validate()?;
+        limits.validate()?;
+        let usage = SwarmBudgetUsage {
+            active_agents: 1,
+            total_agents: 1,
+            consumed: SwarmUsage::default(),
+            reserved: SwarmUsage::default(),
+        };
+        if limits.max_active_agents == 0 || limits.max_total_agents == 0 {
+            return Err(Error::Invalid("swarm root exceeds agent budget".into()));
+        }
+        Ok(Self {
+            state: Arc::new(Mutex::new(SwarmBudgetState {
+                session_id,
+                limits,
+                owner,
+                usage,
+                reservations: BTreeMap::new(),
+                idempotency: BTreeMap::new(),
+            })),
+        })
+    }
+
+    /// Reopens a projection from a durable event stream.
+    pub fn replay(events: impl IntoIterator<Item = SwarmBudgetEvent>) -> Result<Self> {
+        let mut projection: Option<Self> = None;
+        for event in events {
+            match (&projection, &event) {
+                (
+                    None,
+                    SwarmBudgetEvent::Started {
+                        session_id,
+                        owner,
+                        limits,
+                    },
+                ) => {
+                    projection = Some(Self::new(*session_id, owner.clone(), *limits)?);
+                }
+                (None, _) => {
+                    return Err(Error::Conflict("swarm events start without session".into()));
+                }
+                (Some(_), SwarmBudgetEvent::Started { .. }) => {
+                    return Err(Error::Conflict("swarm session started twice".into()));
+                }
+                _ => {}
+            }
+            if matches!(&event, SwarmBudgetEvent::Started { .. }) {
+                continue;
+            }
+            if let Some(value) = &projection {
+                value.apply_event(event)?;
+            }
+        }
+        projection.ok_or_else(|| Error::NotFound("swarm session".into()))
+    }
+
+    /// Returns the immutable session identity and limits.
+    pub fn descriptor(&self) -> Result<(OperationId, SwarmOwnerFence, SwarmBudgetLimits)> {
+        let state = self.lock()?;
+        Ok((state.session_id, state.owner.clone(), state.limits))
+    }
+
+    /// Returns current usage. Counters are monotonic except active/reserved release.
+    pub fn usage(&self) -> Result<SwarmBudgetUsage> {
+        Ok(self.lock()?.usage)
+    }
+
+    /// Returns a reservation snapshot for recovery or reconciliation.
+    pub fn reservation(&self, operation_id: OperationId) -> Result<Option<SwarmForkReservation>> {
+        Ok(self.lock()?.reservations.get(&operation_id).cloned())
+    }
+
+    /// Returns the current owner fence.
+    pub fn owner(&self) -> Result<SwarmOwnerFence> {
+        Ok(self.lock()?.owner.clone())
+    }
+
+    /// Atomically admits one child. Persist the corresponding
+    /// `ChildReserved` event before invoking any fork/model provider.
+    pub fn reserve_child(&self, request: SwarmForkRequest) -> Result<SwarmAdmissionReceipt> {
+        request.validate()?;
+        let mut state = self.lock()?;
+        let digest = request_digest(&request)?;
+        if let Some((existing_digest, operation_id)) =
+            state.idempotency.get(&request.idempotency_key)
+        {
+            if existing_digest != &digest || operation_id != &request.operation_id {
+                return Err(Error::Conflict("swarm retry identity reused".into()));
+            }
+            let reservation = state
+                .reservations
+                .get(operation_id)
+                .cloned()
+                .ok_or_else(|| Error::Storage("swarm reservation index is incomplete".into()))?;
+            return Ok(SwarmAdmissionReceipt {
+                reservation,
+                replayed: true,
+            });
+        }
+        if state.reservations.contains_key(&request.operation_id) {
+            return Err(Error::Conflict(
+                "swarm operation identity already exists".into(),
+            ));
+        }
+        if request.operation_id == state.session_id {
+            return Err(Error::Conflict(
+                "swarm child cannot reuse session identity".into(),
+            ));
+        }
+        if let Some(parent) = request.parent_operation_id {
+            let parent = state
+                .reservations
+                .get(&parent)
+                .ok_or_else(|| Error::NotFound(format!("swarm parent {parent}")))?;
+            if !matches!(
+                parent.state,
+                SwarmReservationState::Reserved | SwarmReservationState::Active
+            ) || request.depth != parent.depth.saturating_add(1)
+            {
+                return Err(Error::Conflict(
+                    "swarm parent is not an active direct ancestor".into(),
+                ));
+            }
+        } else if request.depth != 1 {
+            return Err(Error::Conflict("root child must have depth one".into()));
+        }
+        if request.depth > state.limits.max_recursion_depth {
+            return Err(Error::Conflict("swarm recursion depth exceeded".into()));
+        }
+        if state.usage.active_agents >= state.limits.max_active_agents
+            || state.usage.total_agents >= state.limits.max_total_agents
+        {
+            return Err(Error::Conflict("swarm agent limit exceeded".into()));
+        }
+        let limits = state.limits;
+        reserve_resources(&mut state.usage, request.resources, limits)?;
+        state.usage.active_agents += 1;
+        state.usage.total_agents += 1;
+        let reservation = SwarmForkReservation {
+            operation_id: request.operation_id,
+            parent_operation_id: request.parent_operation_id,
+            depth: request.depth,
+            owner: state.owner.clone(),
+            resources: request.resources,
+            idempotency_key: request.idempotency_key.clone(),
+            usage: SwarmUsage::default(),
+            state: SwarmReservationState::Reserved,
+            publication: None,
+            request_digest: digest,
+        };
+        state
+            .idempotency
+            .insert(request.idempotency_key, (digest, request.operation_id));
+        state
+            .reservations
+            .insert(request.operation_id, reservation.clone());
+        Ok(SwarmAdmissionReceipt {
+            reservation,
+            replayed: false,
+        })
+    }
+
+    /// Records complete model/workspace publication and returns a dispatch token.
+    pub fn activate(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: ForkPublication,
+    ) -> Result<SwarmDispatchToken> {
+        publication.validate()?;
+        let mut state = self.lock()?;
+        require_owner(&state, &owner)?;
+        let mut reservation = state
+            .reservations
+            .get(&operation_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if publication.operation_id != operation_id
+            || publication.parent_operation_id != reservation.parent_operation_id
+        {
+            return Err(Error::Conflict(
+                "fork publication does not match admission".into(),
+            ));
+        }
+        match reservation.state {
+            SwarmReservationState::Reserved => {
+                reservation.state = SwarmReservationState::Active;
+                reservation.publication = Some(publication);
+            }
+            SwarmReservationState::Active => {
+                if reservation.publication.as_ref() != Some(&publication) {
+                    return Err(Error::Conflict("fork activation retry differs".into()));
+                }
+            }
+            SwarmReservationState::Completed | SwarmReservationState::Cancelled => {
+                return Err(Error::Conflict("swarm reservation is terminal".into()));
+            }
+        }
+        let parent_operation_id = reservation.parent_operation_id;
+        state.reservations.insert(operation_id, reservation);
+        Ok(SwarmDispatchToken {
+            operation_id,
+            parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+        })
+    }
+
+    /// Reports cumulative usage and retains the unconsumed remainder.
+    pub fn report_usage(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmForkReservation> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        update_usage(&mut state, operation_id, owner, usage, false)
+    }
+
+    /// Completes a child and releases only its unconsumed active reservation.
+    pub fn complete(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmForkReservation> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        update_usage(&mut state, operation_id, owner, usage, true)
+    }
+
+    /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
+    pub fn cancel(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+    ) -> Result<SwarmForkReservation> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != *owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if matches!(reservation.state, SwarmReservationState::Completed) {
+            return Err(Error::Conflict(
+                "completed swarm child cannot be cancelled".into(),
+            ));
+        }
+        if reservation.state == SwarmReservationState::Cancelled {
+            return Ok(reservation);
+        }
+        release_remaining(&mut state.usage, &reservation)?;
+        state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
+        let reservation = state
+            .reservations
+            .get_mut(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        reservation.state = SwarmReservationState::Cancelled;
+        Ok(reservation.clone())
+    }
+
+    /// Takes ownership after restart and advances the generation exactly once.
+    /// Active reservations are rebound to the new fence; stale tokens cannot mutate them.
+    pub fn takeover(
+        &self,
+        owner: impl Into<String>,
+        expected_generation: u64,
+    ) -> Result<SwarmOwnerFence> {
+        let mut state = self.lock()?;
+        if expected_generation != state.owner.generation {
+            return Err(Error::Conflict("swarm owner generation is stale".into()));
+        }
+        let generation = state
+            .owner
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm owner generation exhausted".into()))?;
+        let fence = SwarmOwnerFence::new(owner, generation)?;
+        state.owner = fence.clone();
+        for reservation in state.reservations.values_mut() {
+            if matches!(
+                reservation.state,
+                SwarmReservationState::Reserved | SwarmReservationState::Active
+            ) {
+                reservation.owner = fence.clone();
+            }
+        }
+        Ok(fence)
+    }
+
+    /// Applies a previously persisted event exactly once at the projection layer.
+    pub fn apply_event(&self, event: SwarmBudgetEvent) -> Result<()> {
+        match event {
+            SwarmBudgetEvent::Started { .. } => {
+                Err(Error::Conflict("swarm session already exists".into()))
+            }
+            SwarmBudgetEvent::ChildReserved { reservation } => {
+                let request = request_from_reservation(&reservation)?;
+                let receipt = self.reserve_child(request)?;
+                if receipt.reservation != reservation {
+                    return Err(Error::Conflict(
+                        "persisted swarm reservation differs".into(),
+                    ));
+                }
+                Ok(())
+            }
+            SwarmBudgetEvent::ChildActivated {
+                operation_id,
+                owner,
+                publication,
+            } => self.activate(operation_id, owner, publication).map(|_| ()),
+            SwarmBudgetEvent::UsageReported {
+                operation_id,
+                owner,
+                usage,
+            } => self.report_usage(operation_id, &owner, usage).map(|_| ()),
+            SwarmBudgetEvent::ChildCompleted {
+                operation_id,
+                owner,
+                usage,
+            } => self.complete(operation_id, &owner, usage).map(|_| ()),
+            SwarmBudgetEvent::ChildCancelled {
+                operation_id,
+                owner,
+            } => self.cancel(operation_id, &owner).map(|_| ()),
+            SwarmBudgetEvent::OwnerTakenOver { owner } => {
+                let state = self.lock()?;
+                let expected = state.owner.generation;
+                drop(state);
+                let observed = self.takeover(owner.owner.clone(), expected)?;
+                if observed != owner {
+                    return Err(Error::Conflict("persisted takeover differs".into()));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, SwarmBudgetState>> {
+        self.state
+            .lock()
+            .map_err(|_| Error::Storage("swarm budget lock is poisoned".into()))
+    }
+}
+
+fn request_digest(request: &SwarmForkRequest) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&canonical_json_bytes(request)?).as_bytes())
+}
+
+fn request_from_reservation(reservation: &SwarmForkReservation) -> Result<SwarmForkRequest> {
+    let request = SwarmForkRequest {
+        operation_id: reservation.operation_id,
+        idempotency_key: reservation.idempotency_key.clone(),
+        parent_operation_id: reservation.parent_operation_id,
+        depth: reservation.depth,
+        resources: reservation.resources,
+    };
+    if request_digest(&request)? != reservation.request_digest {
+        return Err(Error::Conflict(
+            "persisted swarm request digest differs".into(),
+        ));
+    }
+    Ok(request)
+}
+
+fn require_owner(state: &SwarmBudgetState, owner: &SwarmOwnerFence) -> Result<()> {
+    if &state.owner != owner {
+        return Err(Error::Conflict("stale swarm owner generation".into()));
+    }
+    Ok(())
+}
+
+fn reserve_resources(
+    usage: &mut SwarmBudgetUsage,
+    request: SwarmResourceRequest,
+    limits: SwarmBudgetLimits,
+) -> Result<()> {
+    let next = |consumed: u64, reserved: u64, requested: u64, limit: u64| -> Result<u64> {
+        consumed
+            .checked_add(reserved)
+            .and_then(|value| value.checked_add(requested))
+            .filter(|value| *value <= limit)
+            .ok_or_else(|| Error::Conflict("swarm session resource budget exceeded".into()))
+    };
+    let values = [
+        (
+            usage.consumed.model_steps,
+            usage.reserved.model_steps,
+            request.model_steps,
+        ),
+        (
+            usage.consumed.output_bytes,
+            usage.reserved.output_bytes,
+            request.output_bytes,
+        ),
+        (
+            usage.consumed.execution_time_ms,
+            usage.reserved.execution_time_ms,
+            request.execution_time_ms,
+        ),
+    ];
+    let values = [
+        next(
+            values[0].0,
+            values[0].1,
+            values[0].2,
+            limits.max_model_steps,
+        ),
+        next(
+            values[1].0,
+            values[1].1,
+            values[1].2,
+            limits.max_output_bytes,
+        ),
+        next(
+            values[2].0,
+            values[2].1,
+            values[2].2,
+            limits.max_execution_time_ms,
+        ),
+    ];
+    let _ = values;
+    usage.reserved.model_steps = usage
+        .reserved
+        .model_steps
+        .checked_add(request.model_steps)
+        .ok_or_else(|| Error::Invalid("swarm step reservation exhausted".into()))?;
+    usage.reserved.output_bytes = usage
+        .reserved
+        .output_bytes
+        .checked_add(request.output_bytes)
+        .ok_or_else(|| Error::Invalid("swarm output reservation exhausted".into()))?;
+    usage.reserved.execution_time_ms = usage
+        .reserved
+        .execution_time_ms
+        .checked_add(request.execution_time_ms)
+        .ok_or_else(|| Error::Invalid("swarm time reservation exhausted".into()))?;
+    Ok(())
+}
+
+fn release_remaining(
+    usage: &mut SwarmBudgetUsage,
+    reservation: &SwarmForkReservation,
+) -> Result<()> {
+    usage.reserved.model_steps = usage
+        .reserved
+        .model_steps
+        .checked_sub(
+            reservation
+                .resources
+                .model_steps
+                .saturating_sub(reservation.usage.model_steps),
+        )
+        .ok_or_else(|| Error::Storage("swarm step reservation underflow".into()))?;
+    usage.reserved.output_bytes = usage
+        .reserved
+        .output_bytes
+        .checked_sub(
+            reservation
+                .resources
+                .output_bytes
+                .saturating_sub(reservation.usage.output_bytes),
+        )
+        .ok_or_else(|| Error::Storage("swarm output reservation underflow".into()))?;
+    usage.reserved.execution_time_ms = usage
+        .reserved
+        .execution_time_ms
+        .checked_sub(
+            reservation
+                .resources
+                .execution_time_ms
+                .saturating_sub(reservation.usage.execution_time_ms),
+        )
+        .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
+    Ok(())
+}
+
+fn update_usage(
+    state: &mut SwarmBudgetState,
+    operation_id: OperationId,
+    owner: &SwarmOwnerFence,
+    usage: SwarmUsage,
+    complete: bool,
+) -> Result<SwarmForkReservation> {
+    let mut reservation = state
+        .reservations
+        .get(&operation_id)
+        .cloned()
+        .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+    if reservation.owner != *owner {
+        return Err(Error::Conflict("stale swarm reservation generation".into()));
+    }
+    if reservation.state == SwarmReservationState::Completed
+        && complete
+        && usage == reservation.usage
+    {
+        return Ok(reservation);
+    }
+    if reservation.state != SwarmReservationState::Active {
+        return Err(Error::Conflict("swarm child is not active".into()));
+    }
+    let delta = usage.checked_delta(reservation.usage)?;
+    if usage.model_steps > reservation.resources.model_steps
+        || usage.output_bytes > reservation.resources.output_bytes
+        || usage.execution_time_ms > reservation.resources.execution_time_ms
+    {
+        return Err(Error::Conflict(
+            "child usage exceeds its reservation".into(),
+        ));
+    }
+    state.usage.reserved.model_steps = state
+        .usage
+        .reserved
+        .model_steps
+        .checked_sub(delta.model_steps)
+        .ok_or_else(|| Error::Storage("swarm step reservation underflow".into()))?;
+    state.usage.reserved.output_bytes = state
+        .usage
+        .reserved
+        .output_bytes
+        .checked_sub(delta.output_bytes)
+        .ok_or_else(|| Error::Storage("swarm output reservation underflow".into()))?;
+    state.usage.reserved.execution_time_ms = state
+        .usage
+        .reserved
+        .execution_time_ms
+        .checked_sub(delta.execution_time_ms)
+        .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
+    state.usage.consumed.model_steps = state
+        .usage
+        .consumed
+        .model_steps
+        .checked_add(delta.model_steps)
+        .ok_or_else(|| Error::Invalid("swarm step usage exhausted".into()))?;
+    state.usage.consumed.output_bytes = state
+        .usage
+        .consumed
+        .output_bytes
+        .checked_add(delta.output_bytes)
+        .ok_or_else(|| Error::Invalid("swarm output usage exhausted".into()))?;
+    state.usage.consumed.execution_time_ms = state
+        .usage
+        .consumed
+        .execution_time_ms
+        .checked_add(delta.execution_time_ms)
+        .ok_or_else(|| Error::Invalid("swarm time usage exhausted".into()))?;
+    reservation.usage = usage;
+    if complete {
+        release_remaining(&mut state.usage, &reservation)?;
+        state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
+        reservation.state = SwarmReservationState::Completed;
+    }
+    state.reservations.insert(operation_id, reservation.clone());
+    Ok(reservation.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(byte: u8) -> OperationId {
+        OperationId::from_bytes([byte; 16])
+    }
+
+    fn owner(generation: u64) -> SwarmOwnerFence {
+        SwarmOwnerFence::new("host", generation).expect("owner")
+    }
+
+    fn limits() -> SwarmBudgetLimits {
+        SwarmBudgetLimits {
+            max_active_agents: 8,
+            max_total_agents: 8,
+            max_recursion_depth: 2,
+            max_model_steps: 10,
+            max_output_bytes: 100,
+            max_execution_time_ms: 1_000,
+        }
+    }
+
+    fn request(byte: u8, parent: Option<OperationId>) -> SwarmForkRequest {
+        SwarmForkRequest {
+            operation_id: id(byte),
+            idempotency_key: IdempotencyKey::new(format!("key-{byte}")).expect("key"),
+            parent_operation_id: parent,
+            depth: if parent.is_some() { 2 } else { 1 },
+            resources: SwarmResourceRequest {
+                model_steps: 4,
+                output_bytes: 40,
+                execution_time_ms: 400,
+            },
+        }
+    }
+
+    fn publication(operation_id: OperationId, parent: Option<OperationId>) -> ForkPublication {
+        ForkPublication {
+            operation_id,
+            parent_operation_id: parent,
+            completed_boundary_digest: [1; 32],
+            workspace_generation_digest: [2; 32],
+        }
+    }
+
+    #[test]
+    fn duplicate_admission_is_replayed_without_double_counting() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let first = budget.reserve_child(request(1, None))?;
+        let second = budget.reserve_child(request(1, None))?;
+        assert!(!first.replayed);
+        assert!(second.replayed);
+        assert_eq!(budget.usage()?.active_agents, 2);
+        assert_eq!(budget.usage()?.total_agents, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn publication_is_required_before_dispatch_and_depth_is_bounded() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let child = budget.reserve_child(request(1, None))?.reservation;
+        assert!(
+            budget
+                .report_usage(child.operation_id, &owner(0), SwarmUsage::default())
+                .is_err()
+        );
+        let token = budget.activate(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, None),
+        )?;
+        assert_eq!(token.operation_id, child.operation_id);
+        let grandchild = budget
+            .reserve_child(request(2, Some(child.operation_id)))?
+            .reservation;
+        assert_eq!(grandchild.depth, 2);
+        assert!(
+            budget
+                .reserve_child(request(3, Some(grandchild.operation_id)))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn cancellation_releases_active_capacity_but_keeps_consumed_usage() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let child = budget.reserve_child(request(1, None))?.reservation;
+        budget.activate(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, None),
+        )?;
+        let root_owner = owner(0);
+        budget.report_usage(
+            child.operation_id,
+            &root_owner,
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 10,
+                execution_time_ms: 100,
+            },
+        )?;
+        budget.cancel(child.operation_id, &owner(0))?;
+        let usage = budget.usage()?;
+        assert_eq!(usage.active_agents, 1);
+        assert_eq!(usage.consumed.model_steps, 1);
+        assert_eq!(usage.consumed.output_bytes, 10);
+        assert_eq!(usage.reserved, SwarmUsage::default());
+        Ok(())
+    }
+
+    #[test]
+    fn takeover_rebinds_live_reservations_and_fences_old_owner() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let child = budget.reserve_child(request(1, None))?.reservation;
+        let current = budget.takeover("restarted", 0)?;
+        assert_eq!(current.generation, 1);
+        assert!(
+            budget
+                .activate(
+                    child.operation_id,
+                    owner(0),
+                    publication(child.operation_id, None)
+                )
+                .is_err()
+        );
+        budget.activate(
+            child.operation_id,
+            current.clone(),
+            publication(child.operation_id, None),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn durable_event_replay_preserves_reservation_without_dispatch() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let receipt = budget.reserve_child(request(1, None))?;
+        let started = SwarmBudgetEvent::Started {
+            session_id: id(9),
+            owner: owner(0),
+            limits: limits(),
+        };
+        let replayed = SwarmBudget::replay([started, receipt.durable_event()])?;
+        assert_eq!(replayed.usage()?, budget.usage()?);
+        let restored = replayed.reservation(id(1))?.expect("restored reservation");
+        assert_eq!(restored.state, SwarmReservationState::Reserved);
+        assert!(
+            replayed
+                .report_usage(id(1), &owner(0), SwarmUsage::default())
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_admissions_are_atomic_at_active_and_total_limits() -> Result<()> {
+        let budget = Arc::new(SwarmBudget::new(
+            id(9),
+            owner(0),
+            SwarmBudgetLimits {
+                max_active_agents: 5,
+                max_total_agents: 5,
+                ..limits()
+            },
+        )?);
+        let mut joins = Vec::new();
+        for byte in 1..=16 {
+            let budget = Arc::clone(&budget);
+            joins.push(std::thread::spawn(move || {
+                budget.reserve_child(request(byte, None))
+            }));
+        }
+        let accepted = joins
+            .into_iter()
+            .filter_map(|join| join.join().expect("admission thread").ok())
+            .count();
+        assert_eq!(accepted, 4);
+        let usage = budget.usage()?;
+        assert_eq!(usage.active_agents, 5);
+        assert_eq!(usage.total_agents, 5);
+        Ok(())
+    }
+}
