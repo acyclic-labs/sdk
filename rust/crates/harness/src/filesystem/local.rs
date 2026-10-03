@@ -1684,8 +1684,49 @@ fn local_fork_verifier_with_stream_provider(
 /// hashing the supplied root keeps arbitrary caller paths out of the stream
 /// namespace while remaining stable across reopen.
 fn shared_session_descriptor_path(root: &Path) -> String {
-    let digest = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
+    let root = normalized_descriptor_path(root);
+    let identity = path_identity_bytes(&root);
+    let digest = blake3::hash(&identity).to_hex();
     format!("harness/session/{digest}")
+}
+
+fn normalized_descriptor_path(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|current| current.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    };
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
+}
+
+fn path_identity_bytes(path: &Path) -> Vec<u8> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt as _;
+        path.as_os_str()
+            .encode_wide()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect()
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        path.as_os_str().as_bytes().to_vec()
+    }
 }
 
 #[cfg(test)]
