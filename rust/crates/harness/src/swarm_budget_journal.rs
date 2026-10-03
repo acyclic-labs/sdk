@@ -32,6 +32,7 @@ const MAX_ADMISSION_RETRIES: u8 = 32;
 #[serde(deny_unknown_fields)]
 struct BudgetRecord {
     /// Explicitly fences records written before receipt-backed usage events.
+    #[serde(default)]
     version: u16,
     revision: u64,
     event_digest: [u8; 32],
