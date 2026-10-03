@@ -460,7 +460,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let pending_children = if let Some(plans) = swarm.bindings.model_fork_plans.as_ref() {
                 plans
                     .pending_for_parent(intent.parent, &existing_task_ids)
-                    .await
+                    .await?
             } else {
                 0
             };
@@ -873,9 +873,13 @@ impl LocalModelForkPlans {
         &self,
         parent: TaskId,
         existing_tasks: &BTreeSet<TaskId>,
-    ) -> usize {
+    ) -> Result<usize> {
+        // Each PersistentLocalSwarm handle owns its own plan index. Refresh
+        // the selected intents from the shared registry before reserving a
+        // child slot so a sibling process cannot allocate from a stale cache.
+        self.refresh_intents_from_journal().await?;
         let intents = self.intents.lock().await;
-        intents
+        Ok(intents
             .values()
             .filter(|intent| intent.parent == parent)
             .filter(|intent| {
@@ -883,7 +887,86 @@ impl LocalModelForkPlans {
             })
             .map(|intent| intent.child_operation)
             .collect::<BTreeSet<_>>()
-            .len()
+            .len())
+    }
+
+    async fn refresh_intents_from_journal(&self) -> Result<()> {
+        let Some(registry) = self.journal.lock().await.clone() else {
+            return Ok(());
+        };
+        let stream = registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let records = load_records(&stream).await?;
+        let mut intents = self.intents.lock().await;
+        let mut issuer_bindings = self.issuer_bindings.lock().await;
+        for record in records {
+            match record.event {
+                StoredEvent::ForkIntent { intent } => {
+                    let key = (intent.fork_operation, intent.child_operation);
+                    if let Some(existing) = intents.get(&key)
+                        && existing != &intent
+                    {
+                        return Err(Error::Conflict(
+                            "durable model fork intent changed during recovery".into(),
+                        ));
+                    }
+                    intents.insert(key, intent);
+                }
+                StoredEvent::ForkIntentSelected {
+                    intent,
+                    issuer_digest,
+                } => {
+                    let key = (intent.fork_operation, intent.child_operation);
+                    if let Some(existing) = intents.get(&key)
+                        && existing != &intent
+                    {
+                        return Err(Error::Conflict(
+                            "durable model fork intent changed during recovery".into(),
+                        ));
+                    }
+                    intents.insert(key, intent);
+                    if let Some(digest) = issuer_digest {
+                        if digest == [0; 32] {
+                            return Err(Error::Conflict(
+                                "persisted local fork issuer binding is empty".into(),
+                            ));
+                        }
+                        if let Some(existing) = issuer_bindings.get(&key)
+                            && existing != &digest
+                        {
+                            return Err(Error::Conflict(
+                                "durable model fork issuer binding changed during recovery"
+                                    .into(),
+                            ));
+                        }
+                        issuer_bindings.insert(key, digest);
+                    }
+                }
+                StoredEvent::ForkIssuerBinding {
+                    operation,
+                    child_operation,
+                    digest,
+                } => {
+                    let key = (operation, child_operation);
+                    if digest == [0; 32] {
+                        return Err(Error::Conflict(
+                            "persisted local fork issuer binding is empty".into(),
+                        ));
+                    }
+                    if let Some(existing) = issuer_bindings.get(&key)
+                        && existing != &digest
+                    {
+                        return Err(Error::Conflict(
+                            "durable model fork issuer binding changed during recovery".into(),
+                        ));
+                    }
+                    issuer_bindings.insert(key, digest);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     async fn record_intent(&self, intent: LocalForkIntent) -> Result<()> {
