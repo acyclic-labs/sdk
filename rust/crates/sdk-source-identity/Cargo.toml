@@ -1,0 +1,16 @@
+[package]
+name = "sdk-source-identity"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "Apache-2.0"
+publish = false
+description = "Canonical Cargo source identity recipe shared by Rust SDK producers"
+
+[workspace]
+
+[dependencies]
+serde_json = "1.0.145"
+
+[lints.rust]
+unsafe_code = "deny"

@@ -22,6 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut examples_bundle = None;
     let mut source_authority = None;
     let mut source_authority_sha256 = None;
+    let mut release_manifest = None;
     let mut require_rustdoc_json = false;
     let mut website_output = None;
     let mut source_state = "working-tree".to_owned();
@@ -64,6 +65,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         .ok_or("missing --source-authority-sha256 value")?,
                 );
             }
+            "--release-manifest" => {
+                release_manifest = Some(PathBuf::from(
+                    args.next().ok_or("missing --release-manifest value")?,
+                ));
+            }
             "--strict-rustdoc-json" => require_rustdoc_json = true,
             "--website-output" => {
                 website_output = Some(PathBuf::from(
@@ -73,7 +79,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--source-state" => source_state = args.next().ok_or("missing --source-state value")?,
             "--channel" => channel = args.next().ok_or("missing --channel value")?,
             "--help" | "-h" => {
-                println!("sdk-docs --repo-root ROOT --output BUNDLE.json [--website-output PROJECTION.json] [--rustdoc-json FILE_OR_DIR] [--profile-manifest FILE] [--examples-bundle DIR] [--source-authority FILE --source-authority-sha256 SHA256] [--source-revision REV] [--strict-rustdoc-json] [--source-state STATE] [--channel CHANNEL]");
+                println!("sdk-docs --repo-root ROOT --output BUNDLE.json [--website-output PROJECTION.json] [--rustdoc-json FILE_OR_DIR] [--profile-manifest FILE] [--examples-bundle DIR] [--source-authority FILE --source-authority-sha256 SHA256] [--release-manifest FILE] [--source-revision REV] [--strict-rustdoc-json] [--source-state STATE] [--channel CHANNEL]");
                 return Ok(());
             }
             unknown => return Err(format!("unknown argument: {unknown}").into()),
@@ -87,6 +93,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     options.examples_bundle = examples_bundle;
     options.source_authority = source_authority;
     options.source_authority_sha256 = source_authority_sha256;
+    options.release_manifest = release_manifest;
     options.require_rustdoc_json = require_rustdoc_json;
     options.source_state = source_state.clone();
     let bundle = build_bundle(&options)?;

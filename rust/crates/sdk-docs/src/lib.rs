@@ -7,7 +7,7 @@
 //! caller can attach it to the bundle and use it as the authoritative item
 //! inventory. The scanner never claims to resolve a re-export or cfg branch.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -336,8 +336,22 @@ pub struct DocsBundle {
     /// scanned, while strict preview bundles can require it explicitly.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scenario_bundle: Option<serde_json::Value>,
+    /// Verified release identity when an explicit release qualification
+    /// manifest was supplied. Branch previews leave this absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release: Option<ReleaseQualification>,
     /// BLAKE3 digest of the canonical bundle payload excluding this field.
     pub bundle_blake3: String,
+}
+
+/// Exact Git identity accepted for a released documentation bundle.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseQualification {
+    pub schema: String,
+    pub version: String,
+    pub tag: String,
+    pub revision: String,
+    pub qualified: bool,
 }
 
 /// Configuration for [`build_bundle`].
@@ -366,6 +380,9 @@ pub struct BuildOptions {
     /// Trusted digest of the external source authority manifest. Supplying a
     /// manifest without this configured trust-root digest is self-attesting.
     pub source_authority_sha256: Option<String>,
+    /// Explicit release qualification manifest. A release bundle requires a
+    /// verified Git tag, matching HEAD, and a clean worktree.
+    pub release_manifest: Option<PathBuf>,
 }
 
 /// Inputs for the docs-only rustdoc JSON generation command.
@@ -420,6 +437,7 @@ impl BuildOptions {
             examples_bundle: None,
             source_authority: None,
             source_authority_sha256: None,
+            release_manifest: None,
         }
     }
 }
@@ -457,6 +475,24 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         });
     let expected_toolchain = rust_toolchain(&options.repository_root);
     let dirty_worktree = git_worktree_dirty(&options.repository_root);
+    let release = options
+        .release_manifest
+        .as_deref()
+        .map(|path| {
+            verify_release_qualification(
+                path,
+                &options.repository_root,
+                &source_revision,
+                dirty_worktree,
+            )
+        })
+        .transpose()?;
+    if release.is_some() && !options.require_rustdoc_json {
+        return Err(Error::Strict(
+            "release qualification requires --strict-rustdoc-json so source fallback cannot be published as released documentation"
+                .to_owned(),
+        ));
+    }
     let mut crates = Vec::new();
     for crate_dir in crate_dirs {
         match scan_crate(
@@ -534,6 +570,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         "diagnostics": diagnostics,
         "profiles": profiles,
         "scenario_bundle": scenario_bundle,
+        "release": release,
     });
     let bundle_blake3 = digest_bytes(canonical_json(&payload).as_bytes());
     Ok(DocsBundle {
@@ -546,6 +583,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         diagnostics: serde_json::from_value(payload["diagnostics"].clone())?,
         profiles: serde_json::from_value(payload["profiles"].clone())?,
         scenario_bundle: serde_json::from_value(payload["scenario_bundle"].clone())?,
+        release: serde_json::from_value(payload["release"].clone())?,
         bundle_blake3,
     })
 }
@@ -581,12 +619,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
                 &package.target,
                 "--lib",
             ]);
-            let features = package
-                .features
-                .iter()
-                .filter(|feature| feature.as_str() != "default")
-                .cloned()
-                .collect::<Vec<_>>();
+            let features = normalized_features(&package.features);
             if !features.is_empty() {
                 command.args(["--features", &features.join(",")]);
             }
@@ -790,6 +823,9 @@ pub fn to_website_json(
         "sourceState": source_state,
         "channel": channel,
     });
+    if let Some(release) = &bundle.release {
+        projection_source["release"] = serde_json::to_value(release)?;
+    }
     if let Some(authority_sha256) = scenario_authority_sha256 {
         projection_source["scenarioAuthoritySha256"] = authority_sha256;
     }
@@ -884,7 +920,8 @@ fn load_scenario_bundle_with_authority(
                 "SDK examples source directory {source_path} has an empty source files closure"
             )));
         }
-        let source_root = Path::new(&source_path);
+        let repository_root_canonical = repository_root.canonicalize()?;
+        let allowed_roots = cargo_source_closure_roots(repository_root, &source_path)?;
         let mut seen = HashSet::new();
         let mut closure_files = Vec::new();
         for value in declared_source_files {
@@ -896,7 +933,9 @@ fn load_scenario_bundle_with_authority(
                 || relative_path
                     .components()
                     .any(|component| component == std::path::Component::ParentDir)
-                || !relative_path.starts_with(source_root)
+                || !allowed_roots
+                    .iter()
+                    .any(|root| relative_path.starts_with(root))
                 || !seen.insert(relative.to_owned())
             {
                 return Err(Error::Strict(format!(
@@ -904,6 +943,16 @@ fn load_scenario_bundle_with_authority(
                 )));
             }
             let path = repository_root.join(relative_path);
+            let canonical_path = path.canonicalize().map_err(|error| {
+                Error::Strict(format!(
+                    "SDK examples source closure file {relative} is unavailable: {error}"
+                ))
+            })?;
+            if !canonical_path.starts_with(&repository_root_canonical) {
+                return Err(Error::Strict(format!(
+                    "SDK examples source closure file escapes the repository: {relative}"
+                )));
+            }
             let bytes = fs::read(&path).map_err(|error| {
                 Error::Strict(format!(
                     "SDK examples source closure file {relative} is unavailable: {error}"
@@ -911,7 +960,17 @@ fn load_scenario_bundle_with_authority(
             })?;
             closure_files.push((relative.to_owned(), bytes));
         }
-        cargo_source_closure_bytes(repository_root, &source_path, &closure_files)?
+        let build_target = source
+            .get("build_target")
+            .or_else(|| source.get("target"))
+            .and_then(serde_json::Value::as_str)
+            .filter(|target| !target.trim().is_empty())
+            .ok_or_else(|| {
+                Error::Strict(
+                    "SDK examples directory source closure has no producer build target".to_owned(),
+                )
+            })?;
+        cargo_source_closure_bytes(repository_root, &source_path, &closure_files, build_target)?
     };
     let source_blake3 = digest_bytes(&source_bytes);
     let actual_source_sha256 = sha256_digest(&source_bytes);
@@ -1074,10 +1133,134 @@ fn load_scenario_bundle_with_authority(
     Ok(manifest)
 }
 
+/// Return the repository-relative roots that Cargo can compile into the
+/// producer's local source closure. The examples producer includes every
+/// local package reached by Cargo, plus workspace Cargo inputs; requiring the
+/// same independently resolved roots here prevents a forged manifest from
+/// adding arbitrary repository files while still allowing dependencies such
+/// as `rust/crates/actors` and `.cargo/config.toml`.
+fn cargo_source_closure_roots(
+    repository_root: &Path,
+    source_path: &str,
+) -> Result<Vec<PathBuf>, Error> {
+    let source_root = repository_root.canonicalize()?;
+    let manifest = source_root.join(source_path).join("Cargo.toml");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args([
+            "metadata",
+            "--manifest-path",
+            &manifest.to_string_lossy(),
+            "--locked",
+            "--format-version",
+            "1",
+        ])
+        .output()
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Strict(format!(
+            "cargo metadata failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Strict("cargo metadata packages are missing".to_owned()))?;
+    let package_by_id = packages
+        .iter()
+        .filter_map(|package| Some((package.get("id")?.as_str()?.to_owned(), package)))
+        .collect::<BTreeMap<_, _>>();
+    let nodes = metadata
+        .pointer("/resolve/nodes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Strict("cargo metadata resolve.nodes are missing".to_owned()))?;
+    let node_by_id = nodes
+        .iter()
+        .filter_map(|node| Some((node.get("id")?.as_str()?.to_owned(), node)))
+        .collect::<BTreeMap<_, _>>();
+    let root_id = metadata
+        .pointer("/resolve/root")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Strict("cargo metadata resolve.root is missing".to_owned()))?;
+    let mut reachable = HashSet::new();
+    let mut pending = VecDeque::from([root_id.to_owned()]);
+    while let Some(id) = pending.pop_front() {
+        if !reachable.insert(id.clone()) {
+            continue;
+        }
+        let node = node_by_id
+            .get(&id)
+            .ok_or_else(|| Error::Strict(format!("cargo metadata node is missing for {id}")))?;
+        for dependency in node
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            pending.push_back(dependency.to_owned());
+        }
+    }
+
+    let mut roots = Vec::new();
+    for id in reachable {
+        let package = package_by_id
+            .get(&id)
+            .ok_or_else(|| Error::Strict(format!("cargo metadata package is missing for {id}")))?;
+        if package
+            .get("source")
+            .is_some_and(|source| !source.is_null())
+        {
+            continue;
+        }
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::Strict(format!("manifest path is missing for {id}")))?;
+        let package_dir = PathBuf::from(manifest)
+            .canonicalize()
+            .map_err(Error::Io)?
+            .parent()
+            .ok_or_else(|| Error::Strict(format!("manifest has no parent for {id}")))?
+            .to_owned();
+        let relative = package_dir
+            .strip_prefix(&source_root)
+            .map_err(|_| Error::Strict(format!("local package escapes repository: {manifest}")))?
+            .to_owned();
+        roots.push(relative);
+    }
+
+    for relative in [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain",
+        "rust-toolchain.toml",
+    ] {
+        if source_root.join(relative).is_file() {
+            roots.push(PathBuf::from(relative));
+        }
+    }
+    if source_root.join(".cargo").is_dir() {
+        roots.push(PathBuf::from(".cargo"));
+    }
+    roots.sort();
+    roots.dedup();
+    if roots.is_empty() {
+        return Err(Error::Strict(
+            "cargo source closure has no local package or workspace roots".to_owned(),
+        ));
+    }
+    Ok(roots)
+}
+
 fn cargo_source_closure_bytes(
     repository_root: &Path,
     source_path: &str,
     files: &[(String, Vec<u8>)],
+    build_target: &str,
 ) -> Result<Vec<u8>, Error> {
     let source_root = repository_root.canonicalize()?;
     let manifest = source_root.join(source_path).join("Cargo.toml");
@@ -1100,7 +1283,9 @@ fn cargo_source_closure_bytes(
         )));
     }
     let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
-    let recipe = normalized_cargo_build_recipe(&source_root, &metadata)?;
+    let recipe =
+        sdk_source_identity::normalized_build_recipe(&source_root, &metadata, Some(build_target))
+            .map_err(Error::Strict)?;
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"cargo-build-recipe\0");
     bytes.extend_from_slice(&recipe);
@@ -1112,129 +1297,6 @@ fn cargo_source_closure_bytes(
         bytes.push(0);
     }
     Ok(bytes)
-}
-
-fn normalized_cargo_build_recipe(
-    source_root: &Path,
-    metadata: &serde_json::Value,
-) -> Result<Vec<u8>, Error> {
-    let packages = metadata
-        .get("packages")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| Error::Strict("cargo metadata packages are missing".to_owned()))?;
-    let package_by_id = packages
-        .iter()
-        .filter_map(|package| Some((package.get("id")?.as_str()?.to_owned(), package)))
-        .collect::<BTreeMap<_, _>>();
-    let nodes = metadata
-        .pointer("/resolve/nodes")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| Error::Strict("cargo metadata resolve.nodes are missing".to_owned()))?;
-    let node_by_id = nodes
-        .iter()
-        .filter_map(|node| Some((node.get("id")?.as_str()?.to_owned(), node)))
-        .collect::<BTreeMap<_, _>>();
-    let root_id = metadata
-        .pointer("/resolve/root")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::Strict("cargo metadata resolve.root is missing".to_owned()))?;
-    let root_package = package_by_id
-        .get(root_id)
-        .ok_or_else(|| Error::Strict(format!("cargo metadata package is missing for {root_id}")))?;
-    let root_label = format!(
-        "{}@{}",
-        root_package
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown"),
-        root_package
-            .get("version")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("unknown")
-    );
-    let mut reachable = BTreeSet::new();
-    let mut pending = VecDeque::from([root_id.to_owned()]);
-    while let Some(id) = pending.pop_front() {
-        if !reachable.insert(id.clone()) {
-            continue;
-        }
-        let node = node_by_id
-            .get(&id)
-            .ok_or_else(|| Error::Strict(format!("cargo metadata node is missing for {id}")))?;
-        for dependency in node
-            .get("dependencies")
-            .and_then(serde_json::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(serde_json::Value::as_str)
-        {
-            pending.push_back(dependency.to_owned());
-        }
-    }
-    let mut normalized = BTreeMap::new();
-    for id in reachable {
-        let package = package_by_id
-            .get(&id)
-            .ok_or_else(|| Error::Strict(format!("cargo metadata package is missing for {id}")))?;
-        let node = node_by_id
-            .get(&id)
-            .ok_or_else(|| Error::Strict(format!("cargo metadata node is missing for {id}")))?;
-        let manifest = package
-            .get("manifest_path")
-            .and_then(serde_json::Value::as_str)
-            .map(PathBuf::from)
-            .and_then(|path| path.strip_prefix(source_root).ok().map(Path::to_owned))
-            .map(|path| path.to_string_lossy().replace('\\', "/"));
-        let key = format!(
-            "{}@{}",
-            package
-                .get("name")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown"),
-            package
-                .get("version")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("unknown")
-        );
-        let targets = package
-            .get("targets")
-            .and_then(serde_json::Value::as_array)
-            .map(|targets| {
-                let mut targets = targets
-                    .iter()
-                    .map(|target| {
-                        serde_json::json!({
-                            "name": target.get("name"),
-                            "kind": target.get("kind"),
-                            "crate_types": target.get("crate_types"),
-                            "required_features": target.get("required_features"),
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                targets.sort_by_key(serde_json::Value::to_string);
-                targets
-            })
-            .unwrap_or_default();
-        normalized.insert(
-            format!("{key}:{}", manifest.as_deref().unwrap_or("registry")),
-            serde_json::json!({
-                "name": package.get("name"),
-                "version": package.get("version"),
-                "source": if package.get("source").is_some_and(|source| !source.is_null()) { "registry" } else { "local" },
-                "manifest": manifest,
-                "features": node.get("features"),
-                "targets": targets,
-                "dependencies": package.get("dependencies"),
-            }),
-        );
-    }
-    serde_json::to_vec(&serde_json::json!({
-        "schema": "acyclic.sdk.cargo-build-recipe.v1",
-        "target": serde_json::Value::Null,
-        "root": root_label,
-        "packages": normalized,
-    }))
-    .map_err(Error::Json)
 }
 
 /// Verify the source closure against an authority manifest supplied outside
@@ -1264,10 +1326,12 @@ fn verify_source_authority(
     }
     let authority: serde_json::Value = serde_json::from_slice(&authority_bytes)?;
     let authority_schema = authority.get("schema").and_then(serde_json::Value::as_str);
+    let captured_snapshot = authority_schema == Some("acyclic.sdk.docs.source-capture.v1");
     if !matches!(
         authority_schema,
         Some("acyclic.sdk.examples.source-authority.v1")
             | Some("acyclic.sdk.qualification-receipt.v1")
+            | Some("acyclic.sdk.docs.source-capture.v1")
     ) {
         return Err(Error::Strict(format!(
             "unsupported SDK examples source authority schema in {}",
@@ -1281,6 +1345,11 @@ fn verify_source_authority(
         .get("source_revision")
         .and_then(serde_json::Value::as_str)
         .or_else(|| {
+            authority
+                .get("origin_revision")
+                .and_then(serde_json::Value::as_str)
+        })
+        .or_else(|| {
             authority_source
                 .and_then(|source| source.get("revision"))
                 .and_then(serde_json::Value::as_str)
@@ -1288,6 +1357,17 @@ fn verify_source_authority(
         .ok_or_else(|| {
             Error::Strict("SDK examples source authority has no source revision".to_owned())
         })?;
+    let repository_revision = git_revision(repository_root).ok_or_else(|| {
+        Error::Strict(
+            "SDK examples source authority requires a repository with an immutable origin revision"
+                .to_owned(),
+        )
+    })?;
+    if authority_revision != repository_revision {
+        return Err(Error::Strict(format!(
+            "SDK examples source authority origin revision mismatch: expected {repository_revision}, got {authority_revision}"
+        )));
+    }
     if authority_revision != source_revision {
         return Err(Error::Strict(format!(
             "SDK examples source authority revision mismatch: expected {authority_revision}, got {source_revision}"
@@ -1311,6 +1391,11 @@ fn verify_source_authority(
     let authority_hash = authority
         .get("source_sha256")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| {
+            authority
+                .get("closure_sha256")
+                .and_then(serde_json::Value::as_str)
+        })
         .or_else(|| {
             authority_source
                 .and_then(|source| source.get("sha256"))
@@ -1341,7 +1426,8 @@ fn verify_source_authority(
                 .and_then(|source| source.get("file_hashes"))
                 .and_then(serde_json::Value::as_object)
         });
-    if let Some(source_files) = source_files {
+    let captured_files = authority.get("files").and_then(serde_json::Value::as_array);
+    if let Some(source_files) = source_files.or(captured_files) {
         if source_files.is_empty() {
             return Err(Error::Strict(
                 "SDK examples source authority has an empty file list".to_owned(),
@@ -1350,9 +1436,14 @@ fn verify_source_authority(
         let mut seen = HashSet::new();
         let mut closure = Vec::new();
         for value in source_files {
-            let relative = value.as_str().ok_or_else(|| {
-                Error::Strict("SDK examples source authority file is not a string".to_owned())
-            })?;
+            let relative = value
+                .as_str()
+                .or_else(|| value.get("path").and_then(serde_json::Value::as_str))
+                .ok_or_else(|| {
+                    Error::Strict(
+                        "SDK examples source authority file is not a path string".to_owned(),
+                    )
+                })?;
             let relative_path = Path::new(relative);
             if !is_portable_relative_path(relative_path) || !seen.insert(relative.to_owned()) {
                 return Err(Error::Strict(format!(
@@ -1378,25 +1469,86 @@ fn verify_source_authority(
                         "SDK examples immutable source/revision closure mismatch: {relative}"
                     )));
                 }
+            } else if let Some(expected) = value.get("sha256").and_then(serde_json::Value::as_str) {
+                if expected != sha256_digest(&bytes) {
+                    return Err(Error::Strict(format!(
+                        "SDK examples immutable source/revision closure mismatch: {relative}"
+                    )));
+                }
             }
             closure.extend_from_slice(relative.as_bytes());
             closure.push(0);
             closure.extend_from_slice(&bytes);
             closure.push(0);
         }
-        let closure_hash =
-            if source_files.len() == 1 && source_files[0].as_str() == Some(source_path) {
-                sha256_digest(&fs::read(repository_root.join(source_path))?)
-            } else {
-                sha256_digest(&closure)
-            };
+        let closure_hash = if source_files.len() == 1
+            && source_files[0].as_str().or_else(|| {
+                source_files[0]
+                    .get("path")
+                    .and_then(serde_json::Value::as_str)
+            }) == Some(source_path)
+        {
+            sha256_digest(&fs::read(repository_root.join(source_path))?)
+        } else {
+            sha256_digest(&closure)
+        };
         if closure_hash != actual_source_sha256 {
             return Err(Error::Strict(
                 "SDK examples immutable source/revision closure digest mismatch".to_owned(),
             ));
         }
     }
+    if !captured_snapshot {
+        let paths = if let Some(source_files) = source_files {
+            source_files
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .or_else(|| value.get("path").and_then(serde_json::Value::as_str))
+                        .ok_or_else(|| {
+                            Error::Strict(
+                                "SDK examples source authority file is not a path string"
+                                    .to_owned(),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        } else {
+            vec![source_path]
+        };
+        for relative in paths {
+            let expected = git_blob_sha256(repository_root, authority_revision, relative)?;
+            let actual = sha256_digest(&fs::read(repository_root.join(relative))?);
+            if expected != actual {
+                return Err(Error::Strict(format!(
+                    "SDK examples source authority revision does not contain current bytes: {relative}"
+                )));
+            }
+        }
+    }
     Ok(authority_digest)
+}
+
+fn git_blob_sha256(
+    repository_root: &Path,
+    revision: &str,
+    relative: &str,
+) -> Result<String, Error> {
+    let object = format!("{revision}:{relative}");
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository_root)
+        .arg("show")
+        .arg(&object)
+        .output()
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Strict(format!(
+            "SDK examples source authority cannot resolve Git blob {object}"
+        )));
+    }
+    Ok(sha256_digest(&output.stdout))
 }
 
 fn is_portable_relative_path(path: &Path) -> bool {
@@ -2842,6 +2994,102 @@ fn git_revision(root: &Path) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn verify_release_qualification(
+    manifest_path: &Path,
+    repository_root: &Path,
+    source_revision: &str,
+    dirty_worktree: bool,
+) -> Result<ReleaseQualification, Error> {
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(manifest_path)?)?;
+    let schema = manifest
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Strict("release qualification has no schema".to_owned()))?;
+    if schema != "acyclic.sdk.docs.release-qualification.v1" {
+        return Err(Error::Strict(format!(
+            "unsupported release qualification schema: {schema}"
+        )));
+    }
+    let version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| Error::Strict("release qualification has no version".to_owned()))?;
+    let tag = manifest
+        .get("tag")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| {
+            !value.trim().is_empty()
+                && value
+                    .chars()
+                    .all(|character| !character.is_control() && character != '\\')
+        })
+        .ok_or_else(|| Error::Strict("release qualification has no valid Git tag".to_owned()))?;
+    let revision = manifest
+        .get("revision")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            Error::Strict("release qualification has no full Git revision".to_owned())
+        })?;
+    if manifest
+        .get("qualified")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        return Err(Error::Strict(
+            "release qualification must explicitly set qualified=true".to_owned(),
+        ));
+    }
+    if dirty_worktree {
+        return Err(Error::Strict(
+            "release qualification requires a clean Git worktree".to_owned(),
+        ));
+    }
+    if source_revision != revision {
+        return Err(Error::Strict(format!(
+            "release qualification revision mismatch: expected {source_revision}, got {revision}"
+        )));
+    }
+    let head = git_revision(repository_root).ok_or_else(|| {
+        Error::Strict("release qualification requires a Git HEAD revision".to_owned())
+    })?;
+    if head != revision {
+        return Err(Error::Strict(format!(
+            "release qualification HEAD mismatch: expected {head}, got {revision}"
+        )));
+    }
+    let tag_ref = format!("refs/tags/{tag}^{{commit}}");
+    let output = Command::new("git")
+        .args([
+            "-C",
+            repository_root.to_str().unwrap_or_default(),
+            "rev-parse",
+            "--verify",
+        ])
+        .arg(&tag_ref)
+        .output()
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Strict(format!(
+            "release qualification Git tag cannot be resolved: {tag}"
+        )));
+    }
+    let tagged_revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if tagged_revision != revision {
+        return Err(Error::Strict(format!(
+            "release qualification tag {tag} resolves to {tagged_revision}, expected {revision}"
+        )));
+    }
+    Ok(ReleaseQualification {
+        schema: schema.to_owned(),
+        version: version.to_owned(),
+        tag: tag.to_owned(),
+        revision: revision.to_owned(),
+        qualified: true,
+    })
+}
+
 fn git_worktree_dirty(root: &Path) -> bool {
     Command::new("git")
         .args([
@@ -3407,17 +3655,72 @@ mod tests {
         );
         fs::create_dir_all(root.join("source")).unwrap();
         fs::rename(root.join("source.rs"), root.join("source/lib.rs")).unwrap();
-        let mut source_hasher = Sha256::new();
-        source_hasher.update(b"source/lib.rs");
-        source_hasher.update([0]);
-        source_hasher.update(b"pub struct Source;\n");
-        source_hasher.update([0]);
-        let source_hash = format!("sha256:{:x}", source_hasher.finalize());
+        fs::write(
+            root.join("source/Cargo.toml"),
+            b"[package]\nname = \"source\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("source/Cargo.lock"),
+            b"version = 3\n\n[[package]]\nname = \"source\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            b"[package]\nname = \"fixture-root\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"source/lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("Cargo.lock"), b"version = 3\n").unwrap();
+        fs::create_dir_all(root.join(".cargo")).unwrap();
+        fs::write(
+            root.join(".cargo/config.toml"),
+            b"[build]\ntarget-dir = \"target\"\n",
+        )
+        .unwrap();
+        let source_files = vec![
+            (
+                "Cargo.lock".to_owned(),
+                fs::read(root.join("Cargo.lock")).unwrap(),
+            ),
+            (
+                "Cargo.toml".to_owned(),
+                fs::read(root.join("Cargo.toml")).unwrap(),
+            ),
+            (
+                ".cargo/config.toml".to_owned(),
+                fs::read(root.join(".cargo/config.toml")).unwrap(),
+            ),
+            (
+                "source/Cargo.lock".to_owned(),
+                fs::read(root.join("source/Cargo.lock")).unwrap(),
+            ),
+            (
+                "source/Cargo.toml".to_owned(),
+                fs::read(root.join("source/Cargo.toml")).unwrap(),
+            ),
+            (
+                "source/lib.rs".to_owned(),
+                fs::read(root.join("source/lib.rs")).unwrap(),
+            ),
+        ];
+        let source_hash = sha256_digest(
+            &cargo_source_closure_bytes(&root, "source", &source_files, "x86_64-pc-windows-msvc")
+                .unwrap(),
+        );
         let manifest_path = root.join("sdk-examples-manifest.json");
         let mut manifest: serde_json::Value =
             serde_json::from_slice(&fs::read(&manifest_path).expect("read fixture")).unwrap();
         manifest["source"]["path"] = serde_json::Value::String("source".to_owned());
-        manifest["source"]["files"] = serde_json::json!(["source/lib.rs"]);
+        manifest["source"]["files"] = serde_json::json!([
+            "Cargo.lock",
+            "Cargo.toml",
+            ".cargo/config.toml",
+            "source/Cargo.lock",
+            "source/Cargo.toml",
+            "source/lib.rs"
+        ]);
+        manifest["source"]["target"] =
+            serde_json::Value::String("x86_64-pc-windows-msvc".to_owned());
         manifest["source"]["sha256"] = serde_json::Value::String(source_hash.clone());
         manifest["snippets"][0]["source_sha256"] = serde_json::Value::String(source_hash.clone());
         manifest["snippets"][0]["validation"]["receipt"]["source_sha256"] =
@@ -3427,5 +3730,84 @@ mod tests {
         load_scenario_bundle(&root, &root, "scenario-test-revision")
             .expect("directory source closure bytes must bind exactly");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scenario_bundle_rejects_undeclared_outside_source_input() {
+        let root = scenario_fixture(
+            "source-closure-outside",
+            b"pub struct Source;\n",
+            b"fn example() {}\n",
+            &sha256_digest(b"fn example() {}\n"),
+        );
+        fs::create_dir_all(root.join("source")).unwrap();
+        fs::rename(root.join("source.rs"), root.join("source/lib.rs")).unwrap();
+        fs::write(
+            root.join("source/Cargo.toml"),
+            b"[package]\nname = \"source\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\npath = \"lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("source/Cargo.lock"),
+            b"version = 3\n\n[[package]]\nname = \"source\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(root.join("outside.txt"), b"outside").unwrap();
+        let manifest_path = root.join("sdk-examples-manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).expect("read fixture")).unwrap();
+        manifest["source"]["path"] = serde_json::Value::String("source".to_owned());
+        manifest["source"]["files"] =
+            serde_json::json!(["source/Cargo.toml", "source/lib.rs", "outside.txt"]);
+        manifest["source"]["target"] =
+            serde_json::Value::String("x86_64-pc-windows-msvc".to_owned());
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        let error = load_scenario_bundle(&root, &root, "scenario-test-revision")
+            .expect_err("unapproved outside source input must fail closed");
+        assert!(error.to_string().contains("unsafe or duplicate path"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn release_qualification_requires_explicit_qualification() {
+        let path = std::env::temp_dir().join(format!(
+            "sdk-docs-release-qualification-{}-{}.json",
+            std::process::id(),
+            "unqualified"
+        ));
+        let manifest = serde_json::json!({
+            "schema": "acyclic.sdk.docs.release-qualification.v1",
+            "version": "0.1.5",
+            "tag": "cargo-v0.1.5",
+            "revision": "0000000000000000000000000000000000000000",
+            "qualified": false
+        });
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error = verify_release_qualification(&path, Path::new("."), "unknown", false)
+            .expect_err("unqualified release manifest must fail closed");
+        assert!(error.to_string().contains("qualified=true"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn release_qualification_requires_clean_worktree() {
+        let path = std::env::temp_dir().join(format!(
+            "sdk-docs-release-qualification-{}-{}.json",
+            std::process::id(),
+            "dirty"
+        ));
+        let manifest = serde_json::json!({
+            "schema": "acyclic.sdk.docs.release-qualification.v1",
+            "version": "0.1.5",
+            "tag": "cargo-v0.1.5",
+            "revision": "0000000000000000000000000000000000000000",
+            "qualified": true
+        });
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error = verify_release_qualification(&path, Path::new("."), "unknown", true)
+            .expect_err("dirty worktree must fail release qualification");
+        assert!(error.to_string().contains("clean Git worktree"));
+        fs::remove_file(path).unwrap();
     }
 }
