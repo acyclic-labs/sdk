@@ -1,0 +1,202 @@
+{
+  "schema": "acyclic.sdk.ruby-php-dart.package-facade.v1",
+  "generated_at_utc": "2026-10-03T22:05:00Z",
+  "status": "deferred-producer-dynamic-closure",
+  "qualification_scope": "installed package facade selection, automatic runtime resolution, generated transport smoke, and loopback streaming recovery",
+  "source_binding": {
+    "status": "deferred-producer-dynamic-closure",
+    "reason": "sdk-examples source closure remains dynamic; this receipt is scoped to the Rust-emitted facade snapshot and the three installed language package lanes",
+    "rust_emitter": {
+      "path": "rust/crates/sdk-contract-wire/src/facades.rs",
+      "sha256": "3841B90D218FC2C34B37E876630089309F0A82CDCFE46824F34BEA4ECA77D8A6",
+      "generated_policy_binding": "AF71B5DFC74A659E97073D1A6A9CDC2250960038C49B432CE28D6D1CA5378B51"
+    },
+    "php_provenance": {
+      "path": "php/src/provenance.json",
+      "sha256": "9d119e5e58c365fc6241d680c60cd2570895c11a464a1296ec57826631e35210",
+      "bytes": 30841,
+      "nul_count": 0
+    },
+    "generated_snapshots": [
+      {
+        "language": "ruby",
+        "path": "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
+        "sha256": "AF2DF9A5128BC4D1589C814D89222EF98089D4E8F14DCBBA289F205FF6283C4A"
+      },
+      {
+        "language": "php",
+        "path": "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+        "sha256": "D0F180AF2F5CEAFABBDA244902FD67171336370317EDB2DC34A65CA5DBDB2DEE"
+      },
+      {
+        "language": "dart",
+        "path": "dart/lib/src/generated_remote_policy.dart",
+        "sha256": "17F38470AB1EEC71DC7E85237CADBF3E7410FF9E96DD08DC6DEBF3AAF9B9F4C4"
+      }
+    ]
+  },
+  "runtimes": {
+    "ruby": {
+      "path": "Q:/sdk/ruby-cache/ruby/rubyinstaller-3.2.11-1-x64/bin/ruby.exe",
+      "sha256": "522bec55ce15ae724222207930222c4fd85b9688fec155093067872872e9b7bb",
+      "bytes": 35840
+    },
+    "php": {
+      "path": "Q:/sdk/php-cache/php-8.2.34/php.exe",
+      "sha256": "2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96",
+      "bytes": 144384
+    },
+    "php_protobuf": {
+      "path": "Q:/sdk/php-cache/php-protobuf-native/php_protobuf.dll",
+      "sha256": "a6b466ec202afc304e0f091cc2f881126a2b26401142847310d08cee51caa909",
+      "bytes": 339456
+    },
+    "php_grpc": {
+      "path": "Q:/sdk/php-cache/php-grpc-native-1.82.0/php_grpc.dll",
+      "sha256": "021efdad8860e5d47c8c0e042c91d6c8545948b6c8fd7358d67cfd180ff9cdc0",
+      "bytes": 10057216
+    },
+    "dart": {
+      "path": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/dart/.toolchain/dart-sdk/bin/dart.exe",
+      "sha256": "cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c",
+      "bytes": 39998976
+    }
+  },
+  "package_inputs": {
+    "ruby_transport_package": "Q:/sdk/ruby-cache/package-all",
+    "php_transport_package": "Q:/sdk/php-cache/package-final",
+    "dart_transport_package": "Q:/sdk/dart-cache/package-all",
+    "facade_test_staging": "Q:/sdk/.tmp-installed-facades-20261003",
+    "staging_note": "The staging tree combines each retained installable transport package with the current Rust-emitted facade snapshot and language adapter; it is a disposable local test root and is not a release artifact."
+  },
+  "tests": {
+    "facade_auto_resolution": {
+      "ruby": {
+        "status": "passed",
+        "exit_code": 0,
+        "test": "ruby/test/remote_policy_test.rb",
+        "coverage": [
+          "automatic Ruby runtime resolves native",
+          "explicit browser runtime selects streaming HTTP JSON",
+          "native default selects gRPC",
+          "streaming override and bearer validation"
+        ],
+        "runs": 4,
+        "assertions": 12,
+        "log": {
+          "path": "research/acceptance/ruby-php-dart/qualification/package-facade/ruby-auto.log",
+          "sha256": "F158DD2B69D62B21726F3DCD3E878D0B626BE312F43038CC8C992B934BD23C46",
+          "bytes": 170
+        }
+      },
+      "php": {
+        "status": "passed",
+        "exit_code": 0,
+        "test": "php/tests/remote_policy_test.php",
+        "coverage": [
+          "automatic installed PHP runtime resolves native",
+          "explicit browser runtime selects streaming HTTP JSON",
+          "native default invokes gRPC policy",
+          "streaming override and bearer validation"
+        ],
+        "log": {
+          "path": "research/acceptance/ruby-php-dart/qualification/package-facade/php-auto.log",
+          "sha256": "F7DAC5600C9807D35A203B5DE4D2A7B7306B299DDC429C03AA2F70AC8B51B98E",
+          "bytes": 29
+        }
+      },
+      "dart": {
+        "status": "passed",
+        "exit_code": 0,
+        "test": "dart/test/remote_policy_test.dart",
+        "coverage": [
+          "automatic Dart VM runtime resolves native",
+          "explicit browser runtime selects streaming HTTP JSON",
+          "native default selects gRPC",
+          "streaming override and bearer validation"
+        ],
+        "log": {
+          "path": "research/acceptance/ruby-php-dart/qualification/package-facade/dart-auto.log",
+          "sha256": "98D2FE492D2FB9ABCE67CF61BEE8AE0F6CA5EA95EF0777E3EC70B6B88DA92792",
+          "bytes": 349
+        }
+      }
+    },
+    "generated_transport_contract": {
+      "ruby": "passed: 3 runs, 9 assertions, 0 failures, 0 errors",
+      "php": "passed: transport package smoke checks",
+      "dart": "passed: 3 tests, 0 failures"
+    },
+    "stream_recovery": {
+      "fixture": "127.0.0.1:59073",
+      "ruby": {
+        "status": "passed",
+        "exit_code": 0,
+        "coverage": [
+          "append records 0,1",
+          "bounded read from 0 returns 0,1",
+          "resume read from 1 returns 1",
+          "Follow receives 0 then operation.cancel; status is GRPC CANCELLED"
+        ]
+      },
+      "php": {
+        "status": "passed",
+        "exit_code": 0,
+        "coverage": [
+          "append records 0,1",
+          "bounded read from 0 returns 0,1",
+          "resume read from 1 returns 1",
+          "ServerStreamingCall::cancel then getStatus returns CANCELLED and generated client close exits cleanly"
+        ]
+      },
+      "dart": {
+        "status": "passed",
+        "exit_code": 0,
+        "coverage": [
+          "append records 0,1",
+          "bounded read from 0 returns 0,1",
+          "resume read from 1 returns 1",
+          "Follow subscription.cancel completes"
+        ]
+      },
+      "prior_portable_receipt": {
+        "path": "research/acceptance/ruby-php-dart/qualification/stream-recovery/portable-stream-recovery.receipt.json",
+        "sha256": "E606FE570B886CF9FB4CDC1C29F15EBEF1F313283B6BCC04DA73F76D725D81D4"
+      },
+      "capture_retry": {
+        "status": "failed_fixture_exhausted",
+        "reason": "The second evidence capture found the bounded local fixture already shut down after its request budget; the successful package run above completed before this retry and remains represented by the prior portable recovery receipt.",
+        "ruby_log": "research/acceptance/ruby-php-dart/qualification/package-facade/ruby-recovery.log",
+        "dart_log": "research/acceptance/ruby-php-dart/qualification/package-facade/dart-recovery.log"
+      }
+    },
+    "php_lifecycle_policy": {
+      "plain_cancel_getStatus_shutdown": "retained failure: PECL Windows access violation",
+      "qualified_sequence": "cancel -> getStatus -> generated client close -> unset/GC",
+      "evidence": "research/acceptance/ruby-php-dart/qualification/stream-recovery/portable-stream-recovery.receipt.json"
+    }
+  },
+  "all_family_goldens": {
+    "fixture": {
+      "path": "php/tests/fixtures/rust-family-goldens.json",
+      "sha256": "B5FCD6D8FF1B2DA992DEE2808420F36808E2088D08E4B6F70899EEBB2C72EAAE",
+      "families": 9
+    },
+    "ruby": {
+      "status": "passed",
+      "test": "ruby/test/rust_family_goldens_test.rb",
+      "test_sha256": "946CB5CD113A0CDD1B8DDDF9F4DC5E3E777F3BE3620117673B5F5490B3131A00",
+      "exit_code": 0,
+      "runs": 1,
+      "assertions": 29
+    },
+    "dart": {
+      "status": "passed",
+      "test": "dart/test/rust_family_goldens_test.dart",
+      "test_sha256": "812618C2BBA5FAB29104561EF06865ABA7D8C96B434045350932B2E1C3557386",
+      "exit_code": 0,
+      "tests": 1
+    }
+  },
+  "failure_policy": "Any nonzero process status remains failed; fixture exhaustion is retained as a capture failure and does not promote an unobserved result to success."
+}
