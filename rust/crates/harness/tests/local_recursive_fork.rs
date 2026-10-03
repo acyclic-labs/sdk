@@ -679,11 +679,11 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
                 .await
                 .err()
-                .ok_or_else(|| Error::Invalid("unresident merge notice was accepted".into()))?;
-            assert!(matches!(
-                content_error,
-                Error::Conflict(_) | Error::Unauthorized(_)
-            ));
+                .ok_or_else(|| Error::Invalid("forged merge notice was accepted".into()))?;
+            assert!(
+                matches!(content_error, Error::Invalid(_)),
+                "forged notice must fail descriptor validation with Invalid"
+            );
             assert!(
                 host.read(
                     &project_head.workspace,
@@ -693,7 +693,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 )
                 .await
                 .is_err(),
-                "unresident merge notice must fail before provider publication"
+                "forged merge notice must fail before provider publication"
             );
             let journal = Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
