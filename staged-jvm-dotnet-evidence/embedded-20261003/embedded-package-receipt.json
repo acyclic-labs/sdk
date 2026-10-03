@@ -69,5 +69,48 @@
     "The package is installed and consumed locally; nothing is published or deployed.",
     "The net8 project remains source-staged and was not built because the portable host has no full SDK; the compatibility DllImport run is separately identified above.",
     "JNA license policy evidence remains in tooling-license-evidence.txt."
-  ]
+  ],
+  "dotnet_full_sdk": {
+    "sdk_version": "8.0.425",
+    "sdk_archive_url": "https://builds.dotnet.microsoft.com/dotnet/Sdk/8.0.425/dotnet-sdk-8.0.425-win-x64.zip",
+    "sdk_archive_sha512": "F0B6F15BF6F1A0507205C0CB102AB99E1DEE875C4682C8ED94665BE1D580186A06B21455E83B3A01A0FF7F4CD887B67420F2E2FE09ED985534A4CEA488AE1AF9",
+    "runtime_version": "8.0.31",
+    "runtime_archive_url": "https://builds.dotnet.microsoft.com/dotnet/Runtime/8.0.31/dotnet-runtime-8.0.31-win-x64.zip",
+    "runtime_archive_sha512": "9C55C58694676EE64B0EED2CD6D8CBF58B9AA8288420ACC66841E15CA0099C75D4AF0182D23A641C2342E5A151A325DF4A12FA0BDE2E47C0FB7E9A33E7B09896",
+    "source": "dotnet/Program.cs",
+    "source_sha256": "0584CB75E5986B6411314D5DF165EE62B1C1EAF6D9A3DCD1E46F600B33674F4C",
+    "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
+    "project_sha256": "6DD665AA67F51E56863768D04C8903B91439EE6E14A4A4C4783157EDD1E40222",
+    "build": "dotnet build EmbeddedPInvokeConsumer.csproj -c Release --no-restore",
+    "output": "dotnet/net8-output/EmbeddedPInvokeConsumer.dll",
+    "output_sha256": "FA0ADDFCA2BC2F67B4EEC31678335A73BE0B1C08078523D554072ED9BBC26544",
+    "result": "pass",
+    "output_text": ".NET P/Invoke Rust embedded ABI checks passed: append/read/release/recovery/cancel"
+  },
+  "installed_transport_nupkg": {
+    "package": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+    "package_sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891",
+    "consumer_source": "dotnet/consumer/Program.cs",
+    "consumer_source_sha256": "52F357123D31CEE3E3A4A51EDB6FCDA59FE7A3E28BEB17306C12A0BDB2D07CA1",
+    "consumer_project": "dotnet/consumer/Acyclic.Sdk.Transport.Consumer.csproj",
+    "consumer_project_sha256": "7BB8DCFDB20F176308CC833E84C8249CBC579AAE48E6032D1C54C0D2221A93FC",
+    "assets_sha256": "98E45EF2DA0B59B6F23648C8A8014EA3E05464D81DDC4EA2B8853F55EFE53C03",
+    "output": "Q:\\sdk\\.tmp-installed-dotnet-consumer-bin/Acyclic.Sdk.Transport.Consumer.dll",
+    "output_sha256": "879E710079B0F1BE40CF23E2D734044ED7105EB89FAAFE6C90B2345A20400482",
+    "restore": "dotnet restore with embedded nupkg and local dependency cache",
+    "build": "dotnet build -c Release --no-restore",
+    "run": "dotnet Acyclic.Sdk.Transport.Consumer.dll with ACYCLIC_FIXTURE_ENDPOINT unset",
+    "result": "pass",
+    "output_text": [
+      "Rust golden all-family serialization checks passed.",
+      "Generated Actors and Stream consumer checks passed."
+    ]
+  },
+  "transport_audit": {
+    "scope": "JVM/.NET embedded ABI package; no remote transport constructor is part of this facade",
+    "observed_java_example": "ManagedChannelBuilder.forTarget(endpoint).usePlaintext()",
+    "observed_dotnet_example": "GrpcChannel.ForAddress(endpoint)",
+    "observed_kotlin_consumer": "InProcessChannelBuilder for in-process tests; ManagedChannelBuilder.forTarget(...).usePlaintext() for explicit endpoint probe",
+    "decision": "no constructor or fallback policy change in this lane; transport selection metadata remains Rust-owned wire_integration policy and current examples remain producer-owned"
+  }
 }

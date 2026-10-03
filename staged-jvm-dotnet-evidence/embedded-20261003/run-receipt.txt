@@ -40,3 +40,27 @@ Scope:
   Both bindings exercised the retained Rust MemoryStream through append, finite read/end,
   explicit returned-buffer release, second append recovery, follow cancellation, and stale-buffer rejection.
   No Rust ABI source was changed, and no package publication or deployment is claimed.
+
+Pinned full .NET SDK qualification:
+  sdk=8.0.425; runtime=8.0.31; official Windows x64 archives verified against release metadata
+  sdk_sha512=F0B6F15BF6F1A0507205C0CB102AB99E1DEE875C4682C8ED94665BE1D580186A06B21455E83B3A01A0FF7F4CD887B67420F2E2FE09ED985534A4CEA488AE1AF9
+  runtime_sha512=9C55C58694676EE64B0EED2CD6D8CBF58B9AA8288420ACC66841E15CA0099C75D4AF0182D23A641C2342E5A151A325DF4A12FA0BDE2E47C0FB7E9A33E7B09896
+  source=dotnet/Program.cs; project=dotnet/EmbeddedPInvokeConsumer.csproj
+  build=dotnet build -c Release --no-restore
+  result=pass
+  output=.NET P/Invoke Rust embedded ABI checks passed: append/read/release/recovery/cancel
+
+Installed .NET nupkg consumer:
+  package=staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg
+  package_sha256=45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891
+  source=dotnet/consumer/Program.cs
+  restore/build=full pinned SDK with only retained nupkg and local dependency cache
+  endpoint=unset; live fixture operations not claimed
+  result=pass
+  output=Rust golden all-family serialization checks passed.
+  output=Generated Actors and Stream consumer checks passed.
+
+Transport constructor audit:
+  Embedded Rust ABI facade has no remote transport selection or retry/fallback behavior.
+  Existing Java/Kotlin/.NET endpoint examples use explicit gRPC constructors; no generated default was changed here.
+  Transport selection metadata remains Rust-owned wire_integration policy; producer-owned current examples were preserved.

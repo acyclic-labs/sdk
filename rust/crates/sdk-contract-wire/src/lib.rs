@@ -18,6 +18,7 @@ pub mod machines;
 pub mod objects;
 pub mod protocol;
 pub mod stream;
+pub mod transport;
 pub mod workers;
 
 pub use bindings::{
@@ -28,6 +29,11 @@ pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
 pub use family_registry::{
     explicit_http_family_views, family_view, FamilyModel, FamilyView, HttpProjection, FAMILY_VIEWS,
+};
+pub use transport::{
+    select_transport, select_transport_by_name, ClientRuntime, FamilyTransportPolicy,
+    RuntimeTransportPolicy, TransportKind, TransportOption, TransportRequirements,
+    TransportSelection, TransportSelectionError, TransportSelectionRequest,
 };
 pub use filesystem::{
     FILESYSTEM, FILESYSTEM_OPERATION_POLICIES, FILESYSTEM_SERVICE_AVAILABILITY,
@@ -2455,7 +2461,7 @@ fn stream_field_docs(_message: &str, name: &str) -> &'static str {
         "items" => "Items returned by the stream operation.",
         "limit" => "The maximum number of returned items.",
         "start" => "The inclusive starting sequence.",
-        "end" => "The inclusive ending sequence.",
+        "end" => "The exclusive ending sequence.",
         "tail" => "The observed or resulting stream tail.",
         "actual_tail" => "The actual stream tail.",
         "source" => "The source stream path.",
@@ -2818,6 +2824,21 @@ mod tests {
         assert!(source.contains("// Resumes a paused subscription."));
         assert!(source.contains("// The cursor whose delivery most recently failed."));
         assert!(source.ends_with("}\n"));
+    }
+
+    #[test]
+    fn stream_append_ranges_document_half_open_endings() {
+        assert_eq!(
+            stream_field_docs("AppendReceipt", "end"),
+            "The exclusive ending sequence."
+        );
+        assert_eq!(
+            stream_field_docs("CommittedAppend", "end"),
+            "The exclusive ending sequence."
+        );
+        let source = stream_proto();
+        assert!(source.contains("// The exclusive ending sequence."));
+        assert!(!source.contains("// The inclusive ending sequence."));
     }
 
     #[test]

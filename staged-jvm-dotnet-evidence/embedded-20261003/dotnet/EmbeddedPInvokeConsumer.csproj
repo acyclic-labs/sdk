@@ -7,6 +7,11 @@
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="Program.Framework.cs" />
     <None Include="..\native\acyclic_sdk_embedded_prototype.dll" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>
+
+
+
+

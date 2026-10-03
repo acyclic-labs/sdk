@@ -60,7 +60,7 @@
     "source_sha256": "0584CB75E5986B6411314D5DF165EE62B1C1EAF6D9A3DCD1E46F600B33674F4C",
     "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
     "project_sha256": "0E84BF4B1BCABBE2DB38093355D306E4D24765F04B23D412C967148F55642853",
-    "result": "net8 project source staged; compatibility DllImport run passed",
+    "result": "net8 build and run passed with pinned official SDK 8.0.425",
     "blocker": "available .NET hosts report no installed SDK; the retained portable target bundle contains Roslyn assemblies but no SDK toolchain",
     "checks_planned": [
       "ABI version",
@@ -80,6 +80,28 @@
       "result": "pass",
       "output_text": ".NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel",
       "scope": "same standard DllImport mapping; net8 project remains unbuilt because portable host has no full SDK"
+    },
+    "full_sdk_run": {
+      "sdk_version": "8.0.425",
+      "runtime_version": "8.0.31",
+      "source": "dotnet/Program.cs",
+      "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
+      "project_sha256": "6DD665AA67F51E56863768D04C8903B91439EE6E14A4A4C4783157EDD1E40222",
+      "output": "dotnet/net8-output/EmbeddedPInvokeConsumer.dll",
+      "output_sha256": "FA0ADDFCA2BC2F67B4EEC31678335A73BE0B1C08078523D554072ED9BBC26544",
+      "result": "pass",
+      "output_text": ".NET P/Invoke Rust embedded ABI checks passed: append/read/release/recovery/cancel"
+    },
+    "installed_nupkg_consumer": {
+      "package": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+      "package_sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891",
+      "source": "dotnet/consumer/Program.cs",
+      "source_sha256": "52F357123D31CEE3E3A4A51EDB6FCDA59FE7A3E28BEB17306C12A0BDB2D07CA1",
+      "result": "pass",
+      "output_text": [
+        "Rust golden all-family serialization checks passed.",
+        "Generated Actors and Stream consumer checks passed."
+      ]
     }
   },
   "tooling": {
@@ -87,11 +109,11 @@
     "jna": "5.15.0",
     "rust": "cargo 1.98.1",
     "dotnet_host": "8.0.6 system host; retained portable host 8.0.31",
-    "dotnet_sdk": "unavailable"
+    "dotnet_sdk": "official pinned 8.0.425 archive plus 8.0.31 runtime; SHA512s recorded in embedded-package-receipt.json"
   },
   "run_receipt": {
     "path": "run-receipt.txt",
-    "sha256": "0A80BA53F54FFC447A50A8A392E2BD3FD47663E69DFB8B801E5BE5E1A808FA51"
+    "sha256": "419A266EBC24D13A9B493CAC763465DED8B32DDDC788838A1550633DC018DC98"
   },
   "license_evidence": {
     "path": "tooling-license-evidence.txt",
@@ -100,7 +122,6 @@
   "packaging_gaps": [
     "The prototype stages a Windows DLL, import library, and generated header only; Linux and macOS native variants are not present.",
     "JNA is a runtime dependency and needs license policy approval for a distributable JVM package.",
-    "The .NET source is written against the retained ABI but needs an installed SDK to produce a verified binary.",
-    "No JVM or .NET package publication or deployment is claimed."
+    "The package and nupkg runs are local qualification evidence only; no publication or deployment is claimed."
   ]
 }

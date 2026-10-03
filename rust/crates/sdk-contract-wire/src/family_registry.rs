@@ -11,6 +11,11 @@ use crate::{
     INFERENCE_POLICIES, MACHINES, MACHINES_POLICIES, OBJECTS_POLICIES, OBJECTS_V2, STREAM,
     STREAM_POLICIES, WORKERS, WORKER_POLICIES,
 };
+use crate::transport::{
+    FamilyTransportPolicy, ACTORS_TRANSPORT, FILESYSTEM_TRANSPORT, HARNESS_TRANSPORT,
+    INFERENCE_TRANSPORT, MACHINES_TRANSPORT, OBJECTS_TRANSPORT, STREAM_TRANSPORT,
+    WORKERS_TRANSPORT,
+};
 use prost::Message;
 
 /// The model representation used by one public family.
@@ -90,6 +95,8 @@ pub struct FamilyView {
     pub operation_policies: &'static [OperationPolicy],
     /// Explicit HTTP projection status and routes.
     pub http: HttpProjection,
+    /// Runtime-qualified transport options in preference order.
+    pub transport: FamilyTransportPolicy,
 }
 
 impl FamilyView {
@@ -124,48 +131,56 @@ pub const FAMILY_VIEWS: &[FamilyView] = &[
         model: FamilyModel::ContractSpec(&ACTORS),
         operation_policies: ACTOR_POLICIES,
         http: HttpProjection::Explicit(ACTORS.routes),
+        transport: ACTORS_TRANSPORT,
     },
     FamilyView {
         name: "workers",
         model: FamilyModel::ContractSpec(&WORKERS),
         operation_policies: WORKER_POLICIES,
         http: HttpProjection::Explicit(WORKERS.routes),
+        transport: WORKERS_TRANSPORT,
     },
     FamilyView {
         name: "objects",
         model: FamilyModel::ContractSpec(&OBJECTS_V2),
         operation_policies: OBJECTS_POLICIES,
         http: HttpProjection::Explicit(OBJECTS_V2.routes),
+        transport: OBJECTS_TRANSPORT,
     },
     FamilyView {
         name: "stream",
         model: FamilyModel::ContractSpec(&STREAM),
         operation_policies: STREAM_POLICIES,
         http: HttpProjection::Explicit(STREAM.routes),
+        transport: STREAM_TRANSPORT,
     },
     FamilyView {
         name: "inference",
         model: FamilyModel::ContractSpec(&INFERENCE),
         operation_policies: INFERENCE_POLICIES,
         http: HttpProjection::Explicit(INFERENCE.routes),
+        transport: INFERENCE_TRANSPORT,
     },
     FamilyView {
         name: "machines",
         model: FamilyModel::ContractSpec(&MACHINES),
         operation_policies: MACHINES_POLICIES,
         http: HttpProjection::Unavailable,
+        transport: MACHINES_TRANSPORT,
     },
     FamilyView {
         name: "filesystem",
         model: FamilyModel::Filesystem(&crate::filesystem::FILESYSTEM),
         operation_policies: FILESYSTEM_OPERATION_POLICIES,
         http: HttpProjection::Unavailable,
+        transport: FILESYSTEM_TRANSPORT,
     },
     FamilyView {
         name: "harness",
         model: FamilyModel::Harness(&crate::harness::HARNESS),
         operation_policies: HARNESS_OPERATION_POLICIES,
         http: HttpProjection::Unavailable,
+        transport: HARNESS_TRANSPORT,
     },
 ];
 
