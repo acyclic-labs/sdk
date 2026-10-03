@@ -73,11 +73,13 @@ const wasmPackages = [
   ["objects", "build-objects-wasm.mjs", "acyclic_objects_wasm"],
   ["stream", "build-stream-wasm.mjs", "acyclic_stream_wasm"],
 ];
+let authorityCargoEnv = { ...process.env };
 const checkWasmPackage = async ([packageName, buildScript, basename]) => {
   const output = join(temporary, `${packageName}-wasm`);
   const built = spawnSync(process.execPath, [join(root, "scripts", buildScript), output], {
     cwd: root,
     encoding: "utf8",
+    env: authorityCargoEnv,
   });
   if (built.status !== 0) {
     process.stderr.write(built.stdout ?? "");
@@ -133,6 +135,7 @@ const checkWasmPackage = async ([packageName, buildScript, basename]) => {
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
   const authority = rustAuthorityExport();
+  authorityCargoEnv = { ...process.env, CARGO_TARGET_DIR: authority.cargoTargetDir };
   const authorityInput = authority.inputRoot ?? authority.root;
   const authorityFor = source => {
     const normalized = source
@@ -158,7 +161,7 @@ try {
   const generated = spawnSync(
     executable,
     ["generate", "--template", rustAuthorityBufTemplate(authority), "--output", temporary, authorityInput],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", env: authorityCargoEnv },
   );
   if (generated.status !== 0) {
     process.stderr.write(generated.stdout ?? "");
@@ -194,6 +197,7 @@ try {
     const built = spawnSync(executable, ["build", "--path", input, "-o", descriptor], {
       cwd: root,
       encoding: "utf8",
+      env: authorityCargoEnv,
     });
     if (built.status !== 0) {
       process.stderr.write(built.stdout ?? "");

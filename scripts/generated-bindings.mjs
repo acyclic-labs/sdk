@@ -57,6 +57,9 @@ export function rustAuthorityExport() {
   const output = configured
     ? resolve(configured)
     : mkdtempSync(join(tmpdir(), "acyclic-rust-authority-"));
+  const cargoTargetDir = process.env.ACYCLIC_RUST_AUTHORITY_TARGET_DIR
+    ? resolve(process.env.ACYCLIC_RUST_AUTHORITY_TARGET_DIR)
+    : mkdtempSync(join(tmpdir(), "acyclic-rust-authority-target-"));
   if (!configured) {
     const result = spawnSync(
       "cargo",
@@ -72,7 +75,11 @@ export function rustAuthorityExport() {
         "--out",
         output,
       ],
-      { cwd: root, encoding: "utf8", env: { ...process.env, CARGO_NET_OFFLINE: "true" } },
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...process.env, CARGO_NET_OFFLINE: "true", CARGO_TARGET_DIR: cargoTargetDir },
+      },
     );
     if (result.error) throw result.error;
     if (result.status !== 0) {
@@ -97,7 +104,7 @@ export function rustAuthorityExport() {
   if (!existsSync(bufConfig)) {
     writeFileSync(bufConfig, "version: v2\nmodules:\n  - path: .\n");
   }
-  return { root: output, inputRoot: input, manifest };
+  return { root: output, inputRoot: input, manifest, cargoTargetDir };
 }
 
 export function rustAuthorityBufTemplate(authority) {
