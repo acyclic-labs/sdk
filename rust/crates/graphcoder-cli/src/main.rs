@@ -286,7 +286,8 @@ impl Runtime {
             }
         }
         let operation = operation_for(request_id);
-        self.swarm
+        let output = self
+            .swarm
             .run_root(operation, prompt)
             .await
             .map_err(DispatchError::from_harness)?;
@@ -295,7 +296,11 @@ impl Runtime {
             .root_task()
             .await
             .map_err(DispatchError::from_harness)?;
-        self.snapshot(task).await
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
     }
 
     async fn open_session(&self, params: &Value, resume: bool) -> Result<Value, DispatchError> {
@@ -497,7 +502,9 @@ where
                 match serde_json::from_str::<WireRequest>(&line) {
                     Ok(request) => runtime.dispatch(request).await,
                     Err(error) => WireResponse::error(
-                        request_id_from_malformed_line(&line).as_deref().unwrap_or(""),
+                        request_id_from_malformed_line(&line)
+                            .as_deref()
+                            .unwrap_or(""),
                         "invalid_input",
                         format!("invalid request: {error}"),
                     ),
@@ -579,7 +586,10 @@ mod tests {
         let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
         let (response_writer, mut response_reader) = tokio::io::duplex(64 * 1024);
         let server = tokio::spawn(serve(runtime, request_reader, response_writer));
-        request_writer.write_all(&request).await.expect("request writes");
+        request_writer
+            .write_all(&request)
+            .await
+            .expect("request writes");
         request_writer.shutdown().await.expect("request closes");
         let mut response = Vec::new();
         response_reader
@@ -659,15 +669,46 @@ mod tests {
         )
         .await;
         assert_eq!(started["ok"], true);
-        let mut matches = Vec::new();
-        find_exact_bytes(root.path(), b"write fixture", &mut matches);
-        assert!(!matches.is_empty(), "stage fixture bytes were not durably retained");
+        let attachment = &started["result"]["outcome"]["attachments"][0];
+        assert_eq!(attachment["file"]["path"], "graphcoder-fixture.txt");
+        assert_eq!(attachment["file"]["display_name"], "graphcoder-fixture.txt");
+        assert_eq!(attachment["file"]["descriptor"]["media_type"], "text/plain");
+        assert_eq!(attachment["file"]["descriptor"]["byte_length"], 13);
+        assert_eq!(
+            attachment["file"]["descriptor"]["sha256"],
+            json!([
+                0x6f, 0x18, 0x86, 0x95, 0x7c, 0xff, 0xd5, 0x20, 0xa3, 0x9e, 0x7f, 0x0c, 0x30, 0xd6,
+                0xd3, 0xe9, 0x9c, 0x74, 0x9f, 0x30, 0x0b, 0x13, 0x1d, 0x75, 0x83, 0xda, 0x85, 0x43,
+                0x77, 0xef, 0x8a, 0x4d
+            ])
+        );
+        let session_id = started["result"]["summary"]["id"]
+            .as_str()
+            .expect("stage session id")
+            .to_owned();
+        drop(runtime);
+        let reopened = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
+                .await
+                .expect("runtime reopens"),
+        );
+        let resumed = exchange(
+            reopened.clone(),
+            json!({
+                "request_id":"stage-reopen",
+                "method":"open_session",
+                "params":{"session_id": session_id}
+            }),
+        )
+        .await;
+        assert_eq!(resumed["ok"], true);
+        assert_eq!(resumed["result"]["summary"]["state"], "completed");
         let activity = exchange(
-            runtime,
+            reopened,
             json!({
                 "request_id":"activity-1",
                 "method":"read_activity",
-                "params":{"session_id": started["result"]["summary"]["id"]}
+                "params":{"session_id": session_id}
             }),
         )
         .await;
@@ -700,19 +741,5 @@ mod tests {
         .await;
         assert_eq!(oversized["ok"], false);
         assert_eq!(oversized["error"]["code"], "invalid_input");
-    }
-
-    fn find_exact_bytes(root: &std::path::Path, expected: &[u8], matches: &mut Vec<PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(root) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
-                find_exact_bytes(&path, expected, matches);
-            } else if std::fs::read(&path).ok().as_deref() == Some(expected) {
-                matches.push(path);
-            }
-        }
     }
 }
