@@ -527,6 +527,17 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             let plan = parent_facade
                 .prepare_project_merge(host.as_ref(), aggregate.reducer(), &child_project)
                 .await?;
+            assert!(
+                host.read(
+                    &project_head.workspace,
+                    None,
+                    &format!("/level-{level}.txt"),
+                    1_024,
+                )
+                .await
+                .is_err(),
+                "parent workspace changed before the explicit facade publication"
+            );
             let operation_id = OperationId::from_bytes([91; 16]);
             let outcome = parent_facade
                 .apply_project_merge(host.as_ref(), aggregate.reducer(), &plan, operation_id)
