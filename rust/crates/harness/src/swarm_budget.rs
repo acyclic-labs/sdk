@@ -388,6 +388,48 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         Ok(issuer)
     }
 
+    /// Reopens an issuer from the durable receipt cursor and last measured
+    /// cumulative usage retained by the host.
+    pub fn resume(
+        source: S,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        sequence: u64,
+        last_usage: Option<SwarmUsage>,
+    ) -> Result<Self> {
+        validate_issuer_cursor(sequence, last_usage)?;
+        let mut issuer = Self::new(source, operation_id, dispatch_id)?;
+        issuer.sequence = sequence;
+        issuer.last_usage = last_usage;
+        Ok(issuer)
+    }
+
+    /// Reopens an issuer with both its durable cursor and child ceiling.
+    pub fn resume_with_limits(
+        source: S,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        sequence: u64,
+        last_usage: Option<SwarmUsage>,
+        limits: SwarmResourceRequest,
+    ) -> Result<Self> {
+        validate_issuer_cursor(sequence, last_usage)?;
+        let mut issuer = Self::with_limits(source, operation_id, dispatch_id, limits)?;
+        if let Some(usage) = last_usage {
+            if usage.model_steps > limits.model_steps
+                || usage.output_bytes > limits.output_bytes
+                || usage.execution_time_ms > limits.execution_time_ms
+            {
+                return Err(Error::Conflict(
+                    "restored provider usage exceeds the child reservation ceiling".into(),
+                ));
+            }
+        }
+        issuer.sequence = sequence;
+        issuer.last_usage = last_usage;
+        Ok(issuer)
+    }
+
     /// Reads provider counters and issues the next verified durable receipt.
     pub fn issue(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
         let sequence = self
@@ -429,6 +471,15 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))
     }
+}
+
+fn validate_issuer_cursor(sequence: u64, last_usage: Option<SwarmUsage>) -> Result<()> {
+    if (sequence == 0) != last_usage.is_none() {
+        return Err(Error::Invalid(
+            "swarm usage issuer cursor and cumulative usage must advance together".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Parent and child identity submitted before a model fork is dispatched.
@@ -806,6 +857,7 @@ struct SwarmBudgetState {
     usage: SwarmBudgetUsage,
     root_usage: SwarmUsage,
     root_usage_sequence: u64,
+    root_dispatch_id: Option<IdempotencyKey>,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
 }
@@ -845,6 +897,7 @@ impl SwarmBudget {
                 usage,
                 root_usage: SwarmUsage::default(),
                 root_usage_sequence: 0,
+                root_dispatch_id: None,
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -1658,6 +1711,10 @@ fn update_root_usage(
         if receipt.operation_id != state.session_id
             || receipt.usage != usage
             || receipt.sequence != expected_sequence
+            || state
+                .root_dispatch_id
+                .as_ref()
+                .is_some_and(|dispatch_id| dispatch_id != &receipt.dispatch_id)
         {
             return Err(Error::Conflict(
                 "swarm root usage receipt is stale or mismatched".into(),
@@ -1687,6 +1744,9 @@ fn update_root_usage(
     state.usage.consumed = next;
     if let Some(receipt) = receipt {
         state.root_usage_sequence = receipt.sequence;
+        if state.root_dispatch_id.is_none() {
+            state.root_dispatch_id = Some(receipt.dispatch_id.clone());
+        }
     }
     Ok(usage)
 }
@@ -1927,6 +1987,49 @@ mod tests {
             },
         )?;
         assert!(matches!(issuer.issue(), Err(Error::Conflict(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn receipt_issuer_resume_preserves_sequence_and_cumulative_cursor() -> Result<()> {
+        let source = MeasuredSource {
+            snapshots: Mutex::new(vec![SwarmUsage {
+                model_steps: 8,
+                output_bytes: 2048,
+                execution_time_ms: 90,
+            }]),
+        };
+        let mut issuer = SwarmUsageReceiptIssuer::resume_with_limits(
+            source,
+            id(22),
+            IdempotencyKey::new("dispatch-resume")?,
+            3,
+            Some(SwarmUsage {
+                model_steps: 7,
+                output_bytes: 1024,
+                execution_time_ms: 80,
+            }),
+            SwarmResourceRequest {
+                model_steps: 8,
+                output_bytes: 2048,
+                execution_time_ms: 90,
+            },
+        )?;
+        let receipt = issuer.issue()?.into_receipt();
+        assert_eq!(receipt.sequence, 4);
+        assert_eq!(issuer.next_sequence()?, 5);
+        assert!(
+            SwarmUsageReceiptIssuer::resume(
+                MeasuredSource {
+                    snapshots: Mutex::new(Vec::new()),
+                },
+                id(22),
+                IdempotencyKey::new("dispatch-resume")?,
+                2,
+                None,
+            )
+            .is_err()
+        );
         Ok(())
     }
 

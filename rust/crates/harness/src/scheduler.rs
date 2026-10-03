@@ -603,7 +603,7 @@ impl Scheduler {
                   would scatter one event's application across many functions without \
                   clarifying any of them"
     )]
-    pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
+    pub(crate) fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
         self.apply_with_swarm_guard(event, false)
     }
 
