@@ -7,12 +7,12 @@ use acyclic_harness::{
         VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
-    distributed::{CoordinatorApply, DistributedCoordinator, Worker},
+    distributed::{CoordinatorApply, DistributedCoordinator},
     resources::ProviderRef,
     runtime::{TaskAdmissionRecord, TaskRunLimits},
     scheduler::{
         DurableOwner, EntrypointRef, LeaseFence, OperationSpec, Orchestration, ParentLink,
-        Reservation, ResourceRequest, ResourceSnapshot, SchedulerEvent, canonical_swarm_resources,
+        Reservation, ResourceRequest, SchedulerEvent, canonical_swarm_resources,
     },
     swarm_budget::{SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmResourceRequest},
 };
@@ -150,6 +150,7 @@ struct Fixture {
     issuer: AuthorityIssuer,
     scope: Scope,
     session_id: OperationId,
+    session_admission: Option<TaskAdmissionRecord>,
 }
 
 impl Fixture {
@@ -181,6 +182,7 @@ impl Fixture {
             issuer,
             scope,
             session_id,
+            session_admission: None,
         })
     }
 
@@ -191,6 +193,9 @@ impl Fixture {
         resources: Option<SwarmResourceRequest>,
         key: &str,
     ) -> Result<FileRef> {
+        if admission.operation_id == self.session_id {
+            self.session_admission = Some(admission.clone());
+        }
         let (state, bytes) = state_ref(admission)?;
         self.contents
             .lock()
@@ -209,31 +214,43 @@ impl Fixture {
     }
 
     async fn start_session(&mut self) -> Result<()> {
-        let lease = self
-            .coordinator
-            .pull(&Worker {
-                id: "budget-worker".into(),
-                available: ResourceSnapshot(BTreeMap::from([
-                    ("model_steps".into(), 64),
-                    ("output_bytes".into(), 640),
-                    ("execution_time_ms".into(), 6_400),
-                ])),
-                labels: BTreeMap::new(),
-            })
-            .await?
-            .ok_or_else(|| Error::NotFound("session lease".into()))?;
-        if lease.operation.operation_id != self.session_id {
-            return Err(Error::Conflict(
-                "session was not first scheduler lease".into(),
-            ));
-        }
+        let admission = self
+            .session_admission
+            .clone()
+            .ok_or_else(|| Error::NotFound("session admission".into()))?;
+        let resources = SwarmResourceRequest {
+            model_steps: 1,
+            output_bytes: 1,
+            execution_time_ms: 1,
+        };
+        let reservation = Reservation {
+            id: "session-lease".into(),
+            placement: "budget-worker".into(),
+            admitted: canonical_swarm_resources(resources),
+        };
+        self.coordinator
+            .admit_swarm_after(
+                &self.owner,
+                &self.scope,
+                &self.issuer.verifier(),
+                &admission,
+                IdempotencyKey::new("admit-session")?,
+                self.session_id,
+                None,
+                0,
+                limits(2, 2),
+                SwarmOwnerFence::new(self.owner.id.clone(), 0)?,
+                resources,
+                reservation.clone(),
+            )
+            .await?;
         self.coordinator
             .apply(
                 self.session_id,
                 IdempotencyKey::new("start-session")?,
                 SchedulerEvent::Started {
                     operation_id: self.session_id,
-                    fence: LeaseFence::from(&lease.reservation),
+                    fence: LeaseFence::from(&reservation),
                 },
             )
             .await?;
