@@ -35,6 +35,12 @@ interface PendingRequest {
 
 export const DEFAULT_MAXIMUM_PROCESS_LINE_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_MAXIMUM_PENDING_PROCESS_REQUESTS = 64;
+/**
+ * Retired request identities are protocol tombstones. Evicting one would
+ * make a delayed response indistinguishable from an unsolicited response;
+ * once this bound is reached the bridge fails closed instead.
+ */
+const MAXIMUM_RETIRED_REQUESTS_MULTIPLIER = 2;
 
 /**
  * JSON-lines bridge for a host-owned local runtime executable.
@@ -49,6 +55,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #onDiagnostic: (event: GraphCoderProcessDiagnostic) => void;
   readonly #maximumLineBytes: number;
   readonly #maximumPendingRequests: number;
+  readonly #maximumRetiredRequests: number;
   readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
   readonly #operatorToken: string;
   readonly #cancelled = new Set<string>();
@@ -65,6 +72,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (!Number.isSafeInteger(this.#maximumPendingRequests) || this.#maximumPendingRequests < 1) {
       throw new GraphCoderError("invalid_input", "maximum pending process requests must be positive");
     }
+    this.#maximumRetiredRequests = Math.min(
+      Number.MAX_SAFE_INTEGER,
+      this.#maximumPendingRequests * MAXIMUM_RETIRED_REQUESTS_MULTIPLIER,
+    );
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.#cancelMessage = options.cancelMessage;
     this.#operatorToken = options.operatorToken ?? randomUUID();
@@ -149,6 +160,11 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     const pending = this.#pending.get(requestId);
     if (pending === undefined) return false;
     this.#pending.delete(requestId);
+    if (this.#cancelled.size + this.#cancelControls.size >= this.#maximumRetiredRequests) {
+      pending.reject(new GraphCoderError("transport", "bridge cancellation retirement limit reached"));
+      this.#finish(new GraphCoderError("transport", "bridge cancellation retirement limit reached"));
+      return true;
+    }
     this.#cancelled.add(requestId);
     try {
       const control = this.#cancelMessage?.(requestId);

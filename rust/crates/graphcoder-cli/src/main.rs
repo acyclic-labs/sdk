@@ -32,7 +32,7 @@ use std::{
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 #[cfg(test)]
 use tokio::io::AsyncReadExt;
@@ -1006,6 +1006,8 @@ where
     let input = BufReader::new(input);
     let mut frames = BoundedFrames::new(input);
     let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
+    let request_slots = Arc::new(Semaphore::new(MAX_IN_FLIGHT));
+    let control_slots = Arc::new(Semaphore::new(MAX_CONTROL_IN_FLIGHT));
     let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
     let mut control_jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
     loop {
@@ -1046,26 +1048,35 @@ where
             }
         };
         let is_control = request.method == "cancel_session";
-        if is_control && control_jobs.len() >= MAX_CONTROL_IN_FLIGHT {
-            write_direct_error(
-                &output,
-                WireResponse::error(&request.request_id, "invalid_input", "control request limit reached"),
-            )
-            .await?;
-            continue;
-        }
-        if !is_control && jobs.len() >= MAX_IN_FLIGHT {
-            write_direct_error(
-                &output,
-                WireResponse::error(&request.request_id, "invalid_input", "in-flight request limit reached"),
-            )
-            .await?;
-            continue;
-        }
+        let permit = if is_control {
+            control_slots.clone().try_acquire_owned()
+        } else {
+            request_slots.clone().try_acquire_owned()
+        };
+        let permit = match permit {
+            Ok(permit) => permit,
+            Err(_) => {
+                write_direct_error(
+                    &output,
+                    WireResponse::error(
+                        &request.request_id,
+                        "invalid_input",
+                        if is_control {
+                            "control request limit reached"
+                        } else {
+                            "in-flight request limit reached"
+                        },
+                    ),
+                )
+                .await?;
+                continue;
+            }
+        };
         let runtime = runtime.clone();
         let output = output.clone();
         let target = if is_control { &mut control_jobs } else { &mut jobs };
         target.push(tokio::spawn(async move {
+            let _permit = permit;
             let response = runtime.dispatch(request).await;
             let mut output = output.lock().await;
             write_response(&mut *output, &response).await
