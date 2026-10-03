@@ -1027,6 +1027,7 @@ fn generation_descriptor_set(
 mod tests {
     use super::*;
     use prost_types::FileDescriptorSet;
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static TEMPORARY_OUTPUT_ID: AtomicUsize = AtomicUsize::new(0);
@@ -1375,6 +1376,35 @@ mod tests {
             crate::transport::TransportKind::Grpc
         );
         assert!(boundary.transport.browser.options.is_empty());
+        let operation_names = boundary
+            .methods
+            .iter()
+            .map(|method| method.operation_name())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(operation_names.len(), 19);
+        for expected in [
+            "qualifyImage",
+            "create",
+            "checkpoint",
+            "fork",
+            "forkMachine",
+            "suspend",
+            "wake",
+            "setSuspensionPolicy",
+            "destroyMachine",
+            "destroyCheckpoint",
+            "recover",
+            "inspectMachine",
+            "inspectCheckpoint",
+            "listMachines",
+            "events",
+            "usage",
+            "cancel",
+            "inspectOperation",
+            "watchOperation",
+        ] {
+            assert!(operation_names.contains(expected), "missing {expected}");
+        }
 
         for method in &boundary.methods {
             let policy = method

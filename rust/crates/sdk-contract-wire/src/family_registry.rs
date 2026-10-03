@@ -132,6 +132,16 @@ impl NativeMethodBoundary {
     pub fn rpc(self) -> String {
         format!("{}.{}/{}", self.package, self.service, self.method)
     }
+
+    /// Return the canonical camelCase operation name used by the Rust-native
+    /// Machines WASM dispatcher and generated TypeScript bridge.
+    pub fn operation_name(self) -> String {
+        let mut operation = self.method.to_owned();
+        if let Some(first) = operation.get_mut(..1) {
+            first.make_ascii_lowercase();
+        }
+        operation
+    }
 }
 
 fn native_method_boundaries(view: FamilyView) -> Vec<NativeMethodBoundary> {
