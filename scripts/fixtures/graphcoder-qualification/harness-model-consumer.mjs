@@ -57,6 +57,14 @@ const consumerRoot = option("--root");
 if (consumerRoot === undefined) throw new Error("usage: node harness-model-consumer.mjs --root <installed-consumer>");
 
 const api = await loadExport(consumerRoot, "@acyclic-labs/harness");
+const proto = await loadExport(consumerRoot, "@acyclic-labs/harness/proto");
+const protocol = await loadExport(consumerRoot, "@acyclic-labs/harness/protocol");
+assert(proto.file_harness_v2_harness !== undefined, "PKG-HARNESS-CONTRACT-01 harness descriptor export is missing");
+assert(proto.CommandEnvelopeSchema !== undefined && proto.EventEnvelopeSchema !== undefined,
+  "PKG-HARNESS-CONTRACT-01 harness message schema exports are missing");
+assert(protocol.file_protocol_v1_protocol !== undefined, "PKG-HARNESS-CONTRACT-01 protocol descriptor export is missing");
+assert(protocol.ProtocolIdentitySchema !== undefined && protocol.HandshakeRequestSchema !== undefined,
+  "PKG-HARNESS-CONTRACT-01 protocol message schema exports are missing");
 const contracts = await api.NativeContracts.create();
 const options = {
   temperature: 0.2,
@@ -139,5 +147,5 @@ assert(boundedDispatches.count === 0, "NEG-MODEL-BOUNDS-01 dispatched an oversiz
 
 process.stdout.write(JSON.stringify({
   ok: true,
-  scenarios: ["PKG-HARNESS-MODEL-01", "NEG-MODEL-PAIR-01", "NEG-MODEL-BOUNDS-01"],
+  scenarios: ["PKG-HARNESS-CONTRACT-01", "PKG-HARNESS-MODEL-01", "NEG-MODEL-PAIR-01", "NEG-MODEL-BOUNDS-01"],
 }) + "\n");
