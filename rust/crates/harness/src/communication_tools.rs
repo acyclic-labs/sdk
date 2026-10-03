@@ -21,7 +21,10 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::watch;
 
 /// Stable model-visible name for explicit parent/child messages.
@@ -38,6 +41,64 @@ pub const TOOL_REVISION: &str = "1";
 pub trait WaitCancellationSource: Send + Sync {
     /// Returns a live cancellation receiver for one admitted task.
     fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>>;
+}
+
+/// Local authenticated cancellation registry for task execution hosts.
+///
+/// A runtime registers a task when it admits the task, passes this source to
+/// the communication tool registry, and calls [`Self::cancel`] from the same
+/// owner authority that controls the task. The registry is deliberately a
+/// live cancellation bridge; durable cancellation declarations remain owned
+/// by the task journal and should recreate the cancelled state on resume.
+#[derive(Default)]
+pub struct LocalTaskCancellationSource {
+    scopes: Mutex<BTreeMap<TaskId, watch::Sender<bool>>>,
+}
+
+impl LocalTaskCancellationSource {
+    /// Registers or resets one admitted task's live cancellation scope.
+    pub fn register(&self, task_id: TaskId) -> Result<()> {
+        if task_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("cancellation task identity is nil".into()));
+        }
+        let (sender, _) = watch::channel(false);
+        self.scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
+            .insert(task_id, sender);
+        Ok(())
+    }
+
+    /// Requests cancellation for one registered task.
+    pub fn cancel(&self, task_id: TaskId) -> Result<()> {
+        let scopes = self
+            .scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?;
+        let sender = scopes
+            .get(&task_id)
+            .ok_or_else(|| Error::NotFound("cancellation task scope".into()))?;
+        sender.send_replace(true);
+        Ok(())
+    }
+
+    /// Removes one task's live scope after its task loop exits.
+    pub fn remove(&self, task_id: TaskId) -> Result<()> {
+        self.scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
+            .remove(&task_id);
+        Ok(())
+    }
+}
+
+impl WaitCancellationSource for LocalTaskCancellationSource {
+    fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>> {
+        self.scopes
+            .lock()
+            .ok()
+            .and_then(|scopes| scopes.get(&task_id).map(|sender| sender.subscribe()))
+    }
 }
 
 /// Message target selected by the model.  The durable layer verifies the
@@ -603,6 +664,22 @@ mod tests {
         assert_eq!(value["kind"], "tasks");
         assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
         assert_eq!(value["outcomes"][1]["status"], "indeterminate");
+        Ok(())
+    }
+
+    #[test]
+    fn local_cancellation_source_is_task_scoped() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let owner = task(8);
+        let sibling = task(9);
+        source.register(owner)?;
+        source.register(sibling)?;
+        assert!(!*source.receiver(owner).expect("owner scope").borrow());
+        assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        source.cancel(owner)?;
+        assert!(*source.receiver(owner).expect("owner scope").borrow());
+        assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        assert!(matches!(source.cancel(task(10)), Err(Error::NotFound(_))));
         Ok(())
     }
 }
