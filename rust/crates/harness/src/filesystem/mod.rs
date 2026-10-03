@@ -48,6 +48,9 @@ mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
+pub use project_merge_recovery::{
+    ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
+};
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
