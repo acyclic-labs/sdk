@@ -324,13 +324,10 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             let swarm = self.target()?.ok_or_else(|| {
                 Error::Conflict("local recursive fork publisher is not bound to a swarm".into())
             })?;
-            let mut parent = StreamAggregate::open(
-                &plan.stream,
-                plan.report.request.parent.clone(),
-                plan.issuer.verifier(),
-                SchemaRegistry::new(),
-            )
-            .await?;
+            let parent_harness = swarm.open_session(plan.parent).await?;
+            let mut parent = parent_harness
+                .conversation_aggregate(swarm.config.limits)
+                .await?;
             let _outcome = swarm
                 .publish_and_activate_child_with_publication(
                     plan.request.clone(),

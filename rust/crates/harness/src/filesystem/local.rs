@@ -709,6 +709,15 @@ impl PersistentLocalHarness {
         self.storage.conversation_state(limits).await
     }
 
+    /// Opens this session's owner-bound conversation aggregate for typed fork
+    /// publication. The aggregate verifier comes from the session descriptor.
+    pub async fn conversation_aggregate(
+        &self,
+        limits: crate::conversation::Limits,
+    ) -> Result<StreamAggregate<LocalStream>> {
+        self.storage.conversation_aggregate(limits).await
+    }
+
     /// Reads a bounded authoritative event page after a revision cursor.
     pub async fn conversation_events(
         &self,
