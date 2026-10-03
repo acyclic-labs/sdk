@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const websiteRoot = process.env.ACYC_DOCS_WEBSITE_ROOT ?? "Q:/sdk/work/rust-sdk-docs-website";
+const cliWebsiteRoot = process.argv.find((argument) => argument.startsWith("--website-root="))?.slice("--website-root=".length);
+const websiteRoot = cliWebsiteRoot ?? process.env.ACYC_DOCS_WEBSITE_ROOT ?? "Q:/sdk/work/rust-sdk-docs-website";
 const root = (path: string) => join(websiteRoot, path);
 const websiteVersions = () => import(pathToFileURL(root("src/lib/docs/versions.ts")).href);
 
