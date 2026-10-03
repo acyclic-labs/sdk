@@ -900,6 +900,11 @@ impl ForkAtBatch {
         ) = child_zero_context
             .ok_or_else(|| Error::Storage("child zero context missing".into()))?;
         tokio::select! {
+            // A publisher admission and the child task can become ready in
+            // the same scheduler turn. The admission is the handoff point:
+            // prefer it so the recursive fork consumes the completed
+            // boundary before the child is released to finish its turn.
+            biased;
             _ = child_zero_ready.notified() => {}
             _ = &mut all_children => {
                 return Err(Error::Conflict(
