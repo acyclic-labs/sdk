@@ -182,3 +182,14 @@ Fresh captured-docs integrity check: root verified all 769 files in rust-docs-ca
 - All sixteen agent slots remain occupied with owned implementation and verification work. No merge to main, auto-merge, registry publication or production deployment. Goal remains active.
 
 Next bounded milestones: restore and render the actual docs preview; ingest exact tagged release bundles without current-source overlays; execute historical lazy loading; finish Rust-generated facade defaults and source-bound snippets; rerun coherent clean generation and remaining package consumers.
+
+## Iteration 13 — seamless consumer packaging and remaining authored docs
+
+- Previous iteration classified as progress: root release link and display-version commits 742fb6a and 51468e9, passing Svelte checks, a scoped SDK ledger checkpoint, and a concrete public-guide feature-flag audit.
+- User requires platform handling to be transparent: ordinary consumers install one package and use one client API without selecting feature flags, native/WASM bindings, or transports. Internal build profiles remain implementation details. Availability limitations must stay accurate; prose cannot hide packaging gaps.
+- Root source audit identified public Inference/Machines dependency examples with explicit features/default-features and Filesystem quickstart commands requiring the local feature. Owners are changing defaults and target handling before updating Rust-owned guides. Current generated preview has not yet been regenerated from those changes.
+- TypeScript owner committed Actors, Workers and Objects fromEnv factories in ae53cc76 and reports two focused tests per family plus type checks passing. Inference actual HTTP-only adapter integration remains outstanding; generic native gRPC metadata cannot substitute for an installed adapter.
+- Website owner restored the controlled Vite process and reports HTTP 200 on versioned/unversioned quickstart and reference routes. Current owned session is 66558, PID 38224. Root browser tab became an unsupported data error page during the server restart; reload was rejected by browser URL policy. No bypass or alternate automation was used; fresh rendered visual proof remains pending.
+- Website route audit reports 70 routes and 80 local links passing. Planned Harness plugin/managed-agent-runtime contract pages still use independently authored TypeScript prose outside the Rust bundle. Their transfer into Rust-owned crate guides and generated website consumption is required and assigned; being planned does not exclude them from source-of-truth requirements.
+- Catalog load checks are being strengthened against mixed release/captured-snapshot channel labels and release-to-preview relabeling. Real tagged historical archives and production lazy-load runtime evidence remain outstanding.
+- All sixteen subagent slots remain occupied. No merge to main, auto-merge, registry publication or production deployment. Goal remains active.
