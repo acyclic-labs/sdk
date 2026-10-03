@@ -13,6 +13,7 @@ async function source(relative: string): Promise<string> {
 
 const EMPTY_ARTIFACT_DIGEST =
   "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const VALID_RECEIPT_DIGEST = "sha256:" + "0".repeat(64);
 
 function forgedManifest(tool: Record<string, unknown>): string {
   return JSON.stringify({
@@ -163,6 +164,29 @@ test("real drift CLI rejects a required passed tool without hashed output receip
     const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
     expect(result.status).not.toBe(0);
     expect(combined).toMatch(/required|receipt|stdout|stderr/i);
+    await expect(access(join(fixture.output, "sdk-generation-drift.json"))).rejects.toThrow();
+  } finally {
+    await rm(fixture.fixture, { recursive: true, force: true });
+  }
+});
+
+test("real drift CLI rejects valid-looking receipts that are not bound to the source and output", { timeout: 120_000 }, async () => {
+  const fixture = await forgedCliFixture({
+    id: "sdk-docs",
+    status: "passed",
+    required: true,
+    command: ["forged-tool", "wrong-source", "wrong-output"],
+    request: "forged-request.json",
+    stdout_sha256: VALID_RECEIPT_DIGEST,
+    stderr_sha256: VALID_RECEIPT_DIGEST,
+    exit_code: 0,
+    message: null,
+  });
+  try {
+    const result = runDrift(fixture.sourceRoot, fixture.output);
+    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+    expect(result.status).not.toBe(0);
+    expect(combined).toMatch(/source-bound|source.bound|bound/i);
     await expect(access(join(fixture.output, "sdk-generation-drift.json"))).rejects.toThrow();
   } finally {
     await rm(fixture.fixture, { recursive: true, force: true });
