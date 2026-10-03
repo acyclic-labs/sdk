@@ -15,6 +15,7 @@ node scripts/graphcoder-qualification.mjs matrix-check
 node scripts/graphcoder-qualification.mjs render docs/graphcoder-swarm/requirements.json docs/graphcoder-swarm/REQUIREMENTS.generated.md
 node scripts/graphcoder-qualification.mjs receipt-template docs/graphcoder-swarm/requirements.json .qualification/graphcoder-receipt.json
 node scripts/graphcoder-qualification.mjs receipt-check docs/graphcoder-swarm/requirements.json .qualification/graphcoder-receipt.json
+node scripts/assemble-graphcoder-receipt.mjs assemble .qualification/receipt-assembly.json
 ```
 
 The template is deliberately incomplete. It records every matrix ID as
@@ -25,6 +26,12 @@ artifacts consumed by that suite. The receipt also records the source
 commit, worktree, branch, pinned base, clean/unmerged state, suite transcript
 digests, and distributable build provenance. The validator compares those claims
 with the current Git checkout and hashes the referenced files itself.
+
+`assemble-graphcoder-receipt.mjs` merges exact suite records from the capture
+runner with explicit case-to-suite bindings. It always emits all 68 matrix IDs,
+derives evidence and status from suite records, deduplicates artifacts by path
+and digest, and leaves unbound cases pending. The final receipt check remains
+the gate that rejects any pending or incomplete case.
 
 Compilation is a separate execution kind. It may prove that code targets a
 platform, but it cannot satisfy a native, PTY, package, or WASM runtime row.
