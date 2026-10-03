@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
 import { loadMatrix, makePendingReceipt, validateReceipt } from "./graphcoder-qualification.mjs";
 
 const matrix = loadMatrix();
@@ -22,6 +23,11 @@ const testGitOps = {
 };
 const pendingReceipt = () => makePendingReceipt(undefined, { gitOps: testGitOps });
 const validate = (receipt, options = {}) => validateReceipt(matrix, receipt, { ...options, gitOps: testGitOps });
+const receiptSchemaAjv = new Ajv2020({ allErrors: true });
+receiptSchemaAjv.addFormat("date-time", value => typeof value === "string" && !Number.isNaN(Date.parse(value)));
+const validateReceiptSchema = receiptSchemaAjv.compile(
+  JSON.parse(readFileSync("docs/graphcoder-swarm/qualification-receipt.schema.json", "utf8")),
+);
 
 function suiteFixture(directory, executionKind = "native") {
   const descriptorPath = join(directory, `${executionKind}.descriptor.json`);
@@ -66,6 +72,44 @@ test("a pending receipt is structurally valid but cannot be final", () => {
   assert.equal(result.requirements, 68);
   assert.equal(result.counts.missing, 68);
   assert.throws(() => validate({ ...receipt, gate: { ...receipt.gate, final: true } }, { final: true }), /required cases must be passed|missing/);
+});
+
+test("the loaded receipt schema rejects unknown nested contract fields", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-schema-"));
+  try {
+    const suite = suiteFixture(directory);
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    receipt.cases[0] = {
+      id: receipt.cases[0].id,
+      status: "pending",
+      evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: suite.execution_kind, artifact_paths: [] }],
+    };
+    const artifactPath = join(directory, "package.tgz");
+    receipt.artifacts = [{
+      path: artifactPath,
+      sha256: "0".repeat(64),
+      source_commit: receipt.source.commit,
+      source_tree: TEST_TREE,
+      built_at: "2026-10-03T00:00:00.000Z",
+      build_id: "schema-fixture",
+      fresh: true,
+    }];
+    assert.equal(validateReceiptSchema(receipt), true, validateReceiptSchema.errors?.map(error => error.message).join(", "));
+    for (const [label, mutate] of [
+      ["source", value => { value.source.unknown = true; }],
+      ["suite", value => { value.suites[0].unknown = true; }],
+      ["case", value => { value.cases[0].unknown = true; }],
+      ["evidence", value => { value.cases[0].evidence[0].unknown = true; }],
+      ["artifact", value => { value.artifacts[0].unknown = true; }],
+    ]) {
+      const invalid = structuredClone(receipt);
+      mutate(invalid);
+      assert.equal(validateReceiptSchema(invalid), false, `${label} unknown field was accepted`);
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("gate.final applies final-case and artifact rules even without --final", () => {
