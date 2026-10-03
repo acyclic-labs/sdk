@@ -1,0 +1,27 @@
+{
+  "qualification": "incomplete",
+  "compile_failure": {
+    "repair": "589e66a72",
+    "source": "63bce33d9",
+    "errors": [
+      "recursive_fork.rs missing Error import",
+      "manual ForkSeed missing attached_agents/model_boundary"
+    ],
+    "exit_code": 1,
+    "tests_run": 0,
+    "handle": 19459
+  },
+  "runtime_failure": {
+    "passed": 0,
+    "source": "589e66a72",
+    "suite_sha256": "565E944486F6A8CC392532CF80F6613471844C99B634EF81CB61E4EAE73AC41E",
+    "exit_code": 1,
+    "failure": "grandchild_outcome was not JoinOutcome::Applied at line2182",
+    "filtered": 2,
+    "test": "facade_two_children_grandchild_integrates_upward_with_approval",
+    "failed": 1,
+    "handle": 15582,
+    "artifact_sha256": "A4823F1A350573883C0647C58EFE3D4874F34494576E6DC3AB08A04207BE10AF"
+  },
+  "scope": "Focused recursive facade gate failed before swapped-plan assertion; no full integration pass claim"
+}
