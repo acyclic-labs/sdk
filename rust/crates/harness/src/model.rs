@@ -413,12 +413,12 @@ pub trait ModelProvider: Send + Sync {
     /// Reconciles only after verifying the original complete request.
     fn reconcile_admitted<'a>(
         &'a self,
-        request: ModelRequest,
+        prepared: crate::model_input::PreparedModelInput,
         attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
-            self.admit(&request)?;
-            if crate::contract::canonical_json_digest(&request)? != attempt.request_digest {
+            self.admit(prepared.request())?;
+            if prepared.manifest().request_digest != attempt.request_digest {
                 return Err(Error::Conflict(
                     "reconciliation request digest changed".into(),
                 ));

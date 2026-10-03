@@ -175,7 +175,10 @@ function nativeModelOptionPolicy(
 ): NativeModelOptionPolicyWire {
   return {
     name: "model-options",
-    version: `${identity.provider}.${identity.name}.${identity.revision}`,
+    // The model itself is already part of the request binding. Keep this
+    // registered policy revision bounded to the model's pinned revision;
+    // composing provider/name labels can exceed the native component limit.
+    version: identity.revision,
     digest: [...contracts.digestCanonicalJson(policy.schema)],
     schema: policy.schema,
   };

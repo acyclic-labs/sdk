@@ -711,6 +711,11 @@ impl PrefixBoundModelProvider {
             provider,
         })
     }
+    fn admit_prepared(&self, prepared: &PreparedModelInput) -> Result<()> {
+        self.prefix.verify(prepared)?;
+        prepared.validate_complete_exchange()?;
+        self.provider.admit(prepared.request())
+    }
 }
 impl crate::model::ModelProvider for PrefixBoundModelProvider {
     fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
@@ -731,24 +736,24 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
         &'a self,
         prepared: PreparedModelInput,
     ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
-        if let Err(error) = self.admit(prepared.request()) {
+        if let Err(error) = self.admit_prepared(&prepared) {
             return Box::pin(futures::stream::iter(vec![Err(error)]));
         }
         self.provider.generate(prepared)
     }
     fn reconcile_admitted<'a>(
         &'a self,
-        request: ModelRequest,
+        prepared: PreparedModelInput,
         attempt: crate::model::ModelAttempt,
     ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
         Box::pin(async move {
-            self.admit(&request)?;
-            if crate::contract::canonical_json_digest(&request)? != attempt.request_digest {
+            self.admit_prepared(&prepared)?;
+            if prepared.manifest().request_digest != attempt.request_digest {
                 return Err(Error::Conflict(
                     "reconciliation request digest changed".into(),
                 ));
             }
-            self.provider.reconcile_admitted(request, attempt).await
+            self.provider.reconcile_admitted(prepared, attempt).await
         })
     }
     fn reconcile<'a>(
@@ -1213,18 +1218,27 @@ mod tests {
         };
         assert!(provider.reconcile(attempt.clone()).await.is_err());
         assert!(provider
-            .reconcile_admitted(child.clone(), attempt.clone())
+            .reconcile_admitted(
+                PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                attempt.clone(),
+            )
             .await?
             .is_none());
         let mut corrupt_attempt = attempt.clone();
         corrupt_attempt.request_digest = [0; 32];
         assert!(provider
-            .reconcile_admitted(child.clone(), corrupt_attempt)
+            .reconcile_admitted(
+                PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                corrupt_attempt,
+            )
             .await
             .is_err());
         child.messages[0] = text("changed inherited content");
         assert!(provider
-            .reconcile_admitted(child.clone(), attempt)
+            .reconcile_admitted(
+                PreparedModelInput::prepare(child.clone(), Limits::default())?,
+                attempt,
+            )
             .await
             .is_err());
         assert!(provider.admit(&child).is_err());

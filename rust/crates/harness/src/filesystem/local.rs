@@ -1734,7 +1734,7 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
+    use crate::model::{ModelAttempt, ModelEvent};
     use crate::{EffectAttemptId, EffectId, core::EffectGuarantee};
     use futures::{future::BoxFuture, stream::BoxStream};
     use std::sync::atomic::{AtomicUsize, Ordering};

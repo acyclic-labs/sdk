@@ -57,12 +57,10 @@ struct CapturedModel {
     overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
-    fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
-        let prepared = match PreparedModelInput::prepare(request.clone(), Limits::default()) {
-            Ok(prepared) => prepared,
-            Err(error) => return Box::pin(stream::iter(vec![Err(error)])),
-        };
+        let serialized = prepared.bytes().to_vec();
+        let binding_digest = prepared.manifest().binding_digest;
         self.requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -70,11 +68,11 @@ impl ModelProvider for CapturedModel {
         self.serialized_requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(prepared.bytes().to_vec());
+            .push(serialized);
         self.binding_digests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(prepared.manifest().binding_digest);
+            .push(binding_digest);
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         let events = if !self.root && self.read_first && first {
             let file = self.requests.lock().unwrap().last().and_then(|request| {
