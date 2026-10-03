@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 const scenario = JSON.parse(readFileSync("docs/graphcoder-swarm/graphcoder-real-backend-scenarios.json", "utf8"));
+const nativeScenario = JSON.parse(readFileSync("docs/graphcoder-swarm/graphcoder-native-scenarios.json", "utf8"));
 
 test("the production GraphCoder scenario keeps mock, native, package, and PTY lanes distinct", () => {
   assert.equal(scenario.protocol, "acyclic.graphcoder.real-backend-scenarios.v1");
@@ -34,4 +35,16 @@ test("the PTY scenario is mapped to the native helper and captured artifact boun
   assert.match(lanes, /graphcoder-qualification-suite\.mjs capture/u);
   assert.match(scenario.evidence.artifact_binding, /exact GraphCoder package artifact/u);
   assert.match(scenario.evidence.artifact_binding, /bridge executable/u);
+});
+
+test("the native stage lane locks public routes and dropped-response recovery", () => {
+  assert.equal(nativeScenario.protocol, "acyclic.graphcoder.native-scenarios.v1");
+  assert.equal(nativeScenario.runtime.fixture, "stage");
+  assert.equal(nativeScenario.runtime.driver, "scripts/graphcoder-native-stage-e2e.mjs");
+  assert.deepEqual(nativeScenario.public_routes, ["start_session", "read_file", "open_session", "read_activity"]);
+  assert.match(nativeScenario.fault_boundary, /discarded after durable execution/u);
+  assert.deepEqual(nativeScenario.required_markers, ["dropped-response", "retry", "read_file", "reopen", "activity"]);
+  assert.equal(nativeScenario.evidence.execution_kind, "native");
+  assert.match(nativeScenario.evidence.artifact_binding, /exact native executable digest/u);
+  assert.match(nativeScenario.evidence.fixture_boundary, /cannot satisfy production model/u);
 });
