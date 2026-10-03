@@ -1471,7 +1471,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                 "type": "object",
                 "required": ["status", "fork_operation", "child_operation"],
                 "properties": {
-                    "status": {"const": "accepted_after_completed_batch"},
+                    "status": {"const": "selected_after_completed_batch"},
                     "fork_operation": {"type": "string"},
                     "child_operation": {"type": "string"}
                 },
