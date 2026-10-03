@@ -1,7 +1,10 @@
 //! Versioned model-input admission and immutable fork prefixes.
 use crate::{
     conversation::{FileRef, Limits},
-    model::{ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole},
+    model::{
+        ModelContent, ModelContentPart, ModelMessage, ModelOptionPolicy, ModelRequest, ModelRole,
+    },
+    registry::ComponentIdentity,
     Error, Result,
 };
 use serde::{Deserialize, Serialize};
@@ -34,6 +37,10 @@ pub struct ModelInputManifest {
     pub binding_digest: [u8; 32],
     /// Complete request digest.
     pub request_digest: [u8; 32],
+    /// Registered model-option policy identity used for admission, when one
+    /// was supplied by the provider binding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_option_policy: Option<ComponentIdentity>,
     /// Ordered message identities.
     pub messages: Vec<InputMessageManifest>,
     /// Authenticated rejection evidence for malformed tool calls in the
@@ -53,7 +60,29 @@ pub struct PreparedModelInput {
 impl PreparedModelInput {
     /// Validates explicit input and freezes its canonical encoding.
     pub fn prepare(request: ModelRequest, limits: Limits) -> Result<Self> {
+        Self::prepare_with_policy(request, limits, None)
+    }
+
+    /// Prepares input while binding the provider's registered option policy.
+    pub fn prepare_with_policy(
+        request: ModelRequest,
+        limits: Limits,
+        policy: Option<&ModelOptionPolicy>,
+    ) -> Result<Self> {
         limits.validate()?;
+        if let Some(policy) = policy {
+            policy.validate(&request.model.options)?;
+        } else if !(request.model.options.is_null()
+            || request
+                .model
+                .options
+                .as_object()
+                .is_some_and(|value| value.is_empty()))
+        {
+            return Err(Error::Invalid(
+                "model options require a registered provider policy".into(),
+            ));
+        }
         if request.messages.is_empty() || request.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
@@ -88,9 +117,10 @@ impl PreparedModelInput {
         }
         let manifest = ModelInputManifest {
             version: MODEL_INPUT_VERSION,
-            binding_digest: binding_digest(&request)?,
+            binding_digest: binding_digest(&request, policy)?,
             request_digest: *blake3::hash(&bytes).as_bytes(),
             messages,
+            model_option_policy: policy.map(|value| value.identity.clone()),
             rejection_evidence: Vec::new(),
         };
         Ok(Self {
@@ -215,8 +245,16 @@ impl FrozenModelPrefix {
         self.digest
     }
 }
-fn binding_digest(request: &ModelRequest) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(&(MODEL_INPUT_VERSION, &request.model, &request.tools))
+fn binding_digest(
+    request: &ModelRequest,
+    policy: Option<&ModelOptionPolicy>,
+) -> Result<[u8; 32]> {
+    crate::contract::canonical_json_digest(&(
+        MODEL_INPUT_VERSION,
+        &request.model,
+        &request.tools,
+        policy.map(|value| &value.identity),
+    ))
 }
 fn prefix_digest(binding: [u8; 32], messages: &[Vec<u8>]) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(&(MODEL_INPUT_VERSION, binding, messages))
@@ -373,6 +411,9 @@ pub struct CompletedModelBoundary {
     pub request: ModelRequest,
     /// Immutable inherited prefix binding every message and definition.
     pub prefix: FrozenModelPrefix,
+    /// Provider policy required to re-admit this boundary and its children.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_policy: Option<ModelOptionPolicy>,
     /// Typed durable evidence for every recoverable invalid-call exchange in
     /// the request. Keeping this with the boundary prevents a child fork from
     /// reinterpreting a model-visible rejection after restart.
@@ -382,7 +423,7 @@ pub struct CompletedModelBoundary {
 impl CompletedModelBoundary {
     /// Refuses incomplete exchanges; does not regenerate the original context.
     pub fn capture(request: ModelRequest, limits: Limits) -> Result<Self> {
-        Self::capture_with_rejections(request, limits, &[])
+        Self::capture_with_policy(request, limits, None, &[])
     }
 
     /// Captures a completed exchange after checking each malformed call
@@ -393,18 +434,33 @@ impl CompletedModelBoundary {
         limits: Limits,
         rejections: &[crate::tool::ToolRejectionFeedback],
     ) -> Result<Self> {
-        let prepared = PreparedModelInput::prepare(request, limits)?;
+        Self::capture_with_policy(request, limits, None, rejections)
+    }
+
+    /// Captures a completed exchange while pinning the provider option policy.
+    pub fn capture_with_policy(
+        request: ModelRequest,
+        limits: Limits,
+        policy: Option<&ModelOptionPolicy>,
+        rejections: &[crate::tool::ToolRejectionFeedback],
+    ) -> Result<Self> {
+        let prepared = PreparedModelInput::prepare_with_policy(request, limits, policy)?;
         validate_rejection_evidence(prepared.request(), rejections)?;
         let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
         Ok(Self {
             request: prepared.into_request(),
             prefix,
+            option_policy: policy.cloned(),
             rejection_evidence: rejections.to_vec(),
         })
     }
     /// Validates a persisted boundary before admitting any child.
     pub fn verify(&self, limits: Limits) -> Result<()> {
-        let prepared = PreparedModelInput::prepare(self.request.clone(), limits)?;
+        let prepared = PreparedModelInput::prepare_with_policy(
+            self.request.clone(),
+            limits,
+            self.option_policy.as_ref(),
+        )?;
         validate_rejection_evidence(prepared.request(), &self.rejection_evidence)?;
         self.prefix.verify(&prepared)
     }
@@ -544,7 +600,11 @@ impl InheritedModelContext {
         }
         let mut request = boundary.request.clone();
         request.messages.extend(suffix.iter().cloned());
-        let prepared = PreparedModelInput::prepare(request, limits)?;
+        let prepared = PreparedModelInput::prepare_with_policy(
+            request,
+            limits,
+            boundary.option_policy.as_ref(),
+        )?;
         prepared.validate_complete_exchange()?;
         boundary.prefix.verify(&prepared)?;
         Ok(Self { boundary, suffix })
@@ -559,7 +619,11 @@ impl InheritedModelContext {
         limits: Limits,
     ) -> Result<()> {
         self.boundary.verify(limits)?;
-        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        let prepared = PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            limits,
+            self.boundary.option_policy.as_ref(),
+        )?;
         prepared.validate_complete_exchange()?;
         self.boundary.prefix.verify(&prepared)?;
         let mut expected = self.boundary.request.messages.clone();
@@ -613,6 +677,7 @@ impl crate::context::ContextStage for InheritedModelContext {
 pub struct PrefixBoundModelProvider {
     prefix: FrozenModelPrefix,
     limits: Limits,
+    option_policy: Option<ModelOptionPolicy>,
     provider: std::sync::Arc<dyn crate::model::ModelProvider>,
 }
 impl PrefixBoundModelProvider {
@@ -631,16 +696,26 @@ impl PrefixBoundModelProvider {
                 "frozen model prefix integrity failed".into(),
             ));
         }
+        let option_policy = provider.model_option_policy().cloned();
         Ok(Self {
             prefix,
             limits,
+            option_policy,
             provider,
         })
     }
 }
 impl crate::model::ModelProvider for PrefixBoundModelProvider {
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        self.option_policy.as_ref()
+    }
+
     fn admit(&self, request: &ModelRequest) -> Result<()> {
-        let input = PreparedModelInput::prepare(request.clone(), self.limits)?;
+        let input = PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            self.limits,
+            self.option_policy.as_ref(),
+        )?;
         self.prefix.verify(&input)?;
         input.validate_complete_exchange()?;
         self.provider.admit(request)
@@ -653,6 +728,15 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
             return Box::pin(futures::stream::iter(vec![Err(error)]));
         }
         self.provider.generate(request)
+    }
+    fn generate_prepared<'a>(
+        &'a self,
+        prepared: PreparedModelInput,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        if let Err(error) = self.admit(prepared.request()) {
+            return Box::pin(futures::stream::iter(vec![Err(error)]));
+        }
+        self.provider.generate_prepared(prepared)
     }
     fn reconcile_admitted<'a>(
         &'a self,
@@ -831,6 +915,58 @@ mod tests {
         assert!(corrupt.verify(&parent).is_err());
         Ok(())
     }
+
+    #[test]
+    fn option_policy_identity_binds_prepared_input_and_frozen_prefix() -> Result<()> {
+        let policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "mock.options".into(),
+                version: "1".into(),
+                digest: [8; 32],
+            },
+            json!({"type": "object", "additionalProperties": false}),
+        )?;
+        let changed = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "mock.options".into(),
+                version: "2".into(),
+                digest: [9; 32],
+            },
+            json!({"type": "object", "additionalProperties": false}),
+        )?;
+        let request = request()?;
+        let first = PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            Limits::default(),
+            Some(&policy),
+        )?;
+        let second = PreparedModelInput::prepare_with_policy(
+            request,
+            Limits::default(),
+            Some(&changed),
+        )?;
+        assert_eq!(first.bytes(), second.bytes());
+        assert_ne!(first.manifest().binding_digest, second.manifest().binding_digest);
+        assert_eq!(first.manifest().model_option_policy, Some(policy.identity.clone()));
+        let prefix = FrozenModelPrefix::capture(&first, first.request().messages.len())?;
+        assert!(matches!(
+            prefix.verify(&second),
+            Err(Error::Conflict(message)) if message == "fork changed model or tool definitions"
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn unregistered_model_options_cannot_reach_prepared_request() -> Result<()> {
+        let mut request = request()?;
+        request.model.options = json!({"credential": "transport-secret"});
+        assert!(matches!(
+            PreparedModelInput::prepare(request, Limits::default()),
+            Err(Error::Invalid(message)) if message == "model options require a registered provider policy"
+        ));
+        Ok(())
+    }
+
     #[test]
     fn fork_requires_complete_matching_tool_exchange() -> Result<()> {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
@@ -1175,13 +1311,38 @@ mod tests {
         };
         use futures::{future::BoxFuture, stream::BoxStream};
         use std::sync::{Arc, Mutex};
-        struct Capture(Mutex<Vec<ModelRequest>>);
+        struct Capture(Mutex<Vec<(ModelRequest, Vec<u8>, [u8; 32])>>);
         impl ModelProvider for Capture {
             fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(request);
+                    .push((
+                        request.clone(),
+                        crate::contract::canonical_json_bytes(&request).unwrap(),
+                        crate::contract::canonical_json_digest(&request).unwrap(),
+                    ));
+                Box::pin(futures::stream::iter(vec![
+                    Ok(ModelEvent::Content {
+                        delta: "done".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: serde_json::Value::Null,
+                    }),
+                ]))
+            }
+            fn generate_prepared<'a>(
+                &'a self,
+                prepared: PreparedModelInput,
+            ) -> BoxStream<'a, Result<ModelEvent>> {
+                self.0
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((
+                        prepared.request().clone(),
+                        prepared.bytes().to_vec(),
+                        prepared.manifest().request_digest,
+                    ));
                 Box::pin(futures::stream::iter(vec![
                     Ok(ModelEvent::Content {
                         delta: "done".into(),
@@ -1240,13 +1401,18 @@ mod tests {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert_eq!(requests.len(), 1);
-        let received = requests
+        let (received, wire_bytes, wire_digest) = requests
             .first()
             .ok_or_else(|| Error::Storage("no provider request".into()))?;
         assert_eq!(
-            crate::contract::canonical_json_digest(received)?,
+            *blake3::hash(wire_bytes).as_bytes(),
             manifest.request_digest
         );
+        assert_eq!(*blake3::hash(wire_bytes).as_bytes(), *wire_digest);
+        assert_eq!(wire_bytes, &crate::contract::canonical_json_bytes(received)?);
+        assert!(!wire_bytes
+            .windows(b"metadata".len())
+            .any(|window| window == b"metadata"));
         let manifest_index = records
             .iter()
             .position(|record| matches!(&record.event, ExecutionEvent::ModelInputPrepared { .. }));
