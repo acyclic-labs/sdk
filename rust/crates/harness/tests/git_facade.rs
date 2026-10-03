@@ -7,8 +7,8 @@ use acyclic_fs::{
     WorkspaceId,
 };
 use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
-use acyclic_harness::model::ModelToolContext;
 use acyclic_harness::resources::GenerationRef;
+use acyclic_harness::tool::ModelToolContext;
 use acyclic_harness::tool::{
     Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
 };
@@ -130,6 +130,7 @@ fn model_git_definition() -> ToolDefinition {
             }
         }),
         output_schema: json!({"type": "object"}),
+        model_output_schema: json!({"type": "object"}),
     }
 }
 
@@ -526,7 +527,7 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         target.clone(),
     )?;
     let other_scope = issuer.root_for_agent(agent, "different-approval", capabilities);
-    let request = RootWritebackRequest::new(approval, other_scope);
+    let request = RootWritebackRequest::new(approval.clone(), other_scope);
     let notice_file = FileRef::new(
         volume.clone(),
         "notice.txt",

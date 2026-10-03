@@ -4,6 +4,7 @@
 
 use acyclic_fs::{Fs, LocalAuthorityBackend, LocalObjectBackend, LocalOptions};
 use acyclic_harness::{
+    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
         ContentResidencyVerifier, ConversationMessage, Limits, MessageKind, VolumeClass,
@@ -14,9 +15,9 @@ use acyclic_harness::{
     },
     executor::ExecutionEvent,
     filesystem::{
-        workspace_ref, DurableHarnessStorage, FilesystemContentVerifier, FilesystemForkPreparer,
+        DurableHarnessStorage, FilesystemContentVerifier, FilesystemForkPreparer,
         FilesystemForkVerifier, FilesystemHost, FilesystemProjectMergeVerifier, HarnessStorage,
-        WorkspaceMutation,
+        WorkspaceMutation, workspace_ref,
     },
     fork::{
         AttestedBoundary, CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
@@ -30,17 +31,16 @@ use acyclic_harness::{
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
-    AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
@@ -750,11 +750,11 @@ impl ForkAtBatch {
                 &IdempotencyKey::new("recursive-parent-seed")?,
             )
             .await?;
-        let pinned_generation = seeded_source.generation.clone();
+        let pinned_generation = seeded_source.clone();
         let old_source_bytes = self
             .host
             .read(
-                &seeded_source.workspace,
+                &source_before.workspace,
                 Some(&pinned_generation),
                 "/recursive-same-path.txt",
                 self.limits.file_bytes,
@@ -856,7 +856,8 @@ impl ForkAtBatch {
         // Mutating the source path after capture advances its generation. A
         // stale reopen is denied, while the already pinned fork remains valid.
         let source = self.host.resolve(&project_head.workspace).await?;
-        self.host
+        let updated_generation = self
+            .host
             .apply(
                 &source.workspace,
                 Some(&source.generation),
@@ -867,28 +868,30 @@ impl ForkAtBatch {
                 &IdempotencyKey::new("recursive-parent-mutation")?,
             )
             .await?;
-        assert_ne!(source.generation, pinned_generation);
+        assert_ne!(updated_generation, pinned_generation);
         assert_eq!(
             self.host
                 .read(
                     &source.workspace,
-                    Some(&source.generation),
+                    Some(&updated_generation),
                     "/recursive-same-path.txt",
                     self.limits.file_bytes,
                 )
-                .await?,
-            b"new parent generation"
+                .await?
+                .as_ref(),
+            b"new parent generation".as_slice()
         );
-        assert!(self
-            .host
-            .read(
-                &source.workspace,
-                Some(&pinned_generation),
-                "/recursive-same-path.txt",
-                self.limits.file_bytes,
-            )
-            .await
-            .is_err());
+        assert!(
+            self.host
+                .read(
+                    &source.workspace,
+                    Some(&pinned_generation),
+                    "/recursive-same-path.txt",
+                    self.limits.file_bytes,
+                )
+                .await
+                .is_err()
+        );
 
         let storage = HarnessStorage::from_published_fork(
             self.limits.file_bytes,
