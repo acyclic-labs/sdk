@@ -124,4 +124,22 @@ The latest family factory fixture is `research/acceptance/typescript-review/fact
 
 The factories require an explicit endpoint and token in their environment object; no service endpoint default or process-environment fallback is implemented. The transport flag is optional and only selects an override. This is the current seamless consumer behavior and the remaining endpoint configuration requirement.
 
-The archive channel regression remains in `docs-version-production.acceptance.test.ts`: a release-qualified bundle relabeled as preview is currently accepted by the loader. The negative case is ready for the archive owner to convert to rejection once channel binding is implemented.
+## Platform bundle and policy refresh
+
+The focused fixture is `research/acceptance/typescript-review/factory-platform-policy.acceptance.test.ts`, SHA-256 `18715b50ad097a54fbfdff368ab6cdb2cdaef201fded9a40bdee4bbd4adf40f6`. `bun test --timeout 180000 research/acceptance/typescript-review/factory-platform-policy.acceptance.test.ts` passes 3 tests with 228 assertions. It verifies that Actors, Workers, and Objects detect native Node/Bun through `globalThis`, keep their native gRPC modules behind dynamic imports, expose HTTP-only browser policy entries, and emit response-bound, bearer-credential, idempotency, and streaming metadata for the complete modeled operation sets. The current counts are 8 Actors methods, 7 Workers methods, and 13 Objects methods; Objects has two client-streaming and one server-streaming method, and eight operations carry the `objects.idempotent_mutation` capability.
+
+The disposable browser-target bundle audit used Bun 1.3.14:
+
+```text
+bun build typescript/packages/actors/src/client.ts --target browser --outfile %TEMP%\codex-ts-platform-20261003-objects-model\actors.js
+bun build typescript/packages/workers/src/client.ts --target browser --outfile %TEMP%\codex-ts-platform-20261003-objects-model\workers.js
+bun build typescript/packages/objects/src/v2-client.ts --target browser --outfile %TEMP%\codex-ts-platform-20261003-objects-model\objects.js
+```
+
+All three entrypoints bundled, but each output retained Node builtins through `@connectrpc/connect-node`: Actors contained `node:assert`, `node:buffer`, `node:events`, `node:http`, `node:https`, `node:stream`, `node:url`, `node:util`, and `node:zlib`; Workers contained the same set; Objects additionally contained `node:fs`. Bun emitted warnings that the `node:zlib` polyfill has no matching gzip, gunzip, or brotli exports. The output hashes were Actors `adf9024100f2d8de0b9ba95da881deae68f7cdd713f83ac7417d8e869f4850ca`, Workers `ccfe331de6135a639f979fc4ed602f491f2131f8392a3b44cd660b437087100d`, and Objects `a83ab6ecea4b1d63f24e677f0c04da58a1c559128be10199935d20a02ec740c7`. Source-level dynamic import guards therefore do not establish browser bundle safety; the package bundling configuration or native module boundary needs a follow-up fix.
+
+The archive fixture could not be rerun against the archive owner’s claimed channel guard in this checkout. `research/acceptance/typescript-review/docs-version-production.acceptance.test.ts` imports `src/lib/docs/versions.ts`, but that source path is currently absent (`Test-Path src/lib/docs/versions.ts` is false and no matching `docs/versions` source is present). The historical fixture remains evidence of the earlier relabeling case only; its previous acceptance result must not be treated as a current loader result until the owner supplies the current loader path and the exact release-to-preview input is rerun.
+
+The direct package consumer command `bun test --timeout 180000 typescript/packages/actors/test/transport-selection.test.ts typescript/packages/workers/test/transport-selection.test.ts typescript/packages/objects/test/transport-selection.test.ts typescript/packages/stream/test/transport-selection.test.ts typescript/packages/stream/test/remote-policy.test.ts` passes 11 tests with 19 assertions. A current rerun of the archive fixture fails before assertions with `Cannot find module '../../../src/lib/docs/versions'`; it did not observe either acceptance or rejection from the claimed channel guard. This result supersedes the older fixture summary above until the loader source is restored or its new path is supplied.
+
+The earlier archive channel regression is retained as historical evidence in `docs-version-production.acceptance.test.ts`; the current checkout cannot execute it because the loader source is absent, as recorded above.
