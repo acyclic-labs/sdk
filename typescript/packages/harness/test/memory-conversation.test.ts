@@ -494,6 +494,9 @@ test("durable host replay revalidates the pinned projection without publishing p
   const projectionText = new TextDecoder().decode(await conversation.read(projection.file));
   expect(projectionText).toContain("shown");
   expect(projectionText).not.toContain("secret");
+  const revision = resultMessage.extensions["acyclic.tool.revision"];
+  if (!revision) throw new Error("tool revision artifact is missing");
+  expect(new TextDecoder().decode(await conversation.read(revision))).toContain('"revision":"1"');
   conversation.free();
 });
 

@@ -535,19 +535,25 @@ export class MemoryConversation {
         this.#core.canonicalJsonBytes({ value: receipt.projection }), "application/json", "result.json");
       const projection = await this.stage(`turns/${operation}/tools/${index}-projection.json`,
         this.#core.canonicalJsonBytes(receipt.projection), "application/json", "projection.json");
-      for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
+      // Conversation extensions are ref-only wire fields. Persist the pinned
+      // revision as an owner artifact rather than placing a raw string in the
+      // FileRef map, so replay can authenticate the definition without
+      // widening model-visible tool content.
+      const revision = await this.stage(`turns/${operation}/tools/${index}-revision.json`,
+        this.#core.canonicalJsonBytes({ revision: receipt.revision }), "application/json", "revision.json");
+      for (const file of [call, result, projection, revision]) this.#core.validateFileUnderLimits(file, limits);
       let state = this.conversation();
       this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
         id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
         attachments: { kind: "inline", items: [] }, reply_to: userId,
-        tool_call_id: receipt.callId, extensions: { "acyclic.tool.revision": receipt.revision },
+        tool_call_id: receipt.callId, extensions: { "acyclic.tool.revision": revision },
       }, limits);
       state = this.conversation();
       this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
         id: resultId, sequence: BigInt(state.messages.length + 1), kind: "tool_result", content: result,
         attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
         reply_to: callId, tool_call_id: receipt.callId,
-        extensions: { "acyclic.tool.revision": receipt.revision },
+        extensions: { "acyclic.tool.revision": revision },
       }, limits);
     }
   }
