@@ -110,6 +110,14 @@ transports without a forced client default or silent fallback. The package
 license is Apache-2.0; Julia, stdlib, and transitive runtime licenses remain
 explicitly outside that package claim.
 
+`julia-family-consumer.jl` runs from the installed archive against a local HTTP
+fixture for every route in each family. The receipt records 194 passing checks
+covering automatic HTTP selection, rejected gRPC overrides, bearer-auth 401
+errors, bounded recovery for read or idempotent operations, newline-delimited
+streaming responses, and pre-transport cancellation. The fixture and consumer
+are generic harnesses; route and policy identity comes from the Rust-generated
+family modules.
+
 `c-portable-manifest.json` and `dart-portable-manifest.json` record archive
 hashes and file inventories. `c-install-license-manifest.json` and
 `dart-license-manifest.json` record the license evidence for each target.
@@ -117,5 +125,5 @@ hashes and file inventories. `c-install-license-manifest.json` and
 The runnable consumer snippets are `rust-consumer.rs`,
 `rust-reqwest-semantic-consumer.rs`, `powershell-consumer.ps1`,
 `JavaConsumer.java`, `perl-consumer.pl`, `c-consumer.c`,
-`dart-consumer.dart`, and `julia-consumer.jl`; they exercise generated
+`dart-consumer.dart`, `julia-consumer.jl`, and `julia-family-consumer.jl`; they exercise generated
 packages without redeclaring the Workers contract.

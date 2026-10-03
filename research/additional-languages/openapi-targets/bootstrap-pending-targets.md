@@ -68,3 +68,7 @@ inventory; native gRPC is unqualified, and Rust policy selects only
 capability-qualified transports without a forced client default or silent
 fallback. Julia and all stdlib/transitive runtime licenses are tracked outside
 the generated package’s Apache-2.0 scope.
+The installed archive consumer exercises all 52 routes and matching Rust
+operation policies across the five families, with 194 passing checks for HTTP
+default selection, unsupported gRPC override rejection, bearer-auth errors,
+bounded recovery, streaming records, and pre-transport cancellation.
