@@ -14,8 +14,7 @@ use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry,
 };
 use acyclic_harness::filesystem::{
-    FilesystemGitFacade, FilesystemHost, RootWritebackApproval, RootWritebackRequest,
-    workspace_ref,
+    FilesystemGitFacade, FilesystemHost, RootWritebackApproval, RootWritebackRequest, workspace_ref,
 };
 use acyclic_harness::fork::{CapturedResource, ForkSeed, ResourceRevision};
 use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
@@ -81,16 +80,10 @@ impl Fixture {
         };
         let root_agent = AgentId::from_bytes([1; 16]);
         let child_agent = AgentId::from_bytes([2; 16]);
-        let root_issuer = AuthorityIssuer::new(
-            "writeback-acceptance",
-            [7; 32],
-            root_authority.clone(),
-        );
-        let child_issuer = AuthorityIssuer::new(
-            "writeback-acceptance",
-            [8; 32],
-            child_authority.clone(),
-        );
+        let root_issuer =
+            AuthorityIssuer::new("writeback-acceptance", [7; 32], root_authority.clone());
+        let child_issuer =
+            AuthorityIssuer::new("writeback-acceptance", [8; 32], child_authority.clone());
         let root_scope = root_issuer.root_for_agent(
             root_agent,
             "root",
@@ -231,7 +224,12 @@ impl Fixture {
         })
     }
 
-    async fn child_change(&self, path: &str, bytes: &[u8], key: &str) -> Result<ConversationMessage> {
+    async fn child_change(
+        &self,
+        path: &str,
+        bytes: &[u8],
+        key: &str,
+    ) -> Result<ConversationMessage> {
         let child_issuer = AuthorityIssuer::new(
             "writeback-acceptance",
             [8; 32],
@@ -269,7 +267,11 @@ impl Fixture {
     }
 
     async fn read_root(&self, path: &str) -> Option<Vec<u8>> {
-        let workspace = workspace_ref(self.provider.clone(), &self.root_project.storage_name().ok()?).ok()?;
+        let workspace = workspace_ref(
+            self.provider.clone(),
+            &self.root_project.storage_name().ok()?,
+        )
+        .ok()?;
         self.host
             .read(&workspace, None, path, 1_024)
             .await
@@ -281,7 +283,9 @@ impl Fixture {
 #[tokio::test]
 async fn approved_root_writeback_mutates_real_root_only_after_exact_approval() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let notice = fixture.child_change("child.txt", b"child", "child-add") .await?;
+    let notice = fixture
+        .child_change("child.txt", b"child", "child-add")
+        .await?;
     let plan = fixture
         .facade
         .prepare_project_merge_for_child(
@@ -320,7 +324,8 @@ async fn approved_root_writeback_mutates_real_root_only_after_exact_approval() -
             &notice,
         )
         .await
-        .expect_err("stale approval must be rejected before provider mutation");
+        .err()
+        .expect("stale approval must be rejected before provider mutation");
     assert!(matches!(stale_error, Error::Conflict(_)));
     assert_eq!(fixture.read_root("/child.txt").await, None);
 
@@ -350,16 +355,27 @@ async fn approved_root_writeback_mutates_real_root_only_after_exact_approval() -
             &notice,
         )
         .await?;
-    assert!(matches!(outcome, JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_)));
-    assert_eq!(fixture.read_root("/child.txt").await.as_deref(), Some(b"child"));
-    assert_eq!(fixture.read_root("/shared.txt").await.as_deref(), Some(b"base"));
+    assert!(matches!(
+        outcome,
+        JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_)
+    ));
+    assert_eq!(
+        fixture.read_root("/child.txt").await.as_deref(),
+        Some(b"child".as_slice())
+    );
+    assert_eq!(
+        fixture.read_root("/shared.txt").await.as_deref(),
+        Some(b"base".as_slice())
+    );
     Ok(())
 }
 
 #[tokio::test]
 async fn concurrent_user_edit_returns_conflict_without_overwriting_the_root() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let notice = fixture.child_change("shared.txt", b"child", "child-edit") .await?;
+    let notice = fixture
+        .child_change("shared.txt", b"child", "child-edit")
+        .await?;
     let initial_plan = fixture
         .facade
         .prepare_project_merge_for_child(
@@ -430,7 +446,13 @@ async fn concurrent_user_edit_returns_conflict_without_overwriting_the_root() ->
             &notice,
         )
         .await?;
-    assert!(matches!(outcome, JoinOutcome::StaleTarget(_) | JoinOutcome::Conflicted { .. }));
-    assert_eq!(fixture.read_root("/shared.txt").await.as_deref(), Some(b"user"));
+    assert!(matches!(
+        outcome,
+        JoinOutcome::StaleTarget(_) | JoinOutcome::Conflicted { .. }
+    ));
+    assert_eq!(
+        fixture.read_root("/shared.txt").await.as_deref(),
+        Some(b"user".as_slice())
+    );
     Ok(())
 }
