@@ -63,7 +63,7 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
         "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
-        "ruby/generated/acyclic_sdk/generated_remote_policy.rb",
+        "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
         "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
         "dart/lib/src/generated_remote_policy.dart",
     ] {
@@ -109,7 +109,7 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
     );
 
     for relative in [
-        "ruby/generated/acyclic_sdk/generated_remote_policy.rb",
+        "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
         "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
         "dart/lib/src/generated_remote_policy.dart",
     ] {
