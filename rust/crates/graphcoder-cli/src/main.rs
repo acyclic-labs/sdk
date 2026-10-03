@@ -21,7 +21,7 @@ use acyclic_harness::{
     interaction::InteractionResponse,
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
     resources::ProviderRef,
-    Error as HarnessError, InteractionId, OperationId, Result, TaskId,
+    Error as HarnessError, InteractionId, OperationId, Result as HarnessResult, TaskId,
 };
 use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
@@ -323,7 +323,7 @@ struct PendingApproval {
 /// default terminal entrypoint remains fail-closed because it has no authority
 /// from which it could mint a responder scope.
 type ApprovalAuthorizer = Arc<
-    dyn Fn(PendingApproval) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
+    dyn Fn(PendingApproval) -> BoxFuture<'static, HarnessResult<Scope>> + Send + Sync,
 >;
 
 /// Adapts the durable host signer to the terminal's exact pending-ticket
@@ -377,7 +377,7 @@ fn approval_authorizer_from_swarm(swarm: Arc<PersistentLocalSwarm>) -> ApprovalA
 
 async fn recursive_project(
     root: &std::path::Path,
-) -> Result<(
+) -> HarnessResult<(
     Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     StreamClient<LocalStream>,
     VolumeRef,
@@ -1759,7 +1759,7 @@ mod tests {
             let callback_seen = callback_seen.clone();
             async move {
                 *callback_seen.lock().await = Some(pending);
-                Err(HarnessError::Unsupported("test host authorizer"))
+                Err(HarnessError::Unsupported("test host authorizer".into()))
             }
             .boxed()
         });
