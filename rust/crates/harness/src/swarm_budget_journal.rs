@@ -79,7 +79,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: SwarmOwnerFence,
         limits: SwarmBudgetLimits,
     ) -> Result<Self> {
-        Self::start_inner(client, session_id, owner, limits, None).await
+        Self::start_inner(client, session_id, owner, limits, None, false).await
     }
 
     /// Creates a session and binds root usage to the host-issued scheduler
@@ -97,6 +97,29 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             owner,
             limits,
             Some(root_dispatch_id),
+            false,
+        )
+        .await
+    }
+
+    /// Opens a root budget and takes over a prior owner when the durable
+    /// descriptor and root lease match. This is the restart path for local
+    /// process composition; explicit scheduler callers retain the strict
+    /// owner check in [`Self::start_with_root_dispatch`].
+    pub async fn start_with_root_dispatch_recovering(
+        client: &StreamClient<P>,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+        root_dispatch_id: IdempotencyKey,
+    ) -> Result<Self> {
+        Self::start_inner(
+            client,
+            session_id,
+            owner,
+            limits,
+            Some(root_dispatch_id),
+            true,
         )
         .await
     }
@@ -107,6 +130,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: SwarmOwnerFence,
         limits: SwarmBudgetLimits,
         root_dispatch_id: Option<IdempotencyKey>,
+        recover_owner: bool,
     ) -> Result<Self> {
         // Validate the descriptor before creating the durable stream. A
         // malformed start must never leave an unreplayable root record.
@@ -123,13 +147,16 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if tail != 0 {
-            let reopened = Self::open(client, session_id).await?;
+            let mut reopened = Self::open(client, session_id).await?;
             let (_, observed_owner, observed_limits) = reopened.descriptor()?;
-            if observed_owner == owner
-                && observed_limits == limits
-                && reopened.budget.root_dispatch_id()? == root_dispatch_id
-            {
-                return Ok(reopened);
+            if observed_limits == limits && reopened.budget.root_dispatch_id()? == root_dispatch_id {
+                if observed_owner == owner {
+                    return Ok(reopened);
+                }
+                if recover_owner {
+                    reopened.takeover(&observed_owner, owner.owner).await?;
+                    return Ok(reopened);
+                }
             }
             return Err(Error::Conflict("swarm session descriptor differs".into()));
         }
@@ -142,17 +169,22 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         match append_record(&stream, 0, &event, session_id).await {
             Ok(()) => Self::open(client, session_id).await,
             Err(Error::Conflict(_)) => {
-                let reopened = Self::open(client, session_id).await?;
+                let mut reopened = Self::open(client, session_id).await?;
                 let (_, observed_owner, observed_limits) = reopened.descriptor()?;
-                if observed_owner == event_owner(&event)?
-                    && observed_limits == limits
-                    && reopened.budget.root_dispatch_id()?
-                        == event_root_dispatch_id(&event)?
+                if observed_limits == limits
+                    && reopened.budget.root_dispatch_id()? == event_root_dispatch_id(&event)?
                 {
-                    Ok(reopened)
-                } else {
-                    Err(Error::Conflict("swarm session descriptor differs".into()))
+                    if observed_owner == event_owner(&event)? {
+                        return Ok(reopened);
+                    }
+                    if recover_owner {
+                        reopened
+                            .takeover(&observed_owner, event_owner(&event)?.owner)
+                            .await?;
+                        return Ok(reopened);
+                    }
                 }
+                Err(Error::Conflict("swarm session descriptor differs".into()))
             }
             Err(error) => Err(error),
         }
@@ -418,10 +450,26 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         token: &SwarmDispatchToken,
         source: S,
     ) -> Result<SwarmDispatchContext<S>> {
-        let cursor = self
-            .usage_cursor(token.operation_id())?
+        let reservation = self
+            .reservation(token.operation_id())?
             .ok_or_else(|| Error::NotFound(format!("swarm reservation {}", token.operation_id())))?;
-        token.resume_usage_context(source, cursor)
+        if !matches!(
+            reservation.state,
+            crate::swarm_budget::SwarmReservationState::Active
+        ) {
+            return Err(Error::Conflict(
+                "provider usage context requires an active swarm reservation".into(),
+            ));
+        }
+        if reservation.owner != *token.owner() {
+            return Err(Error::Conflict("stale swarm dispatch token".into()));
+        }
+        let cursor = reservation.usage_cursor();
+        let context = token.resume_usage_context(source, cursor)?;
+        if let Some(usage) = context.receipt_cursor().usage {
+            context.restore_runtime_usage(usage);
+        }
+        Ok(context)
     }
 
     /// Reconstructs an active child token after a process restart.

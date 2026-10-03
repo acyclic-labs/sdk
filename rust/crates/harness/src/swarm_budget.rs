@@ -249,47 +249,39 @@ impl SwarmUsageLimiter {
 
     /// Reserves one model step before invoking the model.
     pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
-        let next = self
-            .usage
-            .model_steps
-            .checked_add(1)
-            .ok_or_else(|| Error::Conflict("provider model step ceiling exhausted".into()))?;
-        if next > self.limits.model_steps {
+        if self.usage.model_steps >= self.limits.model_steps {
             return Err(Error::Conflict(
                 "provider model step ceiling exhausted".into(),
             ));
         }
-        self.usage.model_steps = next;
+        self.usage.model_steps += 1;
         Ok(self.usage)
     }
 
     /// Reserves output bytes before accepting them from the provider.
     pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
-        let next = self
-            .usage
-            .output_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| Error::Conflict("provider output ceiling exhausted".into()))?;
-        if next > self.limits.output_bytes {
+        let remaining = self.limits.output_bytes.saturating_sub(self.usage.output_bytes);
+        if bytes > remaining {
+            self.usage.output_bytes = self.limits.output_bytes;
             return Err(Error::Conflict("provider output ceiling exhausted".into()));
         }
-        self.usage.output_bytes = next;
+        self.usage.output_bytes += bytes;
         Ok(self.usage)
     }
 
     /// Advances measured elapsed time before allowing another provider slice.
     pub fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
-        let next = self
-            .usage
+        let remaining = self
+            .limits
             .execution_time_ms
-            .checked_add(elapsed_ms)
-            .ok_or_else(|| Error::Conflict("provider execution time ceiling exhausted".into()))?;
-        if next > self.limits.execution_time_ms {
+            .saturating_sub(self.usage.execution_time_ms);
+        if elapsed_ms > remaining {
+            self.usage.execution_time_ms = self.limits.execution_time_ms;
             return Err(Error::Conflict(
                 "provider execution time ceiling exhausted".into(),
             ));
         }
-        self.usage.execution_time_ms = next;
+        self.usage.execution_time_ms += elapsed_ms;
         Ok(self.usage)
     }
 }
@@ -397,6 +389,17 @@ pub trait SwarmUsageSource {
         _usage: SwarmUsage,
     ) {
     }
+
+    /// Restores the last durable runtime counter before a dispatch resumes.
+    /// Host authoritative sources may leave this hook unchanged; their
+    /// cumulative measurement remains independently validated on receipt.
+    fn restore_runtime_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+        _usage: SwarmUsage,
+    ) {
+    }
 }
 
 impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
@@ -419,6 +422,15 @@ impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
         usage: SwarmUsage,
     ) {
         (**self).record_runtime_usage(operation_id, dispatch_id, usage)
+    }
+
+    fn restore_runtime_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        usage: SwarmUsage,
+    ) {
+        (**self).restore_runtime_usage(operation_id, dispatch_id, usage)
     }
 }
 
@@ -605,6 +617,11 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             .record_runtime_usage(self.operation_id, &self.dispatch_id, usage);
     }
 
+    fn restore_runtime_usage(&self, usage: SwarmUsage) {
+        self.source
+            .restore_runtime_usage(self.operation_id, &self.dispatch_id, usage);
+    }
+
     /// Returns the next sequence expected from this issuer.
     #[must_use]
     pub fn next_sequence(&self) -> Result<u64> {
@@ -682,6 +699,10 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
 
     fn record_runtime_usage(&self, usage: SwarmUsage) {
         self.issuer.record_runtime_usage(usage);
+    }
+
+    pub(crate) fn restore_runtime_usage(&self, usage: SwarmUsage) {
+        self.issuer.restore_runtime_usage(usage);
     }
 
     /// Returns the mutable pre-work provider limiter.
@@ -825,9 +846,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     fn admit_model_step(&mut self) -> Result<SwarmUsage> {
         match self {
             Self::Child(context) => {
-                let usage = context.limiter_mut().admit_model_step()?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_model_step();
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
             Self::Root(context) => {
                 let current = context.limiter.usage();
@@ -835,9 +856,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     model_steps: current.model_steps.saturating_add(1),
                     ..current
                 })?;
-                let usage = context.limiter_mut().admit_model_step()?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_model_step();
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
         }
     }
@@ -845,9 +866,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
         match self {
             Self::Child(context) => {
-                let usage = context.limiter_mut().admit_output(bytes)?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_output(bytes);
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
             Self::Root(context) => {
                 let current = context.limiter.usage();
@@ -855,9 +876,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     output_bytes: current.output_bytes.saturating_add(bytes),
                     ..current
                 })?;
-                let usage = context.limiter_mut().admit_output(bytes)?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_output(bytes);
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
         }
     }
@@ -865,9 +886,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         match self {
             Self::Child(context) => {
-                let usage = context.limiter_mut().admit_execution_time(elapsed_ms)?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_execution_time(elapsed_ms);
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
             Self::Root(context) => {
                 let current = context.limiter.usage();
@@ -875,9 +896,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     execution_time_ms: current.execution_time_ms.saturating_add(elapsed_ms),
                     ..current
                 })?;
-                let usage = context.limiter_mut().admit_execution_time(elapsed_ms)?;
-                context.record_runtime_usage(usage);
-                Ok(usage)
+                let result = context.limiter_mut().admit_execution_time(elapsed_ms);
+                context.record_runtime_usage(context.limiter.usage());
+                result
             }
         }
     }
@@ -1909,6 +1930,9 @@ impl SwarmBudget {
             cursor,
             limits,
         )?;
+        if let Some(usage) = issuer.cursor().usage {
+            issuer.restore_runtime_usage(usage);
+        }
         Ok(SwarmRootDispatchContext::new(limiter, issuer))
     }
 
