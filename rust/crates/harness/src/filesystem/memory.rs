@@ -1608,9 +1608,16 @@ where
         after: Option<&str>,
         maximum_entries: u32,
     ) -> Result<crate::conversation::PrivateDirectoryPage> {
-        self.list_private_directory(path, expected_generation, after, maximum_entries)
-            .await
-            .map(|(_, page)| page)
+        ContentResidencyVerifier::list_private_directory(
+            self.content_verifier.as_ref(),
+            &self.volume,
+            "",
+            path,
+            expected_generation,
+            after,
+            maximum_entries,
+        )
+        .await
     }
 
     /// Returns the bound conversation aggregate identity.

@@ -472,6 +472,16 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                 },
                 "additionalProperties": false
             }),
+            model_output_schema: json!({
+                "type": "object",
+                "required": ["status", "fork_operation", "child_operation"],
+                "properties": {
+                    "status": {"const": "accepted_after_completed_batch"},
+                    "fork_operation": {"type": "string"},
+                    "child_operation": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
         },
         executor: Arc::new(LocalForkToolExecutor { parent, plans }),
         projection: Arc::new(LocalForkToolProjection),
@@ -1220,7 +1230,7 @@ impl PersistentLocalSwarm {
         let approvals = self.list_approvals(task).await?;
         let approval = approvals
             .iter()
-            .find(|approval| approval.ticket.id == id)
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
             .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
         if approval.resolution.is_some() {
             return approval
@@ -2073,7 +2083,7 @@ impl PersistentLocalSwarm {
                         Error::Storage(format!("invalid child completion artifact: {error}"))
                     })?
                 }
-                (None, None, _) => {
+                (None, None, _) | (None, Some(_), None) => {
                     return Err(Error::Conflict(
                         "durable child completion has no replayable output".into(),
                     ));
@@ -2179,7 +2189,7 @@ impl PersistentLocalSwarm {
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
         stream: StreamClient<LocalStream>,
         issuer: AuthorityIssuer,
-        parent: &StreamAggregate<LocalStream>,
+        parent: &mut StreamAggregate<LocalStream>,
     ) -> Result<LocalForkOutcome> {
         let request = self
             .requests
@@ -2542,7 +2552,7 @@ fn apply_record(
                     }
                     completion_refs.insert(child, value);
                 }
-                (None, None, _) => {
+                (None, None, _) | (None, Some(_), None) => {
                     return Err(Error::Conflict(
                         "persisted child completion has no replayable output".into(),
                     ));
