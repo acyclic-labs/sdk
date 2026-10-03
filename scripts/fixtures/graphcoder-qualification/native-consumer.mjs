@@ -1,5 +1,6 @@
 import { createRequire } from "node:module";
 import { createInterface } from "node:readline";
+import { createHash } from "node:crypto";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -144,6 +145,23 @@ async function assertStageProjection(bridge, sessionId, generation, body, pendin
   }
 }
 
+function assertStageOutcome(response, body, pending, label) {
+  const attachments = response.result?.outcome?.attachments;
+  if (!Array.isArray(attachments)) {
+    pending.add("stage-outcome-projection");
+    return;
+  }
+  assert(attachments.length === 1, `${label}: stage outcome attachment count changed`);
+  const file = attachments[0]?.file;
+  assert(file && typeof file === "object", `${label}: stage outcome file is missing`);
+  assert(file.path === "graphcoder-fixture.txt", `${label}: staged logical path changed`);
+  assert(file.display_name === "graphcoder-fixture.txt", `${label}: staged display name changed`);
+  assert(file.descriptor?.media_type === "text/plain", `${label}: staged media type changed`);
+  assert(file.descriptor?.byte_length === Buffer.byteLength(body), `${label}: staged byte length changed`);
+  const expectedDigest = [...createHash("sha256").update(Buffer.from(body)).digest()];
+  assert(JSON.stringify(file.descriptor?.sha256) === JSON.stringify(expectedDigest), `${label}: staged body digest changed`);
+}
+
 const consumerRoot = option("--root");
 const executable = option("--executable");
 if (consumerRoot === undefined || executable === undefined) {
@@ -191,6 +209,8 @@ try {
     await expectNativeError("NEG-NATIVE-METHOD-01 unknown method", () => list({ request_id: "native-unknown", method: "unknown_method", params: {} }), "invalid_input");
     await expectNativeError("NEG-NATIVE-METHOD-01 unsupported method", () => list({ request_id: "native-unsupported", method: "read_activity", params: {} }), "unsupported");
     await expectNativeError("NEG-NATIVE-METHOD-01 malformed prompt", () => list({ request_id: "native-prompt-type", method: "start_session", params: { prompt: 7 } }), "invalid_input");
+    await expectNativeError("NEG-NATIVE-METHOD-01 missing operation", () => list({ request_id: "native-operation-missing", method: "start_session", params: { prompt: "hello" } }), "invalid_input");
+    await expectNativeError("NEG-NATIVE-METHOD-01 oversized operation", () => list({ request_id: "native-operation-high", method: "start_session", params: { prompt: "hello", operation_id: "x".repeat(257) } }), "invalid_input");
     await expectNativeError("NEG-NATIVE-METHOD-01 malformed session", () => list({ request_id: "native-session-type", method: "open_session", params: { session_id: 7 } }), "invalid_input");
     await expectNativeError("NEG-NATIVE-METHOD-01 empty request id", () => list({ request_id: "", method: "list_sessions", params: {} }), "invalid_input");
     await expectNativeError("NEG-NATIVE-METHOD-01 oversized request id", () => list({ request_id: "x".repeat(257), method: "list_sessions", params: {} }), "invalid_input");
@@ -208,13 +228,14 @@ try {
       const started = await stageHandle.bridge.request({
         request_id: "native-stage-start",
         method: "start_session",
-        params: { prompt: stageBody, model_fixture: "stage" },
+        params: { prompt: stageBody, operation_id: "native-stage-operation", model_fixture: "stage" },
       });
       assertResponseId(started, "native-stage-start", "PKG-NATIVE-STAGE-REOPEN-01 start");
       assert(started.ok === true && typeof started.result?.summary?.id === "string", "PKG-NATIVE-STAGE-REOPEN-01 start snapshot is invalid");
       assert(started.result.summary.state === "completed", "PKG-NATIVE-STAGE-REOPEN-01 stage session did not complete");
       assert(started.result.workspace_generation === "0", "PKG-NATIVE-STAGE-REOPEN-01 stage generation is unstable");
       stageSessionId = started.result.summary.id;
+      assertStageOutcome(started, stageBody, pending, "PKG-NATIVE-STAGE-REOPEN-01 start");
       await assertStageProjection(stageHandle.bridge, stageSessionId, started.result.workspace_generation, stageBody, pending);
     } finally {
       await stageHandle.close();
@@ -223,6 +244,14 @@ try {
     const reopenedDiagnostics = [];
     const reopenedHandle = launchInstalled(nodeApi, executable, stageRoot, "stage", reopenedDiagnostics);
     try {
+      const retried = await reopenedHandle.bridge.request({
+        request_id: "native-stage-retry",
+        method: "start_session",
+        params: { prompt: stageBody, operation_id: "native-stage-operation", model_fixture: "stage" },
+      });
+      assertResponseId(retried, "native-stage-retry", "PKG-NATIVE-STAGE-REOPEN-01 retry");
+      assert(retried.ok === true && retried.result?.summary?.id === stageSessionId, "PKG-NATIVE-STAGE-REOPEN-01 retry changed session identity");
+      assertStageOutcome(retried, stageBody, pending, "PKG-NATIVE-STAGE-REOPEN-01 retry");
       const reopened = await reopenedHandle.bridge.request({
         request_id: "native-stage-reopen",
         method: "open_session",

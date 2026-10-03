@@ -34,8 +34,8 @@ The fixture IDs are stable qualification references:
 | `PKG-NATIVE-CLI-01` | Installed Node bridge consumes the native JSON-lines runtime over piped stdio and validates the listing envelope. |
 | `NEG-NATIVE-LIST-01` | Repeated native session listings are stable and do not start visible work or mutate the listing projection. |
 | `NEG-NATIVE-BOUNDS-01` | Native list limits, cursors, and parameter shapes reject invalid bounds with typed errors. |
-| `NEG-NATIVE-METHOD-01` | Native unknown, unsupported, malformed prompt/session, empty-ID, and oversized-ID requests retain typed error codes. |
-| `PKG-NATIVE-STAGE-REOPEN-01` | Installed native stage fixture completes, closes, reopens the same durable root, preserves session identity/state, and validates exact file path/media/body when the authoritative `read_file` projection is exposed. |
+| `NEG-NATIVE-METHOD-01` | Native unknown, unsupported, malformed prompt/session/operation, empty-ID, and oversized-ID requests retain typed error codes. |
+| `PKG-NATIVE-STAGE-REOPEN-01` | Installed native stage fixture uses a stable `operation_id`, completes, closes, retries and reopens the same durable root, preserves session identity/state, and validates the authoritative attachment path/media/display/body digest plus `read_file` bytes when that projection is exposed. |
 | `NEG-NATIVE-CORRELATION-01` | A malformed JSON-lines request must return a correlated error envelope instead of leaving a client request pending. |
 | `PKG-HARNESS-CONTRACT-01` | Installed `@acyclic-labs/harness/proto` and `/protocol` subpaths expose their generated descriptors and public message schemas. |
 | `PKG-HARNESS-MODEL-01` | Installed `@acyclic-labs/harness` model dispatch retains provider/name/revision/options, including a full-width integer, in one frozen canonical request; request and manifest digests agree with the canonical bytes and differ when model identity changes. |
@@ -51,8 +51,9 @@ model behavior, production swarm orchestration, N-API/Cargo bindings, or all
 possible native field combinations. `native-consumer.mjs` requires a separately
 built native runtime; it remains source-only until that installed binary is
 available. The native fixture reports explicit pending projection labels when
-the runtime returns `unsupported` for `read_file`, when the wire file body omits
-the stage display name, or when the host exposes no provider-call diagnostic. It
+the runtime returns `unsupported` for `read_file`, when the native outcome omits
+the stage attachment, when the wire file body omits the stage display name, or
+when the host exposes no provider-call diagnostic. It
 never uses an arbitrary object-store byte match as proof of the logical staged
 file. `harness-model-consumer.mjs` uses a local assertion provider only to observe the installed Harness boundary; it does not
 qualify any production model provider. The installed Harness artifact must
