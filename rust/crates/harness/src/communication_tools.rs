@@ -41,6 +41,14 @@ pub const TOOL_REVISION: &str = "1";
 pub trait WaitCancellationSource: Send + Sync {
     /// Returns a live cancellation receiver for one admitted task.
     fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>>;
+
+    /// Requests cancellation for one admitted task when this source is also
+    /// owner-controlled. Read-only sources may retain the default refusal.
+    fn cancel(&self, _task_id: TaskId) -> Result<()> {
+        Err(Error::Unsupported(
+            "cancellation source is observation-only".into(),
+        ))
+    }
 }
 
 /// Local authenticated cancellation registry for task execution hosts.
@@ -106,6 +114,10 @@ impl WaitCancellationSource for LocalTaskCancellationSource {
             .lock()
             .ok()
             .and_then(|scopes| scopes.get(&task_id).map(|sender| sender.subscribe()))
+    }
+
+    fn cancel(&self, task_id: TaskId) -> Result<()> {
+        LocalTaskCancellationSource::cancel(self, task_id)
     }
 }
 
