@@ -3293,7 +3293,7 @@ mod local_provider_tests {
         conversation::Limits,
         filesystem::PersistentLocalHarness,
         interaction::{Interaction, InteractionResponse},
-        model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
+        model::{Model, ModelAttempt, ModelEvent, ModelProvider},
     };
     use futures::{future::BoxFuture, stream::BoxStream};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

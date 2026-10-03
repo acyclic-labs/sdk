@@ -3647,7 +3647,7 @@ impl TaskContext {
                 (used < step_bound).then_some(used + 1)
             })
             .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
-        let prepared = crate::model_input::PreparedModelInput::prepare(
+        let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
             ModelRequest {
                 model: binding.model.clone(),
                 messages,
@@ -3655,6 +3655,7 @@ impl TaskContext {
                 max_output_tokens,
             },
             self.scope.limits(),
+            binding.provider.model_option_policy(),
         )?;
         prepared.validate_complete_exchange()?;
         let request = prepared.request().clone();
