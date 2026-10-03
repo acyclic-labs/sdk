@@ -19,7 +19,7 @@ clap.workspace = true
 futures.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-std"] }
 
 [lints]
 workspace = true
