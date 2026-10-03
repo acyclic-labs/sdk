@@ -108,18 +108,8 @@ export const packagedSourceCopies = [
   [compatibilityArtifacts.filesystem.conformanceDigest, "rust/crates/conformance/vectors/filesystem/dependency-content-range-v1.json"],
 ];
 
-export const normalizeGeneratedRust = (relative, source) => {
-  let normalized = `${source.trimEnd()}\n`;
-  if (relative === "acyclic/objects/v1/acyclic.objects.v1.rs" ||
-      relative === "acyclic/objects/v2/acyclic.objects.v2.rs" ||
-      relative === "acyclic/machines/v1/acyclic.machines.v1.rs") {
-    const service = relative.includes("objects/v2") ? "acyclic.objects.v2" : relative.includes("objects") ? "acyclic.objects.v1" : "acyclic.machines.v1";
-    normalized = normalized.replace(
-      new RegExp(`(?:#\\[cfg\\(feature = "grpc"\\)\\]\\r?\\n)?include!\\("${service.replaceAll(".", "\\.")}\\.tonic\\.rs"\\);`),
-      `#[cfg(feature = "grpc")]\ninclude!("${service}.tonic.rs");`,
-    );
-  }
-  return normalized;
-};
+// The local Rust protoc plugin emits feature guards for service includes.
+// JavaScript only normalizes terminal whitespace and does not own policy.
+export const normalizeGeneratedRust = (_relative, source) => `${source.trimEnd()}\n`;
 
 export const normalizeGeneratedTypeScript = source => `${source.trimEnd()}\n`;

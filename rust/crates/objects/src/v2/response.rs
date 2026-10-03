@@ -110,6 +110,16 @@ pub fn validate_get_header(query: &[u8], bytes: &[u8], maximum: u64) -> Result<u
     get_header(&header, &query.range, maximum)
 }
 
+/// Validates one bounded download body frame and returns the remaining bytes.
+/// Native and WASM transports use this same state transition so frame-size and
+/// selected-range accounting cannot drift between adapters.
+pub fn validate_get_body(body_length: u64, remaining: u64) -> Result<u64, Error> {
+    if body_length > 65_536 || body_length > remaining {
+        return Err(invalid());
+    }
+    Ok(remaining - body_length)
+}
+
 /// Maps one HTTP status and optional wire error detail to the canonical
 /// Objects error vocabulary used by native and browser transports.
 pub fn http_error_code(status: u16, detail: Option<i32>) -> wire::ErrorCode {
@@ -175,7 +185,7 @@ pub fn object_info(value: &wire::ObjectInfo) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_error_code, validate_http_endpoint};
+    use super::{http_error_code, validate_get_body, validate_http_endpoint};
     use crate::v2::wire;
 
     #[test]
@@ -215,6 +225,13 @@ mod tests {
         ] {
             assert!(validate_http_endpoint(endpoint).is_err(), "{endpoint}");
         }
+    }
+
+    #[test]
+    fn download_body_accounting_is_bounded_and_request_relative() {
+        assert_eq!(validate_get_body(65_536, 100_000).unwrap(), 34_464);
+        assert!(validate_get_body(65_537, 100_000).is_err());
+        assert!(validate_get_body(2, 1).is_err());
     }
 }
 /// Validates a complete or ranged download selection within its decoded allocation bound.

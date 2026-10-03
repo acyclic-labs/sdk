@@ -12,7 +12,7 @@ export interface ObjectsV2GrpcOptions {
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
-import { validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
 function grpcError(error: unknown): ObjectsV2Error {
@@ -172,8 +172,8 @@ export class GrpcObjectsV2 extends ObjectsV2Provider {
                   if (frame.frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
                   remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.frame.value), maximum);
                 } else {
-                  if (frame.frame.case !== "body" || frame.frame.value.byteLength > 65536 || BigInt(frame.frame.value.byteLength) > remaining) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-                  remaining -= BigInt(frame.frame.value.byteLength);
+                  if (frame.frame.case !== "body") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+                  remaining = validate_objects_v2_get_body(BigInt(frame.frame.value.byteLength), remaining);
                 }
               } catch (error) { rejected = objectsV2Error(error); }
             }

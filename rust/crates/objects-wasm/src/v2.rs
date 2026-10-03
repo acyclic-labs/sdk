@@ -71,6 +71,12 @@ pub fn validate_objects_v2_get_header(
     acyclic_objects::v2::response::validate_get_header(query, bytes, maximum).map_err(error)
 }
 
+/// Validates one bounded download body frame and returns its remaining range.
+#[wasm_bindgen]
+pub fn validate_objects_v2_get_body(body_length: u64, remaining: u64) -> Result<u64, JsValue> {
+    acyclic_objects::v2::response::validate_get_body(body_length, remaining).map_err(error)
+}
+
 /// Maps hosted HTTP status/detail values through the canonical Objects error
 /// vocabulary before they cross the browser boundary.
 #[wasm_bindgen]

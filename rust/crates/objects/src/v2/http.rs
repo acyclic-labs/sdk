@@ -11,7 +11,6 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
-const FRAME_BYTES: usize = 65536;
 const JSON_FRAME_BYTES: usize = 128 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
@@ -146,20 +145,9 @@ impl HttpObjects {
         ca: Option<&[u8]>,
     ) -> Result<Self, Error> {
         let invalid = || Error::from(wire::ErrorCode::InvalidArgument);
+        response::validate_http_endpoint(endpoint)?;
         let mut endpoint = Url::parse(endpoint).map_err(|_| invalid())?;
-        let loopback = matches!(
-            endpoint.host_str(),
-            Some("localhost" | "127.0.0.1" | "[::1]")
-        );
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-            || !endpoint.username().is_empty()
-            || endpoint.password().is_some()
-            || endpoint.query().is_some()
-            || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.len() > 8192
-            || maximum_response_bytes == 0
-        {
+        if token.trim().is_empty() || token.len() > 8192 || maximum_response_bytes == 0 {
             return Err(invalid());
         }
         if !endpoint.path().ends_with('/') {
@@ -319,10 +307,8 @@ impl HttpObjects {
                 };
             };
             match frame.frame {
-                Some(wire::get_object_response::Frame::Body(bytes))
-                    if bytes.len() <= FRAME_BYTES && bytes.len() as u64 <= remaining =>
-                {
-                    let remaining = remaining - bytes.len() as u64;
+                Some(wire::get_object_response::Frame::Body(bytes)) => {
+                    let remaining = response::validate_get_body(bytes.len() as u64, remaining)?;
                     Ok(Some((Bytes::from(bytes), (reader, remaining))))
                 }
                 Some(wire::get_object_response::Frame::Error(detail)) => {

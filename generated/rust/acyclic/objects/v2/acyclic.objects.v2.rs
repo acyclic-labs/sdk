@@ -635,5 +635,6 @@ impl ErrorCode {
         }
     }
 }
+#[cfg(feature = "grpc")]
 include!("acyclic.objects.v2.tonic.rs");
 // @@protoc_insertion_point(module)

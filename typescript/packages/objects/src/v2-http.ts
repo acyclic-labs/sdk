@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_error_code, objects_v2_http_type, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_error_code, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -88,8 +88,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         const line = new Uint8Array(128 * 1024);
         let lineLength = 0;
         let wireSize = 0;
-        let bodySize = 0n;
-        let expected: bigint | undefined;
+        let remaining: bigint | undefined;
         while (reader !== undefined) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -111,19 +110,17 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
             lineLength = 0;
             const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
             if (frame.case === "error") throw objectsV2Error({ code: frame.value.code });
-            if (expected === undefined) {
+            if (remaining === undefined) {
               if (frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-              expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
+              remaining = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
             } else {
               if (frame.case !== "body") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-              bodySize += BigInt(frame.value.byteLength);
-              if (bodySize > maximum) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
-              if (bodySize > expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              remaining = validate_objects_v2_get_body(BigInt(frame.value.byteLength), remaining!);
             }
             frames.push(decoded);
           }
         }
-        if (lineLength !== 0 || expected === undefined || bodySize !== expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+        if (lineLength !== 0 || remaining === undefined || remaining !== 0n) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
         return frames;
       }
       const chunks: Uint8Array[] = [];
