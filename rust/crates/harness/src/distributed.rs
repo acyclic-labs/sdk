@@ -4,11 +4,14 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
-    runtime::{MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES},
+    runtime::{MAX_CHILD_PAGE, MAX_CHILD_SLOT_BYTES, TaskAdmissionRecord},
     scheduler::{
         AssemblyKind, DurableOwner, EntrypointRef, LeaseFence, OperationSpec, OperationState,
         OrchestrationDecision, Reservation, ResourceSnapshot, Scheduler, SchedulerEvent,
-        assembly_invocation_digest, reduction_invocation_digest,
+        assembly_invocation_digest, contains_swarm_resource, reduction_invocation_digest,
+    },
+    swarm_budget::{
+        SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmUsage, VerifiedForkPublication,
     },
     wire,
 };
@@ -354,6 +357,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 outcome,
                 ..
             } => (*operation_id, outcome, None),
+            SchedulerEvent::SwarmCompleted {
+                operation_id,
+                outcome,
+                ..
+            } => (*operation_id, outcome, None),
             SchedulerEvent::Orchestrated {
                 operation_id,
                 outcome,
@@ -554,8 +562,355 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "orchestration decisions require coordinator-owned materialization".into(),
             ));
         }
+        if contains_swarm_resource(
+            &self
+                .scheduler
+                .operation(operation_id)
+                .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
+                .spec
+                .resources,
+        ) && matches!(
+            &event,
+            SchedulerEvent::Admitted { .. }
+                | SchedulerEvent::Started { .. }
+                | SchedulerEvent::Checkpointed { .. }
+                | SchedulerEvent::LeaseReleased { .. }
+                | SchedulerEvent::CancellationRequested { .. }
+                | SchedulerEvent::Completed { .. }
+        ) {
+            return Err(Error::Unauthorized(
+                "swarm operations require authenticated swarm lifecycle APIs".into(),
+            ));
+        }
+        if matches!(
+            &event,
+            SchedulerEvent::SwarmAdmitted { .. }
+                | SchedulerEvent::SwarmDispatchStarted { .. }
+                | SchedulerEvent::SwarmUsageReported { .. }
+                | SchedulerEvent::SwarmRootUsageReported { .. }
+                | SchedulerEvent::SwarmCompleted { .. }
+                | SchedulerEvent::SwarmCancelled { .. }
+                | SchedulerEvent::SwarmTakeover { .. }
+        ) {
+            return Err(Error::Unauthorized(
+                "swarm transitions require owner-authenticated coordinator APIs".into(),
+            ));
+        }
         self.apply_internal(operation_id, idempotency_key, event)
             .await
+    }
+
+    /// Atomically admits a scheduler-ready child and its session budget
+    /// reservation in the coordinator's single CAS stream.
+    pub async fn admit_swarm_child(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        session_id: OperationId,
+        limits: SwarmBudgetLimits,
+        swarm_owner: SwarmOwnerFence,
+        request: SwarmForkRequest,
+        reservation: Reservation,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:admit")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        if request.operation_id != operation_id {
+            return Err(Error::Invalid(
+                "swarm admission request belongs to another operation".into(),
+            ));
+        }
+        if request.admission_digest.is_none() {
+            return Err(Error::Invalid(
+                "swarm admission requires a canonical task admission digest".into(),
+            ));
+        }
+        let operation = self
+            .scheduler
+            .operation(operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        let expected_parent = operation
+            .spec
+            .parent
+            .as_ref()
+            .map(|parent| parent.operation_id);
+        if expected_parent != request.parent_operation_id {
+            return Err(Error::Conflict(
+                "swarm parent does not match scheduler declaration".into(),
+            ));
+        }
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SwarmAdmitted {
+                operation_id,
+                session_id,
+                limits,
+                owner: swarm_owner,
+                request,
+                reservation,
+            },
+        )
+        .await
+    }
+
+    /// Builds the resource request from the exact admission returned by
+    /// `DurableTaskHost::admit_after`, retaining its prerequisite digest in
+    /// the compound coordinator event.
+    pub async fn admit_swarm_after(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        admission: &TaskAdmissionRecord,
+        idempotency_key: IdempotencyKey,
+        session_id: OperationId,
+        parent_operation_id: Option<OperationId>,
+        depth: u32,
+        limits: SwarmBudgetLimits,
+        swarm_owner: SwarmOwnerFence,
+        resources: crate::swarm_budget::SwarmResourceRequest,
+        reservation: Reservation,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        admission.validate()?;
+        let operation = self
+            .scheduler
+            .operation(admission.operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {}", admission.operation_id)))?;
+        if operation.spec.dependencies != admission.dependencies {
+            return Err(Error::Conflict(
+                "task admission dependencies differ from scheduler declaration".into(),
+            ));
+        }
+        if operation.spec.entrypoint.name != admission.task.name
+            || operation.spec.entrypoint.version != admission.task.version
+            || operation.spec.entrypoint.digest != admission.task.digest
+        {
+            return Err(Error::Conflict(
+                "task admission identity differs from scheduler declaration".into(),
+            ));
+        }
+        let request = SwarmForkRequest::from_task_admission(
+            admission,
+            idempotency_key.clone(),
+            parent_operation_id,
+            depth,
+            resources,
+        )?;
+        self.admit_swarm_child(
+            owner,
+            scope,
+            verifier,
+            admission.operation_id,
+            idempotency_key,
+            session_id,
+            limits,
+            swarm_owner,
+            request,
+            reservation,
+        )
+        .await
+    }
+
+    /// Commits verified publication and scheduler start before dispatch.
+    pub async fn start_swarm_dispatch(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: LeaseFence,
+        publication: VerifiedForkPublication,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:dispatch")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SwarmDispatchStarted {
+                operation_id,
+                dispatch_id: idempotency_key.clone(),
+                fence,
+                owner: swarm_owner,
+                publication: publication.into_publication(),
+            },
+        )
+        .await
+    }
+
+    /// Records cumulative usage through the same CAS stream as lifecycle.
+    pub async fn report_swarm_usage(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: LeaseFence,
+        usage: SwarmUsage,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:report")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SwarmUsageReported {
+                operation_id,
+                fence,
+                owner: swarm_owner,
+                usage,
+            },
+        )
+        .await
+    }
+
+    /// Records cumulative root usage through the same scheduler and budget
+    /// CAS stream as descendant lifecycle transitions.
+    pub async fn report_swarm_root_usage(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        session_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, session_id, "operation:report")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            session_id,
+            idempotency_key,
+            SchedulerEvent::SwarmRootUsageReported {
+                session_id,
+                owner: swarm_owner,
+                usage,
+            },
+        )
+        .await
+    }
+
+    /// Completes a child, retaining active budget capacity for indeterminate
+    /// outcomes until reconciliation commits a known terminal result.
+    pub async fn complete_swarm(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: Option<LeaseFence>,
+        usage: SwarmUsage,
+        outcome: crate::Outcome<FileRef>,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:complete")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SwarmCompleted {
+                operation_id,
+                fence,
+                owner: swarm_owner,
+                usage,
+                outcome,
+            },
+        )
+        .await
+    }
+
+    /// Cancels a scheduler-derived subtree and releases only live budget
+    /// reservations in reverse frontier order.
+    pub async fn cancel_swarm(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        recursive: bool,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, operation_id, "operation:cancel")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            operation_id,
+            idempotency_key,
+            SchedulerEvent::SwarmCancelled {
+                operation_id,
+                recursive,
+                owner: swarm_owner,
+            },
+        )
+        .await
+    }
+
+    /// Advances the budget owner only after verifying aggregate recovery
+    /// capability; stale expected fences fail in the reducer.
+    pub async fn takeover_swarm(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        session_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        expected_owner: SwarmOwnerFence,
+        next_owner: SwarmOwnerFence,
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, session_id, "operation:recover")?;
+        if next_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            session_id,
+            idempotency_key,
+            SchedulerEvent::SwarmTakeover {
+                session_id,
+                expected_owner,
+                owner: next_owner,
+            },
+        )
+        .await
     }
 
     /// Authenticates the exact durable owner before publishing a declaration.
@@ -753,6 +1108,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
             .clone();
         let operation = state.spec.clone();
+        if contains_swarm_resource(&operation.resources) {
+            return Err(Error::Conflict(
+                "swarm operations require authenticated swarm admission".into(),
+            ));
+        }
         let reservation = Reservation {
             id: format!("{}:{operation_id}:{}", worker.id, self.revision + 1),
             placement: worker.id.clone(),
@@ -1029,7 +1389,14 @@ fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::LeaseReleased { operation_id, .. }
         | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
+        | SchedulerEvent::Orchestrated { operation_id, .. }
+        | SchedulerEvent::SwarmAdmitted { operation_id, .. }
+        | SchedulerEvent::SwarmDispatchStarted { operation_id, .. }
+        | SchedulerEvent::SwarmUsageReported { operation_id, .. }
+        | SchedulerEvent::SwarmCompleted { operation_id, .. }
+        | SchedulerEvent::SwarmCancelled { operation_id, .. } => *operation_id,
+        SchedulerEvent::SwarmRootUsageReported { session_id, .. }
+        | SchedulerEvent::SwarmTakeover { session_id, .. } => *session_id,
     }
 }
 

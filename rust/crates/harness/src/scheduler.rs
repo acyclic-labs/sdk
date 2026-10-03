@@ -1,8 +1,14 @@
 //! Deterministic durable scheduling and structured orchestration semantics.
 
 use crate::{
-    Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, core::Authority,
+    Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
+    conversation::FileRef,
+    core::Authority,
     resources::CheckpointRef,
+    swarm_budget::{
+        ForkPublication, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits, SwarmBudgetUsage,
+        SwarmForkRequest, SwarmOwnerFence, SwarmReservationState, SwarmResourceRequest, SwarmUsage,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,6 +44,42 @@ impl ResourceRequest {
 /// Available logical resources advertised to admission policy.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ResourceSnapshot(pub BTreeMap<String, u64>);
+
+/// Maps the recursive swarm budget dimensions to the scheduler's canonical
+/// resource names. Both projections must carry this exact request before a
+/// child can be admitted through the combined coordinator event.
+#[must_use]
+pub fn canonical_swarm_resources(request: SwarmResourceRequest) -> ResourceRequest {
+    ResourceRequest(BTreeMap::from([
+        ("model_steps".to_owned(), request.model_steps),
+        ("output_bytes".to_owned(), request.output_bytes),
+        ("execution_time_ms".to_owned(), request.execution_time_ms),
+    ]))
+}
+
+/// Recognizes an operation that has opted into the recursive swarm resource
+/// contract and therefore must use the authenticated swarm admission API.
+#[must_use]
+pub fn is_canonical_swarm_resources(request: &ResourceRequest) -> bool {
+    request
+        .0
+        .keys()
+        .map(String::as_str)
+        .eq(["execution_time_ms", "model_steps", "output_bytes"])
+}
+
+/// Returns true when an operation mentions any dimension owned by swarm
+/// admission. Extra provider resources cannot be used to evade the lifecycle
+/// gate by adding another key to an otherwise swarm-shaped request.
+#[must_use]
+pub fn contains_swarm_resource(request: &ResourceRequest) -> bool {
+    request.0.keys().any(|key| {
+        matches!(
+            key.as_str(),
+            "model_steps" | "output_bytes" | "execution_time_ms"
+        )
+    })
+}
 
 /// Explicit lifetime owner for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -285,6 +327,88 @@ pub enum SchedulerEvent {
         /// Digest of exact ordered inputs for materialized joins, quorums, or reduction.
         reduction_digest: Option<[u8; 32]>,
     },
+    /// Atomically admits a recursive swarm child in the scheduler and budget
+    /// projection. The task declaration and its dependency graph remain the
+    /// source of readiness; this event only adds the resource reservation.
+    SwarmAdmitted {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Session budget identity shared by root and descendants.
+        session_id: OperationId,
+        /// Immutable session limits carried on every event for replay checks.
+        limits: SwarmBudgetLimits,
+        /// Owner fence for the reservation.
+        owner: SwarmOwnerFence,
+        /// Canonical resource reservation request.
+        request: SwarmForkRequest,
+        /// Existing scheduler lease reservation.
+        reservation: Reservation,
+    },
+    /// Atomically records verified fork publication and starts child dispatch.
+    SwarmDispatchStarted {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Stable provider dispatch identity retained for unknown-result
+        /// reconciliation and exact retries.
+        dispatch_id: IdempotencyKey,
+        /// Scheduler lease fence.
+        fence: LeaseFence,
+        /// Swarm owner fence.
+        owner: SwarmOwnerFence,
+        /// Exact publication evidence produced by the fork helper.
+        publication: ForkPublication,
+    },
+    /// Records cumulative child usage while retaining the scheduler lease.
+    SwarmUsageReported {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Scheduler lease fence.
+        fence: LeaseFence,
+        /// Swarm owner fence.
+        owner: SwarmOwnerFence,
+        /// Cumulative measured usage.
+        usage: SwarmUsage,
+    },
+    /// Records cumulative measured usage from the session root.
+    SwarmRootUsageReported {
+        /// Budget session identity and root operation identity.
+        session_id: OperationId,
+        /// Swarm owner fence.
+        owner: SwarmOwnerFence,
+        /// Cumulative measured root usage.
+        usage: SwarmUsage,
+    },
+    /// Completes a child and releases only its unconsumed budget reservation.
+    SwarmCompleted {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Scheduler lease fence for known worker completion.
+        fence: Option<LeaseFence>,
+        /// Swarm owner fence.
+        owner: SwarmOwnerFence,
+        /// Cumulative measured usage.
+        usage: SwarmUsage,
+        /// Terminal or indeterminate child outcome.
+        outcome: Outcome<FileRef>,
+    },
+    /// Requests cancellation and derives the complete structured subtree.
+    SwarmCancelled {
+        /// Root operation whose subtree is cancelled.
+        operation_id: OperationId,
+        /// Whether descendants are included.
+        recursive: bool,
+        /// Swarm owner fence.
+        owner: SwarmOwnerFence,
+    },
+    /// Advances the session owner generation after authenticated recovery.
+    SwarmTakeover {
+        /// Budget session identity.
+        session_id: OperationId,
+        /// Exact owner fence observed before takeover.
+        expected_owner: SwarmOwnerFence,
+        /// New owner fence.
+        owner: SwarmOwnerFence,
+    },
 }
 
 /// Pure reducer for dependency, capacity, ownership, and cancellation state.
@@ -293,6 +417,10 @@ pub struct Scheduler {
     operations: BTreeMap<OperationId, OperationState>,
     child_slots: BTreeMap<(OperationId, String), OperationId>,
     completion_order: Vec<OperationId>,
+    /// Budget events projected in the same coordinator history as scheduler
+    /// lifecycle events. Empty means this scheduler has no swarm session.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    swarm_events: Vec<SwarmBudgetEvent>,
 }
 
 impl Scheduler {
@@ -303,6 +431,7 @@ impl Scheduler {
             operations: BTreeMap::new(),
             child_slots: BTreeMap::new(),
             completion_order: Vec::new(),
+            swarm_events: Vec::new(),
         }
     }
 
@@ -310,6 +439,16 @@ impl Scheduler {
     #[must_use]
     pub fn operation(&self, id: OperationId) -> Option<&OperationState> {
         self.operations.get(&id)
+    }
+
+    /// Returns the budget projection committed in this coordinator history.
+    pub fn swarm_budget_usage(&self) -> Result<Option<SwarmBudgetUsage>> {
+        if self.swarm_events.is_empty() {
+            Ok(None)
+        } else {
+            SwarmBudget::replay(self.swarm_events.clone())
+                .and_then(|budget| budget.usage().map(Some))
+        }
     }
 
     /// Plans a declaration, including stable child-slot and cycle checks.
@@ -445,6 +584,16 @@ impl Scheduler {
     )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
         let primary = event_operation(&event);
+        let compound_swarm = matches!(
+            &event,
+            SchedulerEvent::SwarmAdmitted { .. }
+                | SchedulerEvent::SwarmDispatchStarted { .. }
+                | SchedulerEvent::SwarmUsageReported { .. }
+                | SchedulerEvent::SwarmRootUsageReported { .. }
+                | SchedulerEvent::SwarmCompleted { .. }
+                | SchedulerEvent::SwarmCancelled { .. }
+                | SchedulerEvent::SwarmTakeover { .. }
+        );
         let declared_parent = match &event {
             SchedulerEvent::Declared { spec } => {
                 spec.parent.as_ref().map(|value| value.operation_id)
@@ -694,12 +843,17 @@ impl Scheduler {
                 }
                 for target in frontier {
                     let mut terminalized = false;
+                    let retained_for_live_descendant = self.has_live_swarm_descendant(target)?;
                     {
                         let operation = self.mutable(target)?;
                         if operation.phase == OperationPhase::Terminal {
                             continue;
                         }
-                        if matches!(
+                        if matches!(operation.phase, OperationPhase::WaitingForChildren)
+                            && retained_for_live_descendant
+                        {
+                            operation.cancellation_requested = true;
+                        } else if matches!(
                             operation.phase,
                             OperationPhase::WaitingForDependencies
                                 | OperationPhase::WaitingForCapacity
@@ -793,6 +947,105 @@ impl Scheduler {
                     self.completion_order.push(operation_id);
                 }
             }
+            SchedulerEvent::SwarmAdmitted {
+                operation_id,
+                session_id,
+                limits,
+                owner,
+                request,
+                reservation,
+            } => {
+                let mut next = self.clone();
+                next.apply(SchedulerEvent::Admitted {
+                    operation_id,
+                    reservation: reservation.clone(),
+                })?;
+                next.apply_swarm_admitted(session_id, limits, owner, request, reservation)?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmDispatchStarted {
+                operation_id,
+                dispatch_id,
+                fence,
+                owner,
+                publication,
+            } => {
+                IdempotencyKey::new(dispatch_id.0.clone())?;
+                let mut next = self.clone();
+                next.apply(SchedulerEvent::Started {
+                    operation_id,
+                    fence,
+                })?;
+                next.apply_swarm_dispatch_started(operation_id, owner, publication)?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmUsageReported {
+                operation_id,
+                fence,
+                owner,
+                usage,
+            } => {
+                let mut next = self.clone();
+                let operation = next.mutable(operation_id)?;
+                require_phase(operation, OperationPhase::Running)?;
+                require_fence(operation, &fence)?;
+                next.apply_swarm_usage(operation_id, owner, usage)?;
+                let operation = next.mutable(operation_id)?;
+                operation.revision = operation
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmRootUsageReported {
+                session_id,
+                owner,
+                usage,
+            } => {
+                let mut next = self.clone();
+                next.apply_swarm_root_usage(session_id, owner, usage)?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmCompleted {
+                operation_id,
+                fence,
+                owner,
+                usage,
+                outcome,
+            } => {
+                let mut next = self.clone();
+                next.apply(SchedulerEvent::Completed {
+                    operation_id,
+                    outcome: outcome.clone(),
+                    fence,
+                    execution_duration_ns: None,
+                })?;
+                next.apply_swarm_completed(operation_id, owner, usage, &outcome)?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmCancelled {
+                operation_id,
+                recursive,
+                owner,
+            } => {
+                let mut next = self.clone();
+                let frontier = next.cancellation_frontier(operation_id, recursive);
+                next.apply(SchedulerEvent::CancellationRequested {
+                    operation_id,
+                    recursive,
+                })?;
+                next.apply_swarm_cancelled(frontier, owner)?;
+                *self = next;
+            }
+            SchedulerEvent::SwarmTakeover {
+                session_id,
+                expected_owner,
+                owner,
+            } => {
+                let mut next = self.clone();
+                next.apply_swarm_takeover(session_id, &expected_owner, owner)?;
+                *self = next;
+            }
             SchedulerEvent::Orchestrated {
                 operation_id,
                 expected_revision,
@@ -881,18 +1134,313 @@ impl Scheduler {
                 }
             }
         }
-        let operation = self.mutable(primary)?;
-        operation.revision = operation
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
-        if let Some(parent) = declared_parent {
-            let parent = self.mutable(parent)?;
-            parent.revision = parent
+        if !compound_swarm {
+            let operation = self.mutable(primary)?;
+            operation.revision = operation
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+            if let Some(parent) = declared_parent {
+                let parent = self.mutable(parent)?;
+                parent.revision = parent
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply_swarm_admitted(
+        &mut self,
+        session_id: OperationId,
+        limits: SwarmBudgetLimits,
+        owner: SwarmOwnerFence,
+        request: SwarmForkRequest,
+        reservation: Reservation,
+    ) -> Result<()> {
+        let expected_resources = canonical_swarm_resources(request.resources);
+        let operation = self
+            .operations
+            .get(&request.operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {}", request.operation_id)))?;
+        if operation.spec.resources != expected_resources
+            || reservation.admitted != expected_resources
+        {
+            return Err(Error::Conflict(
+                "scheduler and swarm reservations must use canonical resources".into(),
+            ));
+        }
+        let first = self.swarm_events.is_empty();
+        let budget = if first {
+            SwarmBudget::new(session_id, owner.clone(), limits)?
+        } else {
+            let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+            let (observed_session, observed_owner, observed_limits) = budget.descriptor()?;
+            if observed_session != session_id
+                || observed_owner != owner
+                || observed_limits != limits
+            {
+                return Err(Error::Conflict(
+                    "swarm budget descriptor differs from scheduler projection".into(),
+                ));
+            }
+            budget
+        };
+        let receipt = budget.reserve_child(request)?;
+        if first {
+            self.swarm_events.push(SwarmBudgetEvent::Started {
+                session_id,
+                owner,
+                limits,
+            });
+        }
+        self.swarm_events.push(receipt.durable_event());
+        Ok(())
+    }
+
+    fn has_live_swarm_descendant(&self, operation_id: OperationId) -> Result<bool> {
+        if self.swarm_events.is_empty() {
+            return Ok(false);
+        }
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let mut pending = self
+            .children(operation_id)
+            .map(|(_, child)| child.spec.operation_id)
+            .collect::<Vec<_>>();
+        while let Some(candidate) = pending.pop() {
+            if budget.reservation(candidate)?.is_some_and(|reservation| {
+                matches!(
+                    reservation.state,
+                    SwarmReservationState::Reserved | SwarmReservationState::Active
+                )
+            }) {
+                return Ok(true);
+            }
+            pending.extend(
+                self.children(candidate)
+                    .map(|(_, child)| child.spec.operation_id),
+            );
+        }
+        Ok(false)
+    }
+
+    fn apply_swarm_dispatch_started(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: ForkPublication,
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let token = budget.activate(operation_id, owner, publication)?;
+        self.swarm_events.push(SwarmBudgetEvent::ChildActivated {
+            operation_id,
+            owner: token.owner().clone(),
+            publication: token.publication(),
+        });
+        Ok(())
+    }
+
+    fn apply_swarm_usage(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        budget.report_usage(operation_id, &owner, usage)?;
+        self.swarm_events.push(SwarmBudgetEvent::UsageReported {
+            operation_id,
+            owner,
+            usage,
+        });
+        Ok(())
+    }
+
+    fn apply_swarm_root_usage(
+        &mut self,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let (observed_session, _, _) = budget.descriptor()?;
+        if observed_session != session_id {
+            return Err(Error::Conflict(
+                "root usage belongs to another swarm session".into(),
+            ));
+        }
+        let root_operation = self
+            .operations
+            .get(&session_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {session_id}")))?;
+        if root_operation.spec.parent.is_some() {
+            return Err(Error::Unauthorized(
+                "root usage requires the session root operation".into(),
+            ));
+        }
+        budget.report_root_usage(&owner, usage)?;
+        self.swarm_events
+            .push(SwarmBudgetEvent::RootUsageReported { owner, usage });
+        if let Some(operation) = self.operations.get_mut(&session_id) {
+            operation.revision = operation
                 .revision
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
         }
+        Ok(())
+    }
+
+    fn apply_swarm_completed(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        usage: SwarmUsage,
+        outcome: &Outcome<FileRef>,
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        if matches!(outcome, Outcome::Indeterminate { .. }) {
+            budget.report_usage(operation_id, &owner, usage)?;
+            self.swarm_events.push(SwarmBudgetEvent::UsageReported {
+                operation_id,
+                owner,
+                usage,
+            });
+        } else {
+            let mut budget = budget;
+            budget.complete(operation_id, &owner, usage)?;
+            self.swarm_events.push(SwarmBudgetEvent::ChildCompleted {
+                operation_id,
+                owner: owner.clone(),
+                usage,
+            });
+            self.close_cancelled_ancestors(operation_id, &mut budget)?;
+        }
+        Ok(())
+    }
+
+    fn close_cancelled_ancestors(
+        &mut self,
+        operation_id: OperationId,
+        budget: &mut SwarmBudget,
+    ) -> Result<()> {
+        let mut ancestor = self
+            .operations
+            .get(&operation_id)
+            .and_then(|operation| operation.spec.parent.as_ref())
+            .map(|parent| parent.operation_id);
+        while let Some(candidate) = ancestor {
+            let child_ids = self
+                .children(candidate)
+                .map(|(_, child)| child.spec.operation_id)
+                .collect::<Vec<_>>();
+            let Some(parent) = self.operations.get(&candidate) else {
+                break;
+            };
+            if !parent.cancellation_requested
+                || child_ids.iter().any(|child_id| {
+                    self.operations
+                        .get(child_id)
+                        .is_some_and(|child| child.phase != OperationPhase::Terminal)
+                })
+            {
+                break;
+            }
+            if let Some(reservation) = budget.reservation(candidate)?
+                && matches!(
+                    reservation.state,
+                    SwarmReservationState::Reserved | SwarmReservationState::Active
+                )
+            {
+                budget.cancel(candidate, &reservation.owner)?;
+                self.swarm_events.push(SwarmBudgetEvent::ChildCancelled {
+                    operation_id: candidate,
+                    owner: reservation.owner,
+                });
+            }
+            let (was_terminal, next_ancestor) = {
+                let parent = self.mutable(candidate)?;
+                let next_ancestor = parent
+                    .spec
+                    .parent
+                    .as_ref()
+                    .map(|parent| parent.operation_id);
+                if parent.phase != OperationPhase::Terminal {
+                    parent.reservation = None;
+                    parent.phase = OperationPhase::Terminal;
+                    parent.outcome = Some(Outcome::Cancelled);
+                    parent.revision = parent
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+                    (false, next_ancestor)
+                } else {
+                    (true, next_ancestor)
+                }
+            };
+            if !was_terminal && !self.completion_order.contains(&candidate) {
+                self.completion_order.push(candidate);
+            }
+            ancestor = next_ancestor;
+        }
+        Ok(())
+    }
+
+    fn apply_swarm_cancelled(
+        &mut self,
+        frontier: Vec<OperationId>,
+        owner: SwarmOwnerFence,
+    ) -> Result<()> {
+        let mut budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        for operation_id in frontier.into_iter().rev() {
+            // A running or reconciling operation keeps its budget lease until
+            // a fenced completion/cancellation acknowledgement arrives. The
+            // scheduler reducer marks the cancellation request first; only a
+            // terminalized frontier entry can release capacity here.
+            let terminal_cancelled = self.operations.get(&operation_id).is_some_and(|operation| {
+                operation.phase == OperationPhase::Terminal
+                    && operation.outcome == Some(Outcome::Cancelled)
+            });
+            if !terminal_cancelled {
+                continue;
+            }
+            let Some(reservation) = budget.reservation(operation_id)? else {
+                continue;
+            };
+            if !matches!(
+                reservation.state,
+                SwarmReservationState::Reserved | SwarmReservationState::Active
+            ) {
+                continue;
+            }
+            budget.cancel(operation_id, &owner)?;
+            self.swarm_events.push(SwarmBudgetEvent::ChildCancelled {
+                operation_id,
+                owner: owner.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn apply_swarm_takeover(
+        &mut self,
+        session_id: OperationId,
+        expected_owner: &SwarmOwnerFence,
+        owner: SwarmOwnerFence,
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let (observed_session, _, _) = budget.descriptor()?;
+        if observed_session != session_id {
+            return Err(Error::Conflict("swarm takeover session differs".into()));
+        }
+        let observed = budget.takeover(expected_owner, owner.clone())?;
+        if observed != owner {
+            return Err(Error::Conflict(
+                "swarm takeover generation does not advance exactly once".into(),
+            ));
+        }
+        self.swarm_events
+            .push(SwarmBudgetEvent::OwnerTakenOver { owner });
         Ok(())
     }
 
@@ -1282,7 +1830,14 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::LeaseReleased { operation_id, .. }
         | SchedulerEvent::CancellationRequested { operation_id, .. }
         | SchedulerEvent::Completed { operation_id, .. }
-        | SchedulerEvent::Orchestrated { operation_id, .. } => *operation_id,
+        | SchedulerEvent::Orchestrated { operation_id, .. }
+        | SchedulerEvent::SwarmAdmitted { operation_id, .. }
+        | SchedulerEvent::SwarmDispatchStarted { operation_id, .. }
+        | SchedulerEvent::SwarmUsageReported { operation_id, .. }
+        | SchedulerEvent::SwarmCompleted { operation_id, .. }
+        | SchedulerEvent::SwarmCancelled { operation_id, .. } => *operation_id,
+        SchedulerEvent::SwarmRootUsageReported { session_id, .. }
+        | SchedulerEvent::SwarmTakeover { session_id, .. } => *session_id,
     }
 }
 
@@ -1509,6 +2064,99 @@ mod tests {
             Scheduler::new().apply(unfenced),
             Err(Error::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn swarm_compound_events_share_scheduler_projection_and_retain_unknown_capacity() -> Result<()>
+    {
+        let session = id(90);
+        let child = id(91);
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let limits = SwarmBudgetLimits {
+            max_active_agents: 2,
+            max_total_agents: 2,
+            max_recursion_depth: 1,
+            max_model_steps: 8,
+            max_output_bytes: 128,
+            max_execution_time_ms: 200,
+        };
+        let mut scheduler = Scheduler::new();
+        let mut child_spec = spec(child, Orchestration::Leaf)?;
+        child_spec.resources = canonical_swarm_resources(SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 64,
+            execution_time_ms: 100,
+        });
+        scheduler.apply(SchedulerEvent::Declared {
+            spec: Box::new(child_spec),
+        })?;
+        let request = SwarmForkRequest {
+            operation_id: child,
+            idempotency_key: crate::IdempotencyKey::new("swarm-child")?,
+            parent_operation_id: None,
+            depth: 1,
+            resources: crate::swarm_budget::SwarmResourceRequest {
+                model_steps: 4,
+                output_bytes: 64,
+                execution_time_ms: 100,
+            },
+            admission_digest: None,
+        };
+        let lease = Reservation {
+            id: "lease-child".into(),
+            placement: "worker".into(),
+            admitted: canonical_swarm_resources(request.resources),
+        };
+        scheduler.apply(SchedulerEvent::SwarmAdmitted {
+            operation_id: child,
+            session_id: session,
+            limits,
+            owner: owner.clone(),
+            request,
+            reservation: lease,
+        })?;
+        assert_eq!(
+            scheduler
+                .swarm_budget_usage()?
+                .expect("swarm usage")
+                .active_agents,
+            2
+        );
+        scheduler.apply(SchedulerEvent::SwarmDispatchStarted {
+            operation_id: child,
+            dispatch_id: crate::IdempotencyKey::new("dispatch-child")?,
+            fence: LeaseFence {
+                reservation_id: "lease-child".into(),
+                placement: "worker".into(),
+            },
+            owner: owner.clone(),
+            publication: ForkPublication {
+                operation_id: child,
+                parent_operation_id: None,
+                completed_boundary_digest: [1; 32],
+                workspace_generation_digest: [2; 32],
+            },
+        })?;
+        scheduler.apply(SchedulerEvent::SwarmCompleted {
+            operation_id: child,
+            fence: Some(LeaseFence {
+                reservation_id: "lease-child".into(),
+                placement: "worker".into(),
+            }),
+            owner,
+            usage: SwarmUsage {
+                model_steps: 1,
+                output_bytes: 8,
+                execution_time_ms: 10,
+            },
+            outcome: Outcome::Indeterminate {
+                operation_id: child,
+            },
+        })?;
+        let usage = scheduler.swarm_budget_usage()?.expect("swarm usage");
+        assert_eq!(usage.active_agents, 2);
+        assert_eq!(usage.consumed.model_steps, 1);
         Ok(())
     }
 
