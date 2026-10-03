@@ -772,7 +772,6 @@ impl StockExecutor {
                 .await?;
             prepared
         };
-        let request = prepared.request().clone();
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
         for record in &records {
