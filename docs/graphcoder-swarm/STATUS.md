@@ -8,6 +8,8 @@ GraphCoder is a terminal composition wrapper. Harness owns model requests, recur
 
 ## Latest native evidence
 
+The current focused checkpoints pass 17 model-input tests, six execution-journal tests, and two recursive workspace/conflict tests. The separate cold model replay fixture still requires its authenticated host-reader repair. See [checkpoint-native-prepared-input-2026-10-03.json](checkpoint-native-prepared-input-2026-10-03.json) and [checkpoint-native-journal-conflict-pass-2026-10-03.json](checkpoint-native-journal-conflict-pass-2026-10-03.json). These do not qualify default model-selected recursive swarming or the full fault matrix.
+
 Focused local composition on source `e60b913e` (runtime `1373cf6d`), handle 10138, passed all four tests: stable project/session key across reopening, no model dispatch during inspection, exact operator decision, and fork refusals. See [checkpoint-local-composition-2026-10-03.json](checkpoint-local-composition-2026-10-03.json). This does not prove positive recursive model forks.
 
 The recursive restart followup on source `265f1d1f`, handle 74198, passed one case and failed one. The live-stream handle error is repaired; the scenario now reaches a later stale-target assertion and fails there. See [checkpoint-recursive-restart-2026-10-03.json](checkpoint-recursive-restart-2026-10-03.json).
@@ -33,6 +35,10 @@ The recursive workspace descriptor assertion was corrected in `813d2523` after t
 Native CLI source `3ebc129d` (runtime source `c44432dc`), handle 66011, compiled and ran seven tests: six passed and the stage retry failed because its reopened path omitted the registered provider policy. Echo now passes. See [checkpoint-cli-composition-2026-10-03.json](checkpoint-cli-composition-2026-10-03.json). Installed-artifact and interactive PTY qualification remain outstanding.
 
 ## Other scoped evidence
+
+The fresh central manifest validator build passes TypeScript source and test types and all 239 runtime tests, with 1,196 assertions. Rust now owns manifest admission; TypeScript delegates instead of duplicating roughly 110 lines of rules. See [checkpoint-central-manifest-wasm-2026-10-03.json](checkpoint-central-manifest-wasm-2026-10-03.json).
+
+Simplification review is holding proposed fork, budget, and process patches where authority or recovery is split across state paths. Outstanding cases include authoritative historical prefix capture, cancellation before model dispatch, durable budget accounting across handles and restarts, bounded process ownership cleanup, and exact historical file resolution in terminal pages. GraphCoder must not acquire independent storage or lifecycle semantics.
 
 The fresh WASM build from `9fa97138` succeeded. After fixing fixture types and deriving the transport fixture identity from the active artifact, TypeScript source and test contract checks pass and all 239 runtime tests pass at `aa927b74`. GraphCoder transport and terminal tests pass 49/49. See [checkpoint-harness-wasm-typescript-pass-2026-10-03.json](checkpoint-harness-wasm-typescript-pass-2026-10-03.json) and [checkpoint-graphcoder-typescript-2026-10-03.json](checkpoint-graphcoder-typescript-2026-10-03.json). Process cleanup remains unqualified; native lifecycle and bridge fixes are being reviewed for detached readers, bounded reaping, and hidden launches. A proposed global reader reaper remains unaccepted because it can accumulate blocked readers and duplicates lifecycle state.
 

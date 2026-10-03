@@ -2,6 +2,10 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-central-manifest-wasm-2026-10-03.json](checkpoint-central-manifest-wasm-2026-10-03.json) records the fresh Rust-owned manifest validator build and generated declarations: TypeScript source and test types pass, with 239 runtime tests and 1,196 assertions passing. TypeScript no longer duplicates the manifest validation rules.
+
+[checkpoint-native-prepared-input-2026-10-03.json](checkpoint-native-prepared-input-2026-10-03.json) records 17 passing native model-input cases and the separate cold replay fixture failure at its host-owned content reader. [checkpoint-native-journal-conflict-pass-2026-10-03.json](checkpoint-native-journal-conflict-pass-2026-10-03.json) records six passing execution-journal cases and two passing recursive workspace/conflict cases. Conflict journal reopening does not yet prove cold provider reopening after conflict.
+
 [checkpoint-harness-wasm-typescript-pass-2026-10-03.json](checkpoint-harness-wasm-typescript-pass-2026-10-03.json) records the repaired TypeScript gate at `aa927b74`: source and test types pass, and all 239 runtime tests pass against the fresh WASM artifact. The transport fixtures derive their protocol identity from the same artifact as the validators; strict peer checks remain intact. Earlier failures below retain their historical scope.
 
 [checkpoint-wasm-build-2026-10-03.json](checkpoint-wasm-build-2026-10-03.json) records the fresh policy ABI build from `9fa97138`. Against that artifact, [checkpoint-harness-wasm-typescript-2026-10-03.json](checkpoint-harness-wasm-typescript-2026-10-03.json) records source `bf5b14ed`: source types passed, test types failed, and runtime tests passed 223/239. Sixteen transport cases reject an unsupported event wire version. [checkpoint-graphcoder-typescript-2026-10-03.json](checkpoint-graphcoder-typescript-2026-10-03.json) records 49 passing transport and terminal tests. These do not prove full process cleanup or installed native/PTY qualification.
