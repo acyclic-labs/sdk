@@ -1919,6 +1919,26 @@ mod tests {
     };
     use std::sync::Mutex;
 
+    async fn wait_for_flag(flag: &AtomicBool, label: &str) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !flag.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
+    async fn wait_for_calls(calls: &std::sync::atomic::AtomicUsize, label: &str) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
     struct MemoryContent {
         volume: VolumeRef,
         request: Vec<u8>,
@@ -2651,7 +2671,11 @@ mod tests {
         assert!(matches!(
             outcome,
             RunnerOutcome::Unknown { ref reason }
-                if reason.contains("retained output handles")
+                if {
+                    let reason = reason.to_ascii_lowercase();
+                    reason.contains("descendant")
+                        && (reason.contains("handle") || reason.contains("termination"))
+                }
         ));
         std::thread::sleep(Duration::from_secs(4));
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
@@ -3025,22 +3049,19 @@ mod tests {
             let dispatch = dispatch.clone();
             async move { first.dispatch(dispatch).await }
         });
-        for _ in 0..2_000 {
-            if started.load(Ordering::Acquire) {
-                break;
-            }
-            tokio::task::yield_now().await;
+        if let Err(error) = wait_for_flag(&started, "cross-provider blocking runner").await {
+            release.store(true, Ordering::Release);
+            let _ = task.await;
+            return Err(error);
         }
-        assert!(started.load(Ordering::Acquire));
-        assert!(matches!(
-            second.dispatch(dispatch).await,
-            Err(Error::Indeterminate(_))
-        ));
+        let competing = second.dispatch(dispatch).await;
         release.store(true, Ordering::Release);
+        let first_result = task
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(matches!(competing, Err(Error::Indeterminate(_))));
         assert!(matches!(
-            task.await
-                .map_err(|error| Error::Storage(error.to_string()))??
-                .status,
+            first_result.status,
             EffectStatus::Succeeded { .. }
         ));
         Ok(())
@@ -3084,20 +3105,17 @@ mod tests {
             let dispatch = dispatch.clone();
             async move { provider.dispatch(dispatch).await }
         });
-        for _ in 0..2_000 {
-            if calls.load(Ordering::Acquire) != 0 {
-                break;
-            }
-            tokio::task::yield_now().await;
+        if let Err(error) = wait_for_calls(&calls, "cancellation runner").await {
+            let _ = provider.cancel_and_persist(operation).await;
+            let _ = task.await;
+            return Err(error);
         }
-        assert!(calls.load(Ordering::Acquire) != 0);
-        assert!(provider.cancel_and_persist(operation).await?);
-        assert_eq!(
-            task.await
-                .map_err(|error| Error::Storage(error.to_string()))??
-                .status,
-            EffectStatus::Indeterminate
-        );
+        let cancellation = provider.cancel_and_persist(operation).await;
+        let first_result = task
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(cancellation?);
+        assert_eq!(first_result.status, EffectStatus::Indeterminate);
 
         let replay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let restarted = NativeExecutionProvider::new_with_receipt_store(
@@ -3224,21 +3242,19 @@ mod tests {
             let provider = Arc::clone(&provider);
             async move { provider.dispatch(first).await }
         });
-        for _ in 0..2_000 {
-            if started.load(Ordering::Acquire) {
-                break;
-            }
-            tokio::task::yield_now().await;
+        if let Err(error) = wait_for_flag(&started, "active-attempt blocking runner").await {
+            release.store(true, Ordering::Release);
+            let _ = task.await;
+            return Err(error);
         }
-        if !started.load(Ordering::Acquire) {
-            return Err(Error::Storage("blocking runner did not start".into()));
-        }
-        assert!(
-            matches!(provider.dispatch(second).await, Err(Error::Conflict(message)) if message.contains("active attempt"))
-        );
+        let competing = provider.dispatch(second).await;
         release.store(true, Ordering::Release);
         task.await
             .map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(matches!(
+            competing,
+            Err(Error::Conflict(message)) if message.contains("active attempt")
+        ));
         Ok(())
     }
 
@@ -3318,6 +3334,26 @@ mod local_provider_tests {
         }
     }
 
+    async fn wait_for_flag(flag: &AtomicBool, label: &str) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !flag.load(Ordering::Acquire) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
+    async fn wait_for_calls(calls: &AtomicUsize, label: &str) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while calls.load(Ordering::Acquire) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| Error::Storage(format!("{label} did not start within 5 seconds")))
+    }
+
     async fn approved_dispatch(
         session: &PersistentLocalHarness,
         operation: OperationId,
@@ -3363,6 +3399,15 @@ mod local_provider_tests {
                 },
             )
             .await?;
+        let operator = session.storage().interaction_operator_authorizer()?;
+        let scope = operator
+            .issue_scope(&crate::filesystem::InteractionApprovalAuthorization {
+                interaction_id,
+                operation_id: operation,
+                action_digest: digest,
+                approved: true,
+            })
+            .await?;
         session
             .storage()
             .resolve_interaction(
@@ -3371,16 +3416,7 @@ mod local_provider_tests {
                     approved: true,
                     reason: None,
                 },
-                &session
-                    .storage()
-                    .interaction_operator_authorizer()?
-                    .issue_scope(&crate::filesystem::InteractionApprovalAuthorization {
-                        interaction_id,
-                        operation_id: operation,
-                        action_digest: digest,
-                        approved: true,
-                    })
-                    .await?,
+                &scope,
             )
             .await?;
         Ok(EffectDispatch {
@@ -4065,22 +4101,18 @@ mod local_provider_tests {
             let dispatch = dispatch.clone();
             tokio::spawn(async move { provider.dispatch(dispatch).await })
         };
-        for _ in 0..2_000 {
-            if started.load(Ordering::Acquire) {
-                break;
-            }
-            tokio::task::yield_now().await;
+        if let Err(error) = wait_for_flag(&started, "cancellation race runner").await {
+            let _ = provider.cancel_and_persist(operation).await;
+            release.store(true, Ordering::Release);
+            let _ = running.await;
+            return Err(error);
         }
-        if !started.load(Ordering::Acquire) {
-            return Err(Error::Storage(
-                "cancellation race runner did not start".into(),
-            ));
-        }
-        assert!(provider.cancel_and_persist(operation).await?);
+        let cancellation = provider.cancel_and_persist(operation).await;
         release.store(true, Ordering::Release);
         let observation = running
             .await
             .map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(cancellation?);
         assert!(matches!(
             observation.status,
             EffectStatus::FailedWithReceipt { ref message, .. }

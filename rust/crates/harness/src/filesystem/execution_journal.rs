@@ -239,6 +239,24 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 .checked_add(1)
                 .ok_or_else(|| Error::Invalid("interaction version exhausted".into()))
         })?;
+        if let InteractionResponse::Approval { approved, reason } = &response {
+            let approval_operation = ticket
+                .approval
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("approval ticket binding is missing".into()))?
+                .operation_id;
+            self.interactions
+                .resolve_approval(
+                    approval_operation,
+                    responder.clone(),
+                    id,
+                    expected_version,
+                    *approved,
+                    reason.clone(),
+                )
+                .await?;
+            return Ok(());
+        }
         let resolution_operation =
             interaction_operation(id, &format!("resolve-{expected_version}"));
         let detail = if matches!(&response, InteractionResponse::Approval { .. }) {
