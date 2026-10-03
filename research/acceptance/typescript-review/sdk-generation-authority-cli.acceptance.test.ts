@@ -217,6 +217,19 @@ test("real drift accepts a coherent authority fixture before mutation", { timeou
   }
 });
 
+test("real drift can repeat after its prior success report", { timeout: 120_000 }, async () => {
+  const fixture = await makeFixture();
+  try {
+    const first = runDrift(fixture.sourceRoot, fixture.output);
+    expect(first.status).toBe(0);
+    const second = runDrift(fixture.sourceRoot, fixture.output);
+    expect(second.status).toBe(0);
+    expect(JSON.parse(await readFile(join(fixture.output, "sdk-generation-drift.json"), "utf8"))).toMatchObject({ status: "passed" });
+  } finally {
+    await rm(fixture.scratch, { recursive: true, force: true });
+  }
+});
+
 test("real drift rejects a source mutation after the coherent authority baseline", { timeout: 120_000 }, async () => {
   const fixture = await makeFixture();
   try {
@@ -238,6 +251,20 @@ test("real drift rejects an output symlink before writing a drift report", { tim
     const linkPath = join(fixture.output, "wire-alias");
     const linkType = process.platform === "win32" ? "junction" : "dir";
     await symlink(join(fixture.output, "wire"), linkPath, linkType);
+    const result = runDrift(fixture.sourceRoot, fixture.output);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/symlink|link/i);
+    await expect(readFile(join(fixture.output, "sdk-generation-drift.json"), "utf8")).rejects.toThrow();
+  } finally {
+    await rm(fixture.scratch, { recursive: true, force: true });
+  }
+});
+
+test("real drift rejects an output file symlink before reading its target", { timeout: 120_000 }, async () => {
+  const fixture = await makeFixture();
+  try {
+    const linkPath = join(fixture.output, "wire", "authority-alias.json");
+    await symlink(join(fixture.output, "wire", "rust-authority.json"), linkPath, "file");
     const result = runDrift(fixture.sourceRoot, fixture.output);
     expect(result.status).not.toBe(0);
     expect(`${result.stdout}\n${result.stderr}`).toMatch(/symlink|link/i);
