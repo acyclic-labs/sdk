@@ -287,16 +287,32 @@ struct Runtime {
     approval_authorizer: ApprovalAuthorizer,
 }
 
+/// The immutable identity presented to the host approval boundary.
+///
+/// Supplying the interaction ID alone lets an authorizer accidentally grant a
+/// different operation when a stale terminal request races with a new ticket.
+/// The durable ticket's operation and action digest stay attached to the
+/// callback so a host can issue the smallest responder grant for the exact
+/// invocation that the operator selected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingApproval {
+    task: TaskId,
+    interaction: InteractionId,
+    operation: OperationId,
+    action_digest: [u8; 32],
+    approved: bool,
+}
+
 /// Host-owned operator authorization for one exact pending interaction.
 ///
 /// A production host supplies this callback when it composes the runtime. The
 /// default terminal entrypoint remains fail-closed because it has no authority
 /// from which it could mint a responder scope.
 type ApprovalAuthorizer = Arc<
-    dyn Fn(TaskId, InteractionId) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
+    dyn Fn(PendingApproval) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
 >;
 
-fn unavailable_approval_authorizer(_: TaskId, _: InteractionId) -> BoxFuture<'static, Result<Scope>> {
+fn unavailable_approval_authorizer(_: PendingApproval) -> BoxFuture<'static, Result<Scope>> {
     async {
         Err(HarnessError::Unsupported(
             "approval resolution requires a host-owned operator authorizer",
@@ -661,7 +677,30 @@ impl Runtime {
             .get("approved")
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
-        let responder = (self.approval_authorizer)(task, id)
+        let pending = self
+            .swarm
+            .list_approvals(task)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
+            .ok_or_else(|| {
+                DispatchError::from_harness(HarnessError::NotFound(format!(
+                    "local swarm approval {id}"
+                )))
+            })?;
+        let binding = pending.ticket.approval.ok_or_else(|| {
+            DispatchError::from_harness(HarnessError::Invalid(
+                "approval ticket has no exact operation binding".into(),
+            ))
+        })?;
+        let responder = (self.approval_authorizer)(PendingApproval {
+            task,
+            interaction: id,
+            operation: binding.operation_id,
+            action_digest: binding.action_digest,
+            approved,
+        })
             .await
             .map_err(DispatchError::from_harness)?;
         self.swarm
@@ -1535,19 +1574,38 @@ mod tests {
     async fn approval_authorizer_receives_the_exact_pending_invocation() {
         let expected_task = TaskId::from_bytes([0x71; 16]);
         let expected_id = InteractionId::from_bytes([0x72; 16]);
+        let expected_operation = OperationId::from_bytes([0x73; 16]);
+        let expected_digest = [0x74; 32];
+        let expected_approved = true;
         let seen = Arc::new(Mutex::new(None));
         let callback_seen = seen.clone();
-        let authorizer: ApprovalAuthorizer = Arc::new(move |task, id| {
+        let authorizer: ApprovalAuthorizer = Arc::new(move |pending| {
             let callback_seen = callback_seen.clone();
             async move {
-                *callback_seen.lock().await = Some((task, id));
+                *callback_seen.lock().await = Some(pending);
                 Err(HarnessError::Unsupported("test host authorizer"))
             }
             .boxed()
         });
 
-        let result = authorizer(expected_task, expected_id).await;
+        let result = authorizer(PendingApproval {
+            task: expected_task,
+            interaction: expected_id,
+            operation: expected_operation,
+            action_digest: expected_digest,
+            approved: expected_approved,
+        })
+        .await;
         assert!(matches!(result, Err(HarnessError::Unsupported(message)) if message == "test host authorizer"));
-        assert_eq!(*seen.lock().await, Some((expected_task, expected_id)));
+        assert_eq!(
+            *seen.lock().await,
+            Some(PendingApproval {
+                task: expected_task,
+                interaction: expected_id,
+                operation: expected_operation,
+                action_digest: expected_digest,
+                approved: expected_approved,
+            })
+        );
     }
 }
