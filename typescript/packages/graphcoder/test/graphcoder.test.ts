@@ -21,6 +21,8 @@ describe("GraphCoder UI transport boundary", () => {
     expect(transport.calls.map(call => call.method)).toEqual(["listSessions"]);
     expect(ui.state().selectedSession).toBeUndefined();
     expect(ui.state().activity).toEqual([]);
+    expect(Object.isFrozen(ui.state())).toBe(true);
+    expect(Object.isFrozen(ui.state().sessions)).toBe(true);
   });
 
   test("loads history, messages, approvals, and diff bodies only when requested", async () => {
