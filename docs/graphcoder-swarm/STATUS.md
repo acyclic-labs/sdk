@@ -8,11 +8,15 @@ GraphCoder is a terminal composition wrapper. Harness owns model requests, recur
 
 ## Latest native evidence
 
+Focused local composition on source `e60b913e` (runtime `1373cf6d`), handle 10138, passed all four tests: stable project/session key across reopening, no model dispatch during inspection, exact operator decision, and fork refusals. See [checkpoint-local-composition-2026-10-03.json](checkpoint-local-composition-2026-10-03.json). This does not prove positive recursive model forks.
+
+The recursive restart followup on source `265f1d1f`, handle 74198, passed one case and failed one. The live-stream handle error is repaired; the scenario now reaches a later stale-target assertion and fails there. See [checkpoint-recursive-restart-2026-10-03.json](checkpoint-recursive-restart-2026-10-03.json).
+
 Source `c44432dc`, handle 93437, compiled and completed all five selected integration suites: recovery 7/7, execution journal 5/6, recursive workspace 1/2, model-fork boundary 1/3, and model-selected swarm 0/1. Open failures concern exact approval fixture grants, command/revision binding, invalid attestation allocating a workspace, positive fork attestation, and a live child stream handle preventing restart. See [checkpoint-integration-2026-10-03.json](checkpoint-integration-2026-10-03.json).
 
 The focused execution run on source `91214d3a`, handle 50667, completed: 18 passed and one failed. Both previously stalled cases passed. The remaining failure is the hidden descendant-process fixture's missing startup marker. See [checkpoint-host-execution-2026-10-03.json](checkpoint-host-execution-2026-10-03.json); the full matrix remains unqualified.
 
-The latest broader run used source `a9ca8ff4`, handle 66153, and exited 1 during compilation: integration-test providers referenced the library through an invalid crate-relative path. No tests executed in that run. The mandatory prepared-request provider contract compiled in the library; this does not prove runtime behavior. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for source and suite hashes.
+An earlier broader run used source `a9ca8ff4`, handle 66153, and exited 1 during compilation: integration-test providers referenced the library through an invalid crate-relative path. No tests executed in that run. The subsequent `c44432dc` run compiled successfully. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for the earlier source and suite hashes.
 
 The earlier source `c3a98adc`, handle 35128, produced these scoped results:
 
