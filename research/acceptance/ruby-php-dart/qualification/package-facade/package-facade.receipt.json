@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.sdk.ruby-php-dart.package-facade.v1",
-  "generated_at_utc": "2026-10-03T22:05:00Z",
+  "generated_at_utc": "2026-10-03T23:20:39Z",
   "status": "deferred-producer-dynamic-closure",
   "qualification_scope": "installed package facade selection, automatic runtime resolution, generated transport smoke, and loopback streaming recovery",
   "source_binding": {
@@ -8,8 +8,8 @@
     "reason": "sdk-examples source closure remains dynamic; this receipt is scoped to the Rust-emitted facade snapshot and the three installed language package lanes",
     "rust_emitter": {
       "path": "rust/crates/sdk-contract-wire/src/facades.rs",
-      "sha256": "3841B90D218FC2C34B37E876630089309F0A82CDCFE46824F34BEA4ECA77D8A6",
-      "generated_policy_binding": "AF71B5DFC74A659E97073D1A6A9CDC2250960038C49B432CE28D6D1CA5378B51"
+      "sha256": "C09E78D12BD3472E758D0D945E61EFE744126A0E4504C6036713B25E9DEDBE93",
+      "generated_policy_binding": "E66898B83BDD457BD6B86BA0EA616B0F250D4F7996FAC1DDD8DEC534E27FA51E"
     },
     "php_provenance": {
       "path": "php/src/provenance.json",
@@ -21,17 +21,17 @@
       {
         "language": "ruby",
         "path": "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
-        "sha256": "AF2DF9A5128BC4D1589C814D89222EF98089D4E8F14DCBBA289F205FF6283C4A"
+        "sha256": "AA84D62716159117FF772F4DD2862EF61E92B32F475B8EA4269D5D704A74284A"
       },
       {
         "language": "php",
         "path": "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
-        "sha256": "D0F180AF2F5CEAFABBDA244902FD67171336370317EDB2DC34A65CA5DBDB2DEE"
+        "sha256": "734B41B505FE19FACA77ACF47DC1A6EDB81C7ED032045680D7B25FFF2DFA30EC"
       },
       {
         "language": "dart",
         "path": "dart/lib/src/generated_remote_policy.dart",
-        "sha256": "17F38470AB1EEC71DC7E85237CADBF3E7410FF9E96DD08DC6DEBF3AAF9B9F4C4"
+        "sha256": "F9ECBB15C7FDD70ABF0B07DFDDD57829418AB99466EFD27F7BBFA5FF2C51A61D"
       }
     ]
   },
@@ -81,12 +81,12 @@
           "native default selects gRPC",
           "streaming override and bearer validation"
         ],
-        "runs": 4,
-        "assertions": 12,
+          "runs": 6,
+          "assertions": 16,
         "log": {
           "path": "research/acceptance/ruby-php-dart/qualification/package-facade/ruby-auto.log",
-          "sha256": "F158DD2B69D62B21726F3DCD3E878D0B626BE312F43038CC8C992B934BD23C46",
-          "bytes": 170
+          "sha256": "E6F5266EEF40858A692E4C3FCC6F70EC6887543737348BA5C0E325D9CF792FD6",
+          "bytes": 166
         }
       },
       "php": {
@@ -117,8 +117,8 @@
         ],
         "log": {
           "path": "research/acceptance/ruby-php-dart/qualification/package-facade/dart-auto.log",
-          "sha256": "98D2FE492D2FB9ABCE67CF61BEE8AE0F6CA5EA95EF0777E3EC70B6B88DA92792",
-          "bytes": 349
+          "sha256": "23729210D029D9F997EF3D2D5A94B5DFDC6F2DAC660DC89F5A919B3761EA425F",
+          "bytes": 430
         }
       }
     },
