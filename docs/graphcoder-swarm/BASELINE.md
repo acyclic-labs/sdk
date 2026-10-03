@@ -19,3 +19,11 @@ the compiler saw only metadata stubs for `std` and `test`. The run therefore
 did not reach `run-harness-conformance.mjs`; Rust package and provider
 conformance must be rerun with host contention cleared. Compilation or the
 passing TypeScript consumer suite does not substitute for those runtime lanes.
+
+The pinned toolchain was present and internally complete during that failure:
+`rustc`/`cargo` were `1.98.1` from `rust-toolchain.toml`, and the target sysroot
+contained matching `libstd` and `libtest` `.rlib` and `.rmeta` files. This rules
+out a missing-toolchain-file explanation for the recorded run. The retry must
+use a unique `CARGO_TARGET_DIR`, `CARGO_BUILD_JOBS=2`, and no overlapping
+Cargo/rustc lane so the metadata-stub result can be classified as either a
+repeatable package/toolchain problem or host contention.

@@ -30,6 +30,13 @@
         "installed wire transport suite passed"
       ],
       "failure": "The official isolated Cargo package test failed with only metadata stubs available for std and test. Multiple independent Cargo/rustc builds were running on the Windows host at the same time; the package script's Rust suite did not reach a valid result.",
+      "toolchain_diagnostics": {
+        "rustc": "1.98.1",
+        "cargo": "1.98.1",
+        "rust_toolchain": "rust-toolchain.toml",
+        "sysroot_metadata": ["libstd.rlib", "libstd.rmeta", "libtest.rlib", "libtest.rmeta"],
+        "interpretation": "The pinned sysroot files existed; the metadata-stub failure is not explained by a missing std/test installation. Retry with an isolated target directory, jobs=2, and no concurrent Cargo/rustc work before classifying it as a toolchain/package defect."
+      },
       "qualification": "TypeScript installed-package runtime evidence is recorded; Rust package and provider-conformance evidence remain pending and must be rerun after host contention clears."
     }
   ],
