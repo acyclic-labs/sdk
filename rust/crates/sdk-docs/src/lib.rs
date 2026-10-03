@@ -2888,9 +2888,13 @@ fn rustdoc_signature(
         // JSON constants are keyed as `constant` (associated constants use
         // `assoc_const`), so treating only `const` as a signature silently
         // drops the type of every module-level constant.
-        "function" | "assoc_const" | "assoc_type" | "constant" | "static" | "macro" => {
-            value.clone()
-        }
+        "function" | "assoc_const" | "assoc_type" | "constant" | "static" | "macro" | "variant"
+        | "struct_field" => value.clone(),
+        // Modules are namespaces rather than callable declarations, but the
+        // strict graph validator still requires a non-null semantic payload
+        // for every compiler item. Keep a small stable marker instead of
+        // copying the module's child index into every projection.
+        "module" => serde_json::json!({"kind": "module"}),
         "struct" | "enum" | "union" | "trait" | "type" => {
             let object = value.as_object()?;
             let mut selected = serde_json::Map::new();
@@ -3738,7 +3742,17 @@ mod tests {
             .any(|item| item.name == "Ready" && item.kind == "variant"));
         assert!(items
             .iter()
+            .find(|item| item.name == "Ready")
+            .and_then(|item| item.signature.as_ref())
+            .is_some());
+        assert!(items
+            .iter()
             .any(|item| item.name == "request_id" && item.kind == "struct-field"));
+        assert!(items
+            .iter()
+            .find(|item| item.name == "request_id")
+            .and_then(|item| item.signature.as_ref())
+            .is_some());
         assert!(items
             .iter()
             .any(|item| item.name == "connect" && item.kind == "function"));
