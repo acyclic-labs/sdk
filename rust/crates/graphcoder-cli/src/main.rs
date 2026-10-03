@@ -196,6 +196,13 @@ impl Runtime {
     }
 
     async fn dispatch(&self, request: WireRequest) -> WireResponse {
+        if request.request_id.is_empty() || request.request_id.len() > 256 {
+            return WireResponse::error(
+                &request.request_id,
+                "invalid_input",
+                "request_id must be between 1 and 256 bytes",
+            );
+        }
         let result = match request.method.as_str() {
             "list_sessions" => self.list_sessions(&request.params).await,
             "start_session" => {
@@ -218,15 +225,43 @@ impl Runtime {
     }
 
     async fn list_sessions(&self, params: &Value) -> Result<Value, DispatchError> {
-        validate_page_params(params)?;
-        let items = self
+        let (after, limit) = page_bounds(params)?;
+        let mut summaries = self
             .swarm
             .sessions()
             .await
             .into_iter()
             .map(session_summary)
             .collect::<Vec<_>>();
-        Ok(json!({ "items": items }))
+        summaries.sort_by(|left, right| {
+            left.get("id")
+                .and_then(Value::as_str)
+                .cmp(&right.get("id").and_then(Value::as_str))
+        });
+        let start = match after {
+            Some(cursor) => summaries
+                .iter()
+                .position(|item| item.get("id").and_then(Value::as_str) == Some(cursor))
+                .map(|index| index + 1)
+                .ok_or_else(|| DispatchError::invalid("page cursor does not identify a session"))?,
+            None => 0,
+        };
+        let end = (start + limit).min(summaries.len());
+        let items = summaries[start..end].to_vec();
+        let next = (end < summaries.len())
+            .then(|| {
+                items
+                    .last()
+                    .and_then(|item| item.get("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .flatten();
+        let mut result = json!({ "items": items });
+        if let Some(next) = next {
+            result["next"] = Value::String(next);
+        }
+        Ok(result)
     }
 
     async fn start_session(
@@ -369,30 +404,33 @@ fn task_from_value(
     TaskId::parse(required_text(object, key)?).map_err(DispatchError::from_harness)
 }
 
-fn validate_page_params(params: &Value) -> Result<(), DispatchError> {
+fn page_bounds(params: &Value) -> Result<(Option<&str>, usize), DispatchError> {
     let object = object(params)?;
     let Some(query) = object.get("query") else {
-        return Ok(());
+        return Ok((None, 1024));
     };
     let query = query
         .as_object()
         .ok_or_else(|| DispatchError::invalid("query must be an object"))?;
-    if let Some(after) = query.get("after") {
-        if after.as_str().is_none_or(str::is_empty) {
+    let after = if let Some(after) = query.get("after") {
+        let Some(after) = after.as_str() else {
+            return Err(DispatchError::invalid("page cursor must be nonempty text"));
+        };
+        if after.is_empty() {
             return Err(DispatchError::invalid("page cursor must be nonempty text"));
         }
-    }
-    if let Some(limit) = query.get("limit") {
-        let valid = limit
+        Some(after)
+    } else {
+        None
+    };
+    let limit = query.get("limit").map_or(Ok(1024), |value| {
+        value
             .as_u64()
-            .is_some_and(|value| (1..=1024).contains(&value));
-        if !valid {
-            return Err(DispatchError::invalid(
-                "page limit must be between 1 and 1024",
-            ));
-        }
-    }
-    Ok(())
+            .filter(|value| (1..=1024).contains(value))
+            .and_then(|value| usize::try_from(value).ok())
+            .ok_or_else(|| DispatchError::invalid("page limit must be between 1 and 1024"))
+    })?;
+    Ok((after, limit))
 }
 
 fn operation_for(request_id: &str) -> OperationId {
