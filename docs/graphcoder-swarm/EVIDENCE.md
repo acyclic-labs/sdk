@@ -2,6 +2,9 @@
 
 These are checkpoint results, not final product qualification.
 
+Latest native results are in [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json): source c3a98adc recovery 7/7, recursive workspace 1/2, budget boundaries 1/2, scheduler 0/2; library run terminated incomplete. The source813d2523 recursive followup remains1/2 with a later grant failure. No full qualification is claimed. See [STATUS.md](STATUS.md) for the current scope; older results below apply only to their recorded source and artifacts.
+
+
 | Checkpoint | Suite | Result | Required scope remaining |
 |---|---|---|---|
 | 2f96c3c3 | Harness library, filesystem-local | 195 passed | Recursive runtime, persistent host, terminal, artifacts |
@@ -210,3 +213,4 @@ The same checkpoint now records two actual LocalStream communication cases and s
 ## Integrated native fork, workspace, and budget checkpoint
 
 See checkpoint-integrated-native-fork-budget.json for source-bound suite/artifact digests and required failures. Actual native results: journal 6/6, Git facade 7/9, local recursive workspaces 1/2, typed model fork boundary 1/2, budget unit selection 21/23. Source GraphCoder dispatcher/UI tests pass 25/25; provenance validator passes 2/2. Required failures remain open and prevent qualification. The goal stays active; production swarming, hard resource ceilings, effect faults and fresh installed PTY evidence remain outstanding. No merge occurred.
+
