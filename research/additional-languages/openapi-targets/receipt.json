@@ -298,18 +298,18 @@
     },
     "dart": {
       "generator": "dart",
-      "runtime": "Dart 3.8.3 stable",
-      "runtime_executable": "dart/.toolchain/dart-sdk/bin/dart.exe",
-      "runtime_executable_sha256": "cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c",
+      "runtime": "Dart 3.13.5 stable (official archive)",
+      "runtime_executable": "Q:/sdk/tmp-openapi-extra/dart-official-3.13.5/dart-sdk/bin/dart.exe",
+      "runtime_executable_sha256": "9033c8b5402f7d5b587311ddd4e9ab942acfa79b66aa296eb84cbfeac9d1cf23",
       "metadata_source": "workers.json",
       "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
       "generated_files": 64,
-      "pubspec_lock_sha256": "c4424e9c1d72e2f02353fa9ec7824cba85d85b442b2557982457c7826db06041",
+      "pubspec_lock_sha256": "dc6478cd7512c049a9bafa790c178cfcaea2ede907339f3b60b92933897aed35",
       "build": "pass: dart pub get --offline and dart analyze --no-fatal-warnings after Rust-owned adaptation",
       "compile": "pass: dart compile exe tool/semantic_consumer.dart",
       "license_metadata": {
         "manifest": "research/additional-languages/openapi-targets/dart-license-manifest.json",
-        "manifest_sha256": "fffa07a12bf455a0540c8cf6da612f94d244282025df4f3ec42427b472df998e",
+        "manifest_sha256": "1919c33289103084dac711f8eb71479587115d4a1a7eda3d82c25659066c87a3",
         "package_metadata": "pubspec license: Apache-2.0 emitted by Rust-owned adaptation",
         "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
         "dependency_evidence": "resolved pubspec.lock packages with local LICENSE file hashes"
@@ -328,7 +328,7 @@
           0
         ]
       },
-      "generated_test_note": "Rust-owned adaptation pins test >=1.31.0 <2.0.0 and emitted package AOT smoke test passes. dart test remains unavailable on Dart 3.8.3 because frontend_server.dart.snapshot is absent.",
+      "generated_test_note": "Rust-owned adaptation pins test >=1.31.0 <2.0.0. Official Dart 3.13.5 stable archive plus frontend_server_client 4.0.0 resolves the AOT frontend path; dart test passes 70 tests. The prior Dart 3.8.3 missing-snapshot failure remains recorded under historical_failed_test.",
       "adaptation": {
         "script": "research/additional-languages/openapi-targets/apply-dart-runtime-adaptation.ps1",
         "script_sha256": "9ccb3de3282d2ea771ccae4a5773e5986e2d6761193ec9369d411a4bc28b0261",
@@ -343,23 +343,78 @@
       "generated_package_smoke": {
         "source": "tool/rust_owned_package_smoke.dart emitted by Rust-owned Dart adaptation",
         "compile": "pass: dart compile exe",
-        "executable_sha256": "0e84f28c38e947ccda8b1a88bfc471e74204d27dd00785b2117b5783e3fccc15",
+        "executable_sha256": "2cc96f38e828d7d4e4e8cfcc9eb7f6ab0c49ad681b4178af1dbbc876df41e934",
         "checks": "generated request/response base64 JSON round trip, uint64 decimal string 18446744073709551615, and empty enum model serialization"
       },
       "portable_artifact": {
         "manifest": "research/additional-languages/openapi-targets/dart-portable-manifest.json",
-        "manifest_sha256": "7185e7c536a2ad0baafea456bcdc04f6bbe4a47e60a9eadade30798292a89565",
+        "manifest_sha256": "6759969be47747159b218195af87b3fc51fe6b1f94417ba0a465949c575feefe",
         "archive": "Q:/sdk/tmp-openapi-extra/dart-portable.zip",
-        "bytes": 75817,
-        "sha256": "d7d1b3792ef65f881e520fa3cb1624a3bff252505ad0ab8201e1934a95f78e90",
-        "install_result": "pass: curated archive contains generated lib/test/tool sources, pubspec, lockfile, smoke test, and LICENSES.json"
+        "bytes": 75899,
+        "sha256": "7a448a389d7479751596f92f26c21c2a8a7e6440fd62016a969c541afa46deb5",
+        "install_result": "pass: curated archive contains generated lib/test/tool sources, pubspec, upgraded lockfile, smoke test, and LICENSES.json"
+      },
+      "official_sdk": {
+        "archive_url": "https://storage.googleapis.com/dart-archive/channels/stable/release/3.13.5/sdk/dartsdk-windows-x64-release.zip",
+        "archive_sha256": "aed8e4a8932ce8fa18ea32f990e43b4a1c9390a4c73777ab6fdf77fc9f4524d1",
+        "archive_bytes": 219877920,
+        "revision": "04bcd1036cdc799ac6564988f159ee454d42c822",
+        "frontend_server_aot_snapshot_sha256": "152247e6ee416480500619e03adf6759e2f11af444e382cb8a956454832252a3",
+        "test_runner_compatibility": "test 1.31.0 resolves frontend_server_client 4.0.0, which selects the official AOT snapshot"
+      },
+      "dart_test": {
+        "command": "official Dart 3.13.5 dart test --concurrency=1 --reporter expanded",
+        "result": "pass: 70 tests",
+        "dependency_lock": "frontend_server_client 4.0.0 with frontend_server_aot.dart.snapshot",
+        "output_sha256": "90c7e7219aa1bccd3217f78c6c16790c23bb5267e02422c41d9985bc3130815e"
+      },
+      "historical_failed_test": {
+        "runtime": "Dart 3.8.3 stable local runtime",
+        "result": "failed",
+        "reason": "old frontend_server_client 3.2.0 attempted missing frontend_server.dart.snapshot",
+        "preserved": "historical failure retained after official SDK qualification"
       }
+    },
+    "rust_reqwest": {
+      "generator": "rust reqwest",
+      "package": "acyclic_workers_http",
+      "metadata_source": "workers-apache.json",
+      "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "package_artifact": {
+        "crate": "Q:/oag-rust-apache-a/target/package/acyclic_workers_http-1.0.0.crate",
+        "sha256": "17424d5bc3528dfe9ae9988d88c2da2f51c34901aa2fbc3ca1bdfe5ef0a2fa61",
+        "installation": "pass: cargo package and offline cargo check against isolated generated package"
+      },
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/rust-reqwest-semantic-consumer.rs",
+        "snippet_sha256": "ce6e770a34be2339af09a7e0dd92ae72771c42310a8677b1eb7ad119d5409f48",
+        "cargo_lock_sha256": "a696a1810c72aef8f218fc614ff0e4273d34351b21729bf43b21e39ba9348278",
+        "compiled_executable_sha256": "80c754d32198cd7d0c223670e6632622b5b920e65c3230b104b1ffb8d915fb61",
+        "result": "pass: generated Rust reqwest client invoked canonical POST fixture",
+        "serialization": "pass: Vec<u8> [1,2,3] serialized as protobuf JSON base64 AQID",
+        "basic": "pass: HTTP 200 decoded body b2s= and resolvedSha256 AQID",
+        "uint64": "pass: resolvedRevision preserved exact decimal string 18446744073709551615",
+        "error": "pass: typed generated Error::ResponseError preserved HTTP 409, body, and entity",
+        "fixture_exits": [
+          0,
+          0,
+          0
+        ]
+      },
+      "license_metadata": {
+        "package": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "evidence": "generated Cargo.toml license field and crate package artifact",
+        "dependency_scope": "reqwest and transitive dependency licenses remain external to the generated crate and are not claimed as Apache"
+      },
+      "manifest": "research/additional-languages/openapi-targets/rust-reqwest-manifest.json",
+      "manifest_sha256": "5b47a4aa56a8b2a3b79592c34d53370d9389ff8f8a8c12221bf44a24e69553d"
     }
   },
   "limits": [
     "OpenAPI Generator 7.25.0 outputs remain target-generated; Rust owns only contract-bound C/Dart adaptations and checks.",
     "C package license manifest records generated source scope, cJSON MIT, libcurl/curl scopes; no global dependency license claim.",
-    "Dart package license manifest records Apache-2.0 package metadata and every resolved lock package LICENSE hash; dart test remains unavailable because Dart 3.8.3 has no frontend_server.dart.snapshot even with test 1.31.0, so the Rust-emitted AOT package smoke test is the package test evidence."
+    "Dart package license manifest records Apache-2.0 package metadata and every resolved lock package LICENSE hash. Official Dart 3.13.5 plus frontend_server_client 4.0.0 now passes the emitted generated test suite; the earlier 3.8.3 failure is preserved as historical evidence."
   ],
   "unqualified": {
     "c": {

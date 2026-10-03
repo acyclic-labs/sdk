@@ -2,9 +2,9 @@
   "schema": "openapi-extra-license-manifest/v1",
   "target": "dart",
   "package_metadata": {
-    "metadata_basis": "pubspec license field emitted by Rust-owned adapter plus source artifact hash",
     "source": "Rust-owned OpenAPI Workers contract adaptation",
     "spdx": "Apache-2.0",
+    "metadata_basis": "pubspec license field emitted by Rust-owned adapter plus source artifact hash",
     "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77"
   },
   "dependency_license_evidence_root": "C:/Users/varun/AppData/Local/Pub/Cache/hosted/pub.dev",
@@ -83,7 +83,7 @@
     },
     {
       "name": "frontend_server_client",
-      "version": "3.2.0",
+      "version": "4.0.0",
       "license_file": "LICENSE",
       "license_sha256": "f3fedf65adeec4d6ccb2abf053ebc0f07603d402db3d3c5651322b50502e1071"
     },
@@ -197,7 +197,7 @@
     },
     {
       "name": "shelf_web_socket",
-      "version": "1.0.4",
+      "version": "2.0.1",
       "license_file": "LICENSE",
       "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
     },
@@ -281,13 +281,19 @@
     },
     {
       "name": "web",
-      "version": "0.5.1",
+      "version": "1.1.0",
       "license_file": "LICENSE",
       "license_sha256": "aa913ff50d7542eb8cc35b9f48a80928ac6819ba9057f85d424655e3e8dc271c"
     },
     {
+      "name": "web_socket",
+      "version": "0.1.6",
+      "license_file": "LICENSE",
+      "license_sha256": "cbe822ef3446af4366b2b82c48b0979d0b12865edfe74c22b9aa617fc362d6e0"
+    },
+    {
       "name": "web_socket_channel",
-      "version": "2.4.5",
+      "version": "3.0.1",
       "license_file": "LICENSE",
       "license_sha256": "a4b5d7d31626e90b77e8696f1c47643aa31f52e17c1907c1ab60b068110e6e10"
     },

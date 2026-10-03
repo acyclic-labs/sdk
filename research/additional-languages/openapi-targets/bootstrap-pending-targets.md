@@ -33,20 +33,20 @@ hash recorded in the research manifest.
 
 ## Dart
 
-The complete stable Dart SDK at
-`dart/.toolchain/dart-sdk/bin/dart.exe` reports Dart 3.8.3 and contains the
-frontend AOT snapshot. Locked package resolution succeeds and
-`dart analyze --no-fatal-warnings` completes with two generated unused-local
-warnings. The Rust-owned stage repairs the two empty enum anchors, emits
+The official stable Dart 3.13.5 SDK archive is now used for the generated
+package test. The Rust-owned stage repairs the two empty enum anchors, emits
 package-level `Apache-2.0` metadata, pins the current cached `test` line, and
-emits `tool/rust_owned_package_smoke.dart`. Offline resolution, analysis, and
-compilation and execution of that package-owned smoke test pass. `dart test`
-still cannot run because Dart 3.8.3 has no `frontend_server.dart.snapshot`,
-even with the current test line; this SDK runner limitation remains explicit.
-A separate compiled Dart consumer passes the 200 bytes round trip, max uint64
-decimal-string preservation, and canonical 409 mapping against the same Rust
-fixtures. The portable archive carries the generated package and complete
-resolved-dependency license evidence.
+emits `tool/rust_owned_package_smoke.dart`. Offline resolution upgrades
+`frontend_server_client` to its AOT-aware 4.0.0 line; analysis, the emitted
+smoke test, and `dart test --concurrency=1` pass all 70 generated tests. The
+earlier Dart 3.8.3 missing-snapshot failure remains recorded as historical
+evidence. A separate compiled Dart consumer passes the 200 bytes round trip,
+max uint64 decimal-string preservation, and canonical 409 mapping against the
+same Rust fixtures. The portable archive carries the generated package and
+complete resolved-dependency license evidence.
 
-The per-target license and archive manifests remain recorded in `receipt.json`;
-they do not make a global Apache claim for third-party dependencies.
+The generated Rust reqwest package is also qualified by an isolated compiled
+consumer: it passes base64 bytes, maximum uint64 decimal-string preservation,
+and typed 409 error decoding. The per-target license and archive manifests
+remain recorded in `receipt.json`; they do not make a global Apache claim for
+third-party dependencies.

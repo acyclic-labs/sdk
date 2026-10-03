@@ -77,15 +77,21 @@ recorded in `receipt.json`; that evidence does not qualify native gRPC. The C
 lane now builds with the pinned official curl development archive and the
 working LLVM/Ninja toolchain after one anchor-checked generated local-name
 repair. Its consumer passes the bytes, max uint64, and 409 fixture checks.
-The Dart lane now uses the complete stable Dart 3.8.3 SDK; the Rust-owned
+The Dart lane now uses the official stable Dart 3.13.5 SDK; the Rust-owned
 adaptation pins the current cached `test` line, adds package-level
 `Apache-2.0` metadata, and emits an AOT package smoke test. Offline dependency
-resolution, analysis, and the emitted smoke test pass; `dart test` itself
-still cannot run because this SDK has no `frontend_server.dart.snapshot`, so
-that runner limitation remains explicit. Both targets carry per-component
-license manifests and curated portable archives. These records are scoped to
-the generated source, cJSON/curl, and resolved Dart package files; they do not
-inherit a global Apache claim from another artifact.
+resolution, analysis, and the emitted smoke test pass. With
+`frontend_server_client` 4.0.0 selecting the official AOT frontend,
+`dart test --concurrency=1` passes all 70 generated tests. The earlier 3.8.3
+missing-snapshot failure remains in the receipt as historical evidence. Both
+targets carry per-component license manifests and curated portable archives.
+These records are scoped to the generated source, cJSON/curl, and resolved
+Dart package files; they do not inherit a global Apache claim from another
+artifact.
+
+The generated Rust reqwest package now has a separate semantic receipt lane:
+the compiled consumer passes base64 bytes, the maximum uint64 decimal string,
+and the typed 409 error response against the canonical fixtures.
 
 `c-portable-manifest.json` and `dart-portable-manifest.json` record archive
 hashes and file inventories. `c-install-license-manifest.json` and

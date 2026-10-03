@@ -1,0 +1,20 @@
+{
+  "schema": "openapi-extra-target-manifest/v1",
+  "target": "rust-reqwest",
+  "source_artifact": "Q:/sdk/tmp-openapi-integrated2/oag-rust/workers",
+  "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+  "package": "acyclic_workers_http",
+  "crate": "Q:/oag-rust-apache-a/target/package/acyclic_workers_http-1.0.0.crate",
+  "crate_sha256": "17424d5bc3528dfe9ae9988d88c2da2f51c34901aa2fbc3ca1bdfe5ef0a2fa61",
+  "consumer_source": "research/additional-languages/openapi-targets/rust-reqwest-semantic-consumer.rs",
+  "consumer_sha256": "ce6e770a34be2339af09a7e0dd92ae72771c42310a8677b1eb7ad119d5409f48",
+  "consumer_cargo_lock_sha256": "a696a1810c72aef8f218fc614ff0e4273d34351b21729bf43b21e39ba9348278",
+  "consumer_executable_sha256": "80c754d32198cd7d0c223670e6632622b5b920e65c3230b104b1ffb8d915fb61",
+  "generator": "OpenAPI Generator 7.25.0 Rust client",
+  "transport": "reqwest",
+  "license": {
+    "package_spdx": "Apache-2.0",
+    "package_license_evidence": "generated Cargo.toml",
+    "third_party_scope": "not claimed as Apache"
+  }
+}

@@ -2,10 +2,10 @@
   "schema": "openapi-extra-portable-manifest/v1",
   "target": "dart",
   "archive": "Q:/sdk/tmp-openapi-extra/dart-portable.zip",
-  "archive_bytes": 75817,
-  "archive_sha256": "d7d1b3792ef65f881e520fa3cb1624a3bff252505ad0ab8201e1934a95f78e90",
+  "archive_bytes": 75899,
+  "archive_sha256": "7a448a389d7479751596f92f26c21c2a8a7e6440fd62016a969c541afa46deb5",
   "package_root": "Q:/sdk/tmp-openapi-extra/dart-rust-adapt-test2",
-  "install_check": "dart pub get --offline; dart analyze --no-fatal-warnings; dart compile exe tool/rust_owned_package_smoke.dart",
+  "install_check": "dart pub upgrade --offline; dart analyze --no-fatal-warnings; dart test --concurrency=1; dart compile exe tool/rust_owned_package_smoke.dart",
   "files": [
     {
       "path": "analysis_options.yaml",
@@ -14,13 +14,13 @@
     },
     {
       "path": "LICENSES.json",
-      "bytes": 10180,
-      "sha256": "fffa07a12bf455a0540c8cf6da612f94d244282025df4f3ec42427b472df998e"
+      "bytes": 10377,
+      "sha256": "1919c33289103084dac711f8eb71479587115d4a1a7eda3d82c25659066c87a3"
     },
     {
       "path": "pubspec.lock",
-      "bytes": 11404,
-      "sha256": "c4424e9c1d72e2f02353fa9ec7824cba85d85b442b2557982457c7826db06041"
+      "bytes": 11629,
+      "sha256": "dc6478cd7512c049a9bafa790c178cfcaea2ede907339f3b60b92933897aed35"
     },
     {
       "path": "pubspec.yaml",
@@ -357,5 +357,10 @@
       "bytes": 1081,
       "sha256": "9e3c137a9323010dfc64e904a65fd2d5050dc8c58775d01cdaf4f5d89812ccc4"
     }
-  ]
+  ],
+  "runtime": {
+    "version": "3.13.5",
+    "archive_sha256": "aed8e4a8932ce8fa18ea32f990e43b4a1c9390a4c73777ab6fdf77fc9f4524d1",
+    "frontend_server_aot_snapshot_sha256": "152247e6ee416480500619e03adf6759e2f11af444e382cb8a956454832252a3"
+  }
 }
