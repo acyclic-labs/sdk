@@ -10,6 +10,11 @@ use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, runtime::DurableTaskHost,
     scheduler::InboxItem,
 };
+use acyclic_stream::{
+    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+};
+use bytes::Bytes;
+use futures::TryStreamExt as _;
 use futures::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -397,6 +402,288 @@ pub trait DurableWaitStore: Send + Sync {
         request: WaitRequest,
         completion: WaitCompletion,
     ) -> BoxFuture<'a, Result<WaitCompletion>>;
+}
+
+const WAIT_EVENT_CONTRACT: &str = "harness.wait-event.v1";
+const WAIT_STREAM_PAGE: u32 = 1_024;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum PersistedWaitEvent {
+    Admission {
+        contract: String,
+        request: WaitRequest,
+    },
+    Completion {
+        contract: String,
+        request: WaitRequest,
+        completion: WaitCompletion,
+    },
+}
+
+impl PersistedWaitEvent {
+    fn request(&self) -> &WaitRequest {
+        match self {
+            Self::Admission { request, .. } | Self::Completion { request, .. } => request,
+        }
+    }
+
+    fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        crate::contract::canonical_json_bytes(self)
+    }
+
+    fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let value: Value = serde_json::from_slice(bytes)
+            .map_err(|error| Error::Storage(format!("wait event is not JSON: {error}")))?;
+        if crate::contract::canonical_json_bytes(&value)? != bytes {
+            return Err(Error::Storage("wait event is not canonical JSON".into()));
+        }
+        let event: Self = serde_json::from_value(value)
+            .map_err(|error| Error::Storage(format!("wait event is invalid: {error}")))?;
+        let contract = match &event {
+            Self::Admission { contract, .. } | Self::Completion { contract, .. } => contract,
+        };
+        if contract != WAIT_EVENT_CONTRACT {
+            return Err(Error::Storage("wait event contract is unsupported".into()));
+        }
+        event.request().validate(None)?;
+        Ok(event)
+    }
+}
+
+#[derive(Clone)]
+struct RetainedWait {
+    completion: Option<WaitCompletion>,
+}
+
+/// Stream-backed owner journal for wait admissions and terminal results.
+///
+/// The stream is partitioned by waiter identity and uses stable idempotency
+/// keys for the admission and completion phases. This adapter can be bound to
+/// the same `StreamClient` used by `CoordinatorTaskHost`; it does not create a
+/// second coordinator or local recovery cache.
+pub struct StreamWaitStore<P> {
+    stream: StreamClient<P>,
+}
+
+impl<P: StreamProvider> StreamWaitStore<P> {
+    /// Binds wait persistence to an existing owner stream provider.
+    #[must_use]
+    pub fn new(stream: StreamClient<P>) -> Self {
+        Self { stream }
+    }
+
+    fn wait_stream(&self, waiter: TaskId) -> Result<acyclic_stream::Stream<P>> {
+        self.stream
+            .stream(format!("harness/v2/waits/{waiter}"))
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+
+    fn event_key(kind: &str, request: &WaitRequest) -> Result<StreamKey> {
+        let identity = format!(
+            "harness/v2/waits/{kind}/{}/{}",
+            request.waiter, request.operation_id
+        );
+        StreamKey::new(Bytes::copy_from_slice(
+            blake3::hash(identity.as_bytes()).as_bytes(),
+        ))
+        .map_err(|error| Error::Storage(error.to_string()))
+    }
+
+    async fn read_events(
+        &self,
+        stream: &acyclic_stream::Stream<P>,
+        waiter: TaskId,
+    ) -> Result<Vec<PersistedWaitEvent>> {
+        let bounds = match stream.bounds().await {
+            Ok(bounds) => bounds,
+            Err(StreamError::NotFound) => return Ok(Vec::new()),
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        let mut events = Vec::new();
+        let mut from = 0_u64;
+        while from < bounds.tail {
+            let limit = (bounds.tail - from).min(u64::from(WAIT_STREAM_PAGE)) as u32;
+            let records = stream
+                .read(from, limit)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if records.is_empty() {
+                return Err(Error::Storage("wait journal read made no progress".into()));
+            }
+            for record in records {
+                if record.sequence != from {
+                    return Err(Error::Storage("wait journal has a sequence gap".into()));
+                }
+                let event = PersistedWaitEvent::from_canonical_bytes(&record.value)?;
+                if event.request().waiter != waiter {
+                    return Err(Error::Storage("wait journal crosses waiter scope".into()));
+                }
+                events.push(event);
+                from = from.saturating_add(1);
+            }
+        }
+        Ok(events)
+    }
+
+    fn retained(
+        events: &[PersistedWaitEvent],
+        request: &WaitRequest,
+    ) -> Result<Option<RetainedWait>> {
+        let mut retained = None;
+        for event in events {
+            if event.request().operation_id != request.operation_id {
+                continue;
+            }
+            if event.request() != request {
+                return Err(Error::Conflict(
+                    "wait operation identity was reused with another request".into(),
+                ));
+            }
+            match event {
+                PersistedWaitEvent::Admission { .. } => {
+                    if retained.is_some() {
+                        return Err(Error::Storage(
+                            "wait journal has duplicate admission".into(),
+                        ));
+                    }
+                    retained = Some(RetainedWait { completion: None });
+                }
+                PersistedWaitEvent::Completion { completion, .. } => {
+                    let Some(current) = retained.as_mut() else {
+                        return Err(Error::Storage(
+                            "wait completion is missing its admission".into(),
+                        ));
+                    };
+                    if current.completion.is_some() {
+                        return Err(Error::Storage(
+                            "wait journal has duplicate completion".into(),
+                        ));
+                    }
+                    current.completion = Some(completion.clone());
+                }
+            }
+        }
+        Ok(retained)
+    }
+
+    async fn append(
+        &self,
+        stream: &acyclic_stream::Stream<P>,
+        request: &WaitRequest,
+        event: PersistedWaitEvent,
+        kind: &str,
+    ) -> Result<()> {
+        let bytes = event.canonical_bytes()?;
+        let key = Self::event_key(kind, request)?;
+        match stream
+            .append_batch(vec![Bytes::from(bytes)], None, Some(key))
+            .await
+        {
+            Ok(AppendOutcome::Committed(_)) => Ok(()),
+            Ok(AppendOutcome::TailConflict { .. }) => Err(Error::Storage(
+                "wait journal append unexpectedly conflicted on tail".into(),
+            )),
+            Err(StreamError::IdempotencyMismatch) => Err(Error::Conflict(
+                "wait journal operation identity was reused".into(),
+            )),
+            Err(error) => Err(Error::Storage(error.to_string())),
+        }
+    }
+}
+
+impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
+    fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
+        Box::pin(async move {
+            request.validate(None)?;
+            let stream = self.wait_stream(request.waiter)?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            if let Some(retained) = Self::retained(&events, &request)? {
+                return Ok(retained.completion);
+            }
+            let append = self
+                .append(
+                    &stream,
+                    &request,
+                    PersistedWaitEvent::Admission {
+                        contract: WAIT_EVENT_CONTRACT.into(),
+                        request: request.clone(),
+                    },
+                    "admission",
+                )
+                .await;
+            if let Err(error @ Error::Conflict(_)) = append {
+                let events = self.read_events(&stream, request.waiter).await?;
+                if let Some(retained) = Self::retained(&events, &request)? {
+                    return Ok(retained.completion);
+                }
+                return Err(error);
+            }
+            append?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            let Some(retained) = Self::retained(&events, &request)? else {
+                return Err(Error::Storage(
+                    "wait admission disappeared after append".into(),
+                ));
+            };
+            Ok(retained.completion)
+        })
+    }
+
+    fn complete<'a>(
+        &'a self,
+        request: WaitRequest,
+        completion: WaitCompletion,
+    ) -> BoxFuture<'a, Result<WaitCompletion>> {
+        Box::pin(async move {
+            request.validate(None)?;
+            let stream = self.wait_stream(request.waiter)?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            if let Some(retained) = Self::retained(&events, &request)? {
+                if let Some(completion) = retained.completion {
+                    return Ok(completion);
+                }
+            } else {
+                return Err(Error::Conflict(
+                    "wait completion has no retained admission".into(),
+                ));
+            }
+            let append = self
+                .append(
+                    &stream,
+                    &request,
+                    PersistedWaitEvent::Completion {
+                        contract: WAIT_EVENT_CONTRACT.into(),
+                        request: request.clone(),
+                        completion,
+                    },
+                    "completion",
+                )
+                .await;
+            if let Err(error @ Error::Conflict(_)) = append {
+                let events = self.read_events(&stream, request.waiter).await?;
+                if let Some(retained) = Self::retained(&events, &request)? {
+                    if let Some(completion) = retained.completion {
+                        return Ok(completion);
+                    }
+                }
+                return Err(error);
+            }
+            append?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            let Some(retained) = Self::retained(&events, &request)? else {
+                return Err(Error::Storage(
+                    "wait completion disappeared after append".into(),
+                ));
+            };
+            retained.completion.ok_or_else(|| {
+                Error::Storage("wait completion was not retained after append".into())
+            })
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1187,6 +1474,41 @@ mod tests {
             }
         );
         assert_eq!(store.records.lock().expect("wait store lock").len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_wait_store_replays_after_provider_reopen() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let request = WaitRequest {
+            operation_id: operation(39),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 10,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        let store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider.clone()));
+        assert_eq!(store.open(request.clone()).await?, None);
+        let completion = WaitCompletion::Cancelled;
+        assert_eq!(
+            store.complete(request.clone(), completion.clone()).await?,
+            completion
+        );
+        // A newly constructed store reads the owner journal rather than a
+        // process-local cache and returns the retained winner.
+        let reopened = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider));
+        assert_eq!(
+            reopened.open(request.clone()).await?,
+            Some(WaitCompletion::Cancelled)
+        );
+        assert_eq!(
+            reopened.complete(request, WaitCompletion::TimedOut).await?,
+            WaitCompletion::Cancelled
+        );
         Ok(())
     }
 }
