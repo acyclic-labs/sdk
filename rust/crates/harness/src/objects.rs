@@ -859,6 +859,7 @@ mod tests {
             operation_id: request.operation_id,
             parent: request.parent.clone(),
             parent_revision: request.parent_revision,
+            inherited_parent_revision: request.parent_revision,
             child: request.child.clone(),
             child_agent: request.child_agent,
             attached_agents: Vec::new(),

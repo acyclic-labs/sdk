@@ -692,6 +692,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         let inherited_through_sequence = request.preparation.inherited_through_sequence;
         let report = ForkReport {
             request,
+            inherited_parent_revision: self.parent.revision(),
             captures,
             child_private_volume: private.clone(),
             child_private_generation,
@@ -767,14 +768,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .map_err(|_| Error::Invalid("inherited conversation is malformed".into()))?;
             let expected = InheritedConversationPrefix::select(
                 seed.parent.clone(),
-                seed.parent_revision,
+                seed.inherited_parent_revision,
                 parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
                 &conversation.messages,
             )?;
             if actual.parent != expected.parent
-                || actual.parent_revision > expected.parent_revision
+                || actual.parent_revision != expected.parent_revision
                 || actual.parent_agent != expected.parent_agent
                 || actual.through_sequence != expected.through_sequence
                 || actual.attached_agents != expected.attached_agents

@@ -469,6 +469,7 @@ mod tests {
             operation_id: OperationId::from_bytes([3; 16]),
             parent,
             parent_revision: 0,
+            inherited_parent_revision: 0,
             child,
             child_agent: AgentId::from_bytes([4; 16]),
             resources: vec![

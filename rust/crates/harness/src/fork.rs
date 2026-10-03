@@ -1219,6 +1219,10 @@ impl CapturedResource {
 pub struct ForkReport {
     /// The original immutable request.
     pub request: ForkRequest,
+    /// Exact parent revision at which the inherited prefix was captured.
+    /// Publication may advance the parent predecessor before this report is
+    /// appended, but the child-owned prefix bytes remain pinned here.
+    pub inherited_parent_revision: u64,
     /// One result per selection in the same order.
     pub captures: Vec<Capture>,
     /// Newly created empty child-owned private volume.
@@ -1242,6 +1246,11 @@ impl ForkReport {
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if self.inherited_parent_revision > self.request.parent_revision {
+            return Err(Error::Invalid(
+                "fork report inherited prefix revision is newer than its request".into(),
+            ));
+        }
         if self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
             || self.inherited_context.len() > MAX_FORK_RESOURCES
             || self.shared_grants.len() > MAX_FORK_REFERENCES
@@ -1362,6 +1371,7 @@ impl ForkReport {
             operation_id: self.request.operation_id,
             parent: self.request.parent,
             parent_revision: self.request.parent_revision,
+            inherited_parent_revision: self.inherited_parent_revision,
             child: self.request.child,
             child_agent: self.request.child_agent,
             attached_agents: self.request.attached_agents,
@@ -1392,6 +1402,10 @@ pub struct ForkSeed {
     pub parent: Authority,
     /// Exact predecessor revision.
     pub parent_revision: u64,
+    /// Exact parent revision whose immutable prefix bytes are retained.
+    /// This can precede `parent_revision` when sibling children publish from
+    /// one model boundary in sequence.
+    pub inherited_parent_revision: u64,
     /// Fresh child aggregate.
     pub child: Authority,
     /// Fresh child agent.
@@ -1432,6 +1446,11 @@ impl ForkSeed {
         reason = "validates the complete fork seed contract"
     )]
     pub fn validate(&self) -> Result<()> {
+        if self.inherited_parent_revision > self.parent_revision {
+            return Err(Error::Invalid(
+                "fork inherited prefix revision is newer than publication".into(),
+            ));
+        }
         if self.attached_agents.len() > MAX_FORK_AGENTS
             || self.resources.len().saturating_add(self.omissions.len()) > MAX_FORK_RESOURCES
             || self.reference_grants.len() > MAX_FORK_REFERENCES
@@ -2117,6 +2136,7 @@ mod tests {
             operation_id: OperationId::from_bytes([1; 16]),
             parent,
             parent_revision: 3,
+            inherited_parent_revision: 3,
             child,
             child_agent: AgentId::from_bytes([2; 16]),
             attached_agents: Vec::new(),
@@ -2381,6 +2401,7 @@ mod tests {
                 boundary: None,
                 model_boundary: None,
             },
+            inherited_parent_revision: seed.inherited_parent_revision,
             captures: seed
                 .resources
                 .iter()

@@ -174,6 +174,7 @@ impl Fixture {
             operation_id: OperationId::from_bytes([3; 16]),
             parent: root_authority.clone(),
             parent_revision: 1,
+            inherited_parent_revision: 1,
             child: child_authority.clone(),
             child_agent,
             attached_agents: Vec::new(),

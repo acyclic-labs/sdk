@@ -482,6 +482,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             operation_id: OperationId::from_bytes(identity(level + 80)),
             parent: authority.clone(),
             parent_revision: aggregate.reducer().revision(),
+            inherited_parent_revision: aggregate.reducer().revision(),
             child: child_authority.clone(),
             child_agent,
             resources: vec![
@@ -922,6 +923,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 boundary: seed.boundary.clone(),
                 model_boundary: seed.model_boundary.clone(),
             },
+            inherited_parent_revision: seed.inherited_parent_revision,
             captures: seed
                 .resources
                 .iter()
@@ -1420,7 +1422,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         ]),
     );
     let mut parent_reducer = Reducer::new(
-        parent_authority.clone(),
+            parent_authority.clone(),
         parent_issuer.verifier(),
         SchemaRegistry::new(),
     );
@@ -1579,6 +1581,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             operation_id: OperationId::from_bytes(identity(1_000 + u16::from(index))),
             parent: parent_authority.clone(),
             parent_revision,
+            inherited_parent_revision: parent_revision,
             child: child_authority,
             child_agent,
             resources: vec![
@@ -2026,6 +2029,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             operation_id: OperationId::from_bytes(identity(operation)),
             parent: parent.clone(),
             parent_revision,
+            inherited_parent_revision: parent_revision,
             child: child.clone(),
             child_agent,
             attached_agents: Vec::new(),

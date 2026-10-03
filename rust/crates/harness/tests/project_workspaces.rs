@@ -106,6 +106,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         operation_id: OperationId::from_bytes([2; 16]),
         parent: parent.clone(),
         parent_revision: reducer.revision(),
+        inherited_parent_revision: reducer.revision(),
         child: child.clone(),
         child_agent,
         attached_agents: Vec::new(),
