@@ -89,7 +89,7 @@ export interface NativeSelectedModelContext {
 }
 
 /** Exact canonical request evidence returned by Rust model admission. */
-export interface PreparedModelRequest {
+export interface PreparedModelEvidence {
   readonly requestJson: string;
   readonly manifestJson: string;
   readonly requestDigest: readonly number[];
@@ -298,27 +298,33 @@ export class NativeContracts {
     request: WasmModelRequestWire,
     limits: NativeLimitsWire,
     policy: NativeModelOptionPolicyWire | null = null,
-  ): PreparedModelRequest {
+  ): PreparedModelEvidence {
     const prepare = (this.native as NativeExports & {
       readonly prepareModelRequest?: (request: WasmModelRequestWire, limits: WasmModelLimitsInput, policy: NativeModelOptionPolicyWire | null) => unknown;
     }).prepareModelRequest;
     if (typeof prepare !== "function") throw new Error("harness WASM does not provide canonical model request admission");
-    const admitted = normalizeNativeValue(prepare(request, limits, policy));
+    // Snapshot both inputs before crossing the ABI. The exact bytes and
+    // manifest must describe one request, even if a caller retains mutable
+    // objects and changes them while native admission is running.
+    const admittedRequest = structuredClone(request);
+    const admittedPolicy = policy === null ? null : structuredClone(policy);
+    const admitted = normalizeNativeValue(prepare(admittedRequest, limits, admittedPolicy));
     if (admitted === null || typeof admitted !== "object" || Array.isArray(admitted)) {
       throw new TypeError("native model request admission returned an invalid result");
     }
     const result = admitted as Record<string, unknown>;
+    requireExactKeys(result, ["manifest_json", "request_digest", "request_json"], "canonical model request evidence");
     if (typeof result.request_json !== "string" || typeof result.manifest_json !== "string" || !Array.isArray(result.request_digest)
       || result.request_digest.length !== 32 || !result.request_digest.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
       throw new TypeError("native model request admission returned invalid canonical evidence");
     }
     const actualRequestBytes = new TextEncoder().encode(result.request_json);
-    const expectedRequestBytes = this.encodeCanonicalJson(request);
+    const expectedRequestBytes = this.encodeCanonicalJson(admittedRequest);
     if (actualRequestBytes.byteLength !== expectedRequestBytes.byteLength
       || actualRequestBytes.some((byte, index) => byte !== expectedRequestBytes[index])) {
       throw new TypeError("native model request admission returned non-canonical request bytes");
     }
-    const expectedDigest = this.digestCanonicalJson(request);
+    const expectedDigest = this.digestCanonicalJson(admittedRequest);
     if (result.request_digest.some((byte, index) => byte !== expectedDigest[index])) {
       throw new TypeError("native model request admission returned a mismatched request digest");
     }
@@ -328,13 +334,13 @@ export class NativeContracts {
     } catch {
       throw new TypeError("native model request admission returned invalid manifest JSON");
     }
-    const manifestDigest = manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)
-      ? (manifest as Record<string, unknown>).request_digest
-      : undefined;
-    if (!Array.isArray(manifestDigest) || manifestDigest.length !== 32
-      || manifestDigest.some((byte, index) => byte !== result.request_digest[index])) {
-      throw new TypeError("native model request admission returned a mismatched manifest digest");
+    const actualManifestBytes = new TextEncoder().encode(result.manifest_json);
+    const expectedManifestBytes = this.encodeCanonicalJson(manifest);
+    if (actualManifestBytes.byteLength !== expectedManifestBytes.byteLength
+      || actualManifestBytes.some((byte, index) => byte !== expectedManifestBytes[index])) {
+      throw new TypeError("native model request admission returned non-canonical manifest bytes");
     }
+    validateModelInputManifest(this, manifest, admittedRequest, admittedPolicy, result.request_digest);
     return freezeNative({
       requestJson: result.request_json,
       manifestJson: result.manifest_json,
@@ -590,6 +596,121 @@ function wasmModelEventInput(event: ModelEvent): WasmModelEventInput {
       return event;
     case "reasoning":
       return event;
+  }
+}
+
+/** Version of the Rust-owned model-input manifest consumed by this facade. */
+const MODEL_INPUT_VERSION = 3;
+
+function requireExactKeys(value: Record<string, unknown>, expected: readonly string[], label: string): void {
+  const actual = Object.keys(value).sort();
+  const keys = [...expected].sort();
+  if (actual.length !== keys.length || actual.some((key, index) => key !== keys[index])) {
+    throw new TypeError(`${label} contains unexpected fields`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireByteVector(value: unknown, label: string): readonly number[] {
+  if (!Array.isArray(value) || value.length !== 32
+    || value.some(byte => !Number.isInteger(byte) || byte < 0 || byte > 255)) {
+    throw new TypeError(`${label} must be a 32-byte vector`);
+  }
+  return value;
+}
+
+function equalBytes(left: readonly number[], right: readonly number[]): boolean {
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+}
+
+function modelMessageFiles(content: unknown): readonly unknown[] {
+  if (typeof content === "string") return [];
+  if (Array.isArray(content)) return content.flatMap(part => modelMessageFiles(part));
+  if (!isRecord(content)) throw new TypeError("model message content is invalid");
+  if (content.kind === "file") {
+    if (!isRecord(content.file)) throw new TypeError("model file content has an invalid reference");
+    return [content.file];
+  }
+  if (content.kind === "text" || content.kind === "tool_call" || content.kind === "tool_result") return [];
+  throw new TypeError("model message content has an unknown part");
+}
+
+function validateModelInputManifest(
+  contracts: NativeContracts,
+  manifest: unknown,
+  request: WasmModelRequestWire,
+  policy: NativeModelOptionPolicyWire | null,
+  requestDigest: readonly number[],
+): void {
+  if (!isRecord(manifest)) throw new TypeError("native model request admission returned an invalid manifest");
+  const allowed = ["binding_digest", "messages", "request_digest", "version"];
+  if (policy !== null) allowed.push("model_option_policy", "model_option_schema_digest");
+  if (Object.hasOwn(manifest, "rejection_evidence")) allowed.push("rejection_evidence");
+  requireExactKeys(manifest, allowed, "model input manifest");
+  if (manifest.version !== MODEL_INPUT_VERSION) {
+    throw new TypeError("native model request admission returned an unsupported manifest version");
+  }
+  const bindingDigest = requireByteVector(manifest.binding_digest, "model input manifest binding_digest");
+  const policyIdentity = policy === null ? null : {
+    name: policy.name,
+    version: policy.version,
+    digest: Array.from(policy.digest),
+  };
+  const optionSchemaDigest = policy === null ? null : Array.from(contracts.digestCanonicalJson(policy.schema));
+  const expectedBindingDigest = contracts.digestCanonicalJson([
+    MODEL_INPUT_VERSION, request.model, request.tools, policyIdentity, optionSchemaDigest,
+  ]);
+  if (!equalBytes(bindingDigest, expectedBindingDigest)) {
+    throw new TypeError("model input manifest binding digest does not match the request");
+  }
+  const manifestDigest = requireByteVector(manifest.request_digest, "model input manifest request_digest");
+  if (!equalBytes(manifestDigest, requestDigest)) {
+    throw new TypeError("native model request admission returned a mismatched manifest digest");
+  }
+  if (!Array.isArray(manifest.messages) || manifest.messages.length !== request.messages.length) {
+    throw new TypeError("model input manifest message coverage is invalid");
+  }
+  for (const [position, entry] of manifest.messages.entries()) {
+    if (!isRecord(entry)) throw new TypeError("model input manifest message entry is invalid");
+    requireExactKeys(entry, ["digest", "files", "position", "role"], "model input manifest message entry");
+    if (entry.position !== position || entry.role !== request.messages[position]?.role) {
+      throw new TypeError("model input manifest message order or role changed");
+    }
+    const digest = requireByteVector(entry.digest, "model input manifest message digest");
+    const expectedDigest = contracts.digestCanonicalJson(request.messages[position]);
+    if (!equalBytes(digest, expectedDigest)) {
+      throw new TypeError("model input manifest message digest does not match the request");
+    }
+    if (!Array.isArray(entry.files)
+      || !contracts.canonicalEqual(entry.files, modelMessageFiles(request.messages[position]?.content))) {
+      throw new TypeError("model input manifest file coverage does not match the request");
+    }
+  }
+  if (Object.hasOwn(manifest, "rejection_evidence")
+    && (!Array.isArray(manifest.rejection_evidence) || manifest.rejection_evidence.length !== 0)) {
+    throw new TypeError("model input manifest contains unauthorised rejection evidence");
+  }
+  if (policy === null) {
+    if (Object.hasOwn(manifest, "model_option_policy") || Object.hasOwn(manifest, "model_option_schema_digest")) {
+      throw new TypeError("model input manifest contains an unregistered option policy");
+    }
+    return;
+  }
+  if (!isRecord(manifest.model_option_policy)) {
+    throw new TypeError("model input manifest is missing the registered option policy");
+  }
+  requireExactKeys(manifest.model_option_policy, ["digest", "name", "version"], "model option policy identity");
+  if (manifest.model_option_policy.name !== policy.name
+    || manifest.model_option_policy.version !== policy.version
+    || !equalBytes(requireByteVector(manifest.model_option_policy.digest, "model option policy digest"), Array.from(policy.digest))) {
+    throw new TypeError("model input manifest option policy identity changed");
+  }
+  const schemaDigest = requireByteVector(manifest.model_option_schema_digest, "model option schema digest");
+  if (!equalBytes(schemaDigest, optionSchemaDigest!)) {
+    throw new TypeError("model input manifest option schema digest changed");
   }
 }
 
