@@ -29,6 +29,7 @@ const gitIsAncestor = (base, commit) => {
 };
 const gitMergeCount = (base, commit) => Number(execFileSync("git", ["rev-list", "--count", "--merges", `${base}..${commit}`], { encoding: "utf8" }).trim());
 const samePath = (left, right) => resolve(left).toLowerCase() === resolve(right).toLowerCase();
+const defaultGitOps = { currentCommit, currentBranch, gitStatus, gitRoot, gitTree, gitIsAncestor, gitMergeCount };
 
 function failure(message) {
   throw new Error(`qualification: ${message}`);
@@ -134,7 +135,7 @@ function validateCase(caseRecord, entry, suites, final) {
   }
 }
 
-export function validateReceipt(matrix, receipt, { final = false, matrixPath = DEFAULT_MATRIX } = {}) {
+export function validateReceipt(matrix, receipt, { final = false, matrixPath = DEFAULT_MATRIX, gitOps = defaultGitOps } = {}) {
   validateMatrix(matrix);
   if (!receipt || typeof receipt !== "object" || receipt.protocol !== RECEIPT_PROTOCOL) failure("receipt protocol is invalid");
   const expectedMatrixPath = matrixPath.replaceAll("\\", "/");
@@ -146,16 +147,16 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     if (typeof receipt.source[field] !== "string" || receipt.source[field].trim() === "") failure(`receipt source lacks ${field}`);
   }
   if (typeof receipt.source.clean !== "boolean" || typeof receipt.source.merged !== "boolean") failure("receipt source must declare clean and merged");
-  const qualifiedCommit = currentCommit();
+  const qualifiedCommit = gitOps.currentCommit();
   if (receipt.source.commit !== qualifiedCommit) failure("receipt source commit does not match the current checkout");
-  if (receipt.source.branch !== currentBranch()) failure("receipt source branch does not match the current checkout");
-  if (!samePath(receipt.source.worktree, gitRoot())) failure("receipt source worktree does not match the current checkout");
-  const actualClean = gitStatus() === "";
+  if (receipt.source.branch !== gitOps.currentBranch()) failure("receipt source branch does not match the current checkout");
+  if (!samePath(receipt.source.worktree, gitOps.gitRoot())) failure("receipt source worktree does not match the current checkout");
+  const actualClean = gitOps.gitStatus() === "";
   if (receipt.source.clean !== actualClean) failure("receipt source clean claim does not match the current checkout");
   if (receipt.source.merged) failure("receipt source claims a merge, which is forbidden");
   if (receipt.source.base_commit !== matrix.scope.base_commit) failure("receipt source base commit does not match the locked scope");
-  if (!gitIsAncestor(receipt.source.base_commit, qualifiedCommit)) failure("locked base commit is not an ancestor of the qualified source");
-  if (gitMergeCount(receipt.source.base_commit, qualifiedCommit) !== 0) failure("qualified source contains a merge commit");
+  if (!gitOps.gitIsAncestor(receipt.source.base_commit, qualifiedCommit)) failure("locked base commit is not an ancestor of the qualified source");
+  if (gitOps.gitMergeCount(receipt.source.base_commit, qualifiedCommit) !== 0) failure("qualified source contains a merge commit");
   if (!Array.isArray(receipt.suites)) failure("receipt suites must be an array");
   if (!Array.isArray(receipt.cases)) failure("receipt cases must be an array");
   if (!Array.isArray(receipt.artifacts)) failure("receipt artifacts must be an array");
@@ -168,7 +169,7 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
-  const qualifiedTree = gitTree(qualifiedCommit);
+  const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, effectiveFinal, qualifiedCommit, qualifiedTree);
   const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact.path, artifact]));
   for (const suite of receipt.suites) {
@@ -211,12 +212,12 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   return { counts, requirements: matrix.entries.length, suites: receipt.suites.length, artifacts: receipt.artifacts.length };
 }
 
-export function makePendingReceipt(matrixPath = DEFAULT_MATRIX) {
+export function makePendingReceipt(matrixPath = DEFAULT_MATRIX, { gitOps = defaultGitOps } = {}) {
   const matrix = loadMatrix(matrixPath);
   return {
     protocol: RECEIPT_PROTOCOL,
     matrix: { path: matrixPath.replaceAll("\\", "/"), sha256: fileDigest(matrixPath) },
-    source: { commit: currentCommit(), worktree: process.cwd(), branch: currentBranch(), base_commit: matrix.scope.base_commit, clean: gitStatus() === "", merged: false },
+    source: { commit: gitOps.currentCommit(), worktree: gitOps.gitRoot(), branch: gitOps.currentBranch(), base_commit: matrix.scope.base_commit, clean: gitOps.gitStatus() === "", merged: false },
     suites: [],
     cases: matrix.entries.map(entry => ({ id: entry.id, status: "pending", evidence: [] })),
     artifacts: [],

@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,6 +8,20 @@ import { loadMatrix, makePendingReceipt, validateReceipt } from "./graphcoder-qu
 
 const matrix = loadMatrix();
 const digest = value => createHash("sha256").update(value).digest("hex");
+const TEST_COMMIT = "f".repeat(40);
+const TEST_TREE = "e".repeat(40);
+const TEST_ROOT = process.cwd();
+const testGitOps = {
+  currentCommit: () => TEST_COMMIT,
+  currentBranch: () => "codex/graphcoder-validation",
+  gitStatus: () => "",
+  gitRoot: () => TEST_ROOT,
+  gitTree: () => TEST_TREE,
+  gitIsAncestor: () => true,
+  gitMergeCount: () => 0,
+};
+const pendingReceipt = () => makePendingReceipt(undefined, { gitOps: testGitOps });
+const validate = (receipt, options = {}) => validateReceipt(matrix, receipt, { ...options, gitOps: testGitOps });
 
 function suiteFixture(directory, executionKind = "native") {
   const descriptorPath = join(directory, `${executionKind}.descriptor.json`);
@@ -48,39 +61,39 @@ test("the gap audit names every locked row exactly once", () => {
 });
 
 test("a pending receipt is structurally valid but cannot be final", () => {
-  const receipt = makePendingReceipt();
-  const result = validateReceipt(matrix, receipt);
+  const receipt = pendingReceipt();
+  const result = validate(receipt);
   assert.equal(result.requirements, 68);
   assert.equal(result.counts.missing, 68);
-  assert.throws(() => validateReceipt(matrix, { ...receipt, gate: { ...receipt.gate, final: true } }, { final: true }), /required cases must be passed|missing/);
+  assert.throws(() => validate({ ...receipt, gate: { ...receipt.gate, final: true } }, { final: true }), /required cases must be passed|missing/);
 });
 
 test("gate.final applies final-case and artifact rules even without --final", () => {
-  const receipt = makePendingReceipt();
+  const receipt = pendingReceipt();
   receipt.gate.final = true;
-  assert.throws(() => validateReceipt(matrix, receipt), /is pending, required cases must be passed/);
+  assert.throws(() => validate(receipt), /is pending, required cases must be passed/);
 });
 
 test("gate.final refuses a missing artifact even without --final", () => {
-  const receipt = makePendingReceipt();
+  const receipt = pendingReceipt();
   receipt.gate.final = true;
   receipt.artifacts = [{
     path: join(tmpdir(), "graphcoder-qualification-artifact-that-does-not-exist.tgz"),
     sha256: "0".repeat(64),
     source_commit: receipt.source.commit,
-    source_tree: execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
+    source_tree: TEST_TREE,
     built_at: "2026-10-03T00:00:00.000Z",
     build_id: "build-missing",
     fresh: true,
   }];
-  assert.throws(() => validateReceipt(matrix, receipt), /artifact is missing/);
+  assert.throws(() => validate(receipt), /artifact is missing/);
 });
 
 test("evidence cannot relabel a compile suite as native", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
     const suite = suiteFixture(directory, "compile");
-    const receipt = makePendingReceipt();
+    const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.cases[0] = {
       id: receipt.cases[0].id,
@@ -88,7 +101,7 @@ test("evidence cannot relabel a compile suite as native", () => {
       evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }],
     };
     receipt.gate.missing--;
-    assert.throws(() => validateReceipt(matrix, receipt), /execution kind does not match suite/);
+    assert.throws(() => validate(receipt), /execution kind does not match suite/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -99,9 +112,9 @@ test("suite evidence is bound to the descriptor and transcript bytes on disk", (
   try {
     const suite = suiteFixture(directory);
     suite.descriptor_sha256 = "0".repeat(64);
-    const receipt = makePendingReceipt();
+    const receipt = pendingReceipt();
     receipt.suites = [suite];
-    assert.throws(() => validateReceipt(matrix, receipt), /descriptor digest mismatch/);
+    assert.throws(() => validate(receipt), /descriptor digest mismatch/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -111,10 +124,10 @@ test("final package suites must identify the installed artifact used by their ev
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
     const suite = suiteFixture(directory, "package");
-    const receipt = makePendingReceipt();
+    const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.gate.final = true;
-    assert.throws(() => validateReceipt(matrix, receipt), /final package suite .*must reference/);
+    assert.throws(() => validate(receipt), /final package suite .*must reference/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -129,8 +142,8 @@ test("a bystander artifact cannot satisfy a suite's consuming-artifact evidence"
     writeFileSync(consumedPath, "consumed package\\n");
     writeFileSync(bystanderPath, "bystander package\\n");
     suite.artifact_paths = [consumedPath];
-    const receipt = makePendingReceipt();
-    const sourceTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+    const receipt = pendingReceipt();
+    const sourceTree = TEST_TREE;
     const artifact = (path, buildId) => ({
       path,
       sha256: digest(readFileSync(path)),
@@ -153,7 +166,7 @@ test("a bystander artifact cannot satisfy a suite's consuming-artifact evidence"
       }],
     };
     receipt.gate.missing--;
-    assert.throws(() => validateReceipt(matrix, receipt), /artifact use does not match suite/);
+    assert.throws(() => validate(receipt), /artifact use does not match suite/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -167,18 +180,18 @@ test("suite execution cannot precede the build of its referenced artifact", () =
     const bytes = "built package\n";
     writeFileSync(artifactPath, bytes);
     suite.artifact_paths = [artifactPath];
-    const receipt = makePendingReceipt();
+    const receipt = pendingReceipt();
     receipt.suites = [suite];
     receipt.artifacts = [{
       path: artifactPath,
       sha256: digest(bytes),
       source_commit: receipt.source.commit,
-      source_tree: execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
+      source_tree: TEST_TREE,
       built_at: "2026-10-03T00:00:02.000Z",
       build_id: "build-after-suite",
       fresh: true,
     }];
-    assert.throws(() => validateReceipt(matrix, receipt), /started before artifact .* was built/);
+    assert.throws(() => validate(receipt), /started before artifact .* was built/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -190,7 +203,7 @@ test("artifact provenance is bound to the qualified source instead of a freshnes
     const artifactPath = join(directory, "package.tgz");
     const bytes = "package bytes\n";
     writeFileSync(artifactPath, bytes);
-    const receipt = makePendingReceipt();
+    const receipt = pendingReceipt();
     receipt.artifacts = [{
       path: artifactPath,
       sha256: digest(bytes),
@@ -200,27 +213,27 @@ test("artifact provenance is bound to the qualified source instead of a freshnes
       build_id: "build-1",
       fresh: true,
     }];
-    assert.throws(() => validateReceipt(matrix, receipt), /not built from the qualified source commit/);
+    assert.throws(() => validate(receipt), /not built from the qualified source commit/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
 test("source claims are checked against the actual checkout", () => {
-  const receipt = makePendingReceipt();
+  const receipt = pendingReceipt();
   receipt.source.worktree = "C:\\definitely-not-the-qualified-worktree";
-  assert.throws(() => validateReceipt(matrix, receipt), /source worktree does not match/);
+  assert.throws(() => validate(receipt), /source worktree does not match/);
 });
 
 test("matrix digest prevents a receipt from silently changing its requirements", () => {
-  const receipt = makePendingReceipt();
+  const receipt = pendingReceipt();
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-"));
   const matrixCopy = join(directory, "requirements.json");
   const receiptPath = join(directory, "receipt.json");
   try {
     writeFileSync(matrixCopy, `${readFileSync("docs/graphcoder-swarm/requirements.json", "utf8")}\n`);
     writeFileSync(receiptPath, JSON.stringify({ ...receipt, matrix: { ...receipt.matrix, path: matrixCopy } }));
-    assert.throws(() => validateReceipt(matrix, JSON.parse(readFileSync(receiptPath, "utf8"))), /locked matrix path/);
+    assert.throws(() => validate(JSON.parse(readFileSync(receiptPath, "utf8"))), /locked matrix path/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
