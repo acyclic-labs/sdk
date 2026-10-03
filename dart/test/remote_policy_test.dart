@@ -44,6 +44,7 @@ void main() {
     final https = RemoteClient(
       family: 'actors',
       endpoint: 'https://api.example',
+      bearer: ' token ',
       invoker: (_, __, ___) => null,
     );
     expect(https.transport, RemoteTransport.httpJson);

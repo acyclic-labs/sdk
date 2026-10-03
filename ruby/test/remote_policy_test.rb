@@ -30,7 +30,7 @@ class RemotePolicyTest < Minitest::Test
     client = Acyclic::Remote::Client.new(family: "stream", streaming: true, transport: :http_json, invoker: ->(*) { nil })
     assert_equal :http_json, client.transport
 
-    https_client = Acyclic::Remote::Client.new(family: "actors", endpoint: "https://api.example", invoker: ->(*) { nil })
+    https_client = Acyclic::Remote::Client.new(family: "actors", endpoint: "https://api.example", bearer: " token ", invoker: ->(*) { nil })
     assert_equal :http_json, https_client.transport
 
     assert_raises(ArgumentError) do

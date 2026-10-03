@@ -53,7 +53,7 @@ $metadata = new RemoteClient('actors', static fn (...$args): null => null);
 if ($metadata->transport() !== RemotePolicy::HTTP_JSON) {
     throw new RuntimeException('endpoint metadata was not consumed automatically');
 }
-$https = new RemoteClient('actors', static fn (...$args): null => null, 'native', false, null, null, true, null, 'https://api.example');
+$https = new RemoteClient('actors', static fn (...$args): null => null, 'native', false, null, ' token ', true, null, 'https://api.example');
 if ($https->transport() !== RemotePolicy::HTTP_JSON) {
     throw new RuntimeException('HTTPS endpoint metadata did not select HTTP JSON');
 }
