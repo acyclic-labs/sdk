@@ -173,6 +173,58 @@ pub struct LocalModelForkPlan {
     pub issuer: AuthorityIssuer,
 }
 
+/// Model-selected child intent captured from an authenticated batch. The
+/// publication operation is derived from the parent operation and step; the
+/// model chooses only the fresh child operation and task content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalForkIntent {
+    /// Parent task that owns the completed model batch.
+    pub parent: TaskId,
+    /// Parent model turn identity.
+    pub parent_operation: OperationId,
+    /// Completed model step.
+    pub parent_step: u32,
+    /// Host-derived completed-batch publication identity.
+    pub fork_operation: OperationId,
+    /// Fresh child turn identity selected for the child task.
+    pub child_operation: OperationId,
+    /// Durable child task declaration.
+    pub task: String,
+    /// Fresh child user input.
+    pub prompt: String,
+}
+
+impl LocalForkIntent {
+    fn validate(&self) -> Result<()> {
+        if self.parent.into_bytes() == [0; 16]
+            || self.parent_operation.into_bytes() == [0; 16]
+            || self.parent_step > 1_000_000
+            || self.fork_operation.into_bytes() == [0; 16]
+            || self.child_operation.into_bytes() == [0; 16]
+            || self.fork_operation == self.child_operation
+            || self.task.trim().is_empty()
+            || self.task.len() > 4 * 1024
+            || self.prompt.len() > 64 * 1024
+        {
+            return Err(Error::Invalid("model-selected fork intent is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Owner allocator invoked only after the parent completed batch is
+/// published. Implementations allocate child authorities/resources and return
+/// the existing typed report/declaration plan used by activation.
+pub trait LocalModelForkResolver: Send + Sync {
+    /// Resolves one authenticated model intent against its exact publication.
+    fn resolve<'a>(
+        &'a self,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+    ) -> BoxFuture<'a, Result<LocalModelForkPlan>>;
+}
+
 impl LocalModelForkPlan {
     /// Validates the owner prepared identities before exposing the plan to a
     /// model-facing tool.
@@ -200,14 +252,20 @@ impl LocalModelForkPlan {
 /// publisher retry can recover it without trusting model output.
 pub struct LocalModelForkPlans {
     plans: Mutex<BTreeMap<OperationId, LocalModelForkPlan>>,
+    intents: Mutex<BTreeMap<OperationId, LocalForkIntent>>,
     completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
+    resolver: Option<Arc<dyn LocalModelForkResolver>>,
+    journal: Mutex<Option<StreamClient<LocalStream>>>,
 }
 
 impl Default for LocalModelForkPlans {
     fn default() -> Self {
         Self {
             plans: Mutex::new(BTreeMap::new()),
+            intents: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(BTreeMap::new()),
+            resolver: None,
+            journal: Mutex::new(None),
         }
     }
 }
@@ -217,6 +275,75 @@ impl LocalModelForkPlans {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Installs the owner allocator used by model-selected fork intents.
+    #[must_use]
+    pub fn with_resolver(mut self, resolver: Arc<dyn LocalModelForkResolver>) -> Self {
+        self.resolver = Some(resolver);
+        self
+    }
+
+    /// Binds the owner registry used to persist model-selected intents before
+    /// the provider publication callback is entered.
+    pub async fn bind_journal(&self, registry: StreamClient<LocalStream>) -> Result<()> {
+        let stream = registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for record in load_records(&stream).await? {
+            if let StoredEvent::ForkIntent { intent } = record.event {
+                self.intents.lock().await.insert(intent.fork_operation, intent);
+            }
+        }
+        *self.journal.lock().await = Some(registry);
+        Ok(())
+    }
+
+    async fn record_intent(&self, intent: LocalForkIntent) -> Result<()> {
+        intent.validate()?;
+        let mut intents = self.intents.lock().await;
+        if let Some(existing) = intents.get(&intent.fork_operation)
+            && existing != &intent
+        {
+            return Err(Error::Conflict(
+                "model fork publication identity is already bound to another intent".into(),
+            ));
+        }
+        if intents.contains_key(&intent.fork_operation) {
+            return Ok(());
+        }
+        if let Some(registry) = self.journal.lock().await.clone() {
+            let stream = registry
+                .stream(REGISTRY_STREAM)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            append_record(&stream, StoredEvent::ForkIntent { intent: intent.clone() }).await?;
+        }
+        intents.insert(intent.fork_operation, intent);
+        Ok(())
+    }
+
+    async fn resolve_intent(&self, publication: ModelBatchPublication) -> Result<LocalModelForkPlan> {
+        let intent = self
+            .intents
+            .lock()
+            .await
+            .get(&publication.operation_id)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("completed fork publication has no durable intent".into()))?;
+        if publication.parent_operation != intent.parent_operation
+            || publication.step != intent.parent_step
+            || publication.operation_id != intent.fork_operation
+        {
+            return Err(Error::Conflict(
+                "completed fork publication does not match its selected intent".into(),
+            ));
+        }
+        let resolver = self.resolver.clone().ok_or_else(|| {
+            Error::Unsupported("local model fork resolver is not bound".into())
+        })?;
+        let plan = resolver.resolve(intent, publication).await?;
+        self.register(plan.clone()).await?;
+        Ok(plan)
     }
 
     /// Registers one exact prepared report before a model turn begins.
@@ -312,8 +439,9 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
 
     fn publish<'a>(&'a self, publication: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let Some(plan) = self.plans.get(publication.operation_id).await else {
-                return Ok(());
+            let plan = match self.plans.get(publication.operation_id).await {
+                Some(plan) => plan,
+                None => self.plans.resolve_intent(publication.clone()).await?,
             };
             if Some(publication.operation_id) != plan.request.fork_operation
                 || publication.parent_operation != plan.request.parent_operation
@@ -356,8 +484,18 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
         publication: ModelBatchPublication,
     ) -> BoxFuture<'a, Result<Option<()>>> {
         Box::pin(async move {
-            let Some(plan) = self.plans.get(publication.operation_id).await else {
-                return Ok(Some(()));
+            let plan = match self.plans.get(publication.operation_id).await {
+                Some(plan) => plan,
+                None => {
+                    let intents = self.plans.intents.lock().await;
+                    if !intents.contains_key(&publication.operation_id) {
+                        return Err(Error::Conflict(
+                            "reconciled fork publication has no durable intent".into(),
+                        ));
+                    }
+                    drop(intents);
+                    return Ok(None);
+                }
             };
             let digest = crate::contract::canonical_json_digest(&publication)?;
             if self.plans.completed(publication.operation_id).await == Some(digest) {
@@ -376,7 +514,8 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LocalForkToolInput {
-    fork_operation: OperationId,
+    #[serde(default)]
+    fork_operation: Option<OperationId>,
     child_operation: OperationId,
     task: String,
     prompt: String,
@@ -403,35 +542,35 @@ impl ToolExecutor for LocalForkToolExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let input: LocalForkToolInput =
-                serde_json::from_value(invocation.arguments).map_err(|error| {
-                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
-                })?;
-            if input.fork_operation != context.publication_operation()
-                || input.child_operation == input.fork_operation
+            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
+                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+            let fork_operation = context.publication_operation();
+            if input.fork_operation.is_some_and(|value| value != fork_operation)
+                || input.child_operation == fork_operation
             {
                 return Err(Error::Conflict(
                     "local fork tool identity is not bound to this completed model batch".into(),
                 ));
             }
-            let plan = self.plans.get(input.fork_operation).await.ok_or_else(|| {
-                Error::Unauthorized("local fork plan is not owner admitted".into())
-            })?;
-            if plan.parent != self.parent
-                || plan.request.parent_operation != context.parent_operation
-                || plan.request.parent_step != context.step
-                || plan.request.child_operation != input.child_operation
-                || plan.request.task != input.task
-                || plan.request.prompt != input.prompt
-            {
-                return Err(Error::Conflict(
-                    "local fork tool arguments differ from the owner plan".into(),
+            if context.task_id.is_some_and(|task| task != self.parent) {
+                return Err(Error::Unauthorized(
+                    "local fork tool task binding differs from the authenticated parent".into(),
                 ));
             }
+            let intent = LocalForkIntent {
+                parent: self.parent,
+                parent_operation: context.parent_operation,
+                parent_step: context.step,
+                fork_operation,
+                child_operation: input.child_operation,
+                task: input.task,
+                prompt: input.prompt,
+            };
+            self.plans.record_intent(intent).await?;
             Ok(ToolResult {
                 value: json!({
-                    "status": "accepted_after_completed_batch",
-                    "fork_operation": input.fork_operation.to_string(),
+                    "status": "selected_after_completed_batch",
+                    "fork_operation": fork_operation.to_string(),
                     "child_operation": input.child_operation.to_string(),
                 }),
             })
@@ -463,7 +602,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                 "Request an owner-prepared recursive child after this model batch completes".into(),
             input_schema: json!({
                 "type": "object",
-                "required": ["fork_operation", "child_operation", "task", "prompt"],
+                "required": ["child_operation", "task", "prompt"],
                 "properties": {
                     "fork_operation": {"type": "string"},
                     "child_operation": {"type": "string"},
@@ -476,7 +615,7 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
                 "type": "object",
                 "required": ["status", "fork_operation", "child_operation"],
                 "properties": {
-                    "status": {"const": "accepted_after_completed_batch"},
+                    "status": {"const": "selected_after_completed_batch"},
                     "fork_operation": {"type": "string"},
                     "child_operation": {"type": "string"}
                 },
@@ -739,6 +878,9 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind")]
 enum StoredEvent {
     Session(StoredSession),
+    /// Model-selected child intent retained before completed-batch
+    /// publication. The owner allocator resolves it only after publication.
+    ForkIntent { intent: LocalForkIntent },
     /// Prepared request retained before provider publication. This event is
     /// replayable but does not authorize child activation by itself.
     ForkPrepared {
@@ -927,6 +1069,9 @@ impl PersistentLocalSwarm {
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        if let Some(plans) = bindings.model_fork_plans.as_ref() {
+            plans.bind_journal(registry.clone()).await?;
+        }
         let records = load_records(&stream).await?;
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
@@ -2414,6 +2559,9 @@ fn apply_record(
                 return Err(Error::Conflict("unsupported local session version".into()));
             }
             sessions.insert(session.task, session.into());
+        }
+        StoredEvent::ForkIntent { intent } => {
+            intent.validate()?;
         }
         StoredEvent::ForkPrepared {
             parent,
