@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { PassThrough } from "node:stream";
 import { GraphCoderError, GraphCoderUi, agentId, approvalId, sessionId, type SessionId } from "../src/api.js";
 import { BridgeGraphCoderTransport, type GraphCoderWireRequest, type GraphCoderWireResponse } from "../src/bridge.js";
 import { createMockTransport } from "../src/mock.js";
@@ -319,6 +320,33 @@ describe("GraphCoder terminal adapter", () => {
     expect(lines).toHaveLength(4);
     expect(lines[0]).toMatchObject({ ok: true });
     expect(lines[3]).toMatchObject({ ok: true, value: { path: "README.md" } });
+  });
+
+  test("interactive commands keep accepting cancellation while history is waiting", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const transport = createMockTransport();
+    let releaseActivity!: () => void;
+    transport.readActivity = async () => {
+      await new Promise<void>(resolve => { releaseActivity = resolve; });
+      return { items: [] };
+    };
+    const terminal = new GraphCoderTerminal(transport, { input, output });
+    const running = terminal.interactive();
+    input.write("start op-interactive-cancel inspect\n");
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    input.write("activity\n");
+    await new Promise<void>(resolve => setTimeout(resolve, 20));
+    input.write("cancel\n");
+    const deadline = Date.now() + 500;
+    while (!transport.calls.some(call => call.method === "cancelSession") && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 10));
+    }
+    expect(transport.calls.some(call => call.method === "cancelSession")).toBe(true);
+    releaseActivity();
+    input.write("quit\n");
+    input.end();
+    await running;
   });
 
   test("CLI requires an explicit fixture and supports deterministic headless execution", async () => {

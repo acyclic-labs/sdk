@@ -176,24 +176,51 @@ export class GraphCoderTerminal {
   async interactive(): Promise<void> {
     const input = this.#io.input ?? stdin;
     const output = this.#io.output ?? stdout;
+    const terminal = Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY);
     const readline: Interface = createInterface({
       input,
       output,
-      terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY),
+      terminal,
     });
-    try {
-      for (;;) {
-        let line: string;
-        try { line = await readline.question("graphcoder> "); }
-        catch (error) {
-          if (error instanceof Error && "code" in error && error.code === "ERR_USE_AFTER_CLOSE") return;
-          throw error;
-        }
-        if (line.trim() === "quit" || line.trim() === "exit") { await this.command(line); return; }
+    const pending = new Set<Promise<void>>();
+    let closing = false;
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>(resolve => { resolveClosed = resolve; });
+    readline.once("close", resolveClosed);
+    const runLine = async (line: string): Promise<void> => {
+      if (closing) return;
+      const trimmed = line.trim();
+      if (trimmed === "quit" || trimmed === "exit") {
+        closing = true;
         try { await this.command(line); }
         catch (error) { writeLine(this.#io, { ok: false, error: errorProjection(error) }); }
+        readline.close();
+        return;
       }
-    } finally { readline.close(); }
+      try { await this.command(line); }
+      catch (error) { writeLine(this.#io, { ok: false, error: errorProjection(error) }); }
+    };
+    readline.on("line", line => {
+      const task = runLine(line);
+      pending.add(task);
+      void task.finally(() => pending.delete(task));
+      // Keep accepting a second command while the first one waits on the
+      // durable owner. This is what lets `cancel` interrupt a slow history
+      // or model request in the interactive terminal.
+      if (terminal && !closing) readline.prompt();
+    });
+    if (terminal) {
+      readline.setPrompt("graphcoder> ");
+      readline.prompt();
+    }
+    try {
+      await closed;
+      await Promise.all(pending);
+    } finally {
+      closing = true;
+      readline.close();
+      await Promise.allSettled(pending);
+    }
   }
 }
 

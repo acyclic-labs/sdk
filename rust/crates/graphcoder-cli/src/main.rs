@@ -11,12 +11,18 @@
 
 use futures::StreamExt;
 use acyclic_harness::{
-    conversation::Limits,
-    filesystem::{LocalSessionPhase, LocalSwarmConfig, PersistentLocalSwarm},
+    conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
+    filesystem::{
+        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
+        LocalSwarmConfig, PersistentLocalSwarm,
+    },
     interaction::InteractionResponse,
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
-    Error as HarnessError, InteractionId, OperationId, TaskId,
+    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
+    resources::ProviderRef,
+    Error as HarnessError, InteractionId, OperationId, Result, TaskId,
 };
+use acyclic_fs::{LocalFs, LocalOptions};
+use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use clap::Parser;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
@@ -97,6 +103,94 @@ impl ModelProvider for EchoModel {
             "stage" if call > 0 => "fixture:stage complete".to_owned(),
             _ => "fixture:echo".to_owned(),
         };
+        if self.fixture == "recursive" {
+            let child_a = OperationId::from_bytes([0xa1; 16]).to_string();
+            let child_b = OperationId::from_bytes([0xb1; 16]).to_string();
+            let grandchild = OperationId::from_bytes([0xc1; 16]).to_string();
+            let has_text = |needle: &str| {
+                request.messages.iter().any(|message| match &message.content {
+                    ModelContent::Text(value) => value.contains(needle),
+                    ModelContent::Part(ModelContentPart::Text { text }) => text.contains(needle),
+                    ModelContent::Parts(parts) => parts.iter().any(|part| {
+                        matches!(part, ModelContentPart::Text { text } if text.contains(needle))
+                    }),
+                    ModelContent::Part(ModelContentPart::ToolResult { value, .. }) => {
+                        value.to_string().contains(needle)
+                    }
+                    ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) => {
+                        arguments.to_string().contains(needle)
+                    }
+                    ModelContent::Part(ModelContentPart::File { .. }) => false,
+                })
+            };
+            let has_tool_result = |name: &str| {
+                request.messages.iter().any(|message| {
+                    matches!(
+                        &message.content,
+                        ModelContent::Part(ModelContentPart::ToolResult { name: result_name, .. })
+                            if result_name == name
+                    )
+                })
+            };
+            let root = !has_text("child task: child-a")
+                && !has_text("child task: child-b")
+                && !has_text("child task: grandchild");
+            if root && !has_tool_result("acyclic.fork_child") {
+                return Box::pin(futures::stream::iter([
+                    Ok(ModelEvent::Content {
+                        delta: "fixture:recursive root".to_owned(),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "graphcoder-recursive-child-a".to_owned(),
+                        name: "acyclic.fork_child".to_owned(),
+                        arguments: json!({
+                            "child_operation": child_a,
+                            "task": "child-a",
+                            "prompt": "recursive child a"
+                        }),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "graphcoder-recursive-child-b".to_owned(),
+                        name: "acyclic.fork_child".to_owned(),
+                        arguments: json!({
+                            "child_operation": child_b,
+                            "task": "child-b",
+                            "prompt": "recursive child b"
+                        }),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]));
+            }
+            if has_text("child task: child-a") && !has_tool_result("acyclic.fork_child") {
+                return Box::pin(futures::stream::iter([
+                    Ok(ModelEvent::Content {
+                        delta: "fixture:recursive child".to_owned(),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "graphcoder-recursive-grandchild".to_owned(),
+                        name: "acyclic.fork_child".to_owned(),
+                        arguments: json!({
+                            "child_operation": grandchild,
+                            "task": "grandchild",
+                            "prompt": "recursive grandchild"
+                        }),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]));
+            }
+            return Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content {
+                    delta: "fixture:recursive complete".to_owned(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]));
+        }
         if self.fixture == "stage" && call == 0 {
             return Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
@@ -185,14 +279,44 @@ impl WireResponse {
 }
 
 struct Runtime {
-    swarm: PersistentLocalSwarm,
+    swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
+}
+
+async fn recursive_project(
+    root: &std::path::Path,
+) -> Result<(
+    Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
+    StreamClient<LocalStream>,
+    VolumeRef,
+)> {
+    let provider = ProviderRef::new("local", "filesystem", "2")?;
+    let host = Arc::new(
+        FilesystemHost::new(
+            LocalFs::local(LocalOptions::new(root.join("filesystem"))).await
+                .map_err(|error| HarnessError::Storage(error.to_string()))?,
+            provider.clone(),
+        )?,
+    );
+    let stream = StreamClient::new(Arc::new(
+        LocalStream::open(root.join("conversation"), LocalStreamLimits::default())
+            .await
+            .map_err(|error| HarnessError::Storage(error.to_string()))?,
+    ));
+    let project = VolumeRef::new(
+        provider,
+        "graphcoder-recursive-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("graphcoder-recursive-fixture".into()),
+    )?;
+    host.create_volume(&project).await?;
+    Ok((host, stream, project))
 }
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -210,7 +334,28 @@ impl Runtime {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
         });
-        let swarm = PersistentLocalSwarm::open(&args.root, config, provider).await?;
+        let swarm = if fixture == "recursive" {
+            let (host, stream, project) = recursive_project(&args.root).await?;
+            let resolver = Arc::new(
+                LocalFilesystemForkResolver::new(
+                    host,
+                    stream,
+                    ProviderRef::new("local", "stream", "2")?,
+                    project,
+                )?
+                .with_host_secret([0x5a; 32])?,
+            );
+            PersistentLocalSwarm::open_shared_with_model_and_bindings(
+                &args.root,
+                model,
+                provider,
+                Limits::default(),
+                LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            )
+            .await?
+        } else {
+            Arc::new(PersistentLocalSwarm::open(&args.root, config, provider).await?)
+        };
         Ok(Self {
             swarm,
             model_fixture: fixture,
@@ -297,9 +442,9 @@ impl Runtime {
         let params = object(params)?;
         let prompt = required_text(params, "prompt")?;
         let operation_id = required_text(params, "operation_id")?;
-        if operation_id.len() > 256 {
+        if operation_id.trim().is_empty() || operation_id.len() > 256 {
             return Err(DispatchError::invalid(
-                "operation_id must be at most 256 bytes",
+                "operation_id must be nonempty and at most 256 bytes",
             ));
         }
         if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
@@ -386,7 +531,10 @@ impl Runtime {
                 .map_err(DispatchError::from_harness)
                 .and_then(|(_, bytes)| {
                     String::from_utf8(bytes)
-                        .map_err(|_| DispatchError::invalid("message content is not UTF-8"))
+                        .map_err(|_| DispatchError {
+                            code: "transport",
+                            message: "message content is not UTF-8".into(),
+                        })
                 })?;
             items.push(json!({
                 "id": message.id.to_string(),
@@ -993,7 +1141,20 @@ async fn write_response<W: AsyncWrite + Unpin>(
     response: &WireResponse,
 ) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(response).map_err(std::io::Error::other)?;
-    output.write_all(&bytes).await?;
+    if bytes.len() > MAX_LINE_BYTES {
+        let request_id = match response {
+            WireResponse::Ok { request_id, .. } | WireResponse::Err { request_id, .. } => request_id,
+        };
+        let fallback = WireResponse::error(
+            request_id,
+            "transport",
+            "response exceeds the configured size",
+        );
+        let fallback = serde_json::to_vec(&fallback).map_err(std::io::Error::other)?;
+        output.write_all(&fallback).await?;
+    } else {
+        output.write_all(&bytes).await?;
+    }
     output.write_all(b"\n").await?;
     // JSON-lines clients keep stdin open while they await each response.
     // Flush the complete envelope so interactive callers do not wait for EOF.
@@ -1316,5 +1477,20 @@ mod tests {
         .await;
         assert_eq!(oversized["ok"], false);
         assert_eq!(oversized["error"]["code"], "invalid_input");
+
+        let empty_operation_root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(empty_operation_root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let empty_operation = runtime
+            .dispatch(WireRequest {
+                request_id: "empty-operation".into(),
+                method: "start_session".into(),
+                params: json!({"prompt":"hello", "operation_id":""}),
+            })
+            .await;
+        assert!(matches!(empty_operation, WireResponse::Err { error: WireError { code: "invalid_input", .. }, .. }));
     }
 }

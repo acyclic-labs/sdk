@@ -12,6 +12,7 @@ export interface NodeGraphCoderDispatcherOptions {
 
 export const DEFAULT_NODE_DISPATCHER_LINE_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_NODE_DISPATCHER_IN_FLIGHT = 64;
+export const DEFAULT_NODE_DISPATCHER_CONTROL_IN_FLIGHT = 8;
 
 type NodeFrame = { readonly kind: "line"; readonly value: string } | { readonly kind: "too_long" } | { readonly kind: "invalid_utf8" };
 
@@ -25,20 +26,28 @@ export async function runNodeGraphCoderDispatcher(options: NodeGraphCoderDispatc
   const output = options.output ?? process.stdout;
   const dispatcher = new GraphCoderWireDispatcher(options.transport);
   const pending = new Set<Promise<void>>();
+  const controlPending = new Set<Promise<void>>();
   for await (const frame of boundedFrames(input, maximumLineBytes)) {
     // A cancellation is a reserved control path. It must be admitted even
     // when all ordinary model requests are waiting on the durable owner.
-    while (pending.size >= maximumInFlight && !isControlFrame(frame)) await Promise.race(pending);
+    const control = isControlFrame(frame);
+    if (control && controlPending.size >= DEFAULT_NODE_DISPATCHER_CONTROL_IN_FLIGHT) {
+      const response = JSON.stringify({ request_id: requestIdFromFrame(frame), ok: false, error: { code: "invalid_input", message: "control request limit reached" } });
+      await writeResponse(output, response, maximumLineBytes);
+      continue;
+    }
+    while (pending.size >= maximumInFlight && !control) await Promise.race(pending);
     const response = frame.kind === "too_long"
       ? Promise.resolve(JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line exceeds the configured size" } }))
       : frame.kind === "invalid_utf8"
         ? Promise.resolve(JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line is not valid UTF-8" } }))
         : dispatcher.dispatchLine(frame.value);
-    const write = response.then(value => new Promise<void>((resolve, reject) => output.write(`${value}\n`, error => error == null ? resolve() : reject(error))));
-    pending.add(write);
-    void write.finally(() => pending.delete(write));
+    const write = response.then(value => writeResponse(output, value, maximumLineBytes));
+    const owner = control ? controlPending : pending;
+    owner.add(write);
+    void write.finally(() => owner.delete(write));
   }
-  await Promise.all(pending);
+  await Promise.all([...pending, ...controlPending]);
 }
 
 /** Byte bounded JSON-lines framing shared by native and terminal hosts. */
@@ -103,6 +112,23 @@ function isControlFrame(frame: NodeFrame): boolean {
   } catch {
     return false;
   }
+}
+
+function requestIdFromFrame(frame: NodeFrame): string {
+  if (frame.kind !== "line") return "unknown";
+  try {
+    const value = JSON.parse(frame.value) as unknown;
+    if (typeof value !== "object" || value === null || Array.isArray(value)) return "unknown";
+    const requestId = (value as { request_id?: unknown }).request_id;
+    return typeof requestId === "string" && requestId.length > 0 && requestId.length <= 256 ? requestId : "unknown";
+  } catch { return "unknown"; }
+}
+
+async function writeResponse(output: Writable, value: string, maximumLineBytes: number): Promise<void> {
+  const bounded = Buffer.byteLength(value, "utf8") <= maximumLineBytes
+    ? value
+    : JSON.stringify({ request_id: requestIdFromFrame({ kind: "line", value }), ok: false, error: { code: "transport", message: "response exceeds the configured size" } });
+  await new Promise<void>((resolve, reject) => output.write(`${bounded}\n`, error => error == null ? resolve() : reject(error)));
 }
 
 function decodeUtf8(value: Buffer): string | undefined {

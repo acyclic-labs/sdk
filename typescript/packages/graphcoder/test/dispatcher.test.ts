@@ -105,6 +105,68 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     await serving;
   });
 
+  test("node entrypoint admits cancellation with all 64 ordinary slots occupied", async () => {
+    const input = new PassThrough();
+    const lines: string[] = [];
+    const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
+    const transport = createMockTransport();
+    const releases: Array<() => void> = [];
+    transport.listSessions = async () => {
+      await new Promise<void>(resolve => releases.push(resolve));
+      return { items: [] };
+    };
+    transport.cancelSession = async id => ({ summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1" }, agents: [], workspaceGeneration: 0n });
+    const serving = runNodeGraphCoderDispatcher({ transport, input, output, maximumInFlight: 64 });
+    for (let index = 0; index < 64; index += 1) {
+      input.write(JSON.stringify({ request_id: `model-${index}`, method: "list_sessions", params: {} }) + "\n");
+    }
+    input.write(JSON.stringify({ request_id: "cancel-64", method: "cancel_session", params: { session_id: "session-1" } }) + "\n");
+    const deadline = Date.now() + 500;
+    while (!lines.join("").includes('"request_id":"cancel-64"') && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
+    expect(lines.join("")).toContain('"request_id":"cancel-64"');
+    for (const release of releases) release();
+    input.end();
+    await serving;
+  });
+
+  test("node entrypoint bounds the reserved cancellation lane", async () => {
+    const input = new PassThrough();
+    const lines: string[] = [];
+    const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
+    const transport = createMockTransport();
+    const releases: Array<() => void> = [];
+    transport.cancelSession = async id => {
+      await new Promise<void>(resolve => releases.push(resolve));
+      return { summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1" }, agents: [], workspaceGeneration: 0n };
+    };
+    const serving = runNodeGraphCoderDispatcher({ transport, input, output });
+    for (let index = 0; index < 8; index += 1) {
+      input.write(JSON.stringify({ request_id: `control-${index}`, method: "cancel_session", params: { session_id: "session-1" } }) + "\n");
+    }
+    input.write(JSON.stringify({ request_id: "control-overflow", method: "cancel_session", params: { session_id: "session-1" } }) + "\n");
+    const deadline = Date.now() + 500;
+    while (!lines.join("").includes('"request_id":"control-overflow"') && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
+    expect(lines.join("")).toContain('"request_id":"control-overflow"');
+    expect(lines.join("")).toContain('"code":"invalid_input"');
+    for (const release of releases) release();
+    input.end();
+    await serving;
+  });
+
+  test("node entrypoint converts an oversized producer response into a bounded transport error", async () => {
+    const input = new PassThrough();
+    const lines: string[] = [];
+    const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
+    const transport = createMockTransport();
+    transport.listSessions = async () => ({ items: [{ id: "session-1", title: "x".repeat(256), state: "running", updatedAt: "0", rootAgentId: "agent-1" }] });
+    const serving = runNodeGraphCoderDispatcher({ transport, input, output, maximumLineBytes: 128 });
+    input.end(JSON.stringify({ request_id: "large-response", method: "list_sessions", params: {} }) + "\n");
+    await serving;
+    const response = JSON.parse(lines.join("")) as { request_id: string; ok: boolean; error: { code: string } };
+    expect(response).toMatchObject({ request_id: "large-response", ok: false, error: { code: "transport" } });
+    expect(Buffer.byteLength(lines[0]!, "utf8")).toBeLessThanOrEqual(128);
+  });
+
   test("uses a neutral request id when an invalid id cannot be echoed safely", async () => {
     const dispatcher = new GraphCoderWireDispatcher(createMockTransport());
     const response = JSON.parse(await dispatcher.dispatchLine(JSON.stringify({ request_id: "é".repeat(129), method: "unknown", params: {} }))) as { request_id: string; ok: boolean; error: { code: string } };
