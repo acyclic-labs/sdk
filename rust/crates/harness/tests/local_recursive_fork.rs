@@ -879,6 +879,22 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             // compare-and-swap stale. The recovery API must durably retain
             // that known provider result and return the same typed result on
             // a retry with the same operation identity.
+            let child_after_merge = host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &child_project.storage_name()?,
+                )?)
+                .await?;
+            host.apply(
+                &child_after_merge.workspace,
+                Some(&child_after_merge.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/post-merge-child-edit.txt".into(),
+                    bytes: b"post-merge child edit".to_vec(),
+                }],
+                &IdempotencyKey::new("post-merge-child-edit")?,
+            )
+            .await?;
             let terminal_plan = reopened_facade
                 .prepare_project_merge_for_child(
                     host.as_ref(),
