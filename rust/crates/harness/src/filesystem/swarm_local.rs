@@ -60,6 +60,9 @@ pub struct LocalSwarmBindings {
     pub wait_store: Option<Arc<dyn crate::communication::DurableWaitStore>>,
     /// Live cancellation bridge for admitted tasks.
     pub cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
+    /// Owner mediated publication of completed model/tool batches.
+    pub model_batch_publisher:
+        Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
 }
 
 impl LocalSwarmBindings {
@@ -74,20 +77,39 @@ impl LocalSwarmBindings {
             communication_host: Some(host),
             wait_store,
             cancellation,
+            model_batch_publisher: None,
         }
+    }
+
+    /// Adds the authenticated model batch publisher to these bindings.
+    #[must_use]
+    pub fn with_model_batch_publisher(
+        mut self,
+        publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
+    ) -> Self {
+        self.model_batch_publisher = Some(publisher);
+        self
     }
 
     fn tools(&self) -> Result<LocalHarnessTools> {
         let Some(host) = self.communication_host.clone() else {
-            return Ok(LocalHarnessTools::new());
+            let tools = LocalHarnessTools::new();
+            return Ok(match &self.model_batch_publisher {
+                Some(publisher) => tools.with_batch_publisher(publisher.clone()),
+                None => tools,
+            });
         };
-        Ok(LocalHarnessTools::from_registry(
+        let tools = LocalHarnessTools::from_registry(
             crate::communication_tools::communication_tools_with_wait_store_and_cancellation(
                 host,
                 self.wait_store.clone(),
                 self.cancellation.clone(),
             )?,
-        ))
+        );
+        Ok(match &self.model_batch_publisher {
+            Some(publisher) => tools.with_batch_publisher(publisher.clone()),
+            None => tools,
+        })
     }
 }
 
