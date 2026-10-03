@@ -44,6 +44,14 @@
     "./grpc": {
       "default": "./dist/v2-grpc.js",
       "types": "./dist/v2-grpc.d.ts"
+    },
+    "./platform": {
+      "types": "./dist/platform.d.ts",
+      "default": "./dist/platform.js"
+    },
+    "./wasm": {
+      "types": "./dist/wasm-runtime.d.ts",
+      "default": "./dist/wasm-runtime.js"
     }
   },
   "types": "./dist/index.d.ts",
