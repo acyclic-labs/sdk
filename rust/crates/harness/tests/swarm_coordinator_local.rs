@@ -2,10 +2,11 @@
 
 use acyclic_harness::{
     Capabilities, IdempotencyKey, OperationId, Result,
-    conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{FileDescriptor, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::{CoordinatorApply, DistributedCoordinator},
     resources::ProviderRef,
+    runtime::{TaskAdmissionRecord, TaskRunLimits},
     scheduler::{
         DurableOwner, EntrypointRef, OperationSpec, Orchestration, Reservation,
         canonical_swarm_resources,
@@ -14,18 +15,29 @@ use acyclic_harness::{
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::future::join_all;
-use serde_json::Value;
-use std::{collections::BTreeSet, sync::Arc};
+use serde_json::json;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use tempfile::tempdir;
 
-struct ContentVerifier;
+struct ContentVerifier {
+    contents: Arc<BTreeMap<String, Vec<u8>>>,
+}
 
 impl acyclic_harness::conversation::ContentResidencyVerifier for ContentVerifier {
     fn verify<'a>(
         &'a self,
         reference: &'a FileRef,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(async move { reference.descriptor().verify(b"null") })
+        Box::pin(async move {
+            let bytes = self
+                .contents
+                .get(reference.path())
+                .ok_or_else(|| acyclic_harness::Error::NotFound(reference.path().into()))?;
+            reference.descriptor().verify(bytes)
+        })
     }
 
     fn read<'a>(
@@ -33,13 +45,40 @@ impl acyclic_harness::conversation::ContentResidencyVerifier for ContentVerifier
         reference: &'a FileRef,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>>> + Send + 'a>> {
         Box::pin(async move {
-            reference.descriptor().verify(b"null")?;
-            Ok(b"null".to_vec())
+            let bytes = self
+                .contents
+                .get(reference.path())
+                .ok_or_else(|| acyclic_harness::Error::NotFound(reference.path().into()))?;
+            reference.descriptor().verify(bytes)?;
+            Ok(bytes.clone())
         })
     }
 }
 
-fn state_ref() -> Result<FileRef> {
+fn admission(operation_id: OperationId) -> Result<TaskAdmissionRecord> {
+    TaskAdmissionRecord::from_parts(
+        operation_id,
+        "example.task",
+        "1",
+        json!(7),
+        json!({"type":"integer"}),
+        json!({"type":"string"}),
+        &BTreeSet::new(),
+        &[9; 32],
+        None,
+        Capabilities::new([] as [&str; 0]),
+        Limits::default(),
+        TaskRunLimits::default(),
+        None,
+        None,
+        None,
+    )
+}
+
+fn state_ref(admission: &TaskAdmissionRecord) -> Result<(FileRef, Vec<u8>)> {
+    let bytes = serde_json::to_vec(&admission.canonical_value())
+        .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    let path = format!("state/admission-{}.json", admission.operation_id);
     let volume = VolumeRef::new(
         ProviderRef::new("test", "filesystem", "2")?,
         "project",
@@ -48,11 +87,12 @@ fn state_ref() -> Result<FileRef> {
     )?;
     FileRef::new(
         volume,
-        "state/initial.json",
+        path,
         "generation-1",
-        FileDescriptor::from_bytes(b"null", "application/json")?,
-        "initial.json",
+        FileDescriptor::from_bytes(&bytes, "application/json")?,
+        "admission.json",
     )
+    .map(|reference| (reference, bytes))
 }
 
 fn owner() -> Authority {
@@ -62,16 +102,20 @@ fn owner() -> Authority {
     }
 }
 
-fn child_spec(operation_id: OperationId) -> Result<OperationSpec> {
+fn child_spec(
+    operation_id: OperationId,
+    admission: &TaskAdmissionRecord,
+    state: FileRef,
+) -> Result<OperationSpec> {
     Ok(OperationSpec {
         operation_id,
         parent: None,
         owner: DurableOwner::Detached { authority: owner() },
         entrypoint: EntrypointRef {
-            name: "example.task".into(),
-            version: "1".into(),
-            digest: [2; 32],
-            result_schema: Value::Object(Default::default()),
+            name: admission.task.name.clone(),
+            version: admission.task.version.clone(),
+            digest: admission.task.digest,
+            result_schema: admission.output_schema.clone(),
         },
         dependencies: BTreeSet::new(),
         resources: canonical_swarm_resources(SwarmResourceRequest {
@@ -81,7 +125,7 @@ fn child_spec(operation_id: OperationId) -> Result<OperationSpec> {
         }),
         placement: Default::default(),
         orchestration: Orchestration::Leaf,
-        state: state_ref()?,
+        state,
     })
 }
 
@@ -89,23 +133,34 @@ fn child_spec(operation_id: OperationId) -> Result<OperationSpec> {
 async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen_replayed() {
     let root = tempdir().expect("temporary root");
     let stream_path = root.path().join("stream");
+    let operation_id = OperationId::new();
+    let session_id = OperationId::new();
+    let child_admission = admission(operation_id).expect("child admission");
+    let session_admission = admission(session_id).expect("session admission");
+    let (child_state, child_bytes) = state_ref(&child_admission).expect("child state");
+    let (session_state, session_bytes) = state_ref(&session_admission).expect("session state");
+    let contents = Arc::new(BTreeMap::from([
+        (child_state.path().to_owned(), child_bytes),
+        (session_state.path().to_owned(), session_bytes),
+    ]));
     let initial_client = StreamClient::new(Arc::new(
         LocalStream::open(&stream_path, LocalStreamLimits::default())
             .await
             .expect("local stream provider"),
     ));
-    let verifier = Arc::new(ContentVerifier);
+    let verifier = Arc::new(ContentVerifier {
+        contents: contents.clone(),
+    });
     let mut coordinator = DistributedCoordinator::open(&initial_client, verifier.clone())
         .await
         .expect("open coordinator");
-    let operation_id = OperationId::new();
-    let session_id = OperationId::new();
     let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner());
     let scope = issuer.root(
         "swarm",
         Capabilities::new(["operation:declare", "operation:admit"]),
     );
-    let mut session_spec = child_spec(session_id).expect("session spec");
+    let mut session_spec =
+        child_spec(session_id, &session_admission, session_state.clone()).expect("session spec");
     session_spec.resources = Default::default();
     coordinator
         .declare_operation(
@@ -122,7 +177,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
             &owner(),
             &scope,
             &issuer.verifier(),
-            child_spec(operation_id).expect("spec"),
+            child_spec(operation_id, &child_admission, child_state.clone()).expect("spec"),
             IdempotencyKey::new("declare-child").expect("key"),
         )
         .await
@@ -136,18 +191,18 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         max_output_bytes: 128,
         max_execution_time_ms: 200,
     };
-    let request = SwarmForkRequest {
-        operation_id,
-        idempotency_key: IdempotencyKey::new("fork-child").expect("fork key"),
-        parent_operation_id: None,
-        depth: 1,
-        resources: SwarmResourceRequest {
+    let request = SwarmForkRequest::from_task_admission(
+        &child_admission,
+        IdempotencyKey::new("fork-child").expect("fork key"),
+        None,
+        1,
+        SwarmResourceRequest {
             model_steps: 4,
             output_bytes: 64,
             execution_time_ms: 100,
         },
-        admission_digest: Some(*blake3::hash(&operation_id.into_bytes()).as_bytes()),
-    };
+    )
+    .expect("canonical fork request");
     let reservation = Reservation {
         id: "lease-child".into(),
         placement: "worker".into(),
@@ -155,7 +210,9 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
     };
     let coordinators = join_all((0..16).map(|_| {
         let stream_path = stream_path.clone();
-        let verifier = verifier.clone();
+        let verifier = Arc::new(ContentVerifier {
+            contents: contents.clone(),
+        });
         async move {
             let provider = LocalStream::open(stream_path, LocalStreamLimits::default())
                 .await
@@ -185,7 +242,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
                     limits,
                     SwarmOwnerFence::new("owner", 0).expect("owner fence"),
                     request,
-                    state_ref().expect("admission reference"),
+                    child_state.clone(),
                     reservation,
                 )
                 .await
@@ -207,7 +264,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         .await
         .expect("reopen local stream provider");
     let client = StreamClient::new(Arc::new(provider));
-    let reopened = DistributedCoordinator::open(&client, Arc::new(ContentVerifier))
+    let reopened = DistributedCoordinator::open(&client, Arc::new(ContentVerifier { contents }))
         .await
         .expect("reopen coordinator");
     let usage = reopened

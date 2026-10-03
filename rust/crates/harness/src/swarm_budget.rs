@@ -1181,6 +1181,11 @@ fn update_usage(
     if reservation.state != SwarmReservationState::Active {
         return Err(Error::Conflict("swarm child is not active".into()));
     }
+    if complete && has_live_descendant(state, operation_id) {
+        return Err(Error::Conflict(
+            "swarm child with live descendants cannot complete".into(),
+        ));
+    }
     let delta = usage.checked_delta(reservation.usage)?;
     if usage.model_steps > reservation.resources.model_steps
         || usage.output_bytes > reservation.resources.output_bytes
@@ -1234,6 +1239,52 @@ fn update_usage(
     }
     state.reservations.insert(operation_id, reservation.clone());
     Ok(reservation.clone())
+}
+
+fn has_live_descendant(state: &SwarmBudgetState, operation_id: OperationId) -> bool {
+    let mut pending = state
+        .reservations
+        .values()
+        .filter(|reservation| {
+            reservation.parent_operation_id == Some(operation_id)
+                && matches!(
+                    reservation.state,
+                    SwarmReservationState::Reserved | SwarmReservationState::Active
+                )
+        })
+        .map(|reservation| reservation.operation_id)
+        .collect::<Vec<_>>();
+    while let Some(candidate) = pending.pop() {
+        if state.reservations.values().any(|reservation| {
+            reservation.parent_operation_id == Some(candidate)
+                && matches!(
+                    reservation.state,
+                    SwarmReservationState::Reserved | SwarmReservationState::Active
+                )
+        }) {
+            return true;
+        }
+        pending.extend(
+            state
+                .reservations
+                .values()
+                .filter(|reservation| {
+                    reservation.parent_operation_id == Some(candidate)
+                        && matches!(
+                            reservation.state,
+                            SwarmReservationState::Reserved | SwarmReservationState::Active
+                        )
+                })
+                .map(|reservation| reservation.operation_id),
+        );
+    }
+    state.reservations.values().any(|reservation| {
+        reservation.parent_operation_id == Some(operation_id)
+            && matches!(
+                reservation.state,
+                SwarmReservationState::Reserved | SwarmReservationState::Active
+            )
+    })
 }
 
 #[cfg(test)]
@@ -1434,6 +1485,31 @@ mod tests {
             execution_time_ms: 500,
         };
         assert!(budget.reserve_child(sibling).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parent_completion_waits_for_live_descendants() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let parent = budget.reserve_child(request(1, None))?.reservation;
+        budget.activate(
+            parent.operation_id,
+            owner(0),
+            publication(parent.operation_id, None),
+        )?;
+        let child = budget
+            .reserve_child(request(2, Some(parent.operation_id)))?
+            .reservation;
+        budget.activate(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, Some(parent.operation_id)),
+        )?;
+        assert!(
+            budget
+                .complete(parent.operation_id, &owner(0), SwarmUsage::default())
+                .is_err()
+        );
         Ok(())
     }
 

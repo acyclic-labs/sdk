@@ -1067,6 +1067,11 @@ impl Scheduler {
                 reducer,
                 reduction_digest,
             } => {
+                if self.has_swarm_lifecycle(operation_id)? {
+                    return Err(Error::Conflict(
+                        "swarm operations require compound lifecycle transitions".into(),
+                    ));
+                }
                 if let Outcome::Succeeded(reference) = &outcome {
                     reference.validate()?;
                 }
@@ -1198,6 +1203,13 @@ impl Scheduler {
                 "swarm budget session must bind its declared root owner".into(),
             ));
         }
+        if session_operation.phase == OperationPhase::Terminal
+            || session_operation.cancellation_requested
+        {
+            return Err(Error::Conflict(
+                "terminal or cancelled swarm session cannot admit children".into(),
+            ));
+        }
         let budget = if first {
             SwarmBudget::new(session_id, owner.clone(), limits)?
         } else {
@@ -1303,6 +1315,12 @@ impl Scheduler {
         if root_operation.spec.parent.is_some() {
             return Err(Error::Unauthorized(
                 "root usage requires the session root operation".into(),
+            ));
+        }
+        if root_operation.phase == OperationPhase::Terminal || root_operation.cancellation_requested
+        {
+            return Err(Error::Conflict(
+                "terminal or cancelled swarm session cannot report usage".into(),
             ));
         }
         budget.report_root_usage(&owner, usage)?;
@@ -1418,6 +1436,7 @@ impl Scheduler {
         owner: SwarmOwnerFence,
     ) -> Result<()> {
         let mut budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let terminal_frontier = frontier.clone();
         for operation_id in frontier.into_iter().rev() {
             // A running or reconciling operation keeps its budget lease until
             // a fenced completion/cancellation acknowledgement arrives. The
@@ -1445,6 +1464,14 @@ impl Scheduler {
                 owner: owner.clone(),
             });
         }
+        for operation_id in terminal_frontier {
+            if self.operations.get(&operation_id).is_some_and(|operation| {
+                operation.phase == OperationPhase::Terminal
+                    && operation.outcome == Some(Outcome::Cancelled)
+            }) {
+                self.close_cancelled_ancestors(operation_id, &mut budget)?;
+            }
+        }
         Ok(())
     }
 
@@ -1468,6 +1495,15 @@ impl Scheduler {
                 "swarm takeover generation does not advance exactly once".into(),
             ));
         }
+        let root = self
+            .operations
+            .get(&session_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {session_id}")))?;
+        if root.phase == OperationPhase::Terminal || root.cancellation_requested {
+            return Err(Error::Conflict(
+                "terminal or cancelled swarm session cannot be taken over".into(),
+            ));
+        }
         let observed = budget.takeover(expected_owner, owner.clone())?;
         if observed != owner {
             return Err(Error::Conflict(
@@ -1476,6 +1512,11 @@ impl Scheduler {
         }
         self.swarm_events
             .push(SwarmBudgetEvent::OwnerTakenOver { owner });
+        let root = self.mutable(session_id)?;
+        root.revision = root
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
         Ok(())
     }
 
@@ -1695,6 +1736,30 @@ impl Scheduler {
         self.operations
             .get_mut(&id)
             .ok_or_else(|| Error::NotFound(format!("operation {id}")))
+    }
+
+    pub(crate) fn has_swarm_lifecycle(&self, operation_id: OperationId) -> Result<bool> {
+        if self.swarm_events.is_empty() {
+            return Ok(false);
+        }
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        if budget.descriptor()?.0 == operation_id
+            || budget.reservation(operation_id)?.is_some()
+            || self
+                .operations
+                .get(&operation_id)
+                .is_some_and(|operation| contains_swarm_resource(&operation.spec.resources))
+        {
+            return Ok(true);
+        }
+        Ok(self.children(operation_id).any(|(_, child)| {
+            budget
+                .reservation(child.spec.operation_id)
+                .ok()
+                .flatten()
+                .is_some()
+                || contains_swarm_resource(&child.spec.resources)
+        }))
     }
 
     fn dependencies_succeeded(&self, operation: &OperationState) -> bool {

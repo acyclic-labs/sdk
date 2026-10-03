@@ -562,22 +562,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "orchestration decisions require coordinator-owned materialization".into(),
             ));
         }
-        if contains_swarm_resource(
-            &self
-                .scheduler
-                .operation(operation_id)
-                .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?
-                .spec
-                .resources,
-        ) && matches!(
-            &event,
-            SchedulerEvent::Admitted { .. }
-                | SchedulerEvent::Started { .. }
-                | SchedulerEvent::Checkpointed { .. }
-                | SchedulerEvent::LeaseReleased { .. }
-                | SchedulerEvent::CancellationRequested { .. }
-                | SchedulerEvent::Completed { .. }
-        ) {
+        if self.scheduler.has_swarm_lifecycle(operation_id)?
+            && matches!(
+                &event,
+                SchedulerEvent::Admitted { .. }
+                    | SchedulerEvent::Started { .. }
+                    | SchedulerEvent::Checkpointed { .. }
+                    | SchedulerEvent::LeaseReleased { .. }
+                    | SchedulerEvent::CancellationRequested { .. }
+                    | SchedulerEvent::Completed { .. }
+            )
+        {
             return Err(Error::Unauthorized(
                 "swarm operations require authenticated swarm lifecycle APIs".into(),
             ));
@@ -645,6 +640,26 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if expected_parent != request.parent_operation_id {
             return Err(Error::Conflict(
                 "swarm parent does not match scheduler declaration".into(),
+            ));
+        }
+        let stored_admission =
+            TaskAdmissionRecord::from_canonical_value(self.load_json(&admission_reference).await?)?;
+        let admission_digest =
+            crate::contract::canonical_json_digest(&stored_admission.canonical_value())?;
+        if request.admission_digest != Some(admission_digest)
+            || stored_admission.operation_id != operation_id
+            || stored_admission.dependencies != operation.spec.dependencies
+            || stored_admission.task.name != operation.spec.entrypoint.name
+            || stored_admission.task.version != operation.spec.entrypoint.version
+            || stored_admission.task.digest != operation.spec.entrypoint.digest
+            || stored_admission.output_schema != operation.spec.entrypoint.result_schema
+            || stored_admission
+                .parent
+                .map(|parent| OperationId::from_bytes(parent.into_bytes()))
+                != expected_parent
+        {
+            return Err(Error::Conflict(
+                "swarm admission reference is not the host-issued declaration".into(),
             ));
         }
         self.apply_internal(
