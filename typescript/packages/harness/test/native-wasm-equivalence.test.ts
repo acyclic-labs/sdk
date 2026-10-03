@@ -87,6 +87,7 @@ function nativeLimits(): NativeLimitsWire {
     model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
     tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step),
     context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  };
 }
 
 async function modelFile(contracts: NativeContracts, level: string, text: string): Promise<FileRef> {
@@ -104,9 +105,9 @@ function wireFile(file: FileRef): WasmFileRefWire {
 
 const tool = {
   name: "lookup", revision: "1", description: "read one pinned child input",
-  input_schema: { type: "object", additionalProperties: false, properties: { level: { type: "integer" } } },
-  output_schema: { type: "object", additionalProperties: false, properties: { accepted: { type: "boolean" } } },
-  model_output_schema: { type: "object", additionalProperties: false, properties: { accepted: { type: "boolean" } } },
+  input_schema: { type: "object", additionalProperties: false, properties: { level: { type: "integer" }, note: { type: "string" } } },
+  output_schema: { type: "object", additionalProperties: false, properties: { accepted: { type: "boolean" }, text: { type: "string" }, level: { type: "integer" }, output: { type: "string" } } },
+  model_output_schema: { type: "object", additionalProperties: false, properties: { accepted: { type: "boolean" }, text: { type: "string" }, level: { type: "integer" }, output: { type: "string" } } },
 } as const;
 
 function rootMessages(file: FileRef): WasmModelMessageWire[] {
@@ -183,7 +184,7 @@ test("recursive model requests retain exact parent prefixes through raw WASM and
     expect(manifest.version).toBe(3);
     expect(manifest.messages.map(message => message.position)).toEqual(decoded.messages.map((_message, position) => position));
     expect(manifest.messages.flatMap(message => message.files).length).toBeGreaterThan(0);
-    expect(raw.manifest_json).toContain(`level-${level === 0 ? "root" : String(level)}.txt`);
+    expect(raw.manifest_json).toContain(`level-${["root", "one", "two", "three"][level]}.txt`);
 
     if (level === 3) break;
     const parent = current;
@@ -237,7 +238,7 @@ function modelBoundaryRequest(files: readonly FileRef[]): ForkRequestWithModelBo
     selections: [
       { required: true, revision: { kind: "history", reference: { kind: "stream", provider: stream, key: [...new TextEncoder().encode("harness/v2/conversations/parent")], version: "3" } } },
       { required: true, revision: { kind: "project", reference: {
-        volume: { provider: filesystem, id: "child-project", class: "project", owner: { kind: "project", id: "project" } },
+        volume: { provider: filesystem, id: "parent-project", class: "project", owner: { kind: "project", id: "project" } },
         generation: { kind: "generation", provider: filesystem, key: [2], version: null },
       } } },
     ],
