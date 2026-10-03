@@ -297,6 +297,10 @@ async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
     SwarmBudgetJournal::start(&client, session, owner, race_limits)
         .await
         .expect("start budget");
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("tail before same-operation race");
     let journals = join_all((0..16).map(|_| SwarmBudgetJournal::open(&client, session)))
         .await
         .into_iter()
@@ -317,6 +321,14 @@ async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
         .iter()
         .filter(|result| matches!(result, Ok(receipt) if receipt.replayed))
         .count();
+    assert_eq!(
+        stream
+            .tail()
+            .await
+            .expect("tail after same-operation race"),
+        tail_before + 1,
+        "same idempotency identity must append exactly one durable record"
+    );
     assert_eq!(applied, 1);
     assert_eq!(replayed, 15);
     let journal = SwarmBudgetJournal::open(&client, session)
