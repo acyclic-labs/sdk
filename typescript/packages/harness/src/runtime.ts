@@ -1378,8 +1378,9 @@ function publicToolHandle<Input, Output>(registered: RegisteredTool<Input, Outpu
   const erased = eraseRegisteredTool(registered);
   const cached = publicToolHandles.get(erased);
   if (cached !== undefined) return restoreToolRef<Input, Output>(cached);
-  const { name, revision, description, inputSchema, outputSchema } = registered.definition;
-  const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema }),
+  const { name, revision, description, inputSchema, outputSchema, modelOutputSchema } = registered.definition;
+  const handle = Object.freeze({ definition: Object.freeze({ name, revision, description, inputSchema, outputSchema,
+    modelOutputSchema: modelOutputSchema ?? outputSchema }),
     ...(registered.machine ? { machine: registered.machine } : {}) }) as ToolRef<Input, Output>;
   publicToolHandles.set(erased, handle as unknown as ErasedToolRef);
   return handle;
@@ -1671,13 +1672,15 @@ export class HarnessBuilder {
     }
     this.contracts.encodeCanonicalJson(definition.inputSchema);
     this.contracts.encodeCanonicalJson(definition.outputSchema);
+    this.contracts.encodeCanonicalJson(definition.modelOutputSchema ?? definition.outputSchema);
     this.contracts.validateToolDefinition(definition);
     const key = toolKey(definition.name, definition.revision);
     if (this.#tools.has(key)) throw new Error(`conflicting registration for ${key}`);
     const previouslyRegistered = [...this.#tools.values()].some(tool => tool.definition.name === definition.name);
     const pinned = Object.freeze({ ...definition,
       inputSchema: freezeSchema(structuredClone(definition.inputSchema)),
-      outputSchema: freezeSchema(structuredClone(definition.outputSchema)) });
+      outputSchema: freezeSchema(structuredClone(definition.outputSchema)),
+      modelOutputSchema: freezeSchema(structuredClone(definition.modelOutputSchema ?? definition.outputSchema)) });
     this.#tools.set(key, eraseRegisteredTool(Object.freeze({ definition: pinned,
       ...(executor ? { executor } : {}), ...(machine ? { machine } : {}) })));
     this.#toolSources.set(key, eraseToolDefinition(definition));
@@ -2205,6 +2208,7 @@ export class AgentHarness {
           description: tool.definition.description,
           input_schema: tool.definition.inputSchema,
           output_schema: tool.definition.outputSchema,
+          model_output_schema: tool.definition.modelOutputSchema ?? tool.definition.outputSchema,
         },
         invocation: { call_id: callId, name: invocation.name, arguments: admittedInput },
       });
@@ -2231,9 +2235,15 @@ export class AgentHarness {
     const registered = restoreRegisteredTool<Input, Output>(erased);
     if (publicToolHandle(registered) !== tool) throw new Error("tool definition is not registered or no longer active");
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
-    if (registered.definition.handler) return publishOutput(await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput));
+    if (registered.definition.handler) {
+      const value = await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput);
+      this.contracts.validateToolProjection(registered.definition, { value });
+      return publishOutput(value);
+    }
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
-    return publishOutput((await registered.executor.execute(invocation)).value);
+    const result = await registered.executor.execute(invocation);
+    this.contracts.validateToolProjection(registered.definition, result);
+    return publishOutput(result.value);
   }
   async callDurable<Input, Output>(operationId: OperationId, tool: ToolRef<Input, Output>, input: Input,
     taskId: RuntimeTaskId, signal = new AbortController().signal): Promise<Outcome<Output, OperationId>> {
@@ -2244,9 +2254,9 @@ export class AgentHarness {
     // The owner host independently re-evaluates the pinned policy and routes any
     // exact-action approval through its journal; a caller-side decision grants nothing.
     const outcome = await this.state.executeTool(taskId, operationId, tool, parsedInput, this);
-    return outcome.kind === "succeeded"
-      ? { kind: "succeeded", value: publishOutput(outcome.value) }
-      : outcome;
+    if (outcome.kind !== "succeeded") return outcome;
+    this.contracts.validateToolProjection(tool.definition, { value: outcome.value });
+    return { kind: "succeeded", value: publishOutput(outcome.value) };
   }
   canReconcileSelectedTurn(): boolean { return this.host?.executeSelectedTurn !== undefined; }
   async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {

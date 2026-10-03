@@ -149,6 +149,11 @@ pub enum ExecutionEvent {
         invocation: FileRef,
         /// Stable reason without provider exception text or credentials.
         reason: ToolRejectionKind,
+        /// Optional pinned model-visible feedback for recoverable argument
+        /// rejection. This reference binds the feedback to the durable
+        /// rejection record instead of trusting model JSON by itself.
+        #[serde(default)]
+        feedback: Option<FileRef>,
     },
     /// Tool dispatch is about to begin.
     ToolStarted {
@@ -693,9 +698,22 @@ impl StockExecutor {
         step: u32,
         invocation: &ToolInvocation,
         reason: ToolRejectionKind,
+        feedback: Option<&crate::tool::ToolRejectionFeedback>,
     ) -> Result<()> {
         let key = format!("tool:{step}:{}:rejected", invocation.call_id);
         let reference = stage_json(journal, operation, &key, invocation).await?;
+        let feedback = match feedback {
+            Some(feedback) => Some(
+                stage_json(
+                    journal,
+                    operation,
+                    &format!("tool:{step}:{}:rejection-feedback", invocation.call_id),
+                    feedback,
+                )
+                .await?,
+            ),
+            None => None,
+        };
         journal
             .append(
                 operation,
@@ -704,6 +722,7 @@ impl StockExecutor {
                     step,
                     invocation: reference,
                     reason,
+                    feedback,
                 },
             )
             .await
@@ -730,7 +749,26 @@ impl StockExecutor {
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
         let mut request: ModelRequest = load_json(journal, request_file).await?;
         request.messages.extend_from_slice(completed);
-        let boundary = crate::model_input::CompletedModelBoundary::capture(request, self.limits)?;
+        let mut rejections = Vec::new();
+        for record in &records {
+            let ExecutionEvent::ToolAdmissionRejected {
+                step: rejected_step,
+                reason: ToolRejectionKind::InvalidArguments,
+                feedback: Some(feedback),
+                ..
+            } = &record.event
+            else {
+                continue;
+            };
+            if *rejected_step == step {
+                rejections.push(load_json(journal, feedback).await?);
+            }
+        }
+        let boundary = crate::model_input::CompletedModelBoundary::capture_with_rejections(
+            request,
+            self.limits,
+            &rejections,
+        )?;
         let key = format!("model:{step}:completed-batch");
         let reference = stage_json(journal, operation, &key, &boundary).await?;
         journal
@@ -925,6 +963,7 @@ impl StockExecutor {
                 step,
                 &invocation,
                 ToolRejectionKind::UnknownTool,
+                None,
             )
             .await?;
             return Err(Error::NotFound(format!("tool {}", invocation.name)));
@@ -942,6 +981,7 @@ impl StockExecutor {
                 step,
                 &invocation,
                 ToolRejectionKind::Unauthorized,
+                None,
             )
             .await?;
             return Err(Error::Unauthorized(format!("scope lacks {capability}")));
@@ -953,6 +993,7 @@ impl StockExecutor {
                 step,
                 &invocation,
                 ToolRejectionKind::ResourceDenied,
+                None,
             )
             .await?;
             return Err(error);
@@ -969,18 +1010,19 @@ impl StockExecutor {
             &invocation.arguments,
             "tool input",
         ) {
+            let feedback = ToolRejectionFeedback::invalid_arguments(
+                &invocation,
+                &tool.definition.input_schema,
+            )?;
             self.record_tool_rejection(
                 journal,
                 operation_id,
                 step,
                 &invocation,
                 ToolRejectionKind::InvalidArguments,
+                Some(&feedback),
             )
             .await?;
-            let feedback = ToolRejectionFeedback::invalid_arguments(
-                &invocation,
-                &tool.definition.input_schema,
-            )?;
             let message = ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -1061,6 +1103,7 @@ impl StockExecutor {
                                 step,
                                 &invocation,
                                 ToolRejectionKind::PolicyDenied,
+                                None,
                             )
                             .await?;
                             return Err(Error::Unauthorized(reason));

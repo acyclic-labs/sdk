@@ -4,6 +4,7 @@ use crate::{
     executor::{ExecutionRecord, load_json},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRequest, ModelRole},
     model_input::CompletedModelBoundary,
+    tool::{ToolInvocation, ToolResult},
 };
 
 struct HistoryMessage {
@@ -18,6 +19,7 @@ struct HistoryMessage {
 struct HistoryBatch {
     step: u32,
     messages: Vec<ModelMessage>,
+    tools: Vec<crate::tool::ToolDefinition>,
 }
 
 impl HistoryMessage {
@@ -202,6 +204,7 @@ where
             history.push(HistoryBatch {
                 step: *step,
                 messages: suffix.to_vec(),
+                tools: original.tools,
             });
         }
         Ok(history)
@@ -249,6 +252,7 @@ where
                         &path,
                         message,
                         records,
+                        &batch.tools,
                         &mut calls,
                     )
                     .await?,
@@ -271,7 +275,8 @@ where
         path: &str,
         message: &ModelMessage,
         records: &[ExecutionRecord],
-        calls: &mut BTreeMap<String, (Uuid, String)>,
+        tools: &[crate::tool::ToolDefinition],
+        calls: &mut BTreeMap<String, (Uuid, crate::tool::ToolInvocation)>,
     ) -> Result<HistoryMessage> {
         let id = Uuid::from_bytes(publication.into_bytes());
         let (kind, content, attachments, reply_to, call_id) =
@@ -292,9 +297,6 @@ where
                         arguments,
                     }),
                 ) => {
-                    if calls.insert(call_id.clone(), (id, name.clone())).is_some() {
-                        return Err(Error::Storage("duplicate completed call identity".into()));
-                    }
                     let invocation = ToolInvocation::for_model_call(
                         operation,
                         step,
@@ -302,6 +304,12 @@ where
                         name.clone(),
                         arguments.clone(),
                     );
+                    if calls
+                        .insert(call_id.clone(), (id, invocation.clone()))
+                        .is_some()
+                    {
+                        return Err(Error::Storage("duplicate completed call identity".into()));
+                    }
                     (
                         MessageKind::ToolCall,
                         self.stage_history_json(operation, &format!("{path}.json"), &invocation)
@@ -319,14 +327,14 @@ where
                         value,
                     }),
                 ) => {
-                    let (call, called_name) = calls
+                    let (call, invocation) = calls
                         .get(call_id)
                         .ok_or_else(|| Error::Storage("completed result lacks call".into()))?;
-                    if called_name != name {
+                    if invocation.name != *name {
                         return Err(Error::Conflict("completed result changed tool".into()));
                     }
                     let (result, projection) = self
-                        .history_result(operation, step, call_id, path, value, records)
+                        .history_result(operation, step, invocation, path, value, tools, records)
                         .await?;
                     (
                         MessageKind::ToolResult,
@@ -414,9 +422,10 @@ where
         &self,
         operation: OperationId,
         step: u32,
-        call_id: &str,
+        invocation: &ToolInvocation,
         path: &str,
         value: &Value,
+        tools: &[crate::tool::ToolDefinition],
         records: &[ExecutionRecord],
     ) -> Result<(FileRef, FileRef)> {
         if let Some((result, projection)) = records.iter().find_map(|record| match &record.event {
@@ -425,19 +434,104 @@ where
                 call_id: call,
                 result,
                 projection,
-            } if *candidate == step && call == call_id => Some((result, projection)),
+            } if *candidate == step && call == &invocation.call_id => Some((result, projection)),
             _ => None,
         }) {
+            let definition = tools
+                .iter()
+                .find(|definition| definition.name == invocation.name)
+                .ok_or_else(|| {
+                    Error::Storage("completed result lacks pinned tool definition".into())
+                })?;
+            let actual_result: Value = load_json(self.journal.as_ref(), result).await?;
+            crate::tool::validate_value(
+                &definition.output_schema,
+                &actual_result,
+                "durable tool result",
+            )?;
             let actual: Value = load_json(self.journal.as_ref(), projection).await?;
             if &actual != value {
                 return Err(Error::Conflict(
                     "completed result changed its projection".into(),
                 ));
             }
+            crate::tool::validate_value(
+                &definition.model_output_schema,
+                &actual,
+                "durable tool projection",
+            )?;
             return Ok((result.clone(), projection.clone()));
         }
-        // Rejection/failure feedback is already part of the pinned complete exchange.
-        // It is an observation, not a successful effect result.
+        let mut rejection = None;
+        for record in records {
+            let ExecutionEvent::ToolAdmissionRejected {
+                step: candidate,
+                invocation: rejected,
+                reason: crate::executor::ToolRejectionKind::InvalidArguments,
+                feedback,
+            } = &record.event
+            else {
+                continue;
+            };
+            if *candidate != step {
+                continue;
+            }
+            let candidate_invocation: ToolInvocation =
+                load_json(self.journal.as_ref(), rejected).await?;
+            if candidate_invocation.call_id != invocation.call_id {
+                continue;
+            }
+            if candidate_invocation != *invocation {
+                return Err(Error::Conflict(
+                    "rejection record changed its model invocation".into(),
+                ));
+            }
+            if rejection.is_some() {
+                return Err(Error::Storage(
+                    "duplicate invalid-argument rejection for model call".into(),
+                ));
+            }
+            rejection = Some(feedback.clone());
+        }
+        let Some(feedback) = rejection else {
+            return Err(Error::Storage(
+                "completed result lacks durable admission outcome".into(),
+            ));
+        };
+        let feedback = feedback.as_ref().ok_or_else(|| {
+            Error::Storage("invalid-argument rejection lacks durable feedback".into())
+        })?;
+        let durable: crate::tool::ToolRejectionFeedback =
+            load_json(self.journal.as_ref(), feedback).await?;
+        let definition = tools
+            .iter()
+            .find(|definition| definition.name == invocation.name)
+            .ok_or_else(|| Error::Storage("rejection lacks pinned tool definition".into()))?;
+        let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
+            invocation,
+            &definition.input_schema,
+        )?;
+        if durable != expected {
+            return Err(Error::Conflict(
+                "rejection feedback is not bound to the durable invocation".into(),
+            ));
+        }
+        let Some(model_feedback) = crate::tool::ToolRejectionFeedback::from_model_value(value)?
+        else {
+            return Err(Error::Conflict(
+                "model rejection result lacks durable feedback envelope".into(),
+            ));
+        };
+        if model_feedback != durable {
+            return Err(Error::Conflict(
+                "model rejection feedback differs from durable feedback".into(),
+            ));
+        }
+        crate::tool::validate_value(
+            &definition.model_output_schema,
+            value,
+            "durable rejection projection",
+        )?;
         Ok((
             self.stage_history_json(
                 operation,

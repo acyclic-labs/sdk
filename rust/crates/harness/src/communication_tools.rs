@@ -121,6 +121,19 @@ impl From<MessageToolTarget> for MessageTarget {
     }
 }
 
+fn wait_cancellation_id(operation_id: crate::OperationId) -> crate::OperationId {
+    let digest = blake3::hash(
+        &[
+            b"harness:wait-cancellation:v1".as_slice(),
+            operation_id.into_bytes().as_slice(),
+        ]
+        .concat(),
+    );
+    let mut identity = [0_u8; 16];
+    identity.copy_from_slice(&digest.as_bytes()[..16]);
+    crate::OperationId::from_bytes(identity)
+}
+
 /// Exact arguments accepted by the message tool.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -335,6 +348,80 @@ struct CommunicationExecutor {
 }
 
 impl CommunicationExecutor {
+    async fn execute_for_task(
+        &self,
+        waiter: TaskId,
+        operation_id: crate::OperationId,
+        invocation: ToolInvocation,
+    ) -> Result<ToolResult> {
+        invocation.validate()?;
+        let expected_name = match self.kind {
+            CommunicationToolKind::Message => MESSAGE_TOOL_NAME,
+            CommunicationToolKind::Wait => WAIT_TOOL_NAME,
+        };
+        if invocation.name != expected_name {
+            return Err(Error::Conflict(
+                "communication invocation names another tool".into(),
+            ));
+        }
+        // Admission observation is the owner-authenticated boundary for the
+        // model batch path.  ModelToolContext carries only turn provenance;
+        // deriving the durable task identity is safe here because the host
+        // must reject an uncommitted or mismatched task before any effect.
+        self.host.observe_admission(waiter).await?;
+        match self.kind {
+            CommunicationToolKind::Message => {
+                let input: MessageToolInput = serde_json::from_value(invocation.arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let recipient = TaskId::parse(&input.recipient)?;
+                DurableCommunication::new(self.host.clone())
+                    .send(MessageRequest {
+                        sender: waiter,
+                        recipient,
+                        message_id: operation_id,
+                        target: input.target.into(),
+                        payload: input.payload,
+                    })
+                    .await?;
+                Ok(ToolResult {
+                    value: serde_json::to_value(MessageToolOutput {
+                        message_id: operation_id.to_string(),
+                        recipient: recipient.to_string(),
+                        delivered: true,
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                })
+            }
+            CommunicationToolKind::Wait => {
+                let input: WaitToolInput = serde_json::from_value(invocation.arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let timeout_epoch_ms = wait_timeout(&input);
+                let target = wait_target(&input, waiter)?;
+                let request = WaitRequest {
+                    operation_id,
+                    waiter,
+                    target,
+                    timeout_epoch_ms,
+                    cancellation_id: Some(wait_cancellation_id(operation_id)),
+                };
+                let communication = DurableCommunication::new(self.host.clone());
+                let communication = match &self.waits {
+                    Some(waits) => communication.with_wait_store(waits.clone()),
+                    None => communication,
+                };
+                let cancellation = self
+                    .cancellation
+                    .as_ref()
+                    .and_then(|source| source.receiver(waiter));
+                let completion = communication.wait(request, cancellation).await?;
+                Ok(ToolResult {
+                    value: serde_json::to_value(wait_output(completion))
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                })
+            }
+        }
+    }
+
     async fn execute_scoped(
         &self,
         context: ToolContext,
@@ -353,57 +440,8 @@ impl CommunicationExecutor {
         let waiter = context.task().durable_task_id().ok_or_else(|| {
             Error::Unsupported("communication tools require an admitted durable task".into())
         })?;
-        match self.kind {
-            CommunicationToolKind::Message => {
-                let input: MessageToolInput = serde_json::from_value(invocation.arguments)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let recipient = TaskId::parse(&input.recipient)?;
-                DurableCommunication::new(self.host.clone())
-                    .send(MessageRequest {
-                        sender: waiter,
-                        recipient,
-                        message_id: context.operation_id(),
-                        target: input.target.into(),
-                        payload: input.payload,
-                    })
-                    .await?;
-                Ok(ToolResult {
-                    value: serde_json::to_value(MessageToolOutput {
-                        message_id: context.operation_id().to_string(),
-                        recipient: recipient.to_string(),
-                        delivered: true,
-                    })
-                    .map_err(|error| Error::Invalid(error.to_string()))?,
-                })
-            }
-            CommunicationToolKind::Wait => {
-                let input: WaitToolInput = serde_json::from_value(invocation.arguments)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let timeout_epoch_ms = wait_timeout(&input);
-                let target = wait_target(&input, waiter)?;
-                let request = WaitRequest {
-                    operation_id: context.operation_id(),
-                    waiter,
-                    target,
-                    timeout_epoch_ms,
-                    cancellation_id: None,
-                };
-                let communication = DurableCommunication::new(self.host.clone());
-                let communication = match &self.waits {
-                    Some(waits) => communication.with_wait_store(waits.clone()),
-                    None => communication,
-                };
-                let cancellation = self
-                    .cancellation
-                    .as_ref()
-                    .and_then(|source| source.receiver(waiter));
-                let completion = communication.wait(request, cancellation).await?;
-                Ok(ToolResult {
-                    value: serde_json::to_value(wait_output(completion))
-                        .map_err(|error| Error::Invalid(error.to_string()))?,
-                })
-            }
-        }
+        self.execute_for_task(waiter, context.operation_id(), invocation)
+            .await
     }
 }
 
@@ -423,9 +461,9 @@ impl ToolExecutor for CommunicationExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            Err(Error::Unsupported(
-                "communication tools require the durable task execution path".into(),
-            ))
+            let waiter = TaskId::from_bytes(context.parent_operation.into_bytes());
+            self.execute_for_task(waiter, invocation.operation_id, invocation)
+                .await
         })
     }
 
@@ -436,9 +474,10 @@ impl ToolExecutor for CommunicationExecutor {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            Err(Error::Unsupported(
-                "communication tools require the durable task execution path".into(),
-            ))
+            let waiter = TaskId::from_bytes(context.parent_operation.into_bytes());
+            self.execute_for_task(waiter, invocation.operation_id, invocation)
+                .await
+                .map(Some)
         })
     }
 
@@ -597,7 +636,9 @@ fn message_output_schema() -> Value {
 }
 
 fn wait_input_schema() -> Value {
-    let timeout = json!({"type":["integer","null"], "minimum":0});
+    // `0` is rejected by the durable wait contract; an omitted or null
+    // timeout remains the explicit unbounded form.
+    let timeout = json!({"type":["integer","null"], "minimum":1});
     json!({"oneOf":[
         {"type":"object","additionalProperties":false,"required":["kind","task_ids"],"properties":{"kind":{"const":"tasks"},"task_ids":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string"}},"timeout_epoch_ms":timeout}},
         {"type":"object","additionalProperties":false,"required":["kind","after","limit"],"properties":{"kind":{"const":"messages"},"after":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1024},"timeout_epoch_ms":timeout}},

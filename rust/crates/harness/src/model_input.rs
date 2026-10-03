@@ -351,7 +351,19 @@ pub struct CompletedModelBoundary {
 impl CompletedModelBoundary {
     /// Refuses incomplete exchanges; does not regenerate the original context.
     pub fn capture(request: ModelRequest, limits: Limits) -> Result<Self> {
+        Self::capture_with_rejections(request, limits, &[])
+    }
+
+    /// Captures a completed exchange after checking each malformed call
+    /// against typed, durable rejection evidence. A model-visible feedback
+    /// envelope alone cannot authorize a boundary.
+    pub fn capture_with_rejections(
+        request: ModelRequest,
+        limits: Limits,
+        rejections: &[crate::tool::ToolRejectionFeedback],
+    ) -> Result<Self> {
         let prepared = PreparedModelInput::prepare(request, limits)?;
+        validate_rejection_evidence(prepared.request(), rejections)?;
         let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
         Ok(Self {
             request: prepared.into_request(),
@@ -363,6 +375,103 @@ impl CompletedModelBoundary {
         self.prefix
             .verify(&PreparedModelInput::prepare(self.request.clone(), limits)?)
     }
+}
+
+fn validate_rejection_evidence(
+    request: &ModelRequest,
+    rejections: &[crate::tool::ToolRejectionFeedback],
+) -> Result<()> {
+    let definitions = request
+        .tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect::<BTreeMap<_, _>>();
+    let mut malformed = BTreeMap::new();
+    for message in &request.messages {
+        let parts = match &message.content {
+            ModelContent::Text(_) => &[][..],
+            ModelContent::Part(part) => std::slice::from_ref(part),
+            ModelContent::Parts(parts) => parts.as_slice(),
+        };
+        for part in parts {
+            let ModelContentPart::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } = part
+            else {
+                continue;
+            };
+            let Some(definition) = definitions.get(name.as_str()) else {
+                continue;
+            };
+            if crate::tool::validate_value(&definition.input_schema, arguments, "tool input")
+                .is_err()
+            {
+                malformed.insert(call_id.as_str(), (name.as_str(), arguments));
+            }
+        }
+    }
+    let mut observed = Vec::new();
+    for message in &request.messages {
+        let parts = match &message.content {
+            ModelContent::Text(_) => &[][..],
+            ModelContent::Part(part) => std::slice::from_ref(part),
+            ModelContent::Parts(parts) => parts.as_slice(),
+        };
+        for part in parts {
+            let ModelContentPart::ToolResult {
+                call_id,
+                name,
+                value,
+            } = part
+            else {
+                continue;
+            };
+            let Some((called_name, arguments)) = malformed.get(call_id.as_str()) else {
+                continue;
+            };
+            if *called_name != name.as_str() {
+                return Err(Error::Conflict(
+                    "rejection feedback changed the rejected tool".into(),
+                ));
+            }
+            let Some(feedback) = crate::tool::ToolRejectionFeedback::from_model_value(value)?
+            else {
+                return Err(Error::Invalid(
+                    "malformed tool call lacks typed rejection evidence".into(),
+                ));
+            };
+            let invocation = crate::tool::ToolInvocation {
+                operation_id: crate::OperationId::new(),
+                call_id: call_id.clone(),
+                name: name.clone(),
+                arguments: (*arguments).clone(),
+            };
+            let definition = definitions
+                .get(name.as_str())
+                .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+            let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
+                &invocation,
+                &definition.input_schema,
+            )?;
+            if feedback != expected {
+                return Err(Error::Conflict(
+                    "rejection feedback does not match the rejected call".into(),
+                ));
+            }
+            observed.push(feedback);
+        }
+    }
+    if observed
+        .iter()
+        .any(|feedback| !rejections.contains(feedback))
+    {
+        return Err(Error::Conflict(
+            "rejection feedback lacks durable admission evidence".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Explicit context stage appending a child's declaration after a frozen prefix.
@@ -715,6 +824,12 @@ mod tests {
             }),
         };
         PreparedModelInput::prepare(malformed.clone(), Limits::default())?;
+        assert!(CompletedModelBoundary::capture(malformed.clone(), Limits::default()).is_err());
+        CompletedModelBoundary::capture_with_rejections(
+            malformed.clone(),
+            Limits::default(),
+            std::slice::from_ref(&feedback),
+        )?;
 
         if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
             &mut malformed.messages[3].content

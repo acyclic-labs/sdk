@@ -270,8 +270,18 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             ExecutionEvent::ToolBatchCompleted { boundary, .. } => vec![boundary],
             ExecutionEvent::BatchPublicationStarted { publication, .. } => vec![publication],
             ExecutionEvent::Model { event, .. } => vec![event],
-            ExecutionEvent::ToolStarted { invocation, .. }
-            | ExecutionEvent::ToolAdmissionRejected { invocation, .. } => vec![invocation],
+            ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
+            ExecutionEvent::ToolAdmissionRejected {
+                invocation,
+                feedback,
+                ..
+            } => {
+                let mut refs = vec![invocation];
+                if let Some(feedback) = feedback {
+                    refs.push(feedback);
+                }
+                refs
+            }
             ExecutionEvent::ToolCompleted {
                 result, projection, ..
             } => vec![result, projection],

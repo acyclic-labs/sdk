@@ -12,6 +12,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 /// Version of the structured model-visible admission feedback envelope.
 pub const TOOL_REJECTION_FEEDBACK_VERSION: u32 = 1;
+const TOOL_REJECTION_ERROR_MAX_BYTES: usize = 2_048;
 
 /// Durable, model-visible evidence that a tool call was refused before effect
 /// admission. The call, argument, and schema digests make this feedback
@@ -49,6 +50,7 @@ impl ToolRejectionFeedback {
 
     /// Validates the envelope and returns its canonical model value.
     pub fn to_model_value(&self, error: &str) -> Result<Value> {
+        validate_rejection_error(error)?;
         if self.version != TOOL_REJECTION_FEEDBACK_VERSION || self.kind != "invalid_arguments" {
             return Err(Error::Invalid(
                 "tool rejection feedback version or kind is invalid".into(),
@@ -63,9 +65,24 @@ impl ToolRejectionFeedback {
 
     /// Extracts and validates feedback from a model-visible tool result.
     pub fn from_model_value(value: &Value) -> Result<Option<Self>> {
-        let Some(rejection) = value.get("rejection") else {
+        let Some(object) = value.as_object() else {
             return Ok(None);
         };
+        if !object.contains_key("rejection") {
+            return Ok(None);
+        }
+        if object.len() != 2 || !object.contains_key("error") || !object.contains_key("rejection") {
+            return Err(Error::Invalid(
+                "tool rejection feedback envelope has unexpected fields".into(),
+            ));
+        }
+        let error = object.get("error").and_then(Value::as_str).ok_or_else(|| {
+            Error::Invalid("tool rejection feedback error is not a string".into())
+        })?;
+        validate_rejection_error(error)?;
+        let rejection = object
+            .get("rejection")
+            .ok_or_else(|| Error::Invalid("tool rejection feedback is missing".into()))?;
         let feedback: Self = serde_json::from_value(rejection.clone())
             .map_err(|error| Error::Invalid(format!("invalid tool rejection feedback: {error}")))?;
         if feedback.version != TOOL_REJECTION_FEEDBACK_VERSION
@@ -82,6 +99,18 @@ impl ToolRejectionFeedback {
     fn validate_identity(call_id: &str, name: &str) -> Result<()> {
         ToolInvocation::validate_identity(call_id, name)
     }
+}
+
+fn validate_rejection_error(error: &str) -> Result<()> {
+    if error.is_empty()
+        || error.len() > TOOL_REJECTION_ERROR_MAX_BYTES
+        || error.chars().any(char::is_control)
+    {
+        return Err(Error::Invalid(
+            "tool rejection feedback error is outside the bounded text contract".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Model-visible tool definition with immutable schemas.
@@ -521,6 +550,38 @@ mod tests {
         assert_ne!(same, make(parent, 1, "call"));
         assert_ne!(same, make(parent, 0, "other"));
         assert_ne!(same, make(OperationId::from_bytes([8; 16]), 0, "call"));
+    }
+
+    #[test]
+    fn rejection_feedback_has_a_bounded_strict_envelope() -> Result<()> {
+        let invocation = ToolInvocation {
+            operation_id: OperationId::new(),
+            call_id: "call".into(),
+            name: "example.echo".into(),
+            arguments: json!({"value": 1}),
+        };
+        let feedback =
+            ToolRejectionFeedback::invalid_arguments(&invocation, &json!({"type": "object"}))?;
+        let value = feedback.to_model_value("invalid")?;
+        assert_eq!(
+            ToolRejectionFeedback::from_model_value(&value)?,
+            Some(feedback)
+        );
+        let mut forged = value.clone();
+        forged["injected"] = json!(true);
+        assert!(matches!(
+            ToolRejectionFeedback::from_model_value(&forged),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            ToolRejectionFeedback::from_model_value(&json!({"rejection": value["rejection"]})),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            feedback.to_model_value(&"x".repeat(2_049)),
+            Err(Error::Invalid(_))
+        ));
+        Ok(())
     }
 
     #[tokio::test]
