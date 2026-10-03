@@ -368,6 +368,13 @@ pub enum SwarmBudgetEvent {
         /// Cumulative measured child usage.
         usage: SwarmUsage,
     },
+    /// Adds cumulative measured usage from the root operation.
+    RootUsageReported {
+        /// Exact owner fence used for reporting.
+        owner: SwarmOwnerFence,
+        /// Cumulative measured root usage.
+        usage: SwarmUsage,
+    },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
         /// Child operation identity.
@@ -444,6 +451,7 @@ struct SwarmBudgetState {
     limits: SwarmBudgetLimits,
     owner: SwarmOwnerFence,
     usage: SwarmBudgetUsage,
+    root_usage: SwarmUsage,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
 }
@@ -481,6 +489,7 @@ impl SwarmBudget {
                 limits,
                 owner,
                 usage,
+                root_usage: SwarmUsage::default(),
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -700,6 +709,40 @@ impl SwarmBudget {
         update_usage(&mut state, operation_id, owner, usage, true)
     }
 
+    /// Reports cumulative root usage against the same session-wide limits as
+    /// descendants. Root consumption is never refunded and reduces the
+    /// resources that descendants may reserve.
+    pub fn report_root_usage(
+        &self,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmUsage> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let delta = usage.checked_delta(state.root_usage)?;
+        let next = add_usage(state.usage.consumed, delta)?;
+        if next
+            .model_steps
+            .checked_add(state.usage.reserved.model_steps)
+            .is_none_or(|value| value > state.limits.max_model_steps)
+            || next
+                .output_bytes
+                .checked_add(state.usage.reserved.output_bytes)
+                .is_none_or(|value| value > state.limits.max_output_bytes)
+            || next
+                .execution_time_ms
+                .checked_add(state.usage.reserved.execution_time_ms)
+                .is_none_or(|value| value > state.limits.max_execution_time_ms)
+        {
+            return Err(Error::Conflict(
+                "root usage exceeds remaining swarm resource budget".into(),
+            ));
+        }
+        state.root_usage = usage;
+        state.usage.consumed = next;
+        Ok(usage)
+    }
+
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
     pub fn cancel(
         &self,
@@ -800,6 +843,9 @@ impl SwarmBudget {
                 owner,
                 usage,
             } => self.report_usage(operation_id, &owner, usage).map(|_| ()),
+            SwarmBudgetEvent::RootUsageReported { owner, usage } => {
+                self.report_root_usage(&owner, usage).map(|_| ())
+            }
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
                 owner,
@@ -854,6 +900,23 @@ fn require_owner(state: &SwarmBudgetState, owner: &SwarmOwnerFence) -> Result<()
         return Err(Error::Conflict("stale swarm owner generation".into()));
     }
     Ok(())
+}
+
+fn add_usage(current: SwarmUsage, delta: SwarmUsage) -> Result<SwarmUsage> {
+    Ok(SwarmUsage {
+        model_steps: current
+            .model_steps
+            .checked_add(delta.model_steps)
+            .ok_or_else(|| Error::Invalid("swarm step usage exhausted".into()))?,
+        output_bytes: current
+            .output_bytes
+            .checked_add(delta.output_bytes)
+            .ok_or_else(|| Error::Invalid("swarm output usage exhausted".into()))?,
+        execution_time_ms: current
+            .execution_time_ms
+            .checked_add(delta.execution_time_ms)
+            .ok_or_else(|| Error::Invalid("swarm time usage exhausted".into()))?,
+    })
 }
 
 fn reserve_resources(
@@ -1164,6 +1227,35 @@ mod tests {
         assert_eq!(usage.consumed.model_steps, 1);
         assert_eq!(usage.consumed.output_bytes, 10);
         assert_eq!(usage.reserved, SwarmUsage::default());
+        Ok(())
+    }
+
+    #[test]
+    fn root_usage_reduces_descendant_remaining_budget() -> Result<()> {
+        let budget = SwarmBudget::new(
+            id(9),
+            owner(0),
+            SwarmBudgetLimits {
+                max_model_steps: 10,
+                max_output_bytes: 100,
+                max_execution_time_ms: 1_000,
+                ..limits()
+            },
+        )?;
+        budget.report_root_usage(
+            &owner(0),
+            SwarmUsage {
+                model_steps: 7,
+                output_bytes: 70,
+                execution_time_ms: 700,
+            },
+        )?;
+        assert!(budget.reserve_child(request(1, None)).is_err());
+        assert!(
+            budget
+                .report_root_usage(&owner(0), SwarmUsage::default())
+                .is_err()
+        );
         Ok(())
     }
 

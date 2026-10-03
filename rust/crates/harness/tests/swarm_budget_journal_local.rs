@@ -65,6 +65,17 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
         .await
         .expect("start budget");
+    journal
+        .report_root_usage(
+            &owner,
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 8,
+                execution_time_ms: 10,
+            },
+        )
+        .await
+        .expect("report root usage");
     let child = OperationId::new();
     let admission = journal
         .reserve_child(request(child, "child-1"))
