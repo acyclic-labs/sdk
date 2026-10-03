@@ -2,13 +2,13 @@
 
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
 use crate::{
-    Error, IdempotencyKey, InteractionId, OperationId, Result,
+    Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Result,
     conversation::{
         ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
     core::{
-        Action, ApplyResult, Authority, AuthorityIssuer, AuthorityVerifier, Capabilities, Command,
+        Action, ApplyResult, Authority, AuthorityIssuer, AuthorityVerifier, Command,
         SchemaRegistry, Scope,
     },
     interaction::{

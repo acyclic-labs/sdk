@@ -26,7 +26,7 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Arc};
+use std::{path::{Path, PathBuf}, sync::Arc};
 
 /// Persistent providers own durability; storage semantics are shared with memory.
 pub type DurableHarnessStorage =
