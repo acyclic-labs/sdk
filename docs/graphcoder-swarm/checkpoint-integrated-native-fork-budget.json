@@ -127,6 +127,38 @@
       "command": "cargo test -p acyclic-harness --features filesystem-local --test workflow_journal -j 2 -- --nocapture",
       "artifact_sha256": "2e9fdf1fb7c4dc31ac71eac6e857766e02d3fa26725bdfd00b3b476c35238a8d",
       "contract_scope": "real durable ref-only workflow reopen and exact retry, private host records with authorized ordinary command payloads"
+    },
+    {
+      "suite": "Filesystem Git compatibility unit regressions",
+      "source": "1571bcc6",
+      "command": "cargo test -p acyclic-fs --lib git_compat -j 2 -- --nocapture",
+      "passed": 40,
+      "failed": 2,
+      "ignored": 0,
+      "artifact_sha256": "df881066a7948b3ee213179ed483a3cbaa9f7d1407ca5aeb34cf54903b2a7af8",
+      "suite_sha256": "883cac64d9dfaef2d0d8409da059da985966bac50c86c486f876a66dbc5dce88",
+      "failures": [
+        "composed_run_leaves_failed_transition_for_exact_resume: WorkspaceMismatch (fixture returns root tree for child switch)",
+        "state_changing_filesystem_actions_are_prepared_then_completed: InvalidState (legacy None completion for typed switch)"
+      ],
+      "contract_scope": "native Filesystem state transitions; failed fixtures require correction and rerun"
+    },
+    {
+      "suite": "durable LocalStream swarm budget",
+      "source": "1e7f993a",
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test swarm_budget_journal_local -j 2 -- --nocapture",
+      "passed": 5,
+      "failed": 4,
+      "ignored": 0,
+      "artifact_sha256": "5276cade83696d064db74857b442fdd1d094261d58a09a528b9092cdc4eec061",
+      "suite_sha256": "10164218696572a43ee783a1785eb509ec43d746274cbc583997b5b317061aa9",
+      "failures": [
+        "wrong dispatch receipt rejection appended a poisoned durable record",
+        "ancestor ceiling replay accepted parent plus descendant excess",
+        "independent LocalStream provider fixture violates exclusive open contract (AlreadyOpen)",
+        "same operation race counts idempotent successes instead of durable append count"
+      ],
+      "contract_scope": "real durable storage; two library defects and two fixture defects remain"
     }
   ],
   "input_digests": {
