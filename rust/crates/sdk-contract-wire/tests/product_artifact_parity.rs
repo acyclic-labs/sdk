@@ -1,5 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+
+use prost::Message;
+use prost_types::FileDescriptorSet;
+
+use acyclic_sdk_contract_wire::BindingFamily;
 use std::process::Command;
 
 fn repository_root() -> PathBuf {
@@ -84,6 +89,68 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
             restored.status.success(),
             "product regeneration failed for {relative}: {}",
             String::from_utf8_lossy(&restored.stderr)
+        );
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn regenerated_docs_retain_comments_and_objects_grpc_guard() {
+    let root = temporary_root();
+    let generated = run_product_command("generate-products", &root);
+    assert!(
+        generated.status.success(),
+        "generator failed: {}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+
+    for (relative, family) in [
+        (
+            "rust/crates/inference/inference_model_descriptor_docs.bin",
+            BindingFamily::Inference,
+        ),
+        (
+            "rust/crates/inference-contract/inference_model_descriptor_docs.bin",
+            BindingFamily::Inference,
+        ),
+        (
+            "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin",
+            BindingFamily::Machines,
+        ),
+    ] {
+        let bytes = fs::read(root.join(relative)).expect("regenerated docs descriptor");
+        let set = FileDescriptorSet::decode(bytes.as_slice()).expect("docs descriptor set");
+        let file = set
+            .file
+            .iter()
+            .find(|file| file.package.as_deref() == Some(family.package()))
+            .expect("family docs descriptor");
+        let locations = file
+            .source_code_info
+            .as_ref()
+            .expect("family source info")
+            .location
+            .as_slice();
+        assert!(!locations.is_empty(), "{} docs are empty", family.name());
+        assert!(
+            locations.iter().all(|location| location
+                .leading_comments
+                .as_deref()
+                .is_some_and(|comments| !comments.trim().is_empty())),
+            "{} regenerated docs contain an empty declaration comment",
+            family.name()
+        );
+    }
+
+    for relative in [
+        "generated/rust/acyclic/objects/v2/acyclic.objects.v2.tonic.rs",
+        "rust/crates/objects/src/generated/acyclic.objects.v2.tonic.rs",
+    ] {
+        let source = fs::read_to_string(root.join(relative)).expect("Objects tonic product");
+        assert!(
+            source.contains("#[cfg(feature = \"grpc\")]\npub mod"),
+            "Objects tonic guard missing from regenerated {relative}"
         );
     }
 
