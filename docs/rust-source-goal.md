@@ -144,3 +144,16 @@ Fresh iteration 8 evidence: root independently ran the current locked offline wi
 - All sixteen subagents remain occupied and replenished. No main merge, auto-merge, registry publication or production deployment. The goal remains active.
 
 Next bounded milestones: complete compiled dependency authority, capture a coherent clean source snapshot, execute all strict compiler profiles, bind installable package and exact snippet artifacts, finish full-family metadata and shared policy migration, then verify the refreshed website preview.
+
+## Iteration 10 — independent drift failure and producer reproducibility
+
+- Previous turn produced progress: root independently ran the full wire suite, found stale generated Objects Rust output, and assigned model-driven regeneration. The failed check is retained in research/acceptance/wire-family-registry-failed.receipt.json with its exact log hash; it is not counted as a passing suite.
+- Unified operation-family registry and downstream TypeScript exporter are committed in dd6d2ec0 and 49c32f73. Protocol is a descriptor dependency; eight families expose operations. Machines, Filesystem and Harness do not acquire an invented HTTP projection.
+- Rust-backed credential and Stream validation changes are reviewable in 4f4ef935, with regenerated Stream WASM bindings and a record projection correction in e01fd9ef/f655b76b. Remaining handwritten Stream admission and response policies are assigned migration work.
+- The dynamic Cargo closure now rejects out-of-root local dependencies and unsupported symlinks. Its normalized build recipe still needs deterministic machine-independent serialization and agreement with documentation closure verification before fresh producer results qualify.
+- Source-authority review found that comparing HEAD strings and mutable source hashes does not itself prove immutable Git content. The docs and receipt owners are testing matching altered source/authority with unchanged HEAD, and distinguishing independently trusted captured snapshots from clean revision claims.
+- Go retained package consumers pass Actors/Stream examples and descriptor-driven round trips for 407 messages. Cancellation/recovery and current exact-source snippet evidence remain outstanding; frozen snapshot evidence is not relabeled.
+- Root audited 1,194 rg-visible SDK text files for NUL bytes; none were found. The original SDK checkout remains tracked clean. Browser inspection is available again and confirms the website still serves the fc5ae608 branch-preview bundle, with generated examples explicitly pending qualification.
+- All sixteen agent slots remain occupied and replenished. No main merge, auto-merge, registry publication or production deployment. The goal remains active.
+
+Next bounded milestones: fix and rerun product artifact parity; finalize deterministic compiled producer identity; capture coherent immutable generation inputs; execute all strict docs graphs and package-backed snippets; qualify remaining transports/languages; import and render the fresh website bundle.

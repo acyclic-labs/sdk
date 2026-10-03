@@ -1,0 +1,15 @@
+{
+  "schema": "acyclic.sdk.root-verification.v1",
+  "status": "failed",
+  "checked_at_utc": "2026-10-03T19:16:10.7394262Z",
+  "source_root": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk",
+  "observed_revision_after_run": "b98fb2b450a1a3c69c37eec6fdbcb5876f700844",
+  "source_state": "concurrently edited live worktree; not immutable checkpoint proof",
+  "command": "cargo test --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --offline",
+  "exit_code": 101,
+  "log": "Q:/sdk/work/rust-source-root-wire-family-registry.log",
+  "log_sha256": "30ff99f158925deff7d9c141b03c57486ebd4852d4fcd9ec2a1ad6d52088a52d",
+  "failure": "committed_product_artifacts_match_the_rust_model: generated/rust/acyclic/objects/v2/acyclic.objects.v2.rs drift",
+  "qualifying_scope": "negative drift evidence only; full suite not passed",
+  "next_action": "Regenerate product artifacts from Rust and rerun targeted parity, then the full suite."
+}
