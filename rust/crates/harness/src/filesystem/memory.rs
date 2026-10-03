@@ -1295,6 +1295,14 @@ where
         self.content_verifier.read(file).await
     }
 
+    /// Returns the owner authenticated content verifier for host adapters.
+    /// The verifier retains the storage scope and never exposes a raw volume
+    /// read capability to model content.
+    #[must_use]
+    pub fn content_verifier(&self) -> Arc<dyn ContentResidencyVerifier> {
+        self.content_verifier.clone()
+    }
+
     /// Lazily discovers this agent's private files under its existing signed
     /// volume-read grant. Pages pin a generation; callers pass it back to
     /// detect a changed directory instead of silently mixing two heads.
