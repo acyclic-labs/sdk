@@ -115,7 +115,7 @@ impl FamilyTransportPolicy {
 }
 
 /// An optional caller preference and the capabilities needed by the call.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportSelectionRequest {
     /// Runtime in which the client is executing.
     pub runtime: ClientRuntime,
@@ -127,6 +127,34 @@ pub struct TransportSelectionRequest {
     pub endpoint: TransportAvailability,
     /// An explicit transport override. Overrides are validated before a call.
     pub override_kind: Option<TransportKind>,
+}
+
+impl TransportSelectionRequest {
+    /// Construct the conservative Rust-owned default for a runtime.
+    ///
+    /// `ALL` means that the facade has not received a narrower endpoint
+    /// advertisement yet; family policy still filters the result. Consumers
+    /// may replace `installed` with their compiled adapter set and `endpoint`
+    /// with a trusted handshake/configuration result without probing a
+    /// mutating operation.
+    pub const fn for_runtime(runtime: ClientRuntime) -> Self {
+        Self {
+            runtime,
+            requirements: TransportRequirements {
+                streaming: false,
+                bearer_auth: true,
+            },
+            installed: TransportAvailability::ALL,
+            endpoint: TransportAvailability::ALL,
+            override_kind: None,
+        }
+    }
+}
+
+impl Default for TransportSelectionRequest {
+    fn default() -> Self {
+        Self::for_runtime(ClientRuntime::Native)
+    }
 }
 
 /// The result of transport selection.
@@ -239,7 +267,7 @@ const OBJECTS_NATIVE: &[TransportOption] = &[GRPC, HTTP_JSON];
 const OBJECTS_BROWSER: &[TransportOption] = &[HTTP_JSON];
 const STREAM_NATIVE: &[TransportOption] = &[GRPC, HTTP_JSON];
 const STREAM_BROWSER: &[TransportOption] = &[HTTP_JSON];
-const INFERENCE_NATIVE: &[TransportOption] = &[GRPC];
+const INFERENCE_NATIVE: &[TransportOption] = &[GRPC, HTTP_JSON];
 const INFERENCE_BROWSER: &[TransportOption] = &[HTTP_JSON];
 const MACHINES_NATIVE: &[TransportOption] = &[GRPC];
 const FILESYSTEM_NATIVE: &[TransportOption] = &[GRPC];
@@ -324,6 +352,24 @@ mod tests {
             select_transport_by_name("objects", request(ClientRuntime::Browser))
                 .unwrap()
                 .kind,
+            TransportKind::HttpJson
+        );
+    }
+
+    #[test]
+    fn inference_native_selection_respects_installed_adapter_set() {
+        let mut grpc = TransportSelectionRequest::for_runtime(ClientRuntime::Native);
+        assert_eq!(
+            select_transport_by_name("inference", grpc).unwrap().kind,
+            TransportKind::Grpc
+        );
+        grpc.installed = TransportAvailability {
+            grpc: false,
+            grpc_web: false,
+            http_json: true,
+        };
+        assert_eq!(
+            select_transport_by_name("inference", grpc).unwrap().kind,
             TransportKind::HttpJson
         );
     }
@@ -415,6 +461,55 @@ mod tests {
                 .chain(family.transport.browser.options.iter())
                 .filter(|option| option.kind == TransportKind::HttpJson)
                 .all(|_| family.has_http_projection()));
+        }
+    }
+
+    #[test]
+    fn streaming_transport_flags_cover_every_streaming_rpc() {
+        for family in crate::FAMILY_VIEWS {
+            let Some(spec) = family.model.as_contract_spec() else {
+                continue;
+            };
+            let streaming_rpcs = spec
+                .services
+                .iter()
+                .flat_map(|service| service.methods.iter().filter(|method| {
+                    method.client_streaming || method.server_streaming
+                }))
+                .count();
+            let options = family
+                .transport
+                .native
+                .options
+                .iter()
+                .chain(family.transport.browser.options.iter());
+            if streaming_rpcs == 0 {
+                assert!(options.clone().all(|option| !option.streaming));
+            } else {
+                assert!(options.clone().any(|option| option.streaming));
+            }
+            for policy in family.operation_policies {
+                let method_streams = spec.services.iter().any(|service| {
+                    service.methods.iter().any(|method| {
+                        policy.rpc.ends_with(&format!("/{}/{}", service.name, method.name))
+                            && (method.client_streaming || method.server_streaming)
+                    })
+                });
+                if method_streams {
+                    assert!(
+                        family
+                            .transport
+                            .native
+                            .options
+                            .iter()
+                            .chain(family.transport.browser.options.iter())
+                            .any(|option| option.streaming),
+                        "{} {} lacks a streaming transport",
+                        family.name,
+                        policy.rpc
+                    );
+                }
+            }
         }
     }
 }
