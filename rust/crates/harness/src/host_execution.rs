@@ -7,7 +7,7 @@
 
 use crate::{
     EffectAttemptId, EffectId, Error, InteractionId, OperationId, Result, SessionId,
-    conversation::{ContentPublisher, ContentResidencyVerifier, FileRef},
+    conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, VolumeRef},
     core::{EffectGuarantee, EffectStatus},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
@@ -433,6 +433,51 @@ pub struct ExecutionClaimHandle {
     token: [u8; 32],
     generation: u64,
     operator: bool,
+}
+
+/// Authenticated host capability required to resolve an uncertain native
+/// execution. This is separate from the workspace write grant so a model or
+/// ordinary editor cannot mint an operator resolution handle.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ExecutionResolutionCapability {
+    session_id: SessionId,
+    token: [u8; 32],
+}
+
+impl std::fmt::Debug for ExecutionResolutionCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutionResolutionCapability")
+            .field("session_id", &self.session_id)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl ExecutionResolutionCapability {
+    pub(crate) fn issue(session_id: SessionId, volume: &VolumeRef) -> Result<Self> {
+        if session_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid(
+                "execution resolution session identity cannot be zero".into(),
+            ));
+        }
+        let mut input = Vec::with_capacity(64);
+        input.extend_from_slice(b"acyclic:harness:execution-resolution:v1");
+        input.extend_from_slice(&session_id.into_bytes());
+        input.extend_from_slice(volume.id().as_bytes());
+        Ok(Self {
+            session_id,
+            token: *blake3::hash(&input).as_bytes(),
+        })
+    }
+
+    pub(crate) fn matches(&self, session_id: SessionId, token: &[u8; 32]) -> bool {
+        self.session_id == session_id && &self.token == token
+    }
+
+    pub(crate) const fn token(&self) -> &[u8; 32] {
+        &self.token
+    }
 }
 
 impl std::fmt::Debug for ExecutionClaimHandle {

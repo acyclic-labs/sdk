@@ -711,9 +711,42 @@ where
         conversation: Authority,
         issuer: AuthorityIssuer,
     ) -> Result<Self> {
+        let session_id = derive_session_id(&volume)?;
+        Self::from_providers_with_session(
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            session_id,
+        )
+        .await
+    }
+
+    /// Composes providers for one explicitly identified durable session.
+    /// Session identity is independent from the volume so two sessions that
+    /// happen to share a stream and volume still receive isolated journals.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
+    pub async fn from_providers_with_session(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        session_id: SessionId,
+    ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
-        let session_id = derive_session_id(&volume)?;
+        if session_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("session identity cannot be zero".into()));
+        }
         let read_capability = volume.capability(VolumeOperation::Read)?;
         let write_capability = volume.capability(VolumeOperation::Write)?;
         let scope = issuer.root_for_agent(
