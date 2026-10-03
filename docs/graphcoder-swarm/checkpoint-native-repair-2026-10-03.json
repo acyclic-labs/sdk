@@ -103,5 +103,16 @@
       "sha256": "583dfe38102dad581a023b58e179a7a1b3a4ca2db4e6b883ec2957093585ac22"
     }
   ],
-  "qualification": "Not complete; results cover these native suites only. Mock models; no sandbox. Fresh WASM, CLI, installed artifacts and full matrix remain required."
+  "qualification": "Not complete; results cover these native suites only. Mock models; no sandbox. Fresh WASM, CLI, installed artifacts and full matrix remain required.",
+  "recursive_followup": {
+    "source": "813d2523",
+    "terminal_handle": 58597,
+    "exit_code": 1,
+    "passed": 1,
+    "failed": 1,
+    "failure": "Unauthorized(volume operation is not granted) after forged descriptor rejection",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --test local_recursive_fork -j2 -- --nocapture",
+    "suite_sha256": "e01b84f25ab4c56a3df8fdcca05f2d01d90cdb5f3349be0544bb677ec3fdf0ea",
+    "artifact_sha256": "19152de7dc754c0c5e5e568902b4bc6a3ad6842724c77705e10874b523fe6dd6"
+  }
 }
