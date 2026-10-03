@@ -28,19 +28,26 @@ import {
   WireOperationHandle,
   TerminalAdmissionError,
   WireError,
+  Harness,
   type JsonlChannel,
   type HttpFetcher,
 } from "../src/index.js";
 
 const resume = create(ResumeRequestSchema, {});
+// Resolve the identity from the same native/WASM build used by the validators.
+// A checked-in digest would make these transport fixtures reject every request
+// whenever the protobuf descriptor changes, which is the behavior the wire
+// contract is meant to detect at a real peer boundary.
+const fixtureHarness = await Harness.create({
+  authority: { kind: "task", id: "wire-fixture" },
+  issuerId: "wire-fixture",
+  issuerKey: new Uint8Array(32).fill(7),
+});
 const negotiation = create(HandshakeRequestSchema, {
-  protocol: {
-    version: "2",
-    // blake3(FILE_DESCRIPTOR_SET) for the checked-in v2 protobuf contract.
-    descriptorDigest: "8efc8c682b2ba1025b1221dd203685bdf999d04e87568fad3acdf0e428bd84cf",
-  },
+  protocol: fixtureHarness.protocolIdentity(),
   required: { capabilities: [] },
 });
+fixtureHarness.free();
 const handshake = create(HandshakeResponseSchema, {
   protocol: negotiation.protocol,
   supported: { capabilities: [] },
