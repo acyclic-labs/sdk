@@ -596,7 +596,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     ForkSelection {
                         required: true,
                         revision: ResourceRevision::Project {
-                            volume: source_project,
+                            volume: source_project.clone(),
                             generation: source_generation,
                         },
                     },
