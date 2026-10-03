@@ -17,13 +17,65 @@ $client = new RemoteClient('stream', static function (string $operation, array $
     $calls[] = [$operation, $request, $transport];
     return 'ok';
 });
-if ($client->transport() !== RemotePolicy::GRPC || $client->call('append', ['path' => 'events']) !== 'ok'
-    || $calls !== [['append', ['path' => 'events'], RemotePolicy::GRPC]]) {
+ $expectedNative = extension_loaded('grpc') ? RemotePolicy::GRPC : RemotePolicy::HTTP_JSON;
+if ($client->transport() !== $expectedNative || $client->call('append', ['path' => 'events']) !== 'ok'
+    || $calls !== [['append', ['path' => 'events'], $expectedNative]]) {
     throw new RuntimeException('native gRPC facade selection or invocation failed');
+}
+if ($client->runtime() !== 'native' || RemotePolicy::resolveRuntime() !== 'native') {
+    throw new RuntimeException('automatic native runtime resolution failed');
+}
+$browser = RemotePolicy::select('stream', true, 'browser');
+if ($browser !== RemotePolicy::HTTP_JSON) {
+    throw new RuntimeException('embedded browser runtime did not select HTTP JSON');
 }
 $http = new RemoteClient('stream', static fn (...$args): null => null, 'native', true, RemotePolicy::HTTP_JSON);
 if ($http->transport() !== RemotePolicy::HTTP_JSON) {
     throw new RuntimeException('streaming HTTP JSON override was not selected');
+}
+$capability = new RemoteClient(
+    'actors',
+    static fn (...$args): null => null,
+    'native',
+    false,
+    null,
+    null,
+    true,
+    ['grpc' => false, 'http_json' => true],
+    ['grpc' => false, 'http_json' => true],
+);
+if ($capability->transport() !== RemotePolicy::HTTP_JSON) {
+    throw new RuntimeException('installed and endpoint capabilities were not forwarded');
+}
+$previousEndpointTransports = getenv('ACYCLIC_ENDPOINT_TRANSPORTS');
+putenv('ACYCLIC_ENDPOINT_TRANSPORTS=http_json');
+$metadata = new RemoteClient('actors', static fn (...$args): null => null);
+if ($metadata->transport() !== RemotePolicy::HTTP_JSON) {
+    throw new RuntimeException('endpoint metadata was not consumed automatically');
+}
+$https = new RemoteClient('actors', static fn (...$args): null => null, 'native', false, null, null, true, null, 'https://api.example');
+if ($https->transport() !== RemotePolicy::HTTP_JSON) {
+    throw new RuntimeException('HTTPS endpoint metadata did not select HTTP JSON');
+}
+if ($previousEndpointTransports === false) {
+    putenv('ACYCLIC_ENDPOINT_TRANSPORTS');
+} else {
+    putenv('ACYCLIC_ENDPOINT_TRANSPORTS=' . $previousEndpointTransports);
+}
+try {
+    new RemoteClient(
+        'actors',
+        static fn (...$args): null => null,
+        'native',
+        false,
+        null,
+        null,
+        true,
+        ['grpc' => true, 'http_json' => true],
+        ['grpc' => false, 'http_json' => false],
+    );
+    throw new RuntimeException('endpoint with no compatible transport was accepted');
+} catch (InvalidArgumentException $expected) {
 }
 try {
     new RemoteClient('actors', static fn (...$args): null => null, 'native', true, RemotePolicy::HTTP_JSON);

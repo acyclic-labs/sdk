@@ -3875,6 +3875,29 @@ mod tests {
     }
 
     #[test]
+    fn drift_report_is_control_metadata_not_an_artifact() {
+        let root = test_directory("drift-report-artifact");
+        fs::write(root.join("artifact.json"), b"artifact").expect("write artifact");
+        for control in [
+            "sdk-generation-manifest.json",
+            "sdk-generation-drift.json",
+            "language-inventory.json",
+            "qualification.json",
+        ] {
+            fs::write(root.join(control), b"control").expect("write control metadata");
+        }
+        let artifacts = collect_artifacts(&root).expect("collect artifacts");
+        assert_eq!(
+            artifacts
+                .iter()
+                .map(|artifact| artifact.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["artifact.json"]
+        );
+        cleanup(&root);
+    }
+
+    #[test]
     fn generated_manifest_cannot_relabel_a_failed_required_stage() {
         let tools = vec![ToolResult {
             id: "sdk-docs".into(),

@@ -4,7 +4,10 @@ import 'generated_remote_policy.dart' as generated;
 
 enum RemoteTransport { grpc, grpcWeb, httpJson }
 
-enum ClientRuntime { native, browser }
+enum ClientRuntime { auto, native, browser }
+
+const _isBrowserRuntime = bool.fromEnvironment('dart.library.js_interop') ||
+    bool.fromEnvironment('dart.library.html');
 
 class RemotePolicy {
   static Map<ClientRuntime, Map<String, List<(RemoteTransport, bool)>>> get options => {
@@ -35,19 +38,93 @@ class RemotePolicy {
 
   static RemoteTransport select({
     required String family,
-    ClientRuntime runtime = ClientRuntime.native,
+    ClientRuntime runtime = ClientRuntime.auto,
     bool streaming = false,
+    bool bearerAuth = true,
+    Map<RemoteTransport, bool>? installed,
+    Object? endpoint,
     RemoteTransport? override,
   }) {
     final selected = generated.GeneratedRemotePolicy.select(
       family: family,
-      runtime: runtime == ClientRuntime.native
+      runtime: resolveRuntime(runtime) == ClientRuntime.native
           ? generated.GeneratedClientRuntime.native
           : generated.GeneratedClientRuntime.browser,
       streaming: streaming,
+      bearerAuth: bearerAuth,
+      installed: _generatedAvailability(installed ?? installedAvailability(resolveRuntime(runtime))),
+      endpoint: _generatedAvailability(_normalizeEndpoint(endpoint)),
       transportOverride: override == null ? null : _generatedTransport(override),
     );
     return _transport(selected);
+  }
+
+  static Map<generated.GeneratedRemoteTransport, bool>? _generatedAvailability(
+    Map<RemoteTransport, bool>? value,
+  ) => value?.map((key, available) => MapEntry(_generatedTransport(key), available));
+
+  static Map<RemoteTransport, bool> installedAvailability(ClientRuntime runtime) =>
+      runtime == ClientRuntime.browser
+          ? const {
+              RemoteTransport.grpc: false,
+              RemoteTransport.grpcWeb: true,
+              RemoteTransport.httpJson: true,
+            }
+          : const {
+              RemoteTransport.grpc: true,
+              RemoteTransport.grpcWeb: false,
+              RemoteTransport.httpJson: true,
+            };
+
+  static Map<RemoteTransport, bool> get endpointAvailability {
+    const configured = String.fromEnvironment('ACYCLIC_ENDPOINT_TRANSPORTS');
+    if (configured.trim().isEmpty) {
+      return const {
+        RemoteTransport.grpc: true,
+        RemoteTransport.grpcWeb: true,
+        RemoteTransport.httpJson: true,
+      };
+    }
+    final kinds = configured.split(',').map((kind) => kind.trim().toLowerCase()).toSet();
+    return {
+      RemoteTransport.grpc: kinds.contains('grpc'),
+      RemoteTransport.grpcWeb: kinds.contains('grpc_web'),
+      RemoteTransport.httpJson: kinds.contains('http_json'),
+    };
+  }
+
+  static Map<RemoteTransport, bool> _normalizeEndpoint(Object? endpoint) {
+    if (endpoint is Map<RemoteTransport, bool>) return endpoint;
+    if (endpoint is String) {
+      final scheme = endpoint.split(':').first.toLowerCase();
+      if (scheme == 'grpc') {
+        return const {
+          RemoteTransport.grpc: true,
+          RemoteTransport.grpcWeb: false,
+          RemoteTransport.httpJson: false,
+        };
+      }
+      if (scheme == 'grpc-web') {
+        return const {
+          RemoteTransport.grpc: false,
+          RemoteTransport.grpcWeb: true,
+          RemoteTransport.httpJson: false,
+        };
+      }
+      if (scheme == 'http' || scheme == 'https') {
+        return const {
+          RemoteTransport.grpc: false,
+          RemoteTransport.grpcWeb: false,
+          RemoteTransport.httpJson: true,
+        };
+      }
+    }
+    return endpointAvailability;
+  }
+
+  static ClientRuntime resolveRuntime([ClientRuntime runtime = ClientRuntime.auto]) {
+    if (runtime != ClientRuntime.auto) return runtime;
+    return _isBrowserRuntime ? ClientRuntime.browser : ClientRuntime.native;
   }
 
   static String validateBearer(String token) {
@@ -65,16 +142,22 @@ class RemoteClient {
   RemoteClient({
     required this.family,
     required RemoteInvoker invoker,
-    ClientRuntime runtime = ClientRuntime.native,
+    ClientRuntime runtime = ClientRuntime.auto,
     bool streaming = false,
     RemoteTransport? transport,
     String? bearer,
+    bool bearerAuth = true,
+    Map<RemoteTransport, bool>? installed,
+    Object? endpoint,
   })  : _invoker = invoker,
-        runtime = runtime,
+        runtime = RemotePolicy.resolveRuntime(runtime),
         transport = RemotePolicy.select(
           family: family,
           runtime: runtime,
           streaming: streaming,
+          bearerAuth: bearerAuth,
+          installed: installed,
+          endpoint: endpoint,
           override: transport,
         ) {
     if (bearer != null) RemotePolicy.validateBearer(bearer);
