@@ -149,6 +149,9 @@ pub struct LocalForkRequest {
     pub parent_operation: OperationId,
     /// Completed model/tool step to inherit.
     pub parent_step: u32,
+    /// Stable operation identity for the provider fork publication itself.
+    #[serde(default)]
+    pub fork_operation: Option<OperationId>,
     /// New child operation identity. A caller can retry this exact request.
     pub child_operation: OperationId,
     /// Exact child conversation allocated by the typed fork preparation.
@@ -169,9 +172,15 @@ impl LocalForkRequest {
         if self.parent.into_bytes() == [0; 16]
             || self.parent_operation.into_bytes() == [0; 16]
             || self.child_operation.into_bytes() == [0; 16]
+            || self.fork_operation.is_some_and(|value| value.into_bytes() == [0; 16])
         {
             return Err(Error::Invalid(
                 "local fork identities must be nonzero".into(),
+            ));
+        }
+        if self.fork_operation == Some(self.child_operation) {
+            return Err(Error::Invalid(
+                "fork publication and child turn require distinct operation identities".into(),
             ));
         }
         if self.task.trim().is_empty() || self.task.len() > 4 * 1024 {
@@ -295,6 +304,8 @@ enum StoredEvent {
         child: TaskId,
         child_operation: OperationId,
         #[serde(default)]
+        fork_operation: Option<OperationId>,
+        #[serde(default)]
         child_authority: Option<Authority>,
         #[serde(default)]
         child_agent: Option<AgentId>,
@@ -318,6 +329,8 @@ enum StoredEvent {
         parent_step: u32,
         child: TaskId,
         child_operation: OperationId,
+        #[serde(default)]
+        fork_operation: Option<OperationId>,
         #[serde(default)]
         child_authority: Option<Authority>,
         #[serde(default)]
@@ -672,6 +685,14 @@ impl PersistentLocalSwarm {
     ) -> Result<LocalForkOutcome> {
         request.validate()?;
         seed.validate()?;
+        if request.fork_operation != Some(seed.operation_id)
+            || request.child_authority.as_ref() != Some(&seed.child)
+            || request.child_agent != Some(seed.child_agent)
+        {
+            return Err(Error::Conflict(
+                "published fork request is not bound to the immutable seed".into(),
+            ));
+        }
         if issuer.verifier().audience() != &seed.child {
             return Err(Error::Unauthorized(
                 "published fork issuer targets another child authority".into(),
@@ -679,6 +700,13 @@ impl PersistentLocalSwarm {
         }
         let parent_session = self.session(request.parent).await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        if let Some(existing) = self.requests.lock().await.get(&child)
+            && existing != &request
+        {
+            return Err(Error::Conflict(
+                "child operation is already bound to another fork request".into(),
+            ));
+        }
         let parent_harness = self.open_session(request.parent).await?;
         let publication = self.publications.lock().await.get(&child).cloned();
         let declaration = self.declarations.lock().await.get(&child).cloned();
@@ -726,6 +754,7 @@ impl PersistentLocalSwarm {
                     parent_step: request.parent_step,
                     child,
                     child_operation: request.child_operation,
+                    fork_operation: request.fork_operation.clone(),
                     child_authority: request.child_authority.clone(),
                     child_agent: request.child_agent.clone(),
                     task: request.task.clone(),
@@ -774,6 +803,7 @@ impl PersistentLocalSwarm {
                     parent_step: request.parent_step,
                     child,
                     child_operation: request.child_operation,
+                    fork_operation: request.fork_operation.clone(),
                     child_authority: request.child_authority.clone(),
                     child_agent: request.child_agent.clone(),
                     task: request.task.clone(),
@@ -845,7 +875,34 @@ impl PersistentLocalSwarm {
         declaration: LocalInheritedModelDeclaration,
     ) -> Result<()> {
         request.validate()?;
+        if request.child_authority.is_none() || request.child_agent.is_none() {
+            return Err(Error::Invalid(
+                "typed fork publication requires child authority and agent".into(),
+            ));
+        }
+        let fork_operation = request.fork_operation.ok_or_else(|| {
+            Error::Invalid("typed fork publication requires a fork operation identity".into())
+        })?;
         report.validate()?;
+        let parent_storage = self.open_session(request.parent).await?;
+        if report.request.parent != *parent_storage.storage().conversation()
+            || report.request.operation_id != fork_operation
+        {
+            return Err(Error::Conflict(
+                "fork report is bound to another publication operation or parent".into(),
+            ));
+        }
+        let child_authority = request.child_authority.as_ref().ok_or_else(|| {
+            Error::Invalid("typed fork publication requires child authority".into())
+        })?;
+        let child_agent = request.child_agent.ok_or_else(|| {
+            Error::Invalid("typed fork publication requires child agent".into())
+        })?;
+        if child_authority != &report.request.child || child_agent != report.request.child_agent {
+            return Err(Error::Conflict(
+                "fork report child binding differs from fork request".into(),
+            ));
+        }
         let reported_seed = report.clone().into_seed()?;
         if &reported_seed != seed {
             return Err(Error::Conflict(
@@ -853,6 +910,16 @@ impl PersistentLocalSwarm {
             ));
         }
         seed.validate()?;
+        if seed.operation_id != fork_operation
+            || seed.parent != report.request.parent
+            || seed.child != report.request.child
+            || seed.child_agent != report.request.child_agent
+            || publication.operation_id != fork_operation
+        {
+            return Err(Error::Conflict(
+                "published fork seed or model publication has the wrong operation binding".into(),
+            ));
+        }
         declaration.context(self.config.limits)?;
         if publication.parent_operation != request.parent_operation
             || publication.step != request.parent_step
@@ -915,6 +982,7 @@ impl PersistentLocalSwarm {
                 parent_step: request.parent_step,
                 child,
                 child_operation: request.child_operation,
+                fork_operation: request.fork_operation.clone(),
                 child_authority: request.child_authority.clone(),
                 child_agent: request.child_agent.clone(),
                 task: request.task.clone(),
@@ -980,7 +1048,7 @@ impl PersistentLocalSwarm {
         report.validate()?;
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
-            || report.request.operation_id != request.child_operation
+            || request.fork_operation != Some(report.request.operation_id)
         {
             return Err(Error::Conflict(
                 "fork report is not bound to the requested parent and operation".into(),
@@ -1359,6 +1427,7 @@ fn apply_record(
             parent_step,
             child,
             child_operation,
+            fork_operation,
             child_authority,
             child_agent,
             task,
@@ -1375,6 +1444,7 @@ fn apply_record(
             parent_step,
             child,
             child_operation,
+            fork_operation,
             child_authority,
             child_agent,
             task,
@@ -1394,6 +1464,7 @@ fn apply_record(
                 parent_operation,
                 parent_step,
                 child_operation,
+                fork_operation,
                 child_authority: child_authority.clone(),
                 child_agent: child_agent.clone(),
                 task: task.clone(),
@@ -1445,9 +1516,23 @@ fn apply_record(
                 reports.insert(child, report);
             }
             if let Some(publication) = publication {
+                if let Some(existing) = publications.get(&child)
+                    && existing != &publication
+                {
+                    return Err(Error::Conflict(
+                        "persisted model publication changed for the child key".into(),
+                    ));
+                }
                 publications.insert(child, publication);
             }
             if let Some(declaration) = declaration {
+                if let Some(existing) = declarations.get(&child)
+                    && existing != &declaration
+                {
+                    return Err(Error::Conflict(
+                        "persisted inherited declaration changed for the child key".into(),
+                    ));
+                }
                 declarations.insert(child, declaration);
             }
         }
@@ -1546,6 +1631,7 @@ mod tests {
                 parent: root_task,
                 parent_operation: operation,
                 parent_step: 0,
+                fork_operation: None,
                 child_operation: OperationId::new(),
                 child_authority: None,
                 child_agent: None,
@@ -1576,6 +1662,7 @@ mod tests {
                 parent: swarm.root_task().await?,
                 parent_operation: OperationId::new(),
                 parent_step: 0,
+                fork_operation: None,
                 child_operation: OperationId::new(),
                 child_authority: None,
                 child_agent: None,
