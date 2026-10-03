@@ -1378,6 +1378,7 @@ impl PersistentLocalHarness {
                 "local session descriptor belongs to another filesystem provider".into(),
             ));
         }
+        let session_id = descriptor_session_id(&descriptor)?;
         host.create_volume(&descriptor.private_volume).await?;
         if let Some(project) = &descriptor.project {
             host.create_volume(project).await?;
@@ -1394,7 +1395,7 @@ impl PersistentLocalHarness {
             ]),
             None => Capabilities::new(std::iter::empty::<String>()),
         };
-        let storage = DurableHarnessStorage::from_providers_with_reads(
+        let storage = DurableHarnessStorage::from_providers_with_session_and_reads(
             descriptor.agent,
             limits.file_bytes,
             host.clone(),
@@ -1403,6 +1404,7 @@ impl PersistentLocalHarness {
             descriptor.conversation,
             issuer,
             project_capabilities,
+            session_id,
         )
         .await?
         .with_fork_verifier(local_fork_verifier_with_stream_provider(
