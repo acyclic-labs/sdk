@@ -4770,6 +4770,22 @@ mod tests {
         )
         .expect("write authority manifest");
         assert!(verify_authority_manifest(&source_root, &output).is_ok());
+        let mut missing_family = manifest.clone();
+        missing_family["families"]
+            .as_array_mut()
+            .expect("family array")
+            .pop();
+        fs::write(
+            output.join("wire/rust-authority.json"),
+            serde_json::to_vec(&missing_family).expect("encode missing-family manifest"),
+        )
+        .expect("write missing-family manifest");
+        assert!(verify_authority_manifest(&source_root, &output).is_err());
+        fs::write(
+            output.join("wire/rust-authority.json"),
+            serde_json::to_vec(&manifest).expect("restore authority manifest"),
+        )
+        .expect("restore authority manifest");
         let mut missing_shapes = manifest.clone();
         missing_shapes["families"][0]
             .as_object_mut()
