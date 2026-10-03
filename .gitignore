@@ -1,6 +1,9 @@
 /target/
 # Acyclic's runtime state never belongs to a repository.
 .acyclic/
+# Local qualification receipts, suite transcripts, and capture artifacts are
+# generated evidence, not repository source.
+/.qualification/
 /target-*/
 /.tools/
 node_modules/
