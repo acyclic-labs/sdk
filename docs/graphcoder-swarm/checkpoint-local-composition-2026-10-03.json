@@ -1,0 +1,21 @@
+{
+  "source": "e60b913e",
+  "runtime_source": "1373cf6d",
+  "handle": 10138,
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib filesystem::swarm_local::tests -j2 -- --nocapture",
+  "exit_code": 0,
+  "passed": 4,
+  "failed": 0,
+  "ignored": 0,
+  "filtered": 311,
+  "cases": [
+    "fork_refuses_without_a_completed_model_boundary",
+    "recorded_operator_choice_requires_the_exact_decision",
+    "recursive_constructor_reopens_the_pinned_project_and_session_key",
+    "seedless_local_fork_is_rejected_after_completed_boundary"
+  ],
+  "suite_sha256": "695F4F4D80F5D53DECE0B4EE02DBA47501FEADF43DD9BCD5DB51384E476A24CD",
+  "artifact_sha256": "45246DA13FDD74989707F523BF3E83EBD6746135CBE4B58789D168A77124E373",
+  "scope": "Native focused composition tests; does not prove positive recursive model fork or whole matrix",
+  "qualification": "incomplete"
+}
