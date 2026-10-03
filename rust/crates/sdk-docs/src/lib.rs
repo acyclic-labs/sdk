@@ -3479,6 +3479,12 @@ mod tests {
         assert!(items.iter().any(|item| item.name == "Alias"
             && item.kind == "use"
             && item.docs.as_deref() == Some("Re-exported API.")));
+        let alias = items.iter().find(|item| item.name == "Alias").unwrap();
+        assert_eq!(alias.module_path.as_deref(), Some("demo::Alias"));
+        assert_eq!(
+            alias.reexport.as_ref().map(|target| target.source.as_str()),
+            Some("private::Thing")
+        );
         assert!(items
             .iter()
             .any(|item| item.name == "NativeThing" && item.conditional));
@@ -3601,9 +3607,12 @@ mod tests {
             navigation: "filesystem".to_owned(),
             public_items: vec![PublicItem {
                 name: "Filesystem".to_owned(),
-                module_path: None,
+                module_path: Some("filesystem::Filesystem".to_owned()),
                 kind: "trait".to_owned(),
-                signature: None,
+                signature: Some(serde_json::json!({
+                    "generics": {"params": []},
+                    "bounds": []
+                })),
                 source_path: Some("rust/crates/filesystem/src/lib.rs".to_owned()),
                 source_line: Some(12),
                 docs: Some("Filesystem access.".to_owned()),
@@ -3640,6 +3649,14 @@ mod tests {
             "rust/crates/filesystem/src/lib.rs"
         );
         assert_eq!(projection["definition"]["sourceLine"], 12);
+        assert_eq!(
+            projection["definition"]["modulePath"],
+            "filesystem::Filesystem"
+        );
+        assert_eq!(
+            projection["definition"]["signature"]["generics"]["params"],
+            serde_json::json!([])
+        );
     }
 
     #[test]
