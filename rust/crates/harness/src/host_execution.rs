@@ -3338,6 +3338,19 @@ mod local_provider_tests {
         }
     }
 
+    /// Runs the real native adapter, then loses the publication acknowledgement
+    /// so the durable provider must leave its claim indeterminate.
+    struct NativeExitThenFaultRunner;
+
+    impl ExecutionRunner for NativeExitThenFaultRunner {
+        fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            let _ = NativeExecutionRunner.run(request)?;
+            Err(Error::Storage(
+                "fault injected after native child exit".into(),
+            ))
+        }
+    }
+
     struct FailAfterReceiptPublish {
         inner: Arc<dyn ExecutionReceiptStore>,
         fail_after_publish: Arc<AtomicBool>,
@@ -3895,6 +3908,111 @@ mod local_provider_tests {
             let replay = provider.dispatch(dispatch).await?;
             assert_eq!(replay.status, EffectStatus::Indeterminate);
             assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn real_native_unknown_restart_keeps_marker_and_claim_fenced() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-native-unknown-marker-{}",
+            OperationId::new()
+        ));
+        let model = Model::new(
+            "mock",
+            "execution-native-unknown",
+            "1",
+            serde_json::Value::Null,
+        )?;
+        let operation = OperationId::from_bytes([121; 16]);
+        let mut request = local_spec();
+        request.working_directory = root.to_string_lossy().into_owned();
+        if cfg!(windows) {
+            request.arguments = vec!["/C".into(), "echo native-marker>>marker.txt".into()];
+        } else {
+            request.arguments = vec!["-c".into(), "printf native-marker >> marker.txt".into()];
+        }
+
+        let dispatch;
+        let first_marker;
+        {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(NoopModel),
+                Limits::default(),
+            )
+            .await?;
+            let mut approval = ExecutionApproval::approve(operation, request.clone())?;
+            approval.bind_request_location(
+                session.storage().volume(),
+                "requests/native-unknown.json",
+            )?;
+            let bytes =
+                serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
+            let request_file = session
+                .storage()
+                .stage(
+                    operation,
+                    "requests/native-unknown.json",
+                    &bytes,
+                    "application/json",
+                    "native-unknown.json",
+                )
+                .await?;
+            let provider = NativeExecutionProvider::new_with_receipt_store(
+                session.storage().content_verifier(),
+                session.execution_receipt_store()?,
+                Arc::new(NativeExitThenFaultRunner),
+                Arc::new(LocalApprovalVerifier),
+            )?;
+            let request_digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &request_file,
+            )?;
+            dispatch = EffectDispatch {
+                provider: provider.id().into(),
+                effect_id: EffectId::from_bytes(operation.into_bytes()),
+                attempt_id: EffectAttemptId::from_bytes([122; 16]),
+                effect_kind: "host.process".into(),
+                request: request_file,
+                guarantee: EffectGuarantee::AtMostOnce,
+                request_digest,
+            };
+            let observation = provider.dispatch(dispatch.clone()).await?;
+            assert_eq!(observation.status, EffectStatus::Indeterminate);
+            first_marker = std::fs::read(root.join("marker.txt"))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            assert!(!first_marker.is_empty());
+        }
+
+        {
+            let session =
+                PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
+                    .await?;
+            let replay_calls = Arc::new(AtomicUsize::new(0));
+            let provider = NativeExecutionProvider::new_with_receipt_store(
+                session.storage().content_verifier(),
+                session.execution_receipt_store()?,
+                Arc::new(CountingRunner {
+                    calls: Arc::clone(&replay_calls),
+                    outcome: RunnerOutcome::Exited {
+                        status_code: Some(0),
+                        stdout: b"must not rerun".to_vec(),
+                        stderr: Vec::new(),
+                    },
+                }),
+                Arc::new(LocalApprovalVerifier),
+            )?;
+            let replay = provider.dispatch(dispatch).await?;
+            assert_eq!(replay.status, EffectStatus::Indeterminate);
+            assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+            let replayed_marker = std::fs::read(root.join("marker.txt"))
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            assert_eq!(replayed_marker, first_marker);
         }
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
