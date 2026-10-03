@@ -1225,7 +1225,7 @@ where
             conflicts: conflicts
                 .iter()
                 .map(|conflict| ProjectMergeTerminalConflict {
-                    provider: host.provider().clone(),
+                    provider: host.provider.clone(),
                     key: encode_merge_conflict(conflict),
                 })
                 .collect(),
