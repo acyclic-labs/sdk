@@ -173,6 +173,7 @@ where
             _ => None,
         };
         let reference = self.stage(id, "request", request).await?;
+        self.validate_internal_ref(&reference, id, "request", None)?;
         let ticket = InteractionTicket {
             id: interaction_uuid(id)?,
             kind: request.kind(),
@@ -197,12 +198,15 @@ where
                 "interaction answer version must be positive".into(),
             ));
         }
-        self.stage(
-            id,
-            &format!("answer-{expected_version}-{operation_id}"),
-            response,
-        )
-        .await
+        let reference = self
+            .stage(
+                id,
+                &format!("answer-{expected_version}-{operation_id}"),
+                response,
+            )
+            .await?;
+        self.validate_internal_ref(&reference, id, "answer", Some(expected_version))?;
+        Ok(reference)
     }
 
     /// Replays the exact conversation and admits one typed open event.
@@ -356,6 +360,7 @@ where
         let Some((ticket, _)) = self.read(id).await? else {
             return Ok(None);
         };
+        self.validate_internal_ref(&ticket.request, id, "request", None)?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -383,6 +388,7 @@ where
         let InteractionOutcome::Answered { answer } = resolution.outcome else {
             return Ok(None);
         };
+        self.validate_internal_ref(&answer, id, "answer", Some(resolution.expected_version))?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -411,6 +417,7 @@ where
         let Some(detail) = resolution.detail else {
             return Ok(None);
         };
+        self.validate_internal_ref(&detail, id, "answer", Some(resolution.expected_version))?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -453,6 +460,38 @@ where
             action,
         };
         aggregate.execute(command).await
+    }
+
+    fn validate_internal_ref(
+        &self,
+        reference: &FileRef,
+        id: InteractionId,
+        role: &str,
+        expected_version: Option<u64>,
+    ) -> Result<()> {
+        reference.validate()?;
+        if reference.volume() != &self.private_volume
+            || reference.descriptor().media_type() != "application/json"
+        {
+            return Err(Error::Unauthorized(
+                "interaction artifact is outside its authenticated private volume".into(),
+            ));
+        }
+        let prefix = format!(".system/interactions/{id}/");
+        let valid_path = match (role, expected_version) {
+            ("request", None) => reference.path() == format!("{prefix}request.json"),
+            ("answer", Some(version)) => reference
+                .path()
+                .strip_prefix(&format!("{prefix}answer-{version}-"))
+                .is_some_and(|suffix| suffix.ends_with(".json") && suffix.len() > 5),
+            _ => false,
+        };
+        if !valid_path {
+            return Err(Error::Unauthorized(format!(
+                "interaction {role} artifact has an invalid id, role, or version path"
+            )));
+        }
+        Ok(())
     }
 
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
