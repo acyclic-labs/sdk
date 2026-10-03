@@ -244,6 +244,87 @@ impl VerifiedSwarmUsageReceipt {
     }
 }
 
+/// Host/provider boundary for reading cumulative work from one dispatch.
+///
+/// Implementations are owned by the execution route and must read the
+/// provider's measured counters rather than values supplied by a task or
+/// caller. The coordinator only accepts receipts issued through this source.
+pub trait SwarmUsageSource {
+    /// Stable provider identity retained in each receipt.
+    fn provider_identity(&self) -> &str;
+
+    /// Reads cumulative usage for the exact operation and dispatch attempt.
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage>;
+}
+
+/// Monotonic receipt issuer bound to one provider dispatch.
+pub struct SwarmUsageReceiptIssuer<S> {
+    source: S,
+    operation_id: OperationId,
+    dispatch_id: IdempotencyKey,
+    provider: String,
+    sequence: u64,
+    last_usage: Option<SwarmUsage>,
+}
+
+impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
+    /// Binds a host measurement source to one operation and dispatch.
+    pub fn new(source: S, operation_id: OperationId, dispatch_id: IdempotencyKey) -> Result<Self> {
+        if operation_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("swarm usage operation is empty".into()));
+        }
+        IdempotencyKey::new(dispatch_id.0.clone())?;
+        let provider = source.provider_identity();
+        if provider.is_empty() || provider.len() > 255 || provider.chars().any(char::is_control) {
+            return Err(Error::Invalid(
+                "swarm usage provider identity is invalid".into(),
+            ));
+        }
+        Ok(Self {
+            source,
+            operation_id,
+            dispatch_id,
+            provider: provider.to_owned(),
+            sequence: 0,
+            last_usage: None,
+        })
+    }
+
+    /// Reads provider counters and issues the next verified durable receipt.
+    pub fn issue(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        let sequence = self
+            .sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
+        let usage = self
+            .source
+            .cumulative_usage(self.operation_id, &self.dispatch_id)?;
+        if let Some(previous) = self.last_usage {
+            usage.checked_delta(previous)?;
+        }
+        let receipt = SwarmUsageReceipt::new(
+            self.operation_id,
+            self.dispatch_id.clone(),
+            sequence,
+            usage,
+            self.provider.clone(),
+        )?;
+        self.sequence = sequence;
+        self.last_usage = Some(usage);
+        VerifiedSwarmUsageReceipt::from_verified(receipt)
+    }
+
+    /// Returns the next sequence expected from this issuer.
+    #[must_use]
+    pub const fn next_sequence(&self) -> u64 {
+        self.sequence.saturating_add(1)
+    }
+}
+
 /// Parent and child identity submitted before a model fork is dispatched.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1399,6 +1480,7 @@ mod tests {
         runtime::{TaskAdmissionRecord, TaskRunLimits},
     };
     use serde_json::json;
+    use std::sync::Mutex;
     fn id(byte: u8) -> OperationId {
         OperationId::from_bytes([byte; 16])
     }
@@ -1482,6 +1564,74 @@ mod tests {
         Ok(())
     }
 
+    struct MeasuredSource {
+        snapshots: Mutex<Vec<SwarmUsage>>,
+    }
+
+    impl SwarmUsageSource for MeasuredSource {
+        fn provider_identity(&self) -> &str {
+            "local-provider"
+        }
+
+        fn cumulative_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            self.snapshots
+                .lock()
+                .map_err(|_| Error::Storage("measurement source lock poisoned".into()))?
+                .pop()
+                .ok_or_else(|| Error::Storage("measurement source exhausted".into()))
+        }
+    }
+
+    #[test]
+    fn receipt_issuer_reads_each_provider_dimension_and_sequences_retries() -> Result<()> {
+        let operation_id = id(18);
+        let source = MeasuredSource {
+            snapshots: Mutex::new(vec![
+                SwarmUsage {
+                    model_steps: 7,
+                    output_bytes: 4096,
+                    execution_time_ms: 120,
+                },
+                SwarmUsage {
+                    model_steps: 3,
+                    output_bytes: 1024,
+                    execution_time_ms: 40,
+                },
+            ]),
+        };
+        let mut issuer = SwarmUsageReceiptIssuer::new(
+            source,
+            operation_id,
+            IdempotencyKey::new("dispatch-measured")?,
+        )?;
+        let first = issuer.issue()?.into_receipt();
+        assert_eq!(first.sequence, 1);
+        assert_eq!(
+            first.usage,
+            SwarmUsage {
+                model_steps: 3,
+                output_bytes: 1024,
+                execution_time_ms: 40,
+            }
+        );
+        let second = issuer.issue()?.into_receipt();
+        assert_eq!(second.sequence, 2);
+        assert_eq!(
+            second.usage,
+            SwarmUsage {
+                model_steps: 7,
+                output_bytes: 4096,
+                execution_time_ms: 120,
+            }
+        );
+        assert_eq!(issuer.next_sequence(), 3);
+        Ok(())
+    }
+
     #[test]
     fn duplicate_admission_is_replayed_without_double_counting() -> Result<()> {
         let budget = SwarmBudget::new(id(9), owner(0), limits())?;
@@ -1543,6 +1693,79 @@ mod tests {
                 .reserve_child(request(3, Some(grandchild.operation_id)))
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn restart_replays_unknown_dispatch_as_reserved_capacity() -> Result<()> {
+        let session = id(9);
+        let owner = owner(0);
+        let limits = limits();
+        let budget = SwarmBudget::new(session, owner.clone(), limits)?;
+        let reservation = budget.reserve_child(request(6, None))?.reservation;
+        let recovered = SwarmBudget::replay(vec![
+            SwarmBudgetEvent::Started {
+                session_id: session,
+                owner,
+                limits,
+            },
+            SwarmBudgetEvent::ChildReserved {
+                reservation: reservation.clone(),
+            },
+        ])?;
+        let usage = recovered.usage()?;
+        assert_eq!(usage.active_agents, 2);
+        assert_eq!(usage.total_agents, 2);
+        assert_eq!(
+            usage.reserved,
+            SwarmUsage {
+                model_steps: 4,
+                output_bytes: 40,
+                execution_time_ms: 400,
+            }
+        );
+        assert_eq!(
+            recovered
+                .reservation(reservation.operation_id)?
+                .map(|value| value.state),
+            Some(SwarmReservationState::Reserved)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn session_budget_enforces_each_resource_dimension_independently() -> Result<()> {
+        for (byte, resources) in [
+            (
+                20,
+                SwarmResourceRequest {
+                    model_steps: 11,
+                    output_bytes: 40,
+                    execution_time_ms: 400,
+                },
+            ),
+            (
+                21,
+                SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 101,
+                    execution_time_ms: 400,
+                },
+            ),
+            (
+                22,
+                SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 40,
+                    execution_time_ms: 1_001,
+                },
+            ),
+        ] {
+            let budget = SwarmBudget::new(id(byte), owner(0), limits())?;
+            let mut candidate = request(byte.saturating_add(1), None);
+            candidate.resources = resources;
+            assert!(budget.reserve_child(candidate).is_err());
+        }
         Ok(())
     }
 
