@@ -56,6 +56,15 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
     if (crate.analysis_mode !== "rustdoc-json") {
       assertionFailure(`${label}: package ${crate.package_name} is not backed by rustdoc-json`);
     }
+    if (!isBlake3Digest(crate.content_blake3)) {
+      assertionFailure(`${label}: package ${crate.package_name} has no valid content_blake3`);
+    }
+    for (const source of crate.sources ?? []) {
+      if (!isNonEmptyString(source.path) || !isBlake3Digest(source.blake3)
+        || typeof source.contents !== "string") {
+        assertionFailure(`${label}: package ${crate.package_name} has an incomplete retained source entry`);
+      }
+    }
   }
 
   const expected = requiredPackages(manifest);
@@ -96,6 +105,14 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
         }
         if (!isNonEmptyString(item.source_path) || !Number.isInteger(item.source_line) || item.source_line < 1) {
           assertionFailure(`${label}: ${packageName}/${profile.name}/${item.name} has no source path/line`);
+        }
+        const source = (crate.sources ?? []).find(candidate => candidate.path === item.source_path);
+        if (!source) {
+          assertionFailure(`${label}: ${packageName}/${profile.name}/${item.name} source_path is absent from retained sources`);
+        }
+        const sourceLines = source.contents.split(/\r?\n/);
+        if (item.source_line > sourceLines.length) {
+          assertionFailure(`${label}: ${packageName}/${profile.name}/${item.name} source_line exceeds retained source`);
         }
         // `use` and `mod` nodes are graph edges/namespaces, so rustdoc does
         // not provide declaration signatures for them. Semantic declarations

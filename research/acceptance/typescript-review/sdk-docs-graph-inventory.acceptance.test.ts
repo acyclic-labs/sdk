@@ -53,6 +53,8 @@ type Graph = {
 type CrateBundle = {
   package_name?: string;
   analysis_mode?: string;
+  content_blake3?: string;
+  sources?: Array<{ path: string; blake3: string; contents: string }>;
   public_items?: PublicItem[];
   graphs?: Graph[];
 };
@@ -103,7 +105,17 @@ function syntheticStrictBundle(manifest: ProfileManifest): DocsBundle {
         },
       } satisfies Graph;
     });
-    return { package_name: packageName, analysis_mode: "rustdoc-json", graphs };
+    return {
+      package_name: packageName,
+      analysis_mode: "rustdoc-json",
+      content_blake3: "e".repeat(64),
+      sources: [{
+        path: `rust/crates/${packageName}/src/lib.rs`,
+        blake3: "f".repeat(64),
+        contents: "pub struct SyntheticFacade;\n",
+      }],
+      graphs,
+    };
   });
   return {
     schema_version: 1,
@@ -145,6 +157,12 @@ test("synthetic validator fixture covers required package/facade inventory and s
   if (!firstGraph?.public_items?.[0]) throw new Error("synthetic fixture did not contain a graph item");
   firstGraph.public_items[0].module_path = null;
   expect(() => validateStrictDocsBundle(missingSourceBinding, manifest, "synthetic validator fixture")).toThrow(/no module_path/);
+
+  const outOfRangeSource = structuredClone(fixture);
+  const outOfRangeGraph = outOfRangeSource.crates?.[0]?.graphs?.[0];
+  if (!outOfRangeGraph?.public_items?.[0]) throw new Error("synthetic fixture did not contain a source-bound item");
+  outOfRangeGraph.public_items[0].source_line = 99;
+  expect(() => validateStrictDocsBundle(outOfRangeSource, manifest, "synthetic validator fixture")).toThrow(/exceeds retained source/);
 });
 
 const liveOutput = process.env.SDK_DOCS_FULL_OUTPUT;
