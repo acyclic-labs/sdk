@@ -34,7 +34,10 @@ use crate::{
         ToolRegistry, ToolResult,
     },
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_fs::{
+    LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions, SourceOptions,
+    HostCheckout,
+};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
@@ -151,6 +154,41 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    /// Owner-selected native checkout attached to the project workspace.
+    /// Source capture and reconciliation remain provider-owned; the binding
+    /// only carries the caller's path and exact project identity.
+    pub external_project: Option<LocalExternalProject>,
+}
+
+/// Native checkout selected by the host composition.
+#[derive(Clone)]
+pub struct LocalExternalProject {
+    /// Project volume whose durable source identity is being attached.
+    pub project: VolumeRef,
+    /// Host checkout root selected by the authenticated caller.
+    pub path: PathBuf,
+    /// Bounded source capture and continuity policy.
+    pub options: SourceOptions,
+}
+
+impl LocalExternalProject {
+    /// Validates the project binding without touching the host filesystem.
+    pub fn new(project: VolumeRef, path: impl AsRef<Path>, options: SourceOptions) -> Result<Self> {
+        project.validate()?;
+        if project.class() != VolumeClass::Project {
+            return Err(Error::Invalid(
+                "external checkout requires a project volume".into(),
+            ));
+        }
+        if path.as_ref().as_os_str().is_empty() {
+            return Err(Error::Invalid("external checkout path is empty".into()));
+        }
+        Ok(Self {
+            project,
+            path: path.as_ref().to_path_buf(),
+            options,
+        })
+    }
 }
 
 impl LocalSwarmBindings {
@@ -168,6 +206,7 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            external_project: None,
         }
     }
 
@@ -196,6 +235,13 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    /// Attaches an owner-selected native checkout to the project composition.
+    #[must_use]
+    pub fn with_external_project(mut self, project: LocalExternalProject) -> Self {
+        self.external_project = Some(project);
         self
     }
 
@@ -1992,6 +2038,9 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
+    /// Live provider source handle. Retaining it keeps native watcher
+    /// continuity attached for the lifetime of this swarm.
+    external_project: Option<HostCheckout<LocalAuthorityBackend, LocalObjectBackend>>,
 }
 
 impl PersistentLocalSwarm {
@@ -2016,6 +2065,17 @@ impl PersistentLocalSwarm {
     ) -> Result<Self> {
         config.validate()?;
         let root = root.as_ref().to_path_buf();
+        if let Some(external) = bindings.external_project.as_ref() {
+            match config.project.as_ref() {
+                Some(project) if project != &external.project => {
+                    return Err(Error::Conflict(
+                        "swarm config project differs from external checkout project".into(),
+                    ));
+                }
+                None => config.project = Some(external.project.clone()),
+                Some(_) => {}
+            }
+        }
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
                 Error::Invalid(
@@ -2047,6 +2107,27 @@ impl PersistentLocalSwarm {
                 let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
             };
+        let attached_project = if let Some(external) = bindings.external_project.as_ref() {
+            let project = config.project.as_ref().ok_or_else(|| {
+                Error::Invalid("external checkout requires a project binding".into())
+            })?;
+            if project != &external.project {
+                return Err(Error::Conflict(
+                    "external checkout project differs from swarm project".into(),
+                ));
+            }
+            Some(
+                filesystem_host
+                    .attach_directory(
+                        project.storage_name()?,
+                        &external.path,
+                        external.options.clone(),
+                    )
+                    .await?,
+            )
+        } else {
+            None
+        };
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -2145,6 +2226,7 @@ impl PersistentLocalSwarm {
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
+            external_project: attached_project,
         })
     }
 
@@ -2243,18 +2325,67 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_inner(
+            root,
+            model,
+            provider,
+            limits,
+            None,
+        )
+        .await
+    }
+
+    /// Opens the recursive composition with one caller-declared native
+    /// checkout attached to the exact project workspace. The provider retains
+    /// source identity and baseline state; no host publication is performed.
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        project: VolumeRef,
+        checkout: impl AsRef<Path>,
+    ) -> Result<Arc<Self>> {
+        let external = LocalExternalProject::new(project, checkout, SourceOptions::default())?;
+        Self::open_shared_with_model_and_recursive_filesystem_inner(
+            root,
+            model,
+            provider,
+            limits,
+            Some(external),
+        )
+        .await
+    }
+
+    async fn open_shared_with_model_and_recursive_filesystem_inner(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        external: Option<LocalExternalProject>,
+    ) -> Result<Arc<Self>> {
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
         let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
             .await?;
         let stream_provider = ProviderRef::new("local", "stream", "2")?;
         let stream = shared_local_stream(root.join("conversation")).await?;
-        let project = VolumeRef::new(
-            filesystem_provider,
-            "local-project",
-            VolumeClass::Project,
-            VolumeOwner::Project("local-swarm".into()),
-        )?;
+        let project = match external.as_ref() {
+            Some(external) => {
+                if external.project.provider() != &filesystem_provider {
+                    return Err(Error::Invalid(
+                        "external checkout project belongs to another provider".into(),
+                    ));
+                }
+                external.project.clone()
+            }
+            None => VolumeRef::new(
+                filesystem_provider,
+                "local-project",
+                VolumeClass::Project,
+                VolumeOwner::Project("local-swarm".into()),
+            )?,
+        };
         host.create_volume(&project).await?;
         let mut config = LocalSwarmConfig::new(model.clone(), limits)?;
         config.project = Some(project.clone());
@@ -2277,7 +2408,12 @@ impl PersistentLocalSwarm {
             model,
             provider,
             limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            match external {
+                Some(external) => LocalSwarmBindings::default()
+                    .with_filesystem_fork_resolver(resolver)
+                    .with_external_project(external),
+                None => LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            },
         )
         .await
     }
@@ -2291,6 +2427,16 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm root session is missing".into()))
+    }
+
+    /// Returns the authenticated native checkout precondition retained by
+    /// this swarm. Callers persist this binding with an approval record and
+    /// compare it again immediately before provider publication.
+    pub async fn external_checkout_binding(&self) -> Result<Option<acyclic_fs::SourceBinding>> {
+        match &self.external_project {
+            Some(checkout) => Ok(Some(checkout.binding().await)),
+            None => Ok(None),
+        }
     }
 
     /// Returns the host-only signer bound to one task's durable interaction

@@ -11,13 +11,14 @@
 
 use futures::StreamExt;
 use acyclic_harness::{
-    conversation::Limits,
+    conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
         LocalSessionPhase, PersistentLocalSwarm,
     },
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider, ModelRequest},
     registry::ComponentIdentity,
+    resources::ProviderRef,
     Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
@@ -62,6 +63,12 @@ struct Args {
     /// Private host-to-runtime credential for operator control messages.
     #[arg(long, env = "GRAPHCODER_OPERATOR_TOKEN", hide = true)]
     operator_token: Option<String>,
+    /// Caller-declared project identity for an attached native checkout.
+    #[arg(long, env = "GRAPHCODER_PROJECT_ID", requires = "checkout")]
+    project_id: Option<String>,
+    /// Native checkout root to attach as the project source.
+    #[arg(long, env = "GRAPHCODER_CHECKOUT")]
+    checkout: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -326,13 +333,40 @@ impl Runtime {
             calls: Arc::new(AtomicUsize::new(0)),
             option_policy,
         });
-        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
-            &args.root,
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await?;
+        let swarm = match (&args.checkout, &args.project_id) {
+            (Some(checkout), Some(project_id)) => {
+                let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+                let project = VolumeRef::new(
+                    filesystem_provider,
+                    project_id.clone(),
+                    VolumeClass::Project,
+                    VolumeOwner::Project(project_id.clone()),
+                )?;
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                    project,
+                    checkout,
+                )
+                .await?
+            }
+            (Some(_), None) => {
+                return Err(HarnessError::Invalid(
+                    "--project-id is required with --checkout".into(),
+                ));
+            }
+            (None, _) => {
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                    &args.root,
+                    model,
+                    provider,
+                    Limits::default(),
+                )
+                .await?
+            }
+        };
         Ok(Self {
             swarm,
             model_fixture: fixture,
@@ -1317,6 +1351,8 @@ mod tests {
             root,
             model_fixture: fixture.to_owned(),
             operator_token: None,
+            project_id: None,
+            checkout: None,
         }
     }
 

@@ -31,6 +31,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::Path,
     sync::Arc,
 };
 
@@ -83,7 +84,7 @@ mod swarm_local;
 pub use swarm_local::{
     LocalForkIntent, LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration,
     LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
-    LocalModelForkResolver,
+    LocalModelForkResolver, LocalExternalProject,
     LocalSessionPhase, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
     LocalSwarmMessage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
 };
@@ -1690,6 +1691,23 @@ impl<A, O> FilesystemHost<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
+    /// Attaches one owner-selected native checkout to the provider workspace.
+    ///
+    /// The Filesystem source owns baseline capture, root identity, watcher
+    /// continuity, and reconciliation.  Keeping this operation on the host
+    /// adapter prevents CLI callers from reconstructing those semantics.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub async fn attach_directory(
+        &self,
+        name: impl AsRef<str>,
+        path: impl AsRef<Path>,
+        options: acyclic_fs::SourceOptions,
+    ) -> Result<acyclic_fs::HostCheckout<A, O>> {
+        acyclic_fs::HostCheckout::attach(&self.filesystem, name, path, options)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))
+    }
+
     /// Forks a project workspace from one exact generation into a new project volume.
     async fn fork_project(
         &self,
