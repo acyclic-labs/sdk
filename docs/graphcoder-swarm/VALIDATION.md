@@ -55,5 +55,16 @@ The runtime bridge is injected through `HarnessGraphCoderTransport`, so this
 qualification runner does not create a second session store or orchestration
 path in GraphCoder.
 
+Use `scripts/graphcoder-qualification-suite.mjs capture CONFIG.json` at the
+same boundary for each native, WASM, PTY, and packaged run. The configuration
+names the exact executable and argument vector, working directory, explicit
+environment allowlist, expected exit code, and every artifact consumed by the
+run. The utility refuses stale source provenance, artifacts built after the
+suite began, duplicate or changing artifacts, shell execution, and missing
+files. It records the command descriptor, artifact hashes, execution window,
+and combined transcript in a suite record that can be copied into the locked
+receipt. A nonzero process outcome produces `status: failed` and a nonzero
+utility exit status, preserving the failure for the gate.
+
 Any failure, skip, flaky result, missing case, missing evidence, stale artifact,
 or compile-only substitution keeps the receipt non-final.
