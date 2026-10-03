@@ -1,0 +1,243 @@
+name: Rust Source Qualification
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/rust-source-qualification.yml'
+      - '.github/actions/rust-toolchain/**'
+      - 'rust/crates/sdk-generation/**'
+      - 'rust/crates/sdk-contract-wire/**'
+      - 'rust/crates/sdk-contract-validation/**'
+      - 'rust/crates/sdk-openapi-prototype/**'
+      - 'rust/crates/sdk-contract-options/**'
+      - 'rust/crates/sdk-docs/**'
+      - 'rust/crates/sdk-examples/**'
+      - 'rust/crates/sdk-embedded-filesystem/**'
+      - 'rust/crates/sdk-embedded-prototype/**'
+      - 'rust/crates/sdk-python/**'
+      - 'rust/crates/sdk-typescript/**'
+      - 'rust/crates/**/src/**'
+      - 'docs/**'
+      - 'typescript/**'
+      - 'cpp/**'
+      - 'swift/**'
+      - 'languages/**'
+      - 'compatibility/**'
+      - 'proto/**'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-source-qualification-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fast-policy:
+    name: Fast qualification policy
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 2
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify qualification policy
+        # Measured locally at 2.7 seconds; no downstream runtimes or packages.
+        run: node scripts/test-plan-qualification.mjs
+
+  qualify:
+    # Full source and downstream qualification runs on releases or explicit requests.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - platform: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - platform: macos
+            runner: blacksmith-6vcpu-macos-15
+          - platform: windows
+            runner: blacksmith-4vcpu-windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ runner.temp }}/rust-source-target
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+
+      - name: Verify pinned platform toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)" = '1.98.1'
+          rustc --version --verbose
+          cargo --version
+          rustfmt --edition 2021 --check rust/crates/sdk-generation/src/main.rs
+
+      - name: Test generation and contract validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path rust/crates/sdk-contract-options/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-contract-validation/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-openapi-prototype/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-examples/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-embedded-filesystem/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-python/Cargo.toml --locked
+          cargo test --manifest-path rust/crates/sdk-typescript/Cargo.toml --locked
+
+      - name: Verify Rust wire export and drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rust-authority"
+          cargo run --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --bin sdk-contract-wire -- generate --out "$out"
+          cargo run --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --bin sdk-contract-wire -- check --out "$out"
+          test -s "$out/rust-authority.json"
+
+      - name: Run unified source generation and exact drift check
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rust-source-generation"
+          cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
+            generate --source-root "$GITHUB_WORKSPACE" --output "$out"
+          cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
+            check --source-root "$GITHUB_WORKSPACE" --output "$out"
+          test -s "$out/sdk-generation-manifest.json"
+          python -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert p["status"] == "generated", p["status"]; assert not [t for t in p["tools"] if t["required"] and t["status"] != "passed"], p["tools"]' "$out/sdk-generation-manifest.json"
+
+      - name: Upload unified generation evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: rust-source-qualification-${{ matrix.platform }}
+          path: ${{ runner.temp }}/rust-source-generation
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Verify source-bound docs profile graph
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rust-source-generation"
+          test -s "$out/docs.json"
+          test -s "$out/website.json"
+          test -s "$out/sdk-examples-manifest.json"
+          test -s "$out/source-authority.json"
+          python -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); names={x["profile"]["name"] for x in p["profiles"]}; assert names == {"host-default","native-bindings","host-capabilities","wasm-bindings"}, names; assert len(p["profiles"]) == 4; assert all({"complete","missing_packages","unresolved_packages"} <= set(x) for x in p["profiles"]); assert all(x["complete"] and not x["missing_packages"] and not x["unresolved_packages"] for x in p["profiles"])' "$out/docs.json"
+          python -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert p["schema"] == "acyclic.sdk.examples.source-authority.v1"; assert p["source_revision"] and p["source_sha256"].startswith("sha256:"); assert p["source_files"] and set(p["source_files"]) == set(p["source_file_hashes"]); assert all(v.startswith("sha256:") for v in p["source_file_hashes"].values())' "$out/source-authority.json"
+          python -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); json.dump({"schema":"acyclic.sdk.docs.profile-receipt.v1","source_revision":p["source_revision"],"profiles":[{"name":x["profile"]["name"],"complete":x["complete"],"missing_packages":x["missing_packages"],"unresolved_packages":x["unresolved_packages"]} for x in p["profiles"]]},open(sys.argv[2],"w",encoding="utf-8"),indent=2)' "$out/docs.json" "$out/profile-receipt.json"
+          test -s "$out/profile-receipt.json"
+
+      - name: Generate and check Rust-owned TypeScript stage
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/rust-typescript"
+          cargo run --manifest-path rust/crates/sdk-typescript/Cargo.toml --locked -- write "$out"
+          cargo run --manifest-path rust/crates/sdk-typescript/Cargo.toml --locked -- check "$out"
+          test -s "$out/manifest.json"
+
+  platform-package-verification:
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    name: ${{ matrix.package }} pinned platform scope
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: cpp
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - package: swift
+            runner: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Verify pinned package lane and record pending host scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/platform-package/${{ matrix.package }}"
+          status='pending-host-toolchain'
+          if [[ "${{ matrix.package }}" == cpp ]]; then
+            test -f cpp/Generate.ps1
+            grep -q 'ExpectedProtoc = "36.2"' cpp/Generate.ps1
+            grep -q 'ExpectedGrpc = "1.80.0"' cpp/Generate.ps1
+            cp cpp/README.md "$RUNNER_TEMP/platform-package/${{ matrix.package }}/README.md"
+            cp cpp/Generate.ps1 "$RUNNER_TEMP/platform-package/${{ matrix.package }}/Generate.ps1"
+            pins='{"protobuf":"36.2","grpc":"1.80.0"}'
+            if [[ -n "${SDK_CPP_PROTOC:-}" && -n "${SDK_CPP_GRPC_PLUGIN:-}" ]]; then
+              pwsh -NoProfile -File cpp/Generate.ps1 \
+                -Protoc "$SDK_CPP_PROTOC" \
+                -GrpcCppPlugin "$SDK_CPP_GRPC_PLUGIN" \
+                -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
+              cmake -S cpp -B "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" \
+                -DACYCLIC_CPP_GENERATED_DIR="$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
+              cmake --build "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" --config Release
+              status='pending-conformance'
+            fi
+          else
+            test -f swift/Generate.ps1
+            grep -q 'ExpectedProtoc = "36.2"' swift/Generate.ps1
+            grep -q 'ExpectedSwiftProtobuf = "1.38.1"' swift/Generate.ps1
+            grep -q 'ExpectedGrpcSwift = "2.4.1"' swift/Generate.ps1
+            cp swift/README.md "$RUNNER_TEMP/platform-package/${{ matrix.package }}/README.md"
+            cp swift/Generate.ps1 "$RUNNER_TEMP/platform-package/${{ matrix.package }}/Generate.ps1"
+            pins='{"protobuf":"36.2","swiftProtobuf":"1.38.1","grpcSwift":"2.4.1"}'
+            if [[ -n "${SDK_SWIFT_PROTOC:-}" && -n "${SDK_SWIFT_PLUGIN:-}" && -n "${SDK_GRPC_SWIFT_PLUGIN:-}" ]]; then
+              pwsh -NoProfile -File swift/Generate.ps1 \
+                -Protoc "$SDK_SWIFT_PROTOC" \
+                -SwiftPlugin "$SDK_SWIFT_PLUGIN" \
+                -GrpcSwiftPlugin "$SDK_GRPC_SWIFT_PLUGIN" \
+                -WritePackageManifest \
+                -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
+              if command -v swift >/dev/null 2>&1; then
+                swift build --package-path "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
+                status='pending-conformance'
+              else
+                status='pending-swiftpm-host'
+              fi
+            fi
+          fi
+          python -c 'import json,os,sys; json.dump({"schema":"acyclic.sdk.platform-qualification.v1","package":sys.argv[1],"status":sys.argv[3],"pins":json.loads(sys.argv[2]),"publishes":False},open(os.path.join(os.environ["RUNNER_TEMP"],"platform-package",sys.argv[1],"qualification.json"),"w"),indent=2)' '${{ matrix.package }}' "$pins" "$status"
+
+      - name: Upload internal platform package evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: rust-source-qualification-${{ matrix.package }}
+          path: ${{ runner.temp }}/platform-package/${{ matrix.package }}
+          if-no-files-found: error
+          retention-days: 7
