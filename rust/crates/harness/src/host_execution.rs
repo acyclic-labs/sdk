@@ -197,7 +197,8 @@ pub struct ExecutionApproval {
     pub request_digest: [u8; 32],
     /// Digest of the exact host volume and logical path approved for dispatch.
     /// The locator is bound before staging so the approval record is not
-    /// self-referential.
+    /// self-referential. The authenticated interaction separately binds the
+    /// dispatch digest, which includes the immutable staged file reference.
     #[serde(default)]
     pub request_locator_digest: Option<[u8; 32]>,
     /// Whether the owner approved dispatch.
@@ -1310,6 +1311,12 @@ impl NativeExecutionProvider {
                 "approved execution request must be JSON content".into(),
             ));
         }
+        let bytes = self.resolver.read(&request.request).await?;
+        request.request.descriptor().verify(&bytes)?;
+        let approval: ExecutionApproval = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Invalid(format!("approved execution request is invalid: {error}"))
+        })?;
+        approval.validate()?;
         if self.receipt_store.is_some() {
             let locator =
                 execution_request_locator_digest(request.request.volume(), request.request.path())?;
@@ -1319,12 +1326,6 @@ impl NativeExecutionProvider {
                 ));
             }
         }
-        let bytes = self.resolver.read(&request.request).await?;
-        request.request.descriptor().verify(&bytes)?;
-        let approval: ExecutionApproval = serde_json::from_slice(&bytes).map_err(|error| {
-            Error::Invalid(format!("approved execution request is invalid: {error}"))
-        })?;
-        approval.validate()?;
         if EffectId::from_bytes(approval.operation_id.into_bytes()) != request.effect_id {
             return Err(Error::Conflict(
                 "execution approval operation does not match effect identity".into(),
@@ -2924,11 +2925,6 @@ mod local_provider_tests {
             ];
         }
         let request_digest = request.digest()?;
-        let interaction = Interaction::Approval {
-            prompt: "approve exact marker command".into(),
-            operation_id: operation,
-            action_digest: request_digest,
-        };
         let request_file;
         let dispatch;
         {
@@ -2939,26 +2935,12 @@ mod local_provider_tests {
                 Limits::default(),
             )
             .await?;
-            session
-                .storage()
-                .open_interaction(interaction_id, interaction)
-                .await?;
             let mut approval = ExecutionApproval::approve_for(
                 session.storage().session_id(),
                 interaction_id,
                 operation,
                 request.clone(),
             )?;
-            session
-                .storage()
-                .resolve_interaction(
-                    interaction_id,
-                    InteractionResponse::Approval {
-                        approved: true,
-                        reason: None,
-                    },
-                )
-                .await?;
             approval
                 .bind_request_location(session.storage().volume(), "requests/authenticated.json")?;
             let bytes =
@@ -2980,6 +2962,27 @@ mod local_provider_tests {
                 "host.process",
                 &request_file,
             )?;
+            session
+                .storage()
+                .open_interaction(
+                    interaction_id,
+                    Interaction::Approval {
+                        prompt: "approve exact marker command".into(),
+                        operation_id: operation,
+                        action_digest: digest,
+                    },
+                )
+                .await?;
+            session
+                .storage()
+                .resolve_interaction(
+                    interaction_id,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                )
+                .await?;
             dispatch = EffectDispatch {
                 provider: provider.id().into(),
                 effect_id: EffectId::from_bytes(operation.into_bytes()),
@@ -3025,27 +3028,6 @@ mod local_provider_tests {
 
             let denied_operation = OperationId::from_bytes([96; 16]);
             let denied_interaction = InteractionId::from_bytes([97; 16]);
-            session
-                .storage()
-                .open_interaction(
-                    denied_interaction,
-                    Interaction::Approval {
-                        prompt: "decline exact marker command".into(),
-                        operation_id: denied_operation,
-                        action_digest: request_digest,
-                    },
-                )
-                .await?;
-            session
-                .storage()
-                .resolve_interaction(
-                    denied_interaction,
-                    InteractionResponse::Approval {
-                        approved: false,
-                        reason: Some("owner declined".into()),
-                    },
-                )
-                .await?;
             let mut denied = ExecutionApproval::deny_for(
                 session.storage().session_id(),
                 denied_interaction,
@@ -3072,6 +3054,27 @@ mod local_provider_tests {
                 "host.process",
                 &denied_file,
             )?;
+            session
+                .storage()
+                .open_interaction(
+                    denied_interaction,
+                    Interaction::Approval {
+                        prompt: "decline exact marker command".into(),
+                        operation_id: denied_operation,
+                        action_digest: denied_digest,
+                    },
+                )
+                .await?;
+            session
+                .storage()
+                .resolve_interaction(
+                    denied_interaction,
+                    InteractionResponse::Approval {
+                        approved: false,
+                        reason: Some("owner declined".into()),
+                    },
+                )
+                .await?;
             let denied_observation = provider
                 .dispatch(EffectDispatch {
                     provider: provider.id().into(),
@@ -3090,22 +3093,20 @@ mod local_provider_tests {
             ));
 
             let mut forged = ExecutionApproval::approve_for(
-                SessionId::new(),
+                session.storage().session_id(),
                 interaction_id,
                 operation,
                 request.clone(),
             )?;
-            forged.bind_request_location(
-                session.storage().volume(),
-                "requests/forged-session.json",
-            )?;
+            forged
+                .bind_request_location(session.storage().volume(), "requests/authenticated.json")?;
             let forged_bytes =
                 serde_json::to_vec(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
             let forged_file = session
                 .storage()
                 .stage(
                     OperationId::from_bytes([93; 16]),
-                    "requests/forged-session.json",
+                    "requests/authenticated.json",
                     &forged_bytes,
                     "application/json",
                     "forged-session.json",
@@ -3121,7 +3122,7 @@ mod local_provider_tests {
                 provider
                     .dispatch(EffectDispatch {
                         provider: provider.id().into(),
-                        effect_id: EffectId::from_bytes([94; 16]),
+                        effect_id: EffectId::from_bytes(operation.into_bytes()),
                         attempt_id: EffectAttemptId::from_bytes([95; 16]),
                         effect_kind: "host.process".into(),
                         request: forged_file,
@@ -3146,6 +3147,135 @@ mod local_provider_tests {
         let replayed_marker =
             std::fs::read(&marker).map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(replayed_marker, first_marker);
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn protected_local_store_unknown_reopens_for_operator_resolution_without_rerun()
+    -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("harness-protected-unknown-{}", OperationId::new()));
+        let model = Model::new("mock", "execution-unknown", "1", serde_json::Value::Null)?;
+        let operation = OperationId::from_bytes([111; 16]);
+        let interaction_id = InteractionId::from_bytes([112; 16]);
+        let request = local_spec();
+        let dispatch;
+        let first_calls = Arc::new(AtomicUsize::new(0));
+        {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(NoopModel),
+                Limits::default(),
+            )
+            .await?;
+            let mut approval = ExecutionApproval::approve_for(
+                session.storage().session_id(),
+                interaction_id,
+                operation,
+                request.clone(),
+            )?;
+            approval
+                .bind_request_location(session.storage().volume(), "requests/uncertain.json")?;
+            let approval_bytes =
+                serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
+            let request_file = session
+                .storage()
+                .stage(
+                    operation,
+                    "requests/uncertain.json",
+                    &approval_bytes,
+                    "application/json",
+                    "uncertain.json",
+                )
+                .await?;
+            let provider = NativeExecutionProvider::new_with_receipt_store(
+                session.storage().content_verifier(),
+                session.execution_receipt_store()?,
+                Arc::new(CountingRunner {
+                    calls: Arc::clone(&first_calls),
+                    outcome: RunnerOutcome::Unknown {
+                        reason: "host process outcome was interrupted".into(),
+                    },
+                }),
+                session.storage().execution_approval_verifier(),
+            )?;
+            let request_digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &request_file,
+            )?;
+            session
+                .storage()
+                .open_interaction(
+                    interaction_id,
+                    Interaction::Approval {
+                        prompt: "approve uncertain process".into(),
+                        operation_id: operation,
+                        action_digest: request_digest,
+                    },
+                )
+                .await?;
+            session
+                .storage()
+                .resolve_interaction(
+                    interaction_id,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                )
+                .await?;
+            dispatch = EffectDispatch {
+                provider: provider.id().into(),
+                effect_id: EffectId::from_bytes([113; 16]),
+                attempt_id: EffectAttemptId::from_bytes([114; 16]),
+                effect_kind: "host.process".into(),
+                request: request_file,
+                guarantee: EffectGuarantee::AtMostOnce,
+                request_digest,
+            };
+            let observation = provider.dispatch(dispatch.clone()).await?;
+            assert_eq!(observation.status, EffectStatus::Indeterminate);
+            assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        }
+
+        let second_calls = Arc::new(AtomicUsize::new(0));
+        {
+            let session =
+                PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
+                    .await?;
+            let key = ExecutionReceiptKey {
+                operation_id: operation,
+                effect_id: dispatch.effect_id,
+                attempt_id: dispatch.attempt_id,
+                provider: dispatch.provider.clone(),
+                effect_kind: dispatch.effect_kind.clone(),
+                guarantee: dispatch.guarantee,
+                request_digest: dispatch.request_digest,
+            };
+            session
+                .resolve_unknown_execution(&key, "operator reviewed after restart")
+                .await?;
+            let provider = NativeExecutionProvider::new_with_receipt_store(
+                session.storage().content_verifier(),
+                session.execution_receipt_store()?,
+                Arc::new(CountingRunner {
+                    calls: Arc::clone(&second_calls),
+                    outcome: RunnerOutcome::Exited {
+                        status_code: Some(0),
+                        stdout: b"must not rerun".to_vec(),
+                        stderr: Vec::new(),
+                    },
+                }),
+                session.storage().execution_approval_verifier(),
+            )?;
+            let replay = provider.dispatch(dispatch).await?;
+            assert_eq!(replay.status, EffectStatus::Indeterminate);
+            assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        }
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
