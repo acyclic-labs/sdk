@@ -1041,6 +1041,15 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
             let swarm = self.target()?.ok_or_else(|| {
                 Error::Conflict("local recursive fork publisher is not bound to a swarm".into())
             })?;
+            let first_parent = plans
+                .first()
+                .map(|plan| plan.parent)
+                .ok_or_else(|| Error::Conflict("fork publication resolved no plans".into()))?;
+            let parent_harness = swarm.open_session(first_parent).await?;
+            let mut parent = parent_harness
+                .conversation_aggregate(swarm.config.limits)
+                .await?;
+            let mut prepared = Vec::with_capacity(plans.len());
             for mut plan in plans {
                 if Some(publication.operation_id) != plan.request.fork_operation
                     || publication.parent_operation != plan.request.parent_operation
@@ -1050,10 +1059,11 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                         "completed model publication does not match its fork plan".into(),
                     ));
                 }
-                let parent_harness = swarm.open_session(plan.parent).await?;
-                let mut parent = parent_harness
-                    .conversation_aggregate(swarm.config.limits)
-                    .await?;
+                if plan.parent != first_parent {
+                    return Err(Error::Conflict(
+                        "one model publication selected children from different parents".into(),
+                    ));
+                }
                 let child = TaskId::from_bytes(plan.request.child_operation.into_bytes());
                 if swarm
                     .session(child)
@@ -1071,16 +1081,30 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     plan.report.request.parent_revision = current_revision;
                     plan.report.validate()?;
                 }
-                swarm
-                    .publish_and_activate_child_with_publication(
+                let seed = swarm
+                    .publish_child_seed_with_publication(
                         plan.request.clone(),
-                        plan.host.clone(),
                         plan.stream.clone(),
                         plan.issuer.clone(),
                         &mut parent,
                         plan.report.clone(),
                         publication.clone(),
                         plan.declaration.clone(),
+                    )
+                    .await?;
+                prepared.push((plan, seed));
+            }
+            // Every child is now durably admitted and bound to the parent
+            // aggregate. Only after that barrier may a child model dispatch.
+            for (plan, seed) in prepared {
+                swarm
+                    .activate_published_child(
+                        plan.request,
+                        plan.host,
+                        plan.stream,
+                        plan.issuer,
+                        &parent,
+                        &seed,
                     )
                     .await?;
             }
@@ -2755,6 +2779,34 @@ impl PersistentLocalSwarm {
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
     ) -> Result<LocalForkOutcome> {
+        let seed = self
+            .publish_child_seed_with_publication(
+                request.clone(),
+                stream.clone(),
+                issuer.clone(),
+                parent,
+                report,
+                publication,
+                declaration,
+            )
+            .await?;
+        self.activate_published_child(request, host, stream, issuer, parent, &seed)
+            .await
+    }
+
+    /// Performs the durable admission and typed parent/child publication
+    /// phase without dispatching the child model. Batch publishers use this
+    /// phase for every selected child before any child turn begins.
+    async fn publish_child_seed_with_publication(
+        &self,
+        request: LocalForkRequest,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &mut StreamAggregate<LocalStream>,
+        report: ForkReport,
+        publication: ModelBatchPublication,
+        declaration: LocalInheritedModelDeclaration,
+    ) -> Result<ForkSeed> {
         request.validate()?;
         report.validate()?;
         let parent_storage = self.open_session(request.parent).await?;
@@ -2812,8 +2864,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        self.activate_published_child(request, host, stream, issuer, parent, &seed)
-            .await
+        Ok(seed)
     }
 
     async fn activate_child_with_harness(
