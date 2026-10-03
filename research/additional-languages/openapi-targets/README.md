@@ -1,7 +1,8 @@
 # OpenAPI Generator target qualification
 
-This lane qualifies bounded Rust, PowerShell, Java, Perl, C, Dart, and Julia HTTP clients from the Rust-owned
-Workers projection at `Q:/sdk/tmp-openapi-integrated2/artifacts/workers.json`.
+This lane qualifies bounded Rust, PowerShell, Java, Perl, C, Dart, and Julia HTTP clients from Rust-owned
+OpenAPI projections. The PowerShell five-family receipt is
+`powershell-manifest.json`; the other target receipts retain their own source scopes.
 Neither client defines a second contract. The pinned OpenAPI Generator release
 is 7.25.0 (`ef964b0`) with the CLI JAR hash recorded in `receipt.json`.
 
@@ -15,7 +16,7 @@ The generated `Cargo.toml` declares Apache-2.0, `cargo check` passes offline,
 and an isolated consumer completed the canonical Rust fixture request with
 protobuf JSON bytes round-tripping as `AQID`.
 
-The PowerShell generator is beta. It is invoked with fixed package name,
+The PowerShell generator is invoked with fixed package name,
 version, GUID, and Apache license URI options. The checked-in
 `apply-powershell-byte-adaptation.ps1` is a narrow, anchor-checked generated
 adaptation for the Workers bytes fields: request `byte[]` values become base64
@@ -24,10 +25,12 @@ base64 strings become `byte[]`. It does not translate shared algorithms or
 define routes. The adapted module imported under PowerShell 7.6.5 and invoked
 the canonical fixture with a direct `[byte[]](1,2,3)` caller value. The fixture
 received `"body":"AQID"`, and the consumer decoded `b2s=` and `AQID` back to
-bytes. A local `AcyclicWorkersHttp-1.0.0-local.zip` package was expanded into
-an isolated module directory and imported successfully; its SHA-256 and the
-fixture executable hash are recorded in `receipt.json`. A second generation
-plus adaptation matched all 94 compared files.
+bytes. Five family modules were generated from the Rust Actors, Workers,
+Stream, Objects and Inference projections, each packaged, expanded into an
+isolated install directory, and imported under PowerShell 7.6.5. The
+five-family package hashes, installed consumer vectors, and limits are recorded
+in `powershell-manifest.json`. Workers retains the Rust-emitted byte[] adapter;
+the other projections use their generated base64 JSON values.
 
 The Java target uses the pinned `okhttp-gson` library and Maven package
 `dev.acyclic:acyclic-workers-http:1.0.0`. Maven package and source archives

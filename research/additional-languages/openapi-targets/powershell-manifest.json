@@ -1,0 +1,97 @@
+{
+  "receipt_version": 1,
+  "recorded_at": "2026-10-04",
+  "target": "powershell",
+  "qualification": "Rust-owned five-family OpenAPI HTTP projection prototype",
+  "source": {
+    "contract": "Rust sdk-openapi-prototype Actors, Workers, Stream, Objects and Inference documents",
+    "projection_sha256": {
+      "actors": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
+      "workers": "090821C087D43A6813E6A0457B448303FD131FD7E9FB1FC76301261DB4551A77",
+      "stream": "9EE98891DF2D54503FA6CF058B849E89482422062FA5A5575A046A14038A1E4D",
+      "objects": "34D1FC4DD0A909122BFEAB8FA349B746FFF1451CCD8D4CC760EE7EA970BBBC6A",
+      "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
+    },
+    "generator": "research/additional-languages/openapi-targets/qualify-powershell-five.ps1",
+    "generator_sha256": "554EB9E72CC121E3B328481E74F1624EA40BF4E8640CB7E3C5727EB072B4F437",
+    "fixture": "research/additional-languages/openapi-targets/powershell-fixture.py",
+    "fixture_sha256": "AB44A11BCD69A2F25DDF3749A8DBD9BC35C5D121078C8477EAA40EFE8B7610C5",
+    "consumer": "research/additional-languages/openapi-targets/powershell-consumer-five.ps1",
+    "consumer_sha256": "978B976BD57C827A98A7079A11237B533FB8DAFC76A54AB42158419D83177E4D",
+    "workers_adaptation": "research/additional-languages/openapi-targets/apply-powershell-byte-adaptation.ps1",
+    "workers_adaptation_sha256": "81E9AEC41571CF4AE7C204A43D93AB47E4F09A7F52F6728001A062D2F3AF504E"
+  },
+  "generator": {
+    "name": "OpenAPI Generator powershell",
+    "version": "7.25.0",
+    "jar_sha256": "41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE",
+    "license": "Apache-2.0",
+    "package_options": "packageName=Acyclic<Family>Http, packageVersion=1.0.0, fixed packageGuid, licenseUri=https://www.apache.org/licenses/LICENSE-2.0"
+  },
+  "runtime": {
+    "name": "PowerShell",
+    "version": "7.6.5",
+    "edition": "Core",
+    "platform": "Windows"
+  },
+  "packages": {
+    "actors": {
+      "name": "acyclic-actors-powershell-1.0.0.zip",
+      "sha256": "00B18A881C07DF39132316C87412F1C41CFE2384944A398D2317B023728BF88"
+    },
+    "workers": {
+      "name": "acyclic-workers-powershell-1.0.0.zip",
+      "sha256": "F76AD6E06326A4AC38706DCDD07DF90741206A42A85C6CCEC2609CB625F09284"
+    },
+    "stream": {
+      "name": "acyclic-stream-powershell-1.0.0.zip",
+      "sha256": "D8F9C8DE76A97CE8DD390CFDC64080F33F0DF6D5321141A3ADC2C18738CCE867"
+    },
+    "objects": {
+      "name": "acyclic-objects-powershell-1.0.0.zip",
+      "sha256": "B0718934656924BE66F89921D2BA97975BE4787A4EFE67680F0DB01BF37C140A"
+    },
+    "inference": {
+      "name": "acyclic-inference-powershell-1.0.0.zip",
+      "sha256": "CCEF20BF25BAB84AFA5B5BC953ABBA1BFA759311CCD2ABA57B675B07DEDA546D"
+    },
+    "combined_installed": {
+      "name": "acyclic-http-powershell-1.0.0.zip",
+      "sha256": "37B45D844DB3DD3A3481AD7F16A35EF79C769BE740CF116129051EF12B9E582E"
+    }
+  },
+  "tests": {
+    "status": "passed",
+    "fixture_port": 18767,
+    "install": "Each family archive was expanded into an isolated installed/<family> directory; consumers imported the extracted module manifest.",
+    "vectors": [
+      "Actors invokeActor preserves AQID request/response bytes and status 200",
+      "Workers invokeDeployment uses Rust-emitted byte[] base64 adaptation, decodes response bytes, and preserves uint64 18446744073709551615",
+      "Stream read preserves AQID record bytes and max uint64 sequence; generated 503 error raises and is observed by the consumer",
+      "Objects put preserves AQID request and etag/size response",
+      "Inference generate preserves AQID context and max uint64 request/response values",
+      "Bearer authentication reaches every fixture route"
+    ],
+    "operations": {
+      "actors": "Invoke-Actor",
+      "workers": "Invoke-Deployment",
+      "stream": "Read-",
+      "objects": "Send-Object",
+      "inference": "Invoke-RunsGenerate"
+    }
+  },
+  "license_scope": {
+    "generated_template": "OpenAPI Generator Apache-2.0 project; generated package metadata carries the Apache license URI",
+    "rust_contract": "Rust source and projection license scope remains separate from generated module metadata",
+    "runtime": "PowerShell runtime licensing applies separately",
+    "dependencies": "No global dependency license closure is asserted; package is local-only pending module/runtime review"
+  },
+  "limits": [
+    "HTTP/JSON projection only; no protobuf/gRPC, native or embedded behavior is qualified",
+    "One representative operation per family was exercised; full operation/model validation remains outstanding",
+    "Stream recovery is only explicit caller-observed 503 handling; no automatic retry policy is implemented",
+    "The generated PowerShell client has no operation cancellation primitive or endpoint-pool recovery policy",
+    "Workers byte[] adaptation is Rust-emitted and anchor-checked; other family byte fields remain generated base64 JSON values",
+    "No PowerShell Gallery publication or redistributable dependency closure is claimed"
+  ]
+}

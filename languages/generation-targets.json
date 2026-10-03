@@ -1329,7 +1329,7 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "Rust-owned adapted PowerShell HTTP module is installed and loopback-qualified for one Workers route; no protobuf/gRPC package target.",
+        "notes": "Rust-owned adapted PowerShell HTTP modules are installed and loopback-qualified for one route in each of the five HTTP family projections; no protobuf/gRPC package target.",
         "qualification": "prototype"
       },
       "embedded": {
@@ -1349,7 +1349,7 @@
         "ecosystem": "PowerShell Gallery/module",
         "artifact": "Acyclic.SDK",
         "installable": true,
-        "notes": "Local AcyclicWorkersHttp module package imports under PowerShell 7.6.5; artifact SHA-256 716C88031A65719D02194C050DB069AD2033978BC105C4D55C8BECE6FD6BCB9F; receipt: research/additional-languages/openapi-targets/receipt.json."
+        "notes": "Five local Acyclic<Family>Http module packages import under PowerShell 7.6.5; receipt: research/additional-languages/openapi-targets/powershell-manifest.json."
       },
       "evidence": [
         {
@@ -1357,12 +1357,12 @@
           "claim": "PowerShell generator is listed with HTTP client output."
         },
         {
-          "url": "research/additional-languages/openapi-targets/receipt.json",
-          "claim": "Rust-derived Workers module imported under PowerShell 7.6.5 and passed direct byte[], base64 and uint64 loopback vectors."
+          "url": "research/additional-languages/openapi-targets/powershell-manifest.json",
+          "claim": "Rust-derived five-family module packages were extracted and imported under PowerShell 7.6.5; representative bytes, uint64, authentication and 503 error vectors passed."
         }
       ],
       "outstanding": [
-        "Extend qualification from the Workers representative route to the other Rust HTTP family projections and model vectors.",
+        "Extend qualification to every operation and model vector in each Rust HTTP family projection.",
         "Review generated module and PowerShell/runtime dependency licenses before redistribution; keep the package local-only.",
         "PowerShell generated client has no native gRPC, endpoint-pool recovery or operation cancellation qualification."
       ]
