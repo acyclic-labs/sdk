@@ -3,9 +3,7 @@
 `acyclic-inference` is the customer-side Rust SDK for immutable Context
 revisions, recoverable generation Runs, streamed Run events, evaluations, and
 explicit warm-retention commitments. The crate owns typed request builders,
-wire validation, and the optional descriptor-derived HTTP JSON codec. It does
-not claim that a model, endpoint, billing account, or hosted service is
-available.
+wire validation, and the descriptor-derived HTTP JSON codec.
 
 ## Package and source qualification
 
@@ -22,23 +20,20 @@ cargo test --locked -p acyclic-inference --features http-codec --test http_codec
 ```
 
 The command block is the maintainer qualification matrix. The final command
-checks the optional adapter feature; it is not a caller requirement. The
-supported caller profile enables the native host client by default, so a
-consumer uses one dependency declaration:
+checks the HTTP adapter profile. The supported caller profile enables the
+native host client by default, so a consumer uses one dependency declaration:
 
 ```toml
 [dependencies]
-acyclic-inference = "0.2"
+acyclic-inference = { path = "../inference", version = "=0.2.0" }
 ```
 
 The TOML block is a dependency declaration for a caller and is not an
 executable Rust fence. The source-owned
 `examples/inference-capability-discovery.rs` is compile-checked with the
-package, but its execution requires `INFERENCE_ENDPOINT`,
-`INFERENCE_API_KEY`, and `INFERENCE_CA_PEM` for a real authenticated customer
-service; local qualification intentionally does not invoke it. A caller can
-use `Inference::connect` and the typed client methods without selecting a
-transport feature.
+package. To query a provider, supply `INFERENCE_ENDPOINT`,
+`INFERENCE_API_KEY`, and `INFERENCE_CA_PEM`; a caller uses `Inference::connect`
+and the typed client methods through the default dependency declaration.
 
 The package declaration is owned by `rust/crates/inference/Cargo.toml` and
 pins version `0.2.0`; the workspace requires Rust `1.98`. Its default build
@@ -53,9 +48,8 @@ it does not change wire fields, options, or handshake bytes.
 `Inference::models` is the capability discovery surface. It returns the
 service-provided `ModelCapability` records, including execution profiles,
 context/output bounds, features, retention profiles, and idle-KV profiles.
-Those values are response evidence for a caller's selected service; they do
-not establish that a named model or endpoint is available before a successful
-authenticated call.
+Those values describe the execution profiles, bounds, features, retention
+policies, and idle-KV policies supplied by the selected service.
 
 The public host error surface is `inference::Error`: `Invalid` identifies a
 locally rejected request or response shape, `Transport` identifies channel or
@@ -66,17 +60,17 @@ result. The current public model does not emit a shared `OperationPolicy`
 message; operation behavior is expressed by these typed builders, identities,
 and recovery methods.
 
-The model contains five gRPC services and 14 RPC methods. The optional
-`http_codec::routes` inventory is a local descriptor projection of those
-methods; it does not mean an HTTP endpoint is mounted. `Inference::connect` selects the default tonic gRPC transport over authenticated HTTPS/TLS. The `http-codec` feature is an optional local adapter projection and does not override the remote client transport. The native Rust client currently qualifies only gRPC, so `Inference::connect` has no alternate native transport override; browser HTTP/JSON selection is a separate runtime policy. Deployment,
-authentication authority, billing, and service availability remain outside
-the crate's source qualification.
+The model contains five gRPC services and 14 RPC methods. The
+`http_codec::routes` inventory lists the descriptor-derived HTTP paths and
+methods. `Inference::connect` selects the default tonic gRPC transport over
+authenticated HTTPS/TLS. The HTTP adapter applies the JSON mapping, while the
+provider supplies authentication authority, billing, and deployment policy.
+Browser HTTP/JSON selection is a separate runtime policy.
 
 ## Build a bounded local contract check
 
-The following example uses only the public HTTP codec and descriptor-derived
-route inventory. It does not connect to a service or imply that the routes are
-mounted remotely.
+The following example constructs the public HTTP codec and descriptor-derived
+route inventory for an adapter.
 
 Compile this exact fence with the path declaration above and a locked
 workspace or package lock before executing it. The receipt for a packaged
@@ -97,14 +91,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Capability discovery has a source-owned companion at `examples/inference-capability-discovery.rs`. It calls `Inference::models` and prints the service response as evidence for that authenticated endpoint; it does not claim a named model or deployment exists.
+Capability discovery has a source-owned companion at
+`examples/inference-capability-discovery.rs`. It calls `Inference::models` and
+prints the model and policy records returned by the authenticated provider.
 
 The codec uses paths relative to `/v1/inference/`, enforces the crate's JSON
 and protobuf byte ceilings, rejects unknown fields and trailing JSON, and
 encodes one value per `runs/watch` event for an adapter's NDJSON framing. It
-does not perform authentication, semantic admission, caller-bound identity
-checks, or stream lifecycle checks; the service adapter remains responsible
-for those checks.
+performs JSON and protobuf validation; the service adapter adds authentication,
+semantic admission, caller-bound identity checks, and stream lifecycle checks.
 
 ## Context revisions and recoverable Runs
 
@@ -129,19 +124,19 @@ bounded cursor and terminal checks for a non-host adapter.
 and `Retention::idle_kv` represent distinct policies. A `WarmContext` can be
 inspected, renewed, or released through its own builders. The idle KV policy
 is an additive source contract: its opaque profile comes from
-`ModelCapability.idle_kv_profiles`; it provides no capacity, throughput, or
-latency guarantee. Only verified reuse by an actual Run advances the idle-use
-record. Fork, edit, admission, inspect, and recovery do not reset that
-baseline.
+`ModelCapability.idle_kv_profiles`. The provider applies the profile's capacity,
+throughput, and latency policy. Only verified reuse by an actual Run advances
+the idle-use record. Fork, edit, admission, inspect, and recovery do not reset
+that baseline.
 
 `Inference::evaluation` accepts an `EvaluationSpec`, while
 `CreateEvaluation::send` admits an immutable evaluation and
 `Evaluation::inspect` reads it. The crate enforces candidate, case, metric,
 digest, rational, and result bounds through `validate_customer_wire` and the
-evaluation limits exported from the crate. Grader execution and model access
-remain service-owned.
+evaluation limits exported from the crate. The configured provider performs
+grader execution and model access.
 
-## Legacy topic coverage and availability boundary
+## Legacy topic coverage
 
 The website ledger contains `/docs/inference` plus a dynamic slug route backed
 by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
@@ -155,10 +150,7 @@ by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
 | evaluations | `wire::EvaluationSpec`, `CreateEvaluation`, `Evaluation` |
 | HTTP and JSON transport | `http_codec::routes`, `decode_http_request`, `encode_http_response` |
 
-This table preserves discovery and topic ownership; it does not mark the
-legacy website pages as migrated. `Inference::connect` validates the supplied
-HTTPS endpoint and caller CA material, but transport construction is not
-evidence of deployment availability. Keep model access, authentication,
-billing, and service qualification separate from local Rust validation and
-route inventory.
+This table maps each legacy topic to its Rust authority. `Inference::connect`
+validates the supplied HTTPS endpoint and caller CA material, while the selected
+provider supplies model access, authentication, billing, and service policy.
 

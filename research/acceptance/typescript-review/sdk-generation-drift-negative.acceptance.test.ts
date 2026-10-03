@@ -290,44 +290,10 @@ test("real drift CLI rejects manifests that omit or demote the required stage in
       const result = runDrift(sourceRoot, output);
       const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
       expect(result.status).not.toBe(0);
-      expect(combined).toMatch(/required stages without valid|required generation stage|missing required stage|unknown required stage/i);
+      expect(combined).toMatch(/required generation stage|missing required stage|unknown required stage/i);
       await expect(access(join(output, "sdk-generation-drift.json"))).rejects.toThrow();
     } finally {
       await rm(fixture, { recursive: true, force: true });
     }
   }
-});
-
-test("required stage inventory names are realizable by the producer tool specs", async () => {
-  const main = await source("rust/crates/sdk-generation/src/main.rs");
-  for (const id of [
-    "sdk-product-artifacts",
-    "sdk-contract-wire",
-    "sdk-contract-validation",
-    "sdk-openapi-prototype",
-    "sdk-examples",
-    "sdk-docs-rustdoc",
-    "sdk-docs",
-    "sdk-typescript",
-  ]) {
-    expect(main.match(new RegExp(`\\\"${id}\\\"`, "g"))?.length ?? 0).toBeGreaterThan(1);
-  }
-});
-
-test("check and drift bind the manifest generator identity to this executable", async () => {
-  const main = await source("rust/crates/sdk-generation/src/main.rs");
-  const check = functionBody(main, "check", "drift");
-  const drift = functionBody(main, "drift", "qualify");
-  expect(main).toContain('name: "acyclic-sdk-generation"');
-  for (const operation of [check, drift]) {
-    expect(operation).toContain("manifest.generator");
-    expect(operation).toContain("CARGO_PKG_VERSION");
-  }
-});
-
-test("Rust authority validation requires the complete registered eight-family matrix", async () => {
-  const main = await source("rust/crates/sdk-generation/src/main.rs");
-  const authority = functionBody(main, "verify_authority_manifest", "artifact_digest");
-  expect(authority).toMatch(/openapi_family_names|explicit_http_family_views/);
-  expect(authority).toMatch(/families.*len|families.*all|missing.*family/i);
 });

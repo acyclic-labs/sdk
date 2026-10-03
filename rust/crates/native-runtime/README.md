@@ -50,8 +50,8 @@ result does not depend on platform completion order.
 
 The current backend uses bounded completion workers and a separate bounded
 host-operation pool for locks and namespace work without native completion.
-Its owned file operations do not block the caller's async executor. Run the
-local backend baseline with
+Owned file operations run through the bounded completion workers and the
+separate host-operation pool described above. Run the local backend baseline with
 `cargo test -p acyclic-native-runtime --lib owned_io_backend_baseline -- --ignored --nocapture`.
 It records the OS, architecture, bytes, and native-versus-baseline elapsed time;
 release qualification additionally requires mounted Cargo and Lean workloads.
