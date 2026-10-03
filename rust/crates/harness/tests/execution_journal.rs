@@ -820,7 +820,8 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         model_output_schema: json!({}),
     };
     let digest = definition.digest()?;
-    let operation = OperationId::from_bytes([14; 16]);
+    let denied_operation = OperationId::from_bytes([14; 16]);
+    let approved_operation = OperationId::from_bytes([17; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
     let operator = InteractionOperatorAuthorizer::new(
@@ -839,15 +840,18 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         )?),
         issuer.clone(),
     );
-    let approval = Interaction::approval("Install echo", operation, digest)?;
+    let denied_approval = Interaction::approval("Install echo", denied_operation, digest)?;
+    let approved_approval = Interaction::approval("Install echo", approved_operation, digest)?;
     journal
-        .open_interaction(denied_id, approval.clone())
+        .open_interaction(denied_id, denied_approval)
         .await?;
-    journal.open_interaction(approved_id, approval).await?;
+    journal
+        .open_interaction(approved_id, approved_approval)
+        .await?;
     let denied_scope = operator
         .issue_scope(&InteractionApprovalAuthorization {
             interaction_id: denied_id,
-            operation_id: operation,
+            operation_id: denied_operation,
             action_digest: digest,
             approved: false,
         })
@@ -855,7 +859,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let approved_scope = operator
         .issue_scope(&InteractionApprovalAuthorization {
             interaction_id: approved_id,
-            operation_id: operation,
+            operation_id: approved_operation,
             action_digest: digest,
             approved: true,
         })
@@ -870,7 +874,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         registry
             .install_scoped(
                 tool.clone(),
-                operation,
+                approved_operation,
                 &scope,
                 &issuer.verifier(),
                 approved_id,
@@ -893,7 +897,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         registry
             .install_scoped(
                 tool.clone(),
-                operation,
+                denied_operation,
                 &scope,
                 &issuer.verifier(),
                 denied_id,
@@ -916,7 +920,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         registry
             .install_scoped(
                 tool.clone(),
-                OperationId::from_bytes([17; 16]),
+                OperationId::from_bytes([18; 16]),
                 &scope,
                 &issuer.verifier(),
                 approved_id,
@@ -928,7 +932,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     registry
         .install_scoped(
             tool,
-            operation,
+            approved_operation,
             &scope,
             &issuer.verifier(),
             approved_id,
