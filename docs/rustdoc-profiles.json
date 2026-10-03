@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "name": "host-default",
+      "packages": [
+        { "package": "acyclic-actors", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
+        { "package": "acyclic-fs", "target": "x86_64-pc-windows-msvc", "features": ["default", "acyclic-objects/grpc", "acyclic-stream/grpc"] },
+        { "package": "acyclic-harness", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": true },
+        { "package": "acyclic-inference", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
+        { "package": "acyclic-inference-contract", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
+        { "package": "acyclic-machines", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
+        { "package": "acyclic-native-runtime", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
+        { "package": "acyclic-objects", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
+        { "package": "acyclic-stream", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
+        { "package": "acyclic-workers", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false }
+      ]
+    },
+    {
+      "name": "native-bindings",
+      "packages": [
+        { "package": "acyclic-fs-napi", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false }
+      ]
+    },
+    {
+      "name": "host-capabilities",
+      "packages": [
+        { "package": "acyclic-fs", "target": "x86_64-pc-windows-msvc", "features": ["distributed", "s3-http", "acyclic-objects/grpc", "acyclic-stream/grpc"], "default_features": false },
+        { "package": "acyclic-harness", "target": "x86_64-pc-windows-msvc", "features": ["filesystem", "filesystem-local", "grpc", "machines", "objects"], "default_features": false },
+        { "package": "acyclic-inference", "target": "x86_64-pc-windows-msvc", "features": ["host", "http-codec"], "default_features": false },
+        { "package": "acyclic-machines", "target": "x86_64-pc-windows-msvc", "features": ["grpc"], "default_features": false },
+        { "package": "acyclic-objects", "target": "x86_64-pc-windows-msvc", "features": ["grpc", "http", "json", "local"], "default_features": false },
+        { "package": "acyclic-stream", "target": "x86_64-pc-windows-msvc", "features": ["grpc", "http", "local"], "default_features": false }
+      ]
+    },
+    {
+      "name": "wasm-bindings",
+      "packages": [
+        { "package": "acyclic-fs-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
+        { "package": "acyclic-harness", "target": "wasm32-unknown-unknown", "features": ["wasm"], "default_features": false },
+        { "package": "acyclic-inference-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
+        { "package": "acyclic-machines-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
+        { "package": "acyclic-objects-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
+        { "package": "acyclic-stream-wasm", "target": "wasm32-unknown-unknown", "features": [], "default_features": false },
+        { "package": "acyclic-fs", "target": "wasm32-unknown-unknown", "features": ["typescript"], "default_features": false },
+        { "package": "acyclic-stream", "target": "wasm32-unknown-unknown", "features": ["wasm"], "default_features": false }
+      ]
+    }
+  ]
+}
