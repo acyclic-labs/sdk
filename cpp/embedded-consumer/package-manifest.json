@@ -1,0 +1,38 @@
+{
+  "package": "acyclic-sdk-cpp-embedded-local",
+  "status": "local-install-only",
+  "source": {
+    "crate": "acyclic-sdk-embedded-prototype",
+    "version": "0.2.0",
+    "revision": "41d14f38eaa2aee665f378b3ffe8c7f5e31921d9",
+    "source_dirty": true,
+    "source_receipt": "embedded-runtime-closure-current.json",
+    "source_scope": [
+      "rust/crates/sdk-embedded-prototype",
+      "cpp/embedded-consumer"
+    ],
+    "abi_version": 1
+  },
+  "toolchain": {
+    "rust": "1.98.1",
+    "clang": "17.0.2",
+    "cmake": "3.26.4",
+    "generator": "Ninja"
+  },
+  "artifacts": {
+    "acyclic_embedded_prototype.h": {
+      "sha256": "64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109"
+    },
+    "acyclic_sdk_embedded_prototype.dll": {
+      "sha256": "F71C80E94703E2D9EF8968480879F6A75C88A26234493F80665190031C6E6F1D"
+    },
+    "acyclic_sdk_embedded_prototype.dll.lib": {
+      "sha256": "67AE3ED7A570C2BF1961C234B21EF1AF15204CD84C5ECAB9B499FE73C9B7EEFC"
+    }
+  },
+  "qualification": {
+    "cmake_ctest": "3/3 passed",
+    "clean_prefix_consumer": "passed",
+    "registry_published": false
+  }
+}
