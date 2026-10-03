@@ -232,6 +232,51 @@ fn modeled_operation_policies_cover_each_policy_backed_rpc() {
 }
 
 #[test]
+fn registry_policies_cover_every_descriptor_method_and_protocol_is_dependency_only() {
+    for view in FAMILY_VIEWS {
+        let descriptor = FileDescriptorSet::decode(view.model.descriptor().as_slice())
+            .expect("registered family descriptor");
+        let descriptor_rpcs = descriptor
+            .file
+            .iter()
+            .flat_map(|file| {
+                let package = file.package.as_deref().unwrap_or_default();
+                file.service.iter().flat_map(move |service| {
+                    let service_name = service.name.as_deref().unwrap_or_default();
+                    service.method.iter().map(move |method| {
+                        format!(
+                            "{package}.{service_name}/{}",
+                            method.name.as_deref().unwrap_or_default()
+                        )
+                    })
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        let policy_rpcs = view
+            .operation_policies
+            .iter()
+            .map(|policy| policy.rpc.to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            policy_rpcs, descriptor_rpcs,
+            "{} policy and descriptor RPC coverage drifted",
+            view.name
+        );
+        if matches!(
+            view.model,
+            FamilyModel::Filesystem(_) | FamilyModel::Harness(_)
+        ) {
+            assert!(
+                descriptor.file.iter().any(|file| file.name.as_deref()
+                    == Some(acyclic_sdk_contract_wire::protocol::FILE_NAME)),
+                "{} must retain the Protocol dependency in its descriptor closure",
+                view.name
+            );
+        }
+    }
+}
+
+#[test]
 fn unified_family_registry_covers_all_models_and_transport_projections() {
     let expected = [
         ("actors", "acyclic.actors.v1"),

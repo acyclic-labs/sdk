@@ -1,0 +1,4555 @@
+{
+  "generator": "sdk-typescript",
+  "generator_version": "0.1.0",
+  "source_revision": "working-tree",
+  "services": [
+    {
+      "family": "actors",
+      "rust_crate": "acyclic-actors",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::actors_descriptor",
+      "package": "acyclic.actors.v1",
+      "service": "ActorsService",
+      "descriptor_sha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf",
+      "source_content_sha256": "b100ee7c4430d74e7c22f07a11bcd30b065afea6b70252368d73ef548d9bace8",
+      "source_model_sha256": "b100ee7c4430d74e7c22f07a11bcd30b065afea6b70252368d73ef548d9bace8",
+      "modeled_operations": 8,
+      "http_projection": true,
+      "remote_policy": null,
+      "methods": [
+        {
+          "operation_id": "createActor",
+          "rpc_name": "CreateActor",
+          "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+          "docs": "Creates an actor.",
+          "path": "v1/actors/create",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.CreateActorRequest",
+          "response_type": "acyclic.actors.v1.CreateActorResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "code_sha256",
+              "json_name": "codeSha256",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "home_region",
+              "json_name": "homeRegion",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "bindings",
+              "json_name": "bindings",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "limits",
+              "json_name": "limits",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "subscriptions",
+              "json_name": "subscriptions",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 6,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "updateActor",
+          "rpc_name": "UpdateActor",
+          "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
+          "docs": "Replaces actor configuration with compare-and-swap semantics.",
+          "path": "v1/actors/update",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.UpdateActorRequest",
+          "response_type": "acyclic.actors.v1.UpdateActorResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "code_sha256",
+              "json_name": "codeSha256",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "bindings",
+              "json_name": "bindings",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "limits",
+              "json_name": "limits",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expected_configuration_revision",
+              "json_name": "expectedConfigurationRevision",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 6,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "inspectActor",
+          "rpc_name": "InspectActor",
+          "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
+          "docs": "Returns the current actor observation.",
+          "path": "v1/actors/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.InspectActorRequest",
+          "response_type": "acyclic.actors.v1.InspectActorResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "addSubscription",
+          "rpc_name": "AddSubscription",
+          "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+          "docs": "Adds a subscription to an actor.",
+          "path": "v1/actors/subscriptions/add",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.AddSubscriptionRequest",
+          "response_type": "acyclic.actors.v1.AddSubscriptionResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "subscription",
+              "json_name": "subscription",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "removeSubscription",
+          "rpc_name": "RemoveSubscription",
+          "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+          "docs": "Removes a subscription from an actor.",
+          "path": "v1/actors/subscriptions/remove",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.RemoveSubscriptionRequest",
+          "response_type": "acyclic.actors.v1.RemoveSubscriptionResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "subscription_id",
+              "json_name": "subscriptionId",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "resumeSubscription",
+          "rpc_name": "ResumeSubscription",
+          "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+          "docs": "Resumes a paused subscription.",
+          "path": "v1/actors/subscriptions/resume",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.ResumeSubscriptionRequest",
+          "response_type": "acyclic.actors.v1.ResumeSubscriptionResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "subscription_id",
+              "json_name": "subscriptionId",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "checkpointActor",
+          "rpc_name": "CheckpointActor",
+          "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+          "docs": "Requests an actor checkpoint.",
+          "path": "v1/actors/checkpoint",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.CheckpointActorRequest",
+          "response_type": "acyclic.actors.v1.CheckpointActorResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "actor",
+              "json_name": "actor",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "invokeActor",
+          "rpc_name": "InvokeActor",
+          "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+          "docs": "Invokes an actor method.",
+          "path": "v1/actors/invoke",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.actors.v1.InvokeActorRequest",
+          "response_type": "acyclic.actors.v1.InvokeActorResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "actor_id",
+              "json_name": "actorId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "method",
+              "json_name": "method",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "url",
+              "json_name": "url",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "status",
+              "json_name": "status",
+              "number": 1,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "workers",
+      "rust_crate": "acyclic-workers",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::workers::workers_descriptor",
+      "package": "acyclic.workers.v1",
+      "service": "WorkersService",
+      "descriptor_sha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128",
+      "source_content_sha256": "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05",
+      "source_model_sha256": "c78b9fcfb6af4276a15df308a5b6811bc8670f3af9f79f3f033f04bafdd2ec05",
+      "modeled_operations": 7,
+      "http_projection": true,
+      "remote_policy": null,
+      "methods": [
+        {
+          "operation_id": "publishVersion",
+          "rpc_name": "PublishVersion",
+          "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+          "docs": "Publishes an immutable JavaScript module version.",
+          "path": "v1/workers/versions/publish",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.PublishVersionRequest",
+          "response_type": "acyclic.workers.v1.PublishVersionResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "javascript_module",
+              "json_name": "javascriptModule",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expected_sha256",
+              "json_name": "expectedSha256",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "version",
+              "json_name": "version",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "selectDeployment",
+          "rpc_name": "SelectDeployment",
+          "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+          "docs": "Selects a version for a deployment alias with revision compare-and-swap.",
+          "path": "v1/workers/deployments/select",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.SelectDeploymentRequest",
+          "response_type": "acyclic.workers.v1.SelectDeploymentResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "alias",
+              "json_name": "alias",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "version_sha256",
+              "json_name": "versionSha256",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expected_revision",
+              "json_name": "expectedRevision",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_expected_revision",
+              "proto3_optional": true
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 4,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "deployment",
+              "json_name": "deployment",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "submitJob",
+          "rpc_name": "SubmitJob",
+          "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+          "docs": "Accepts durable input and returns the accepted job.",
+          "path": "v1/workers/jobs/submit",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.SubmitJobRequest",
+          "response_type": "acyclic.workers.v1.SubmitJobResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "target",
+              "json_name": "target",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "input",
+              "json_name": "input",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "limits",
+              "json_name": "limits",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "retry",
+              "json_name": "retry",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 5,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "job",
+              "json_name": "job",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "inspectJob",
+          "rpc_name": "InspectJob",
+          "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+          "docs": "Returns the current durable job observation.",
+          "path": "v1/workers/jobs/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.InspectJobRequest",
+          "response_type": "acyclic.workers.v1.InspectJobResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "job_id",
+              "json_name": "jobId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "job",
+              "json_name": "job",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "cancelJob",
+          "rpc_name": "CancelJob",
+          "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+          "docs": "Requests cancellation of a durable job.",
+          "path": "v1/workers/jobs/cancel",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.CancelJobRequest",
+          "response_type": "acyclic.workers.v1.CancelJobResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "job_id",
+              "json_name": "jobId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "job",
+              "json_name": "job",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "invokeVersion",
+          "rpc_name": "InvokeVersion",
+          "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+          "docs": "Invokes an immutable Worker version as ordinary HTTP work.",
+          "path": "v1/workers/versions/{sha256hex}/invoke",
+          "path_parameters": [
+            "sha256hex"
+          ],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.InvokeVersionRequest",
+          "response_type": "acyclic.workers.v1.InvokeResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "version_sha256",
+              "json_name": "versionSha256",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "method",
+              "json_name": "method",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "url",
+              "json_name": "url",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 5,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "status",
+              "json_name": "status",
+              "number": 1,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "resolved_sha256",
+              "json_name": "resolvedSha256",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "resolved_revision",
+              "json_name": "resolvedRevision",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_resolved_revision",
+              "proto3_optional": true
+            }
+          ]
+        },
+        {
+          "operation_id": "invokeDeployment",
+          "rpc_name": "InvokeDeployment",
+          "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+          "docs": "Invokes the version selected by a deployment alias.",
+          "path": "v1/workers/deployments/{alias}/invoke",
+          "path_parameters": [
+            "alias"
+          ],
+          "http_method": "POST",
+          "request_type": "acyclic.workers.v1.InvokeDeploymentRequest",
+          "response_type": "acyclic.workers.v1.InvokeResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "alias",
+              "json_name": "alias",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "method",
+              "json_name": "method",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "url",
+              "json_name": "url",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 5,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "status",
+              "json_name": "status",
+              "number": 1,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "headers",
+              "json_name": "headers",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "resolved_sha256",
+              "json_name": "resolvedSha256",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "resolved_revision",
+              "json_name": "resolvedRevision",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_resolved_revision",
+              "proto3_optional": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "objects",
+      "rust_crate": "acyclic-objects",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::objects::objects_descriptor",
+      "package": "acyclic.objects.v2",
+      "service": "BucketsService",
+      "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
+      "source_content_sha256": "a2d26f8af6bcc5312883141862150407785c33fe92e1f9db83893fe97ded063b",
+      "source_model_sha256": "a2d26f8af6bcc5312883141862150407785c33fe92e1f9db83893fe97ded063b",
+      "modeled_operations": 13,
+      "http_projection": true,
+      "remote_policy": {
+        "protocol": "https-or-loopback-http",
+        "auth": "bearer",
+        "request_encoding": "protobuf-json",
+        "response_encoding": "protobuf-json",
+        "credential_policy": "bearer-no-crlf",
+        "response_limit_policy": "bounded-cumulative-utf8",
+        "behavior_binding": "native-wasm"
+      },
+      "methods": [
+        {
+          "operation_id": "createBucket",
+          "rpc_name": "CreateBucket",
+          "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+          "docs": "Creates a logical bucket.",
+          "path": "v2/objects/buckets/create",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.CreateBucketRequest",
+          "response_type": "acyclic.objects.v2.Bucket",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "name",
+              "json_name": "name",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "created_at",
+              "json_name": "createdAt",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "headBucket",
+          "rpc_name": "HeadBucket",
+          "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+          "docs": "Returns logical bucket metadata.",
+          "path": "v2/objects/buckets/head",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.HeadBucketRequest",
+          "response_type": "acyclic.objects.v2.Bucket",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "created_at",
+              "json_name": "createdAt",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "deleteBucket",
+          "rpc_name": "DeleteBucket",
+          "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+          "docs": "Deletes a logical bucket when it is empty.",
+          "path": "v2/objects/buckets/delete",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.DeleteBucketRequest",
+          "response_type": "acyclic.objects.v2.DeleteBucketResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "existed",
+              "json_name": "existed",
+              "number": 1,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "putObject",
+          "rpc_name": "PutObject",
+          "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+          "docs": "Publishes one complete object after an explicit upload completion frame.",
+          "path": "v2/objects/objects/put",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.PutObjectRequest",
+          "response_type": "acyclic.objects.v2.ObjectInfo",
+          "client_streaming": true,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "header",
+              "json_name": "header",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "complete",
+              "json_name": "complete",
+              "number": 3,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "etag",
+              "json_name": "etag",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "size",
+              "json_name": "size",
+              "number": 2,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "metadata",
+              "json_name": "metadata",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "last_modified",
+              "json_name": "lastModified",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "getObject",
+          "rpc_name": "GetObject",
+          "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+          "docs": "Reads one complete object representation as bounded response frames.",
+          "path": "v2/objects/objects/get",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.GetObjectRequest",
+          "response_type": "acyclic.objects.v2.GetObjectResponse",
+          "client_streaming": false,
+          "server_streaming": true,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "range",
+              "json_name": "range",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "if_match",
+              "json_name": "ifMatch",
+              "number": 4,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "if_none_match",
+              "json_name": "ifNoneMatch",
+              "number": 5,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "header",
+              "json_name": "header",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "error",
+              "json_name": "error",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "headObject",
+          "rpc_name": "HeadObject",
+          "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+          "docs": "Returns object metadata without its body.",
+          "path": "v2/objects/objects/head",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.HeadObjectRequest",
+          "response_type": "acyclic.objects.v2.HeadObjectResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "if_match",
+              "json_name": "ifMatch",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "if_none_match",
+              "json_name": "ifNoneMatch",
+              "number": 4,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "object",
+              "json_name": "object",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "deleteObject",
+          "rpc_name": "DeleteObject",
+          "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+          "docs": "Deletes the current object representation atomically.",
+          "path": "v2/objects/objects/delete",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.DeleteObjectRequest",
+          "response_type": "acyclic.objects.v2.DeleteObjectResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "preconditions",
+              "json_name": "preconditions",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "existed",
+              "json_name": "existed",
+              "number": 1,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "listObjects",
+          "rpc_name": "ListObjects",
+          "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+          "docs": "Lists objects through an eventual lexical traversal.",
+          "path": "v2/objects/objects/list",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.ListObjectsRequest",
+          "response_type": "acyclic.objects.v2.ListObjectsResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "prefix",
+              "json_name": "prefix",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "delimiter",
+              "json_name": "delimiter",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "page_size",
+              "json_name": "pageSize",
+              "number": 4,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "continuation_token",
+              "json_name": "continuationToken",
+              "number": 5,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "entries",
+              "json_name": "entries",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "common_prefixes",
+              "json_name": "commonPrefixes",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "continuation_token",
+              "json_name": "continuationToken",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "is_truncated",
+              "json_name": "isTruncated",
+              "number": 4,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "createMultipart",
+          "rpc_name": "CreateMultipart",
+          "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+          "docs": "Starts a multipart upload.",
+          "path": "v2/objects/multipart/create",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.CreateMultipartRequest",
+          "response_type": "acyclic.objects.v2.MultipartUpload",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "metadata",
+              "json_name": "metadata",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "upload_id",
+              "json_name": "uploadId",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "uploadPart",
+          "rpc_name": "UploadPart",
+          "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+          "docs": "Uploads one multipart part after an explicit completion frame.",
+          "path": "v2/objects/multipart/upload-part",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.UploadPartRequest",
+          "response_type": "acyclic.objects.v2.UploadedPart",
+          "client_streaming": true,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "header",
+              "json_name": "header",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "body",
+              "json_name": "body",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            },
+            {
+              "name": "complete",
+              "json_name": "complete",
+              "number": 3,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": true,
+              "oneof": "frame",
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "part_number",
+              "json_name": "partNumber",
+              "number": 1,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "etag",
+              "json_name": "etag",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "size",
+              "json_name": "size",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "listParts",
+          "rpc_name": "ListParts",
+          "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+          "docs": "Lists the uploaded parts for a multipart upload.",
+          "path": "v2/objects/multipart/list-parts",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.ListPartsRequest",
+          "response_type": "acyclic.objects.v2.ListPartsResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "upload_id",
+              "json_name": "uploadId",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "after_part_number",
+              "json_name": "afterPartNumber",
+              "number": 4,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "page_size",
+              "json_name": "pageSize",
+              "number": 5,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "parts",
+              "json_name": "parts",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "next_part_number",
+              "json_name": "nextPartNumber",
+              "number": 2,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "is_truncated",
+              "json_name": "isTruncated",
+              "number": 3,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "completeMultipart",
+          "rpc_name": "CompleteMultipart",
+          "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+          "docs": "Publishes a multipart object from exact ordered part receipts.",
+          "path": "v2/objects/multipart/complete",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.CompleteMultipartRequest",
+          "response_type": "acyclic.objects.v2.ObjectInfo",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "upload_id",
+              "json_name": "uploadId",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "parts",
+              "json_name": "parts",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "preconditions",
+              "json_name": "preconditions",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 6,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "etag",
+              "json_name": "etag",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "size",
+              "json_name": "size",
+              "number": 2,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "metadata",
+              "json_name": "metadata",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "last_modified",
+              "json_name": "lastModified",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "abortMultipart",
+          "rpc_name": "AbortMultipart",
+          "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+          "docs": "Aborts a multipart upload.",
+          "path": "v2/objects/multipart/abort",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.objects.v2.AbortMultipartRequest",
+          "response_type": "acyclic.objects.v2.AbortMultipartResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "bucket",
+              "json_name": "bucket",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "object_key",
+              "json_name": "objectKey",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "upload_id",
+              "json_name": "uploadId",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutation",
+              "json_name": "mutation",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "existed",
+              "json_name": "existed",
+              "number": 1,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "stream",
+      "rust_crate": "acyclic-stream",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::stream::stream_descriptor",
+      "package": "acyclic.stream.v2",
+      "service": "StreamService",
+      "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
+      "source_content_sha256": "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb",
+      "source_model_sha256": "72a02b5ce9e67bddb14feac82967fc6d70adf178d168d0b56b2e091f37713deb",
+      "modeled_operations": 10,
+      "http_projection": true,
+      "remote_policy": {
+        "protocol": "https-or-loopback-http",
+        "auth": "bearer",
+        "request_encoding": "protobuf-json",
+        "response_encoding": "protobuf-json",
+        "credential_policy": "bearer-no-crlf",
+        "response_limit_policy": "bounded-cumulative-utf8",
+        "behavior_binding": "native-wasm"
+      },
+      "methods": [
+        {
+          "operation_id": "inspectIdempotency",
+          "rpc_name": "InspectIdempotency",
+          "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+          "docs": "Returns the admitted outcome for an idempotency key, when present.",
+          "path": "v1/stream/idempotency/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.InspectIdempotencyRequest",
+          "response_type": "acyclic.stream.v2.InspectIdempotencyResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "observation",
+              "json_name": "observation",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_observation",
+              "proto3_optional": true
+            }
+          ]
+        },
+        {
+          "operation_id": "append",
+          "rpc_name": "Append",
+          "rpc": "acyclic.stream.v2.StreamService/Append",
+          "docs": "Appends records to a stream with an optional expected tail.",
+          "path": "v1/stream/append",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.AppendRequest",
+          "response_type": "acyclic.stream.v2.AppendResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "path",
+              "json_name": "path",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "records",
+              "json_name": "records",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "if_tail",
+              "json_name": "ifTail",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_if_tail",
+              "proto3_optional": true
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_idempotency_key",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "committed",
+              "json_name": "committed",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "outcome",
+              "proto3_optional": false
+            },
+            {
+              "name": "conflict",
+              "json_name": "conflict",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "outcome",
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "tail",
+          "rpc_name": "Tail",
+          "rpc": "acyclic.stream.v2.StreamService/Tail",
+          "docs": "Returns the current tail sequence for a stream.",
+          "path": "v1/stream/tail",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.TailRequest",
+          "response_type": "acyclic.stream.v2.TailResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "path",
+              "json_name": "path",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "tail",
+              "json_name": "tail",
+              "number": 1,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "fork",
+          "rpc_name": "Fork",
+          "rpc": "acyclic.stream.v2.StreamService/Fork",
+          "docs": "Forks a stream path at an admitted sequence.",
+          "path": "v1/stream/fork",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.ForkRequest",
+          "response_type": "acyclic.stream.v2.ForkReceipt",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "source",
+              "json_name": "source",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "destination",
+              "json_name": "destination",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "at_tail",
+              "json_name": "atTail",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_at_tail",
+              "proto3_optional": true
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_idempotency_key",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "source",
+              "json_name": "source",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "destination",
+              "json_name": "destination",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "forked_at",
+              "json_name": "forkedAt",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "tail",
+              "json_name": "tail",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "commit_id",
+              "json_name": "commitId",
+              "number": 5,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "read",
+          "rpc_name": "Read",
+          "rpc": "acyclic.stream.v2.StreamService/Read",
+          "docs": "Reads records from a stream page by page.",
+          "path": "v1/stream/read",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.ReadRequest",
+          "response_type": "acyclic.stream.v2.ReadResponse",
+          "client_streaming": false,
+          "server_streaming": true,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "path",
+              "json_name": "path",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "from",
+              "json_name": "from",
+              "number": 2,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "limit",
+              "json_name": "limit",
+              "number": 3,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "record",
+              "json_name": "record",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "follow",
+          "rpc_name": "Follow",
+          "rpc": "acyclic.stream.v2.StreamService/Follow",
+          "docs": "Follows a stream and yields records as they become available.",
+          "path": "v1/stream/follow",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.FollowRequest",
+          "response_type": "acyclic.stream.v2.ReadResponse",
+          "client_streaming": false,
+          "server_streaming": true,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "path",
+              "json_name": "path",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "from",
+              "json_name": "from",
+              "number": 2,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "record",
+              "json_name": "record",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "children",
+          "rpc_name": "Children",
+          "rpc": "acyclic.stream.v2.StreamService/Children",
+          "docs": "Lists child stream paths under a parent path.",
+          "path": "v1/stream/children",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.ChildrenRequest",
+          "response_type": "acyclic.stream.v2.ChildrenResponse",
+          "client_streaming": false,
+          "server_streaming": true,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "parent",
+              "json_name": "parent",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_parent",
+              "proto3_optional": true
+            },
+            {
+              "name": "limit",
+              "json_name": "limit",
+              "number": 2,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "child",
+              "json_name": "child",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "childrenPage",
+          "rpc_name": "ChildrenPage",
+          "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+          "docs": "Returns one ordered page of child stream paths.",
+          "path": "v1/stream/children/page",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.ChildrenPageRequest",
+          "response_type": "acyclic.stream.v2.ChildrenPageResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "parent",
+              "json_name": "parent",
+              "number": 1,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_parent",
+              "proto3_optional": true
+            },
+            {
+              "name": "after",
+              "json_name": "after",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_after",
+              "proto3_optional": true
+            },
+            {
+              "name": "hierarchy_version",
+              "json_name": "hierarchyVersion",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_hierarchy_version",
+              "proto3_optional": true
+            },
+            {
+              "name": "limit",
+              "json_name": "limit",
+              "number": 4,
+              "wire_type": "uint32",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "hierarchy_version",
+              "json_name": "hierarchyVersion",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "children",
+              "json_name": "children",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "next_after",
+              "json_name": "nextAfter",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_next_after",
+              "proto3_optional": true
+            }
+          ]
+        },
+        {
+          "operation_id": "commit",
+          "rpc_name": "Commit",
+          "rpc": "acyclic.stream.v2.StreamService/Commit",
+          "docs": "Atomically commits stream mutations after checking conditions.",
+          "path": "v1/stream/commit",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.CommitRequest",
+          "response_type": "acyclic.stream.v2.CommitResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "conditions",
+              "json_name": "conditions",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutations",
+              "json_name": "mutations",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "deadline_unix_millis",
+              "json_name": "deadlineUnixMillis",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_deadline_unix_millis",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "committed",
+              "json_name": "committed",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "outcome",
+              "proto3_optional": false
+            },
+            {
+              "name": "conflict",
+              "json_name": "conflict",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "outcome",
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "readCommit",
+          "rpc_name": "ReadCommit",
+          "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+          "docs": "Reads a committed envelope by commit identifier.",
+          "path": "v1/stream/commits/read",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "acyclic.stream.v2.ReadCommitRequest",
+          "response_type": "acyclic.stream.v2.CommittedEnvelope",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "conditions",
+              "json_name": "conditions",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutations",
+              "json_name": "mutations",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idempotency_key",
+              "json_name": "idempotencyKey",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "deadline_unix_millis",
+              "json_name": "deadlineUnixMillis",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_deadline_unix_millis",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "commit_id",
+              "json_name": "commitId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "mutations",
+              "json_name": "mutations",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "inference",
+      "rust_crate": "acyclic-inference",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::inference::inference_descriptor",
+      "package": "inference.customer.v1",
+      "service": "ModelsService",
+      "descriptor_sha256": "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea",
+      "source_content_sha256": "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9",
+      "source_model_sha256": "4b42d7429f0ac4db8b473ca5670631470f67d7ce3aaa116f5912b7912e49f4a9",
+      "modeled_operations": 14,
+      "http_projection": true,
+      "remote_policy": null,
+      "methods": [
+        {
+          "operation_id": "modelsList",
+          "rpc_name": "List",
+          "rpc": "inference.customer.v1.ModelsService/List",
+          "docs": "Lists model capabilities and retention profiles.",
+          "path": "v1/inference/models/list",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.ListModelsRequest",
+          "response_type": "inference.customer.v1.ListModelsResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [],
+          "response_fields": [
+            {
+              "name": "models",
+              "json_name": "models",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "contextsCreate",
+          "rpc_name": "Create",
+          "rpc": "inference.customer.v1.ContextsService/Create",
+          "docs": "Creates an immutable context revision.",
+          "path": "v1/inference/contexts/create",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.CreateContextRequest",
+          "response_type": "inference.customer.v1.MutationReceipt",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model",
+              "json_name": "model",
+              "number": 2,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "items",
+              "json_name": "items",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "revision",
+              "json_name": "revision",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "command_digest",
+              "json_name": "commandDigest",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "retained",
+              "json_name": "retained",
+              "number": 4,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "contextsInspect",
+          "rpc_name": "Inspect",
+          "rpc": "inference.customer.v1.ContextsService/Inspect",
+          "docs": "Reads an immutable context revision by digest.",
+          "path": "v1/inference/contexts/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.InspectContextRequest",
+          "response_type": "inference.customer.v1.ContextView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "revision",
+              "json_name": "revision",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "revision",
+              "json_name": "revision",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "parent",
+              "json_name": "parent",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_parent",
+              "proto3_optional": true
+            },
+            {
+              "name": "lineage",
+              "json_name": "lineage",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "execution_profile",
+              "json_name": "executionProfile",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "content_digest",
+              "json_name": "contentDigest",
+              "number": 5,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "items",
+              "json_name": "items",
+              "number": 6,
+              "wire_type": "message",
+              "repeated": true,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model",
+              "json_name": "model",
+              "number": 7,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "provenance",
+              "json_name": "provenance",
+              "number": 8,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "contextsMutate",
+          "rpc_name": "Mutate",
+          "rpc": "inference.customer.v1.ContextsService/Mutate",
+          "docs": "Admits one immutable context mutation or release.",
+          "path": "v1/inference/contexts/mutate",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.MutateContextRequest",
+          "response_type": "inference.customer.v1.MutationReceipt",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "source",
+              "json_name": "source",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "edit",
+              "json_name": "edit",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            },
+            {
+              "name": "fork",
+              "json_name": "fork",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            },
+            {
+              "name": "truncate",
+              "json_name": "truncate",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            },
+            {
+              "name": "compact",
+              "json_name": "compact",
+              "number": 6,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            },
+            {
+              "name": "release",
+              "json_name": "release",
+              "number": 7,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            },
+            {
+              "name": "transfer",
+              "json_name": "transfer",
+              "number": 8,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "action",
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "revision",
+              "json_name": "revision",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "command_digest",
+              "json_name": "commandDigest",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "retained",
+              "json_name": "retained",
+              "number": 4,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "warmContextsRetain",
+          "rpc_name": "Retain",
+          "rpc": "inference.customer.v1.WarmContextsService/Retain",
+          "docs": "Admits an explicit warm-retention commitment.",
+          "path": "v1/inference/warm/retain",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.RetainWarmRequest",
+          "response_type": "inference.customer.v1.WarmView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "latency_profile",
+              "json_name": "latencyProfile",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_kv",
+              "json_name": "idleKv",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model_profile",
+              "json_name": "modelProfile",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "latency_profile",
+              "json_name": "latencyProfile",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 6,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "evidence_digest",
+              "json_name": "evidenceDigest",
+              "number": 7,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "admission_receipt_id",
+              "json_name": "admissionReceiptId",
+              "number": 8,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 9,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_kv",
+              "json_name": "idleKv",
+              "number": 10,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "warmContextsInspect",
+          "rpc_name": "Inspect",
+          "rpc": "inference.customer.v1.WarmContextsService/Inspect",
+          "docs": "Reads the current warm-retention commitment.",
+          "path": "v1/inference/warm/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.InspectWarmRequest",
+          "response_type": "inference.customer.v1.WarmView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model_profile",
+              "json_name": "modelProfile",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "latency_profile",
+              "json_name": "latencyProfile",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 6,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "evidence_digest",
+              "json_name": "evidenceDigest",
+              "number": 7,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "admission_receipt_id",
+              "json_name": "admissionReceiptId",
+              "number": 8,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 9,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_kv",
+              "json_name": "idleKv",
+              "number": 10,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "warmContextsRenew",
+          "rpc_name": "Renew",
+          "rpc": "inference.customer.v1.WarmContextsService/Renew",
+          "docs": "Extends a warm-retention commitment.",
+          "path": "v1/inference/warm/renew",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.RenewWarmRequest",
+          "response_type": "inference.customer.v1.WarmView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 3,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_timeout_ms",
+              "json_name": "idleTimeoutMs",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_idle_timeout_ms",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model_profile",
+              "json_name": "modelProfile",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "latency_profile",
+              "json_name": "latencyProfile",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 6,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "evidence_digest",
+              "json_name": "evidenceDigest",
+              "number": 7,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "admission_receipt_id",
+              "json_name": "admissionReceiptId",
+              "number": 8,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 9,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_kv",
+              "json_name": "idleKv",
+              "number": 10,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "warmContextsRelease",
+          "rpc_name": "Release",
+          "rpc": "inference.customer.v1.WarmContextsService/Release",
+          "docs": "Releases a warm-retention commitment.",
+          "path": "v1/inference/warm/release",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.ReleaseWarmRequest",
+          "response_type": "inference.customer.v1.WarmView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "commitment",
+              "json_name": "commitment",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model_profile",
+              "json_name": "modelProfile",
+              "number": 3,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "latency_profile",
+              "json_name": "latencyProfile",
+              "number": 4,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "expires_at_ms",
+              "json_name": "expiresAtMs",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 6,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "evidence_digest",
+              "json_name": "evidenceDigest",
+              "number": 7,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "admission_receipt_id",
+              "json_name": "admissionReceiptId",
+              "number": 8,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 9,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "idle_kv",
+              "json_name": "idleKv",
+              "number": 10,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "runsGenerate",
+          "rpc_name": "Generate",
+          "rpc": "inference.customer.v1.RunsService/Generate",
+          "docs": "Admits a recoverable generation run.",
+          "path": "v1/inference/runs/generate",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.GenerateRunRequest",
+          "response_type": "inference.customer.v1.GenerateRunResponse",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "context",
+              "json_name": "context",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "input",
+              "json_name": "input",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "maximum_output",
+              "json_name": "maximumOutput",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "seed",
+              "json_name": "seed",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_seed",
+              "proto3_optional": true
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "run",
+              "json_name": "run",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "runsInspect",
+          "rpc_name": "Inspect",
+          "rpc": "inference.customer.v1.RunsService/Inspect",
+          "docs": "Reads the current generation run view.",
+          "path": "v1/inference/runs/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.InspectRunRequest",
+          "response_type": "inference.customer.v1.RunView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "run_id",
+              "json_name": "runId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "run_id",
+              "json_name": "runId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "input",
+              "json_name": "input",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model",
+              "json_name": "model",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "last_sequence",
+              "json_name": "lastSequence",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "cancellation_requested",
+              "json_name": "cancellationRequested",
+              "number": 5,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "result",
+              "json_name": "result",
+              "number": 6,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_result",
+              "proto3_optional": true
+            }
+          ]
+        },
+        {
+          "operation_id": "runsWatch",
+          "rpc_name": "Watch",
+          "rpc": "inference.customer.v1.RunsService/Watch",
+          "docs": "Streams ordered run events from a sequence cursor.",
+          "path": "v1/inference/runs/watch",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.WatchRunRequest",
+          "response_type": "inference.customer.v1.RunEvent",
+          "client_streaming": false,
+          "server_streaming": true,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "run_id",
+              "json_name": "runId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "from_sequence",
+              "json_name": "fromSequence",
+              "number": 2,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 1,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "output",
+              "json_name": "output",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": true,
+              "oneof": "event",
+              "proto3_optional": false
+            },
+            {
+              "name": "usage",
+              "json_name": "usage",
+              "number": 3,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "event",
+              "proto3_optional": false
+            },
+            {
+              "name": "terminal",
+              "json_name": "terminal",
+              "number": 4,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": true,
+              "oneof": "event",
+              "proto3_optional": false
+            },
+            {
+              "name": "progress",
+              "json_name": "progress",
+              "number": 5,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "event",
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "runsCancel",
+          "rpc_name": "Cancel",
+          "rpc": "inference.customer.v1.RunsService/Cancel",
+          "docs": "Requests cancellation of a generation run.",
+          "path": "v1/inference/runs/cancel",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.InspectRunRequest",
+          "response_type": "inference.customer.v1.RunView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "run_id",
+              "json_name": "runId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "run_id",
+              "json_name": "runId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "input",
+              "json_name": "input",
+              "number": 2,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "model",
+              "json_name": "model",
+              "number": 3,
+              "wire_type": "string",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "last_sequence",
+              "json_name": "lastSequence",
+              "number": 4,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "cancellation_requested",
+              "json_name": "cancellationRequested",
+              "number": 5,
+              "wire_type": "bool",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "result",
+              "json_name": "result",
+              "number": 6,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_result",
+              "proto3_optional": true
+            }
+          ]
+        },
+        {
+          "operation_id": "evaluationsCreate",
+          "rpc_name": "Create",
+          "rpc": "inference.customer.v1.EvaluationsService/Create",
+          "docs": "Admits an immutable evaluation specification.",
+          "path": "v1/inference/evaluations/create",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.CreateEvaluationRequest",
+          "response_type": "inference.customer.v1.EvaluationView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "identity",
+              "json_name": "identity",
+              "number": 1,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "spec",
+              "json_name": "spec",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "evaluation_id",
+              "json_name": "evaluationId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "spec",
+              "json_name": "spec",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 3,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "result",
+              "json_name": "result",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_result",
+              "proto3_optional": true
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        },
+        {
+          "operation_id": "evaluationsInspect",
+          "rpc_name": "Inspect",
+          "rpc": "inference.customer.v1.EvaluationsService/Inspect",
+          "docs": "Reads an immutable evaluation view.",
+          "path": "v1/inference/evaluations/inspect",
+          "path_parameters": [],
+          "http_method": "POST",
+          "request_type": "inference.customer.v1.InspectEvaluationRequest",
+          "response_type": "inference.customer.v1.EvaluationView",
+          "client_streaming": false,
+          "server_streaming": false,
+          "request_encoding": "protobuf-json",
+          "response_encoding": "protobuf-json",
+          "auth": "bearer",
+          "credential_policy": "bearer-no-crlf",
+          "response_limit_policy": "bounded-cumulative-utf8",
+          "request_fields": [
+            {
+              "name": "evaluation_id",
+              "json_name": "evaluationId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ],
+          "response_fields": [
+            {
+              "name": "evaluation_id",
+              "json_name": "evaluationId",
+              "number": 1,
+              "wire_type": "bytes",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "spec",
+              "json_name": "spec",
+              "number": 2,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "state",
+              "json_name": "state",
+              "number": 3,
+              "wire_type": "enum",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            },
+            {
+              "name": "result",
+              "json_name": "result",
+              "number": 4,
+              "wire_type": "message",
+              "repeated": false,
+              "optional": true,
+              "oneof": "_result",
+              "proto3_optional": true
+            },
+            {
+              "name": "sequence",
+              "json_name": "sequence",
+              "number": 5,
+              "wire_type": "uint64",
+              "repeated": false,
+              "optional": false,
+              "oneof": null,
+              "proto3_optional": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "family": "machines",
+      "rust_crate": "acyclic-machines",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::machines::machines_descriptor",
+      "package": "acyclic.machines.v1",
+      "service": "MachinesService",
+      "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
+      "source_content_sha256": "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76",
+      "source_model_sha256": "91bd77dbe41a84547921038829be4ca78a6a1b74b160d15cdfd64632b884ff76",
+      "modeled_operations": 19,
+      "http_projection": false,
+      "remote_policy": null,
+      "methods": []
+    },
+    {
+      "family": "filesystem",
+      "rust_crate": "acyclic-filesystem",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor",
+      "package": "acyclic.filesystem.v2",
+      "service": "FilesystemService",
+      "descriptor_sha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
+      "source_content_sha256": "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3",
+      "source_model_sha256": "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3",
+      "modeled_operations": 30,
+      "http_projection": false,
+      "remote_policy": null,
+      "methods": []
+    },
+    {
+      "family": "harness",
+      "rust_crate": "acyclic-harness",
+      "source_kind": "rust-model",
+      "source_artifact": "acyclic_sdk_contract_wire::harness::harness_descriptor",
+      "package": "acyclic.harness.v2",
+      "service": "HarnessService",
+      "descriptor_sha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
+      "source_content_sha256": "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8",
+      "source_model_sha256": "6d3bfbc8e37a3b05c32f259104c7d07a6d473b4b7dcf84c8f47b1efd176738c8",
+      "modeled_operations": 5,
+      "http_projection": false,
+      "remote_policy": null,
+      "methods": []
+    }
+  ]
+}

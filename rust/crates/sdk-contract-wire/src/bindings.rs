@@ -12,16 +12,17 @@ use std::{
 
 use prost::Message;
 use prost_types::{
-    FileDescriptorProto, FileDescriptorSet, SourceCodeInfo, source_code_info::Location,
+    source_code_info::Location, FileDescriptorProto, FileDescriptorSet, SourceCodeInfo,
 };
 
 use crate::{
-    ACTORS, ContractSpec, actors_descriptor,
-    inference::{INFERENCE, inference_descriptor},
-    machines::{MACHINES, machines_descriptor},
-    objects::{OBJECTS_V2, objects_descriptor},
-    stream::{STREAM, stream_descriptor},
-    workers::{WORKERS, workers_descriptor},
+    actors_descriptor,
+    inference::{inference_descriptor, INFERENCE},
+    machines::{machines_descriptor, MACHINES},
+    objects::{objects_descriptor, OBJECTS_V2},
+    stream::{stream_descriptor, STREAM},
+    workers::{workers_descriptor, WORKERS},
+    ContractSpec, ACTORS,
 };
 
 /// A public contract family with a model-owned Rust descriptor.
@@ -374,7 +375,7 @@ fn generate_plugin_files(
     );
     let prost_files = protoc_gen_prost::execute(&request)
         .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, prost_files, false)?;
+    write_plugin_files(out_dir, prost_files, family == BindingFamily::Objects)?;
 
     let mut tonic_params = Vec::new();
     if !config.client {
@@ -414,12 +415,20 @@ fn write_plugin_files(
                     "missing insertion point {marker} in {name}"
                 ))
             })?;
-            current.insert_str(offset, file.content.as_deref().unwrap_or_default());
+            let insertion = file.content.as_deref().unwrap_or_default();
+            let insertion = if guard_grpc {
+                guard_tonic_include(insertion)
+            } else {
+                insertion.to_owned()
+            };
+            current.insert_str(offset, &insertion);
             fs::write(path, current)?;
         } else {
             let content = file.content.unwrap_or_default();
             let content = if guard_grpc && name.ends_with(".tonic.rs") {
                 guard_tonic_modules(&content)
+            } else if guard_grpc {
+                guard_tonic_include(&content)
             } else {
                 content
             };
@@ -433,6 +442,22 @@ fn guard_tonic_modules(source: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 128);
     for line in source.lines() {
         if line.starts_with("pub mod ") {
+            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+        }
+        guarded.push_str(line);
+        guarded.push('\n');
+    }
+    if !source.ends_with('\n') {
+        guarded.pop();
+    }
+    guarded
+}
+
+fn guard_tonic_include(source: &str) -> String {
+    let mut guarded = String::with_capacity(source.len() + 64);
+    for line in source.lines() {
+        if line.trim_start().starts_with("include!(") && line.trim_end().ends_with(".tonic.rs\");")
+        {
             guarded.push_str("#[cfg(feature = \"grpc\")]\n");
         }
         guarded.push_str(line);
@@ -1129,6 +1154,14 @@ mod tests {
                 "{} Rust output missing",
                 family.name()
             );
+            if family == BindingFamily::Objects {
+                assert!(
+                    source.contains(
+                        "#[cfg(feature = \"grpc\")]\ninclude!(\"acyclic.objects.v2.tonic.rs\");"
+                    ),
+                    "Objects generated prost module must guard its tonic include"
+                );
+            }
         }
     }
 
@@ -1140,6 +1173,17 @@ mod tests {
         assert_eq!(
             source,
             "// @generated\n#[cfg(feature = \"grpc\")]\npub mod buckets_service_client {}\n#[cfg(feature = \"grpc\")]\npub mod objects_service_server {}\n"
+        );
+    }
+
+    #[test]
+    fn objects_product_include_is_feature_gated_by_product_generation() {
+        let source = guard_tonic_include(
+            "// @generated\ninclude!(\"acyclic.objects.v2.tonic.rs\");\n// tail\n",
+        );
+        assert_eq!(
+            source,
+            "// @generated\n#[cfg(feature = \"grpc\")]\ninclude!(\"acyclic.objects.v2.tonic.rs\");\n// tail\n"
         );
     }
 

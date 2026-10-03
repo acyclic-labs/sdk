@@ -427,11 +427,16 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         env!("CARGO_MANIFEST_DIR"),
         "/../sdk-contract-wire/src/family_registry.rs"
     ));
+    let credential = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sdk-contract-wire/src/credential.rs"
+    ));
     match family {
-        "actors" => model_source_content(&[lib, registry]),
+        "actors" => model_source_content(&[lib, registry, credential]),
         "workers" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/workers.rs"
@@ -440,6 +445,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "objects" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/objects.rs"
@@ -448,6 +454,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "stream" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/stream.rs"
@@ -456,6 +463,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "inference" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/inference.rs"
@@ -464,6 +472,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "machines" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/machines.rs"
@@ -472,6 +481,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "filesystem" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/filesystem.rs"
@@ -480,6 +490,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         "harness" => model_source_content(&[
             lib,
             registry,
+            credential,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/harness.rs"
@@ -820,6 +831,23 @@ mod tests {
     fn models_all_sdk_family_routes() {
         let manifest = model().expect("Rust descriptors and routes are compatible");
         assert_eq!(manifest.services.len(), 8);
+        for (service, view) in manifest
+            .services
+            .iter()
+            .zip(acyclic_sdk_contract_wire::FAMILY_VIEWS)
+        {
+            assert_eq!(service.family, view.name);
+            assert_eq!(service.modeled_operations, view.operation_policies.len());
+            assert_eq!(service.http_projection, view.has_http_projection());
+            assert!(!service.source_artifact.is_empty());
+            assert!(!service.package.is_empty());
+            if view.has_http_projection() {
+                assert_eq!(service.methods.len(), view.routes().len());
+                assert!(service.methods.iter().all(|method| !method.docs.is_empty()));
+            } else {
+                assert!(service.methods.is_empty());
+            }
+        }
         assert_eq!(manifest.services[0].family, "actors");
         assert_eq!(manifest.services[0].methods.len(), 8);
         assert_eq!(manifest.services[1].family, "workers");
@@ -887,5 +915,12 @@ mod tests {
         let first = generated_files(&model().expect("model")).expect("files");
         let second = generated_files(&model().expect("model")).expect("files");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn source_digest_input_includes_rust_credential_policy() {
+        let bytes = source_content_for_family("actors");
+        let source = String::from_utf8_lossy(&bytes);
+        assert!(source.contains("BEARER_NO_CRLF"));
     }
 }
