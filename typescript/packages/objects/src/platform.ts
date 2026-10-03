@@ -1,5 +1,7 @@
 /** Runtime and packaged-artifact resolution for the cross-platform Objects client. */
 
+import { OBJECTS_REMOTE_POLICY } from "./generated-client.js";
+
 export type ObjectsRuntime = "node" | "bun" | "browser" | "unknown";
 export type ObjectsResolvedTransport = "grpc" | "http";
 
@@ -38,9 +40,11 @@ export function objectsWasmArtifactUrl(): URL {
  */
 export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolution> {
   const runtime = detectObjectsRuntime();
+  const policyRuntime = runtime === "node" || runtime === "bun" ? "native" : "browser";
+  const policyOptions = OBJECTS_REMOTE_POLICY.transport[policyRuntime];
   let wasmAvailable = typeof WebAssembly === "object";
   const fallbacks: ("grpc-to-http" | "wasm-unavailable")[] = [];
-  let transport: ObjectsResolvedTransport = "http";
+  let transport: ObjectsResolvedTransport = policyOptions[0]?.kind === "grpc" ? "grpc" : "http";
 
   if (wasmAvailable) {
     try {
@@ -56,12 +60,12 @@ export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolutio
   } else {
     fallbacks.push("wasm-unavailable");
   }
-  if (runtime === "node" || runtime === "bun") {
+  if (transport === "grpc") {
     try {
       await import("./v2-grpc.js");
-      transport = "grpc";
     } catch {
       fallbacks.push("grpc-to-http");
+      transport = policyOptions.find(option => option.kind === "http") === undefined ? "grpc" : "http";
     }
   }
 
