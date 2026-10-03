@@ -237,7 +237,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
     )?;
     let root_scope = scope(&root_issuer, root_agent, &root_private, &root_project)?;
     let mut project = root_project.clone();
-    let private = root_private.clone();
+    let mut private = root_private.clone();
     let mut authority = root_authority.clone();
     let mut issuer = root_issuer.clone();
     let mut grant_scope = root_scope.clone();
@@ -1018,6 +1018,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .is_err()
             );
         }
+        private = child_private;
     }
 
     let final_agent = final_child_scope
