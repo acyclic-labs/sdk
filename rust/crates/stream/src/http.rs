@@ -9,7 +9,7 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde_json::Value;
-use std::{collections::VecDeque, net::IpAddr, time::Duration};
+use std::{collections::VecDeque, time::Duration};
 
 /// Invalid endpoint, bearer token, CA, or response bound.
 #[derive(Debug, thiserror::Error)]
@@ -40,12 +40,9 @@ impl HttpStream {
         maximum: usize,
         ca: Option<&[u8]>,
     ) -> Result<Self, ConnectError> {
+        crate::http_validation::validate_endpoint(endpoint).map_err(|_| ConnectError)?;
         let mut endpoint = Url::parse(endpoint).map_err(|_| ConnectError)?;
-        let loopback = endpoint.host_str().is_some_and(|host| {
-            host == "localhost" || host.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
-        });
-        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
-            || !endpoint.username().is_empty()
+        if !endpoint.username().is_empty()
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()

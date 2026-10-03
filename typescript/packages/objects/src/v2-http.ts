@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_type, validate_objects_v2_get_header } from "../generated/wasm/acyclic_objects_wasm.js";
+import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_error_code, objects_v2_http_type, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -18,8 +18,13 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
   private readonly fetcher: typeof globalThis.fetch;
   constructor(private readonly options: ObjectsV2HttpOptions) {
     super();
-    const endpoint = new URL(options.endpoint);
-    if ((endpoint.protocol !== "https:" && !(endpoint.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("invalid Objects HTTP endpoint");
+    let endpoint: URL;
+    try {
+      endpoint = new URL(options.endpoint);
+      validate_objects_v2_http_endpoint(options.endpoint);
+    } catch {
+      throw new TypeError("invalid Objects HTTP endpoint");
+    }
     if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
     this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
     this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
@@ -28,11 +33,14 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     this.endpoint = endpoint;
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
-  protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint): Promise<readonly Uint8Array[]> {
+  protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, signal?: AbortSignal): Promise<readonly Uint8Array[]> {
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
     const decodeResponse = (data: Uint8Array, maximum: number) => {
       try { return decode_objects_v2_json(types[1], data, maximum); }
-      catch (error) { throw new ObjectsV2Error(objectsV2Error(error).code === wire.ErrorCode.QUOTA_EXCEEDED ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE); }
+      catch (error) {
+        const code = objectsV2Error(error).code;
+        throw new ObjectsV2Error(code === wire.ErrorCode.QUOTA_EXCEEDED ? code : wire.ErrorCode.UNAVAILABLE);
+      }
     };
     const streaming = route === "objects/put" || route === "multipart/upload-part";
     const payloads: Uint8Array[] = [];
@@ -65,6 +73,9 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     let offset = 0;
     for (const part of payloads) { request.set(part, offset); offset += part.byteLength; }
     const controller = new AbortController();
+    const forwardAbort = () => controller.abort(signal?.reason);
+    if (signal?.aborted) forwardAbort();
+    else signal?.addEventListener("abort", forwardAbort, { once: true });
     const timeout = setTimeout(() => controller.abort(), 30000);
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
@@ -96,6 +107,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
             const stop = lineLength > 0 && line[lineLength - 1] === 13 ? lineLength - 1 : lineLength;
             if (stop === 0) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
             const decoded = decodeResponse(line.subarray(0, stop), 128 * 1024);
+            validate_objects_v2_response("objects/get", bytes, decoded, maximum);
             lineLength = 0;
             const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
             if (frame.case === "error") throw objectsV2Error({ code: frame.value.code });
@@ -103,7 +115,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
               if (frame.case !== "header") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
               expected = validate_objects_v2_get_header(bytes, toBinary(wire.GetObjectHeaderSchema, frame.value), maximum);
             } else {
-              if (frame.case !== "body" || frame.value.byteLength > 65536) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
+              if (frame.case !== "body") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
               bodySize += BigInt(frame.value.byteLength);
               if (bodySize > maximum) throw new ObjectsV2Error(wire.ErrorCode.QUOTA_EXCEEDED);
               if (bodySize > expected) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
@@ -128,18 +140,19 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       offset = 0;
       for (const part of chunks) { data.set(part, offset); offset += part.byteLength; }
       if (response.status !== 200) {
+        let detailCode: number | undefined;
         try {
           const detail = fromBinary(wire.ErrorDetailSchema, decode_objects_v2_json("ErrorDetail", data, this.maximumResponse));
-          if (detail.code >= wire.ErrorCode.INVALID_ARGUMENT && detail.code <= wire.ErrorCode.NOT_MODIFIED) throw new ObjectsV2Error(detail.code);
-        } catch (error) { if (error instanceof ObjectsV2Error) throw error; }
-        const code = response.status === 400 ? wire.ErrorCode.INVALID_ARGUMENT : response.status === 401 || response.status === 403 ? wire.ErrorCode.ACCESS_DENIED : response.status === 404 ? wire.ErrorCode.NOT_FOUND : response.status === 412 ? wire.ErrorCode.PRECONDITION_FAILED : response.status === 416 ? wire.ErrorCode.RANGE_NOT_SATISFIABLE : response.status === 413 || response.status === 429 ? wire.ErrorCode.QUOTA_EXCEEDED : wire.ErrorCode.UNAVAILABLE;
-        throw new ObjectsV2Error(code);
+          detailCode = detail.code;
+        } catch { /* malformed details fall back to the canonical HTTP status mapping */ }
+        throw new ObjectsV2Error(objects_v2_http_error_code(response.status, detailCode) as wire.ErrorCode);
       }
       const media = response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
       if (media !== "application/json") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
       return [decodeResponse(data, this.maximumResponse)];
     } finally {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", forwardAbort);
       await reader?.cancel().catch(() => {});
       reader?.releaseLock();
     }

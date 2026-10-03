@@ -48,11 +48,13 @@ pub struct ObjectMetadata {
 /// Conditional requirements evaluated at publication.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Preconditions {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[prost(oneof = "preconditions::Condition", tags = "1, 2")]
     pub condition: ::core::option::Option<preconditions::Condition>,
 }
 /// Nested message and enum types in `Preconditions`.
 pub mod preconditions {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Condition {
         /// Requires the current object to be absent.
@@ -142,11 +144,13 @@ pub struct PutObjectHeader {
 /// Frames for an object upload.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct PutObjectRequest {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[prost(oneof = "put_object_request::Frame", tags = "1, 2, 3")]
     pub frame: ::core::option::Option<put_object_request::Frame>,
 }
 /// Nested message and enum types in `PutObjectRequest`.
 pub mod put_object_request {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Frame {
         /// The required first upload or download header frame.
@@ -173,11 +177,13 @@ pub struct InclusiveRange {
 /// A byte range or suffix selection for an object read.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ByteRange {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[prost(oneof = "byte_range::Selection", tags = "1, 2")]
     pub selection: ::core::option::Option<byte_range::Selection>,
 }
 /// Nested message and enum types in `ByteRange`.
 pub mod byte_range {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Selection {
         /// An inclusive byte range selection.
@@ -233,11 +239,13 @@ pub struct GetObjectHeader {
 /// Frames returned by an object read.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetObjectResponse {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[prost(oneof = "get_object_response::Frame", tags = "1, 2, 3")]
     pub frame: ::core::option::Option<get_object_response::Frame>,
 }
 /// Nested message and enum types in `GetObjectResponse`.
 pub mod get_object_response {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[derive(Clone, PartialEq, ::prost::Oneof)]
     pub enum Frame {
         /// The required first upload or download header frame.
@@ -387,11 +395,13 @@ pub struct UploadPartHeader {
 /// Frames for a multipart part upload.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UploadPartRequest {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[prost(oneof = "upload_part_request::Frame", tags = "1, 2, 3")]
     pub frame: ::core::option::Option<upload_part_request::Frame>,
 }
 /// Nested message and enum types in `UploadPartRequest`.
 pub mod upload_part_request {
+    /// A mutually exclusive field group in the Objects v2 wire contract.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Frame {
         /// The required first upload or download header frame.
@@ -509,12 +519,19 @@ pub struct ErrorDetail {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ObjectsLimit {
+    /// An enum value in the Objects v2 wire contract.
     Unspecified = 0,
+    /// An enum value in the Objects v2 wire contract.
     MaxIdempotencyKeyBytes = 256,
+    /// An enum value in the Objects v2 wire contract.
     MaxKeyBytes = 1024,
+    /// An enum value in the Objects v2 wire contract.
     MaxUserMetadataBytes = 2048,
+    /// An enum value in the Objects v2 wire contract.
     MaxPageEntries = 1000,
+    /// An enum value in the Objects v2 wire contract.
     MaxBodyFrameBytes = 65536,
+    /// An enum value in the Objects v2 wire contract.
     MaxMultipartParts = 10000,
 }
 impl ObjectsLimit {
@@ -553,17 +570,29 @@ impl ObjectsLimit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ErrorCode {
+    /// An enum value in the Objects v2 wire contract.
     Unspecified = 0,
+    /// An enum value in the Objects v2 wire contract.
     InvalidArgument = 1,
+    /// An enum value in the Objects v2 wire contract.
     NotFound = 2,
+    /// An enum value in the Objects v2 wire contract.
     AlreadyExists = 3,
+    /// An enum value in the Objects v2 wire contract.
     PreconditionFailed = 4,
+    /// An enum value in the Objects v2 wire contract.
     IdempotencyMismatch = 5,
+    /// An enum value in the Objects v2 wire contract.
     QuotaExceeded = 6,
+    /// An enum value in the Objects v2 wire contract.
     Unsupported = 7,
+    /// An enum value in the Objects v2 wire contract.
     Unavailable = 8,
+    /// An enum value in the Objects v2 wire contract.
     AccessDenied = 9,
+    /// An enum value in the Objects v2 wire contract.
     RangeNotSatisfiable = 10,
+    /// An enum value in the Objects v2 wire contract.
     NotModified = 11,
 }
 impl ErrorCode {

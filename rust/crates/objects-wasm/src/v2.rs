@@ -71,6 +71,20 @@ pub fn validate_objects_v2_get_header(
     acyclic_objects::v2::response::validate_get_header(query, bytes, maximum).map_err(error)
 }
 
+/// Maps hosted HTTP status/detail values through the canonical Objects error
+/// vocabulary before they cross the browser boundary.
+#[wasm_bindgen]
+pub fn objects_v2_http_error_code(status: u16, detail: Option<i32>) -> i32 {
+    acyclic_objects::v2::response::http_error_code(status, detail) as i32
+}
+
+/// Validates the HTTPS or loopback HTTP endpoint policy used by native and
+/// browser Objects clients.
+#[wasm_bindgen]
+pub fn validate_objects_v2_http_endpoint(endpoint: &str) -> Result<(), JsValue> {
+    acyclic_objects::v2::response::validate_http_endpoint(endpoint).map_err(error)
+}
+
 #[wasm_bindgen]
 pub struct ObjectsV2Memory {
     inner: MemoryObjects,

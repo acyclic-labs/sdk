@@ -1,4 +1,4 @@
-import initObjectsWasm from "../generated/wasm/acyclic_objects_wasm.js";
+import initObjectsWasm, { initSync as initObjectsWasmSync } from "../generated/wasm/acyclic_objects_wasm.js";
 
 let ready: Promise<void> | undefined;
 
@@ -17,4 +17,21 @@ export async function ensureObjectsWasm(): Promise<void> {
     void attempt.catch(() => { if (ready === attempt) ready = undefined; });
   }
   await ready;
+}
+
+// HTTP constructors synchronously validate their endpoint. Load the packaged
+// module before consumers can construct one, matching the Stream boundary.
+if (!initializeObjectsWasmSync()) await ensureObjectsWasm();
+
+function initializeObjectsWasmSync(): boolean {
+  const runtime = globalThis as typeof globalThis & {
+    process?: { getBuiltinModule?: (name: string) => unknown };
+  };
+  const getBuiltinModule = runtime.process?.getBuiltinModule;
+  if (getBuiltinModule === undefined) return false;
+  const filesystem = getBuiltinModule("node:fs") as { readFileSync?: (path: URL) => Uint8Array } | undefined;
+  if (filesystem?.readFileSync === undefined) return false;
+  const wasmUrl = new URL("../generated/wasm/acyclic_objects_wasm_bg.wasm", import.meta.url);
+  initObjectsWasmSync({ module: filesystem.readFileSync(wasmUrl) });
+  return true;
 }

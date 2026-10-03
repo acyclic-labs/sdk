@@ -198,6 +198,22 @@ export function is_stream_error_code(value) {
 }
 
 /**
+ * Validates one hosted read page and returns its canonical follow cursor.
+ * @param {string} response_json
+ * @param {bigint} from
+ * @returns {bigint}
+ */
+export function nextHttpFollowCursor(response_json, from) {
+    const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.nextHttpFollowCursor(ptr0, len0, from);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+
+/**
  * Normalize and encode canonical protobuf bytes for one commit request.
  *
  * The returned bytes use the same deterministic ordering as the in-memory
@@ -281,6 +297,61 @@ export function validateAppendRequest(input) {
         return getStringFromWasm0(ret[0], ret[1]);
     } finally {
         wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validates request-relative child-page semantics through the canonical Rust
+ * provider rules before a public page reaches a TypeScript caller.
+ * @param {Uint8Array} request
+ * @param {Uint8Array} response
+ */
+export function validateChildrenPageResponse(request, response) {
+    const ptr0 = passArray8ToWasm0(request, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(response, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validateChildrenPageResponse(ptr0, len0, ptr1, len1);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validates the endpoint policy shared by native and browser HTTP clients.
+ * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
+ * fixture servers. The return value is empty for a valid endpoint.
+ * @param {string} endpoint
+ * @returns {string}
+ */
+export function validateHttpEndpoint(endpoint) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passStringToWasm0(endpoint, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateHttpEndpoint(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
+    }
+}
+
+/**
+ * Validate a hosted read page against the request cursor captured by the
+ * caller. Rust owns record shape and cursor contiguity; the HTTP adapter only
+ * supplies the response text and its request-relative starting position.
+ * @param {string} response_json
+ * @param {bigint} from
+ */
+export function validateHttpReadResponse(response_json, from) {
+    const ptr0 = passStringToWasm0(response_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.validateHttpReadResponse(ptr0, len0, from);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
     }
 }
 

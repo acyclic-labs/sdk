@@ -481,6 +481,15 @@ pub fn validate_sequence(value: &str) -> String {
     }
 }
 
+/// Validates the endpoint policy shared by native and browser HTTP clients.
+/// HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
+/// fixture servers. The return value is empty for a valid endpoint.
+#[wasm_bindgen(js_name = validateHttpEndpoint)]
+pub fn validate_http_endpoint(endpoint: &str) -> String {
+    crate::http_validation::validate_endpoint(endpoint)
+        .map_or_else(str::to_owned, |_| String::new())
+}
+
 /// Normalize and encode canonical protobuf bytes for one commit request.
 ///
 /// The returned bytes use the same deterministic ordering as the in-memory
@@ -543,13 +552,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
             "children_page" => wire::ChildrenPageRequest::decode(input)
                 .map_err(|_| StreamError::InvalidArgument)
                 .and_then(wire_codec::children_page_from_wire)
-                .and_then(|request| {
-                    if request.after.is_some() && request.hierarchy_version.is_none() {
-                        return Err(StreamError::InvalidArgument);
-                    }
-                    Ok(request)
-                })
-                .and_then(|request| memory::validate_limit(request.limit)),
+                .and_then(|request| memory::validate_children_page_request(&request)),
             _ => Err(StreamError::InvalidArgument),
         });
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
@@ -579,6 +582,60 @@ pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), Js
     let value: Value = serde_json::from_str(response_json)
         .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
     http::validate(route, &value).map_err(JsValue::from_str)
+}
+
+/// Validate a hosted read page against the request cursor captured by the
+/// caller. Rust owns record shape and cursor contiguity; the HTTP adapter only
+/// supplies the response text and its request-relative starting position.
+#[wasm_bindgen(js_name = validateHttpReadResponse)]
+pub fn validate_http_read_response(response_json: &str, from: u64) -> Result<(), JsValue> {
+    let value: Value = serde_json::from_str(response_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
+    crate::http_validation::validate_read_from(&value, from).map_err(JsValue::from_str)
+}
+
+/// Validates one hosted read page and returns its canonical follow cursor.
+#[wasm_bindgen(js_name = nextHttpFollowCursor)]
+pub fn next_http_follow_cursor(response_json: &str, from: u64) -> Result<u64, JsValue> {
+    let value: Value = serde_json::from_str(response_json)
+        .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
+    crate::http_validation::next_follow_cursor(&value, from).map_err(JsValue::from_str)
+}
+
+/// Validates request-relative child-page semantics through the canonical Rust
+/// provider rules before a public page reaches a TypeScript caller.
+#[wasm_bindgen(js_name = validateChildrenPageResponse)]
+pub fn validate_children_page_response(request: &[u8], response: &[u8]) -> Result<(), JsValue> {
+    let request = wire::ChildrenPageRequest::decode(request)
+        .map_err(|_| js_error(StreamError::InvalidArgument))?;
+    let response = wire::ChildrenPageResponse::decode(response)
+        .map_err(|_| js_error(StreamError::InvalidArgument))?;
+    let request = wire_codec::children_page_from_wire(request).map_err(js_error)?;
+    let hierarchy_version: [u8; 32] = response
+        .hierarchy_version
+        .as_ref()
+        .try_into()
+        .map_err(|_| js_error(StreamError::InvalidArgument))?;
+    let page = crate::ChildrenPage {
+        hierarchy_version: crate::CommitId::from_bytes(hierarchy_version),
+        children: response
+            .children
+            .into_iter()
+            .map(|child| {
+                Ok(crate::Child {
+                    path: crate::StreamPath::new(child.path)
+                        .map_err(|_| StreamError::InvalidPath)?,
+                })
+            })
+            .collect::<Result<_, StreamError>>()
+            .map_err(js_error)?,
+        next_after: response
+            .next_after
+            .map(|path| crate::StreamPath::new(path).map_err(|_| StreamError::InvalidPath))
+            .transpose()
+            .map_err(js_error)?,
+    };
+    memory::validate_children_page_response(&request, &page).map_err(js_error)
 }
 
 /// Validate and project one hosted HTTP JSON success response into the public
@@ -1113,6 +1170,31 @@ mod tests {
         );
         assert_eq!(public_http_error_code("commit_not_found", "read"), None);
         assert_eq!(public_http_error_code("unknown", "read"), None);
+    }
+
+    #[test]
+    fn endpoint_validation_matches_the_hosted_transport_policy() {
+        for endpoint in [
+            "https://stream.example",
+            "http://localhost:3000/fixture",
+            "http://127.0.0.1:3000/fixture",
+            "http://[::1]:3000/fixture",
+        ] {
+            assert_eq!(validate_http_endpoint(endpoint), "", "{endpoint}");
+        }
+        for endpoint in [
+            "http://stream.example",
+            "https://user@stream.example",
+            "https://stream.example/?query=1",
+            "https://stream.example/#fragment",
+            "https://stream.example:not-a-port",
+        ] {
+            assert_eq!(
+                validate_http_endpoint(endpoint),
+                "invalid_endpoint",
+                "{endpoint}"
+            );
+        }
     }
 
     #[test]

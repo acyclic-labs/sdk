@@ -86,6 +86,11 @@ export function encodeHttpRequest(route: string, input: Uint8Array): string;
 export function is_stream_error_code(value: string): boolean;
 
 /**
+ * Validates one hosted read page and returns its canonical follow cursor.
+ */
+export function nextHttpFollowCursor(response_json: string, from: bigint): bigint;
+
+/**
  * Normalize and encode canonical protobuf bytes for one commit request.
  *
  * The returned bytes use the same deterministic ordering as the in-memory
@@ -116,6 +121,26 @@ export function publicHttpErrorCode(raw: string, route: string): string | undefi
  * the in-memory provider. Otherwise this returns one stable error code.
  */
 export function validateAppendRequest(input: Uint8Array): string;
+
+/**
+ * Validates request-relative child-page semantics through the canonical Rust
+ * provider rules before a public page reaches a TypeScript caller.
+ */
+export function validateChildrenPageResponse(request: Uint8Array, response: Uint8Array): void;
+
+/**
+ * Validates the endpoint policy shared by native and browser HTTP clients.
+ * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
+ * fixture servers. The return value is empty for a valid endpoint.
+ */
+export function validateHttpEndpoint(endpoint: string): string;
+
+/**
+ * Validate a hosted read page against the request cursor captured by the
+ * caller. Rust owns record shape and cursor contiguity; the HTTP adapter only
+ * supplies the response text and its request-relative starting position.
+ */
+export function validateHttpReadResponse(response_json: string, from: bigint): void;
 
 /**
  * Validate one hosted HTTP JSON success response using the same path, width,
@@ -165,10 +190,14 @@ export interface InitOutput {
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
+    readonly nextHttpFollowCursor: (a: number, b: number, c: bigint) => [bigint, number, number];
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
     readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];
+    readonly validateChildrenPageResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateHttpEndpoint: (a: number, b: number) => [number, number];
+    readonly validateHttpReadResponse: (a: number, b: number, c: bigint) => [number, number];
     readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validatePath: (a: number, b: number) => [number, number];
     readonly validateRequest: (a: number, b: number, c: number, d: number) => [number, number];

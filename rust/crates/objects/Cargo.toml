@@ -32,6 +32,7 @@ prost-reflect = { workspace = true, features = ["serde"], optional = true }
 serde_json = { workspace = true, optional = true }
 prost-types = "0.14.4"
 thiserror.workspace = true
+url = { version = "2.5.8", default-features = false }
 tokio = { version = "1.48.0", default-features = false, features = ["sync"] }
 tonic = { version = "0.14.6", features = ["tls-ring", "tls-webpki-roots"], optional = true }
 tonic-prost = { workspace = true, optional = true }
