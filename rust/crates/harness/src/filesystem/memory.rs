@@ -1582,16 +1582,10 @@ where
         &self,
         id: InteractionId,
         response: InteractionResponse,
+        responder: &Scope,
     ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.root(
-            format!("local-responder:{id}"),
-            Capabilities::new([
-                "interaction:resolve".to_owned(),
-                format!("interaction:respond:{id}"),
-            ]),
-        );
         self.journal
-            .resolve_interaction(id, response, &responder)
+            .resolve_interaction(id, response, responder)
             .await?;
         self.journal
             .interaction_outcome(id)

@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     effects::EffectRegistry,
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
@@ -1248,8 +1248,11 @@ impl PersistentLocalHarness {
         &self,
         id: crate::InteractionId,
         response: crate::interaction::InteractionResponse,
+        responder: &Scope,
     ) -> Result<crate::interaction::InteractionOutcome> {
-        self.storage.resolve_interaction(id, response).await
+        self.storage
+            .resolve_interaction(id, response, responder)
+            .await
     }
     /// Runtime shared with other local host compositions.
     #[must_use]

@@ -15,7 +15,7 @@ use crate::{
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry},
+    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -2213,6 +2213,7 @@ impl PersistentLocalSwarm {
         task: TaskId,
         id: crate::InteractionId,
         response: InteractionResponse,
+        responder: &Scope,
     ) -> Result<crate::interaction::InteractionOutcome> {
         let approvals = self.list_approvals(task).await?;
         let approval = approvals
@@ -2250,7 +2251,10 @@ impl PersistentLocalSwarm {
             return Ok(resolution.outcome.clone());
         }
         let harness = self.open_session(task).await?;
-        harness.storage().resolve_interaction(id, response).await
+        harness
+            .storage()
+            .resolve_interaction(id, response, responder)
+            .await
     }
 
     /// Sends a ref-only message through the authenticated durable host.
