@@ -1,240 +1,35 @@
-# Implementation status
+# Local swarm implementation status
 
-Base: 31b9ff52d63c91f2b9bf87e16b78ad682d26546f.
-Branch: codex/graphcoder-sdk. No merge/publication.
+Goal active; qualification incomplete. All changes stay in the managed worktree on `codex/graphcoder-sdk`, based on `31b9ff52d63c91f2b9bf87e16b78ad682d26546f`. No merge occurred.
 
-## Implemented foundation (historical checkpoints; current qualification pending)
-- Shared versioned model-input admission in stock executor and live task dispatch.
-- Ordered manifests bind message bytes, roles, file references, model and tool revisions.
-- Aggregate input bounds reject overflow without truncation.
-- Exact persisted model prefixes reject content/order/binding mutations and corruption.
-- Fork-prefix capture rejects incomplete tool exchanges.
-- Stock executor persists input manifests before model dispatch.
-- Provider-capture integration verifies actual received input against the persisted manifest.
-- Provider admission enforces pinned prefixes before dispatch and recovered attempts.
-- Memory and persistent compositions share the same provider-neutral storage implementation.
-- Persistent session descriptors pin identities, authority keys, model and limits.
-- Reopening replays completed turns without model redispatch; changed prompt/configuration fails.
-- Full model requests are pinned beside their ordered manifests.
-- Completed tool batches pin one boundary after all results; child context is an explicit suffix stage.
-- Production executor tests preserve inherited inputs across three child levels with real file effects.
-- Assistant text in tool-bearing responses now reaches the next model request.
-- Reconciliation verifies the original admitted request and its digest; guarded providers refuse identity-only recovery.
-- Pre-dispatch refusals are durable, scoped, non-secret observations distinct from dispatched failures.
-- Completed-batch publication has a pinned implementation/guarantee and immutable admission.
-- Publication uncertainty prevents the next parent request; reconciliation uses the original admission.
-- Publication retry is permitted only for the declared idempotent guarantee.
-- Authoritative history publishes the exact complete exchange, including assistant text and rejected-call feedback.
-- Versioned text artifacts restore the original model text representation with no regenerated content.
-- Follow-up history preserves intermediate text once and publishes only the final step's text as the final reply.
-- Completed-conversation boundaries reject stale histories before publication file writes.
-- Child prefix/model binding is supplied by the shared Harness inherited constructor.
+## Ownership
 
-- Model tools receive checked turn/step provenance through dispatch and reconciliation, separately from model input.
-- Batch publication uses a distinct identity domain from model-owned tool calls.
-- Stock executor v3 fences the previous publication identity semantics before replay/dispatch.
+GraphCoder is a terminal composition wrapper. Harness owns model requests, recursive forks, sessions, communication, budgets, approvals, effects, and recovery. Filesystem owns workspace lifecycle and direct-parent integration. CLI approval bookkeeping and manual host composition still need consolidation into Harness; their presence is not accepted as final architecture.
 
-## Verification
-- Existing Harness baseline: 176 passed.
-- Shared-input integration: 181 passed.
-- Filesystem-local suite after manifest and provider-capture integration: 195 passed.
-- Durable local composition and prefix admission: 197 passed.
-- Completed-batch and recursive input composition: 198 passed.
-- Existing journal E2E: 6 passed; fork-preparer recovery: 1 passed.
-- Existing native durable recursive-workspace E2E: 2 passed.
-- Full native Harness regression at f2fc0f4c: 215 passed, zero ignored.
-- Latest request-bound recovery/refusal changes: 198 library + 6 journal tests passed.
-- Native library lint gate passed; WASM compilation passed (execution not tested).
-- Completed publication recovery: 200 library + 6 persistent-journal tests passed.
-- Final publication source: native lint and WASM compilation passed.
-- Exact authoritative history: 201 library + 6 journal + 1 fork recovery + 2 native fork tests passed.
-- Two native sibling forks receive byte-identical completed prefixes and declared suffixes.
-- A native stale-boundary test confirms refusal does not change the private workspace generation.
-- Source-bound checkpoint receipts: checkpoint-recovery.json, checkpoint-publication.json and checkpoint-history.json.
-- Model tool provenance checkpoint: 204 library + 6 journal + 1 fork recovery + 2 native fork tests passed, zero ignored.
-- Native library lint passed after documentation repair; WASM compilation passed, with execution still unverified.
-- checkpoint-provenance.json binds these results to source, suite and test executable digests.
-- None of these results qualify the complete swarm or terminal product.
+## Latest native evidence
 
-## Current execution checkpoint
+Source `c3a98adc`, handle 35128, exited 1. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for suite and artifact hashes.
 
-The model-input and local composition paths are implemented but remain under
-qualification. Production project grants, per-child fork identities, durable
-operator principals, and receipt preflight are committed on the isolated branch.
+| Suite | Observed result |
+|---|---|
+| Local recovery | 7 passed, 0 failed |
+| Recursive workspace | 1 passed, 1 failed |
+| Budget production boundaries | 1 passed, 1 failed |
+| Budget scheduler | 0 passed, 2 failed |
+| Harness library | Incomplete: two observed failures and two stalled tests; exact test process stopped, no aggregate pass claim |
 
-Latest scoped results are recorded in checkpoint-runtime-integration-2026-10-03.json
-and checkpoint-native-2026-10-03-followup.json:
-- TypeScript runtime and memory conversation: 100 passed, zero failed at eb8f41a4,
-  using existing WASM. Fresh artifact qualification is still required.
-- Native Harness library: 300 passed, three failed at eb8f41a4. Wait cancellation,
-  terminal wait replay, duplicate-input classification, and the bounded fork
-  fixture now pass. Execution uncertainty and the wire fixture remain failing.
-- Native local swarm recovery: six passed, one failed. Cancellation fencing and
-  persisted-prefix reconciliation pass; the concurrent losing handle returns
-  typed uncertainty and its eventual replay contract remains under repair.
-- Native root writeback: two passed, zero failed. These support boundary tests
-  establish exact approval and preservation of concurrent edits, not installed
-  terminal/operator qualification.
-- Model fork boundary: one passed, two failed. Invalid attestation still leaves
-  an allocated child workspace, and positive recursive attestation is rejected.
-- Production recursive model swarm: zero passed, one failed at fork manifest
-  command/parent revision binding. This is an open correctness gate.
-- The interrupted earlier library run is explicitly recorded as incomplete;
-  no aggregate pass was inferred from its partial output.
-- Budget dispatch context and production coordinator admission tests are
-  integrated. Actual provider metering and restart budget enforcement remain
-  under implementation and qualification.
-- Terminal authenticated operator-control changes are pending integration and
-  verification. Cross-handle child activation, execution attempt fencing, lazy
-  child reopen, and known failed writeback recovery have assigned repair work.
-- The shared native/WASM event fixture was refreshed from actual native bytes
-  at 2ff44ad3. Independent fresh native and WASM equality remains required.
+The recursive workspace descriptor assertion was corrected in `813d2523` after tracing its rejection through `FileDescriptor::verify`. A focused rerun exposed a later missing volume-operation grant; it remains open. Execution fixtures need reliable runner cleanup and exact production approval grants. Budget tests expose missing authenticated admission and concurrent capacity accounting. Provider metering is under review and not yet fully wired into the persistent runtime.
 
-## Next
+## Other scoped evidence
 
-Repair and verify exact fork publication timing, recursive production swarm
-composition, terminal cancellation at saturation, and authenticated approval
-callers. Finish registry CAS/reconciliation and wire measured provider ceilings.
-Refresh WASM and generated contracts, then build fresh installed artifacts and
-run the locked matrix including hidden native PTY and real process fault cases.
-No passing narrow suite establishes completion of the full swarm goal.
+[checkpoint-fresh-wasm-terminal-2026-10-03.json](checkpoint-fresh-wasm-terminal-2026-10-03.json) records the earlier fresh WASM build, 100 passing Harness TypeScript tests, one native/WASM canonical equivalence test, and 49 passing GraphCoder TypeScript tests. Those artifacts predate the latest native input-policy changes and must be rebuilt. Native CLI qualification remains pending.
 
-The locked requirements matrix remains authoritative. No Cloud, web UI,
-production models, migration or sandbox. Arbitrary host commands and root
-writeback require approval; workspace routing is not process confinement.
+[checkpoint-native-2026-10-03-followup.json](checkpoint-native-2026-10-03-followup.json) records the earlier complete native library run (300 passed, 3 failed) and other source-bound results. Historical checkpoints retain their original scope; they do not prove the current source passes.
 
-## Durable prerequisite checkpoint
+## Completion gates
 
-Task admissions pin sorted operation prerequisites; empty admissions retain canonical v2 bytes,
-while dependent admissions use v3. Native owner admission rejects missing or foreign dependencies
-before staging payloads. The existing scheduler controls readiness and cancellation failure.
-Two real-provider scenarios verify blocked child dispatch across reopening, exact reattachment,
-changed dependency refusal, and cancelled prerequisites. This is not full fork activation.
+The locked [requirements.json](requirements.json) remains authoritative: 68 requirements, unchanged digest `4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef`.
 
-Focused native regression: 205 library + 2 dependency + 6 journal + 1 fork preparer + 2 boundary
-cases passed. Native library and dependency-test lint passed after repairs. A freshly built WASM
-runtime passed 69 TypeScript tests (382 assertions), before final native lint-only repairs.
-Installed package equivalence remains pending: directly invoking that fixture from source failed
-because its package had not been installed. No distributable qualification is claimed.
+Remaining work includes exact prepared-request dispatch through every provider wrapper and WASM binding, frozen policy identity, recursive fork/restart qualification, hard runtime resource ceilings, execution and publication fault recovery, thin terminal composition, generated public contracts, fresh distributable artifacts, installed interactive/headless and Windows PTY tests, package consumption, regression and dependency checks, and a complete source/suite/artifact evidence audit. Required failures, skips, flakes, and missing evidence prevent completion.
 
-Five persistent slice owners now work in separate managed worktrees: communication/waits,
-workspace facade/integration/writeback, approved execution, terminal/generic UI, and qualification.
-The root owns exact model inputs, fork activation, shared composition and combined integration.
-Workers continue validation and maintainability iterations after initial delivery; verified commits
-are cherry-picked to this branch without merging branches.
-
-## Strict history and attachment admission checkpoint
-
-Default turn selection now keeps every authoritative model-visible message through the current
-user, or rejects overflow. It never chooses a suffix automatically. Retained selections omitting
-prior history are fenced before replay or dispatch. Projection rejects excess selected attachments
-instead of adding an omission note. Explicit selection remains a separate public contract.
-
-Native focused gates: 209 library + 2 dependencies + 6 journal + 1 fork preparer + 2 boundary =
-220 passed. Native library lint passed. Fresh WASM production code passed 101 TypeScript tests
-with 582 assertions across runtime, projection and memory-conversation suites. The first new replay
-test omitted completion of its prior turn and was repaired. A highly contended run exceeded the
-5-second default for the 1,030-attachment fixture; its explicit budget is now 15 seconds. The next
-full run passed, with that fixture completing in about 2.1 seconds. Reliability still requires final
-qualification; these observations are retained rather than treated as final product evidence.
-
-Persistent slice owners received review feedback and continue native effects, model-facing tools,
-recovery and package qualification work. Initial worker commits remain under review.
-
-## Admitted model fork boundary checkpoint
-
-HarnessStorage now verifies the exact persisted batch publication admission, original
-request, completed exchange, and authoritative conversation before entering the existing
-typed workspace fork engine. Identity, request-reference, and publisher substitutions
-are rejected before workspace preparation. The two native real-filesystem boundary
-scenarios pass. This remains a checkpoint: production recursive activation, persisted
-child suffix/replay consistency, and exact inherited content grants remain unqualified.
-
-Seven persistent implementation owners and two independent reviewers now cover the
-slices. The installed terminal PTY demo passed in its worker branch, but its fake
-transport does not qualify the production swarm. The qualification owner's installed
-Harness baseline passed npm/WASM checks; its Rust package phase failed and provider
-conformance did not run. Worker changes remain separate until reviewed integration.
-
-## Published fork exact-grant checkpoint
-
-HarnessStorage::from_published_fork verifies the existing typed published parent seed and
-child binding, then signs only the seed's immutable read capabilities in the child's scope.
-Its journal, content reader, and builder share those exact grants. Ordinary provider
-composition remains owner-private. Limits and provider mismatches are checked before binding.
-The inherited-conversation namespace permits exact reads; journal internals still require
-owner volume authority.
-
-The native two-child boundary suite passed 2/2 (11.78 seconds) after the final source change,
-and strict library/test lint passed. Assertions cover inherited primary bytes, unchanged
-historical reads after parent mutation, denied later parent files, forged seed rejection,
-reopened child grants, attached-reader inherited-prefix access, denied missing grants,
-denied private scratch, and denied internal request files. Helpers separate these security
-checks from publication setup. A refactor initially lost iteration borrows and was repaired;
-strict complexity checks prompted the helper separation.
-
-This is not full recursive qualification. Ancestor grant propagation at deeper levels,
-declared suffix/authoritative replay consistency, real swarm integration, fault injection,
-WASM/package/platform lanes, and production terminal qualification remain required.
-
-## Final context and allocation authority checkpoint
-
-Checkpoint 8b9c7496 verifies every final model-context file reference through the
-journal resolver before provider admission. A custom context stage injecting an
-existing sibling private file is rejected before any prepared/started/model event
-or provider request. Published child composition also validates all inherited
-file providers and private/project allocation provenance before binding.
-
-Windows native execution_journal passed 6/6 and model_fork_boundary passed 2/2,
-with no failures or ignored cases. Fresh unbound-child negatives cover foreign
-file provider, changed operation allocation, and altered project seed. The last
-case fails the private allocation whole-seed digest before the project guard;
-it does not independently qualify missing project allocation recovery.
-
-checkpoint-final-context-authority.json records scoped source and executable
-digests. This is focused checkpoint evidence, not full-tree, recursive, WASM,
-packaged terminal, fault-matrix, or final qualification.
-
-## Recursive declaration and WASM admission checkpoint
-
-prepareModelRequest shares PreparedModelInput admission and completed exchange
-validation with TypeScript. Actual wasm32 compilation and wasm-release artifact
-generation passed at 50e334ad. Generated public declarations expose the export.
-Provider dispatch parity and lossless normalized request consumption remain pending.
-
-The recursive fork helper now accepts an explicit InheritedModelContext and checks
-the complete frozen prefix, exact declared suffix, and all authoritative own messages.
-The root helper retains exact full conversation equality. The negative composition
-test passed; real native fork boundary scenarios passed 2/2 (8.20 seconds).
-Production persistence of that declaration and recursive activation remain required.
-
-Broader model_input unit selection produced 8 passes and 1 required failure:
-production_batch_pins_text_and_all_ordered_results rejects exact file read authority.
-Its old recursion loop creates independent child stores then inherits references
-without published seed grants. The new final-context verifier exposes this gap.
-No bypass or skip was introduced; replacement with typed published recursion and
-ancestor reference propagation remains an unmet acceptance gate.
-
-## Current integrated checkpoint
-
-Exact model-bound references are signed only against the verified parent revision and checked before fork allocation. Final provider admission rejects incomplete tool exchanges. The generated WASM export returns canonical request and manifest bytes with typed digest octets. TypeScript dispatch invokes this shared admission path; undefined transport fields are omitted.
-
-Focused fresh checks: native model fork 2 passed; actual generated WASM 12 passed; captured TypeScript dispatch 4 passed; GraphCoder build and package tests 24 passed. See checkpoint-canonical-fork-terminal.json for scoped digests and commands. Production recursive tool routing, durable outcome replay, protected receipt/approval composition, coordinator budget enforcement, cold merge recovery, and full installed production PTY qualification remain required gates.
-
-## Projection, execution, and regenerated bindings checkpoint
-
-See checkpoint-projection-execution-bindings.json for scoped digests, actual pass counts, required failures, and limitations. Fresh WASM admission: 12 passed; focused TypeScript runtime: 8 passed; TypeScript contracts pass after generating the Objects dependency; qualification validation: 21 passed. Native receipt reopen and actual subprocess fault checks each passed one case. These do not qualify the full recursive runtime or production approval recovery.
-
-The native malformed-call continuation test currently fails because cumulative typed rejection evidence is missing. Host-owned journal reader separation and the full published-fork fixture remain required failures. Dynamic model-selected fork routing and final installed native terminal/ConPTY qualification remain pending. The goal is active; no merge occurred.
-
-## Native terminal and host-history checkpoint
-
-Source 5cefdcc5002860196660c146d2cc9b2b4e152178 has three passing native CLI tests, including real staged-file restart and exact SDK reads. Host execution artifacts remain private; authoritative conversation stores validated model projections. Actual provider-manifest capture, repeated-call rejection replay, and orphaned tool-role rejection have focused passing evidence. The synthetic recursive test still fails missing inherited grants. This is not installed-package, recursive swarm, or final qualification. See checkpoint-native-terminal-host-history.json for digests and limitations.
-
-## Current authoritative replay and interactive native checkpoint
-
-The earlier malformed-call failure has been repaired and its native regression passes. At 63513211 the expanded executor suite passes 20/20, including corrupt or duplicate pinned input and future-step rejection replay. At 384cdeaa four CLI tests pass, including response delivery with stdin kept open. An actual hidden native executable plus separately built installed SDK consumer passes real staged bytes, retry, reopen, and BigInt decoding. Cross-worktree package provenance prevents final artifact qualification. The synthetic recursive model fixture remains a required failure until replaced with real published-fork grants. Production recursive swarming, measured budget limits, authenticated process recovery, direct-parent integration/writeback, PTY, fresh WASM and the full locked matrix remain open. Goal active; no merge.
-
-## Integrated native fork, workspace, and budget checkpoint
-
-See checkpoint-integrated-native-fork-budget.json for source-bound suite/artifact digests and required failures. Actual native results: journal 6/6, Git facade 7/9, local recursive workspaces 1/2, typed model fork boundary 1/2, budget unit selection 21/23. Source GraphCoder dispatcher/UI tests pass 25/25; provenance validator passes 2/2. Required failures remain open and prevent qualification. The goal stays active; production swarming, hard resource ceilings, effect faults and fresh installed PTY evidence remain outstanding. No merge occurred.
+Models are mocked. Host execution requires exact approval. Workspace routing provides no process confinement; no sandbox is implemented. The original checkout must remain untouched. Root writeback requires approval and reconciliation with concurrent user edits.
