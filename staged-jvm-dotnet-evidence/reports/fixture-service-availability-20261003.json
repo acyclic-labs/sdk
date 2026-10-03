@@ -1,0 +1,14 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.fixture-service-availability.v1",
+  "checked_at": "2026-10-03T19:48:00+01:00",
+  "endpoint": "127.0.0.1:54837",
+  "probe": "TCP connect with a one-second timeout",
+  "reachable": false,
+  "result": "connection unavailable",
+  "qualification_effect": "No live fixture operation is claimed from this check; current-source qualification remains blocked by the separately recorded source closure mismatch.",
+  "source_identity": {
+    "recorded_fixture_source_sha256": "2332A0BAB5CB6FC8B43C7275BAA39BCF761C73AF98CEFD0A1331293DC56080F4",
+    "current_renderer_closure_sha256": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+    "current_fixture_matches_renderer": false
+  }
+}

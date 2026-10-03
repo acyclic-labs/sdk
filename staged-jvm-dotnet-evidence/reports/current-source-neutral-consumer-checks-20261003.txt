@@ -1,0 +1,42 @@
+JVM/.NET package lane — source-neutral checks
+date=2026-10-03
+
+JVM generated transport:
+  command=mvn -f Q:\sdk\.tmp-jvm-run\pom.xml test -o
+  authority=staged-jvm-dotnet-evidence/authority (9 families)
+  result=pass
+  tests=5
+  failures=0
+  errors=0
+  coverage=all-nine-family-golden-round-trips; Harness FileRef descriptor-accessor reflection/round-trip
+
+JVM installed Java consumer:
+  command=mvn -f Q:\sdk\.tmp-jvm-consumer\pom.xml test -o
+  result=pass
+  tests=1
+  failures=0
+  errors=0
+
+JVM package reproducibility:
+  clean_build=Q:\sdk\.tmp-jvm-run\target\acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar
+  clean_build_sha256=2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F
+  recorded_jar_sha256=2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F
+  result=byte-identical
+
+Kotlin installed consumer:
+  command=mvn -s Q:\sdk\.tmp-maven-settings.xml -f Q:\sdk\.tmp-jvm-kotlin-consumer\pom.xml test
+  result=pass
+  tests=5
+  failures=0
+  errors=0
+  bootstrap=org.jetbrains.kotlin:kotlin-test-junit5:2.1.21
+  bootstrap_sha256=3C8099D9850475C08EB761FD6A0B704EB3D908EE546DE997858C59AF26F88208
+  in_process=presence/oneof; FAILED_PRECONDITION error detail; stream recovery at if_tail; server-stream cancellation
+
+.NET installed consumer:
+  command=dotnet/consumer/bin/Debug/net8.0/Acyclic.Sdk.Transport.Consumer.exe
+  result=pass
+  output=Rust golden all-family serialization checks passed; Generated Actors and Stream consumer checks passed
+  note=executed retained installed-consumer binary directly; no source or receipt claim was changed
+
+These checks exercise the retained package and staged Rust authority/golden inputs. They do not relabel the source-bound fixture snippet receipt while sdk-examples is changing.

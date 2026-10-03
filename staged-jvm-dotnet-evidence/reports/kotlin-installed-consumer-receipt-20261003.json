@@ -1,0 +1,42 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.kotlin-consumer-receipt.v1",
+  "source_neutral": true,
+  "consumer": "jvm/kotlin-consumer",
+  "consumer_pom": "portable-20261003/consumer/kotlin-consumer-pom.xml",
+  "consumer_pom_sha256": "AAF8601F8548912DE50B973E8E079305C4DB12FFCC80B5683F885B053C00C5AC",
+  "test_source": "portable-20261003/consumer/KotlinTransportConsumerTest.kt",
+  "test_source_sha256": "1413140D1832A1044CF3B3C9C6948003A3D158098EEC8A4AF7BD32524698DFAA",
+  "bootstrap_settings": "portable-20261003/lock/maven-settings.xml",
+  "bootstrap_settings_sha256": "8DBB264565A0CBB117076F993412C080B33031E3751BABE688A7F515772AC8A",
+  "test_class": "dev.acyclic.consumer.KotlinTransportConsumerTest",
+  "output": {
+    "surefire_xml": "portable-20261003/output/TEST-dev.acyclic.consumer.KotlinTransportConsumerTest.xml",
+    "surefire_xml_sha256": "E0C14C8C000B8EC6D25FA0D75DB6AD899AF82791B72DD4E56B6A686F17FE09E0"
+  },
+  "result": "pass",
+  "tests": 5,
+  "failures": 0,
+  "errors": 0,
+  "in_process_checks": [
+    "generated optional presence and oneof selection",
+    "FAILED_PRECONDITION idempotency_mismatch status and detail",
+    "stream append recovery at if_tail boundary",
+    "server-stream first-record delivery and client cancellation"
+  ],
+  "bootstrap": {
+    "coordinate": "org.jetbrains.kotlin:kotlin-test-junit5:2.1.21",
+    "repository": "https://repo.maven.apache.org/maven2",
+    "sha256": "3C8099D9850475C08EB761FD6A0B704EB3D908EE546DE997858C59AF26F88208"
+  },
+  "portable_artifacts": {
+    "jvm_jar": {
+      "path": "portable-20261003/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+      "sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F"
+    },
+    "dotnet_nupkg": {
+      "path": "portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+      "sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891"
+    }
+  },
+  "fixture_qualification": "not claimed; current sdk-examples manifest remains source-stale"
+}
