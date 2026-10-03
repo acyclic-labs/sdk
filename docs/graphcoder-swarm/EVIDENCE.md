@@ -97,3 +97,27 @@ These are real native provider effects, but activation is supplied by the test
 fixture. Production fork tools, task scheduling, complete recursive swarm recovery,
 git facade, terminal, generated bindings and fresh package qualification remain
 required and pending.
+
+## Model tool provenance checkpoint
+
+The stock executor now passes checked turn/step provenance outside model content
+to tool execution and reconciliation. An interrupted-tool test captures both
+calls, proves they retain the same exact invocation, and checks actual serialized
+provider requests for absence of runtime metadata. It then interrupts batch
+publication and confirms recovery never repeats the tool effect.
+
+A separate identity domain prevents a model call ID such as publication from
+colliding with batch publication. Cross-turn/step/call routing is refused.
+The executor revision changes to v3; a v2 replay regression proves refusal
+occurs before dispatch, without new journal observations.
+
+The first focused compilation found a test-only serde error conversion mismatch;
+the test was corrected. This checkpoint supplies provenance needed for the fork
+tool, not production fork admission, budgets or activation. Those gates remain
+pending, along with the complete swarm, terminal and installed-artifact matrix.
+
+Final checkpoint run: 204 library + 6 execution-journal + 1 fork-preparer +
+2 native model-fork tests passed (213 total), zero failed or ignored. Native
+library lint passed after doc formatting repair; WASM compilation passed, with
+no claim of WASM execution. See checkpoint-provenance.json for source, suite,
+descriptor and tested executable digests. No distributables are qualified.

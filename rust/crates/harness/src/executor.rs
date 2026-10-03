@@ -16,7 +16,7 @@ use crate::{
     runtime::{
         RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
     },
-    tool::{ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{ModelToolContext, ToolInvocation, ToolRegistry, ToolResult, validate_value},
 };
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
@@ -421,7 +421,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v2",
+            "executor": "acyclic.stock.v3",
             "input": input,
             "model": self.model,
             "context": self.context.contracts(),
@@ -763,14 +763,11 @@ impl StockExecutor {
         let identity = publisher.identity();
         let guarantee = publisher.guarantee();
         let publication = ModelBatchPublication {
-            operation_id: ToolInvocation::for_model_call(
-                operation,
+            operation_id: ModelToolContext {
+                parent_operation: operation,
                 step,
-                "publication".into(),
-                "acyclic.batch".into(),
-                Value::Null,
-            )
-            .operation_id,
+            }
+            .publication_operation(),
             parent_operation: operation,
             step,
             request,
@@ -1138,8 +1135,17 @@ impl StockExecutor {
                     Err(error) => return Err(error),
                 }
             };
+            let tool_context = ModelToolContext {
+                parent_operation: operation_id,
+                step,
+            };
+            tool_context.validate_invocation(&invocation)?;
             let result = if claimed {
-                match tool.executor.execute(invocation.clone()).await {
+                match tool
+                    .executor
+                    .execute_in_model_batch(tool_context, invocation.clone())
+                    .await
+                {
                     Ok(result) => result,
                     Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -1159,7 +1165,11 @@ impl StockExecutor {
                     }
                 }
             } else {
-                match tool.executor.reconcile(invocation.clone()).await {
+                match tool
+                    .executor
+                    .reconcile_in_model_batch(tool_context, invocation.clone())
+                    .await
+                {
                     Ok(Some(result)) => result,
                     Ok(None) | Err(Error::Indeterminate(_)) | Err(Error::Storage(_)) => {
                         return Err(Error::Indeterminate(operation_id));
@@ -1778,6 +1788,198 @@ mod tests {
         fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             async { Ok(None) }.boxed()
         }
+    }
+
+    struct InterruptedContextTool {
+        executions: Mutex<Vec<(ModelToolContext, ToolInvocation)>>,
+        reconciliations: Mutex<Vec<(ModelToolContext, ToolInvocation)>>,
+    }
+
+    impl crate::tool::ToolExecutor for InterruptedContextTool {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            async { Err(Error::Invalid("missing model tool provenance".into())) }.boxed()
+        }
+
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            async { Err(Error::Invalid("missing recovery provenance".into())) }.boxed()
+        }
+
+        fn execute_in_model_batch<'a>(
+            &'a self,
+            context: ModelToolContext,
+            invocation: ToolInvocation,
+        ) -> BoxFuture<'a, Result<ToolResult>> {
+            async move {
+                context.validate_invocation(&invocation)?;
+                self.executions.lock().unwrap().push((context, invocation));
+                Err(Error::Storage("lost tool admission response".into()))
+            }
+            .boxed()
+        }
+
+        fn reconcile_in_model_batch<'a>(
+            &'a self,
+            context: ModelToolContext,
+            invocation: ToolInvocation,
+        ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            async move {
+                context.validate_invocation(&invocation)?;
+                self.reconciliations
+                    .lock()
+                    .unwrap()
+                    .push((context, invocation.clone()));
+                Ok(Some(ToolResult {
+                    value: invocation.arguments,
+                }))
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn old_publication_identity_semantics_are_fenced_before_dispatch() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::new(),
+        );
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("same".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let old_digest = crate::contract::canonical_json_digest(&json!({
+            "executor": "acyclic.stock.v2",
+            "input": input,
+            "model": executor.model,
+            "context": executor.context.contracts(),
+            "tools": executor.tools.definitions()?,
+            "limits": executor.limits,
+            "tool_scope": (executor.tool_scope.grants(), executor.tool_scope.limits()),
+            "policy": executor.policy_identity.as_ref(),
+            "batch_publisher": (&executor.batch_identity, executor.batch_guarantee),
+        }))?;
+        assert_ne!(old_digest, executor.request_digest(&input)?);
+        let journal = Journal::default();
+        journal
+            .append(
+                input.operation_id,
+                "execution:started".into(),
+                ExecutionEvent::Started {
+                    request_digest: old_digest,
+                },
+            )
+            .await?;
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(journal.0.lock().unwrap().len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn model_tool_provenance_survives_recovery_without_entering_model_input() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool = Arc::new(InterruptedContextTool {
+            executions: Mutex::new(Vec::new()),
+            reconciliations: Mutex::new(Vec::new()),
+        });
+        let publisher = Arc::new(InterruptedPublisher {
+            guarantee: EffectGuarantee::AtMostOnce,
+            observed: true,
+            dispatches: AtomicUsize::new(0),
+            reconciliations: AtomicUsize::new(0),
+            admissions: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type":"object"}),
+                output_schema: json!({"type":"object"}),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?
+        .with_batch_publisher(Some(publisher.clone()))?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("exact input".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Indeterminate(_))
+        ));
+        let first = tool.executions.lock().unwrap()[0].clone();
+        assert_eq!(
+            first.0,
+            ModelToolContext {
+                parent_operation: input.operation_id,
+                step: 0
+            }
+        );
+        // Publication itself loses its response on the recovery run.
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(
+            tool.reconciliations.lock().unwrap().as_slice(),
+            &[first.clone()]
+        );
+        assert_eq!(
+            publisher.admissions.lock().unwrap()[0].operation_id,
+            first.0.publication_operation()
+        );
+        assert_eq!(
+            executor.execute(input.clone(), &journal).await?.text,
+            "done"
+        );
+        executor.execute(input, &journal).await?;
+        assert_eq!(tool.executions.lock().unwrap().len(), 1);
+        assert_eq!(tool.reconciliations.lock().unwrap().len(), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        let requests = model.requests.lock().unwrap();
+        let visible = crate::contract::canonical_json_bytes(&requests[1])?;
+        let visible = String::from_utf8(visible).unwrap();
+        assert!(!visible.contains("parent_operation"));
+        assert!(!visible.contains(&first.0.parent_operation.to_string()));
+        assert!(!visible.contains(&first.0.publication_operation().to_string()));
+        assert!(requests[1].messages.iter().any(|message| matches!(
+            &message.content,
+            ModelContent::Part(ModelContentPart::ToolCall { call_id, arguments, .. })
+                if call_id == "call-1" && *arguments == first.1.arguments
+        )));
+        Ok(())
     }
 
     struct Projection;

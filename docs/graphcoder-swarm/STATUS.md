@@ -30,6 +30,10 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Completed-conversation boundaries reject stale histories before publication file writes.
 - Child prefix/model binding is supplied by the shared Harness inherited constructor.
 
+- Model tools receive checked turn/step provenance through dispatch and reconciliation, separately from model input.
+- Batch publication uses a distinct identity domain from model-owned tool calls.
+- Stock executor v3 fences the previous publication identity semantics before replay/dispatch.
+
 ## Verification
 - Existing Harness baseline: 176 passed.
 - Shared-input integration: 181 passed.
@@ -47,6 +51,9 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Two native sibling forks receive byte-identical completed prefixes and declared suffixes.
 - A native stale-boundary test confirms refusal does not change the private workspace generation.
 - Source-bound checkpoint receipts: checkpoint-recovery.json, checkpoint-publication.json and checkpoint-history.json.
+- Model tool provenance checkpoint: 204 library + 6 journal + 1 fork recovery + 2 native fork tests passed, zero ignored.
+- Native library lint passed after documentation repair; WASM compilation passed, with execution still unverified.
+- checkpoint-provenance.json binds these results to source, suite and test executable digests.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next

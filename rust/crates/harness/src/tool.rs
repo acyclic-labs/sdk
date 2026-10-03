@@ -121,6 +121,54 @@ fn validate_tool_name(name: &str) -> Result<()> {
     validate_component_label(name, "tool name")
 }
 
+/// Runtime provenance for a model tool batch. This metadata is never added to
+/// model-visible arguments or conversation content.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelToolContext {
+    /// Owning durable model turn.
+    pub parent_operation: OperationId,
+    /// Zero-based step whose complete exchange admits child activation.
+    pub step: u32,
+}
+
+impl ModelToolContext {
+    /// Rejects an invocation routed from another turn, step, or call identity.
+    pub fn validate_invocation(&self, invocation: &ToolInvocation) -> Result<()> {
+        invocation.validate()?;
+        let expected = ToolInvocation::for_model_call(
+            self.parent_operation,
+            self.step,
+            invocation.call_id.clone(),
+            invocation.name.clone(),
+            invocation.arguments.clone(),
+        );
+        if expected.operation_id != invocation.operation_id {
+            return Err(Error::Conflict(
+                "model tool provenance differs from invocation".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stable completed-batch publication dependency. A fork may be admitted
+    /// before this operation completes, but cannot dispatch a child model yet.
+    #[must_use]
+    pub fn publication_operation(&self) -> OperationId {
+        let digest = blake3::hash(
+            &[
+                b"harness:model-batch-publication:v1".as_slice(),
+                self.parent_operation.into_bytes().as_slice(),
+                &self.step.to_be_bytes(),
+            ]
+            .concat(),
+        );
+        let mut identity = [0_u8; 16];
+        identity.copy_from_slice(&digest.as_bytes()[..16]);
+        OperationId::from_bytes(identity)
+    }
+}
+
 /// Result returned by a tool executor.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -143,6 +191,33 @@ pub trait ToolExecutor: Send + Sync {
 
     /// Executes an already admitted invocation.
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>>;
+
+    /// Executes under the model batch's runtime provenance after durable admission.
+    /// Context-aware tools use this to bind deferred child activation to the
+    /// completed exchange. Legacy adapters receive the original invocation.
+    fn execute_in_model_batch<'a>(
+        &'a self,
+        context: ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            self.execute(invocation).await
+        })
+    }
+
+    /// Reconciles with exactly the original model batch provenance. The default
+    /// never retries execution when the outcome is unknown.
+    fn reconcile_in_model_batch<'a>(
+        &'a self,
+        context: ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            self.reconcile(invocation).await
+        })
+    }
 
     /// Executes with the scoped task/tool context when admitted by the typed runtime.
     /// Existing host adapters may delegate to `execute`; contextual tools override this.
@@ -362,6 +437,62 @@ mod tests {
         assert_ne!(same, make(parent, 1, "call"));
         assert_ne!(same, make(parent, 0, "other"));
         assert_ne!(same, make(OperationId::from_bytes([8; 16]), 0, "call"));
+    }
+
+    #[tokio::test]
+    async fn model_batch_context_refuses_cross_turn_step_and_call_routing() -> Result<()> {
+        let context = ModelToolContext {
+            parent_operation: OperationId::new(),
+            step: 2,
+        };
+        let make = |parent, step, call: &str| {
+            ToolInvocation::for_model_call(
+                parent,
+                step,
+                call.into(),
+                "example.echo".into(),
+                Value::Null,
+            )
+        };
+        let invocation = make(context.parent_operation, context.step, "call");
+        context.validate_invocation(&invocation)?;
+        let decoded: ModelToolContext =
+            serde_json::from_value(serde_json::to_value(context).unwrap()).unwrap();
+        assert_eq!(decoded, context);
+        for mut invalid in [
+            make(OperationId::new(), context.step, "call"),
+            make(context.parent_operation, context.step + 1, "call"),
+            make(context.parent_operation, context.step, "other"),
+        ] {
+            invalid.call_id = "call".into();
+            assert!(matches!(
+                Executor
+                    .execute_in_model_batch(context, invalid.clone())
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            assert!(matches!(
+                Executor.reconcile_in_model_batch(context, invalid).await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        assert_eq!(
+            context.publication_operation(),
+            decoded.publication_operation()
+        );
+        assert_ne!(
+            context.publication_operation(),
+            make(context.parent_operation, context.step, "publication").operation_id
+        );
+        assert_ne!(
+            context.publication_operation(),
+            ModelToolContext {
+                step: context.step + 1,
+                ..context
+            }
+            .publication_operation()
+        );
+        Ok(())
     }
 
     #[test]

@@ -65,3 +65,15 @@ These supplement the original required rows; they do not qualify the full swarm.
 | HISTORY-03 | Retain intermediate assistant text once across follow-up turns | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED |
 | FORK-01-A | Two actual sibling workspace forks receive the same completed model prefix bytes | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED fixture through production executor and SDK fork providers |
 | EFFECT-05-A | Refuse stale completed conversation before writing publication artifacts | stale_completed_boundary_is_refused_before_publication_files_are_written | checkpoint-history.json; TESTED native generation unchanged |
+
+## Model tool provenance subcontracts
+
+These refine FORK-04 and EFFECT-02. They do not implement fork admission or child
+activation and do not qualify those parent requirements.
+
+| ID | Contract | Verification | Evidence/status |
+|---|---|---|---|
+| FORK-04-B | Runtime turn/step provenance survives tool recovery without entering model-visible content | model_tool_provenance_survives_recovery_without_entering_model_input | checkpoint-provenance.json; TESTED stock dispatch/reconciliation |
+| EFFECT-02-C | Cross-turn, cross-step and cross-call routing is refused | model_batch_context_refuses_cross_turn_step_and_call_routing | checkpoint-provenance.json; TESTED |
+| EFFECT-02-D | Batch-publication effect IDs cannot collide with model-owned call IDs | model_batch_context_refuses_cross_turn_step_and_call_routing | checkpoint-provenance.json; TESTED separate identity domain |
+| EFFECT-02-E | Recovery refuses earlier executor semantics before model/effect dispatch | old_publication_identity_semantics_are_fenced_before_dispatch | checkpoint-provenance.json; TESTED v2/v3 fence |

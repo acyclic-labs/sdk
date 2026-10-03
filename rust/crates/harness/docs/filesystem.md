@@ -34,19 +34,36 @@ The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted prov
 
 ## Exact completed model history
 
-Shared HarnessStorage publishes completed batches from their immutable model
+Shared `HarnessStorage` publishes completed batches from their immutable model
 request and completed boundary records. This includes assistant text and tool
 rejection feedback, rather than inferring history only from successful effects.
 The versioned application/vnd.acyclic.model-text.v1+json artifact is a canonical
 JSON string; projection restores the exact text message and refuses corrupt,
 noncanonical or oversized content.
 
-completed_conversation(operation, step, limits) publishes the complete exchange
+`completed_conversation(operation, step, limits)` publishes the complete exchange
 before fork preparation. It checks the authoritative boundary before writing
 publication artifacts and refuses later conversation messages. Existing Stream
 and Filesystem fork preparation/publication still own recursive fork semantics.
 
-inherited_builder binds a child's private storage to the parent's pinned model
+`inherited_builder` binds a child's private storage to the parent's pinned model
 and prefix with a declared suffix. Tool registration and grants remain explicit;
 the inherited transcript does not add mutable workspace permissions. Applications
 still need durable fork/task admission; the constructor does not create a child.
+
+## Model tool admission provenance
+
+`StockExecutor` passes `ModelToolContext` (owning turn and zero-based step) to model
+tools through `execute_in_model_batch` and `reconcile_in_model_batch`. It validates
+the deterministic `ToolInvocation` identity before dispatch or reconciliation.
+Default adapters retain their existing execute/reconcile implementation;
+context-dependent adapters can refuse calls without model provenance.
+
+This metadata is not injected into tool arguments or model conversation content.
+`ModelToolContext.publication_operation` supplies a stable, separate identity for
+the completed-batch publication. It is a prospective activation dependency, not
+proof of completed publication or a permission grant. The admission provider
+must still persist bounded child admission and gate activation on publication.
+
+The executor admission identity is now acyclic.stock.v3. Earlier executor
+journals are refused before dispatch; this change does not migrate them.

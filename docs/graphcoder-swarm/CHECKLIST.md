@@ -10,6 +10,7 @@ do not substitute for full acceptance gates.
 - [x] Complete batch publication admission and safe reconciliation.
 - [x] Exact authoritative exchange publication and child inherited binding.
 - [x] Native sibling fork/provider-prefix scenario and stale-boundary refusal.
+- [x] Checked runtime model-tool provenance and disjoint completed-batch publication identity.
 - [ ] Production fork intent tools and durable child task activation.
 - [ ] Session-wide active/total/depth/step/output/time budget admission.
 - [ ] Recursive swarming through the existing scheduler/task host.
