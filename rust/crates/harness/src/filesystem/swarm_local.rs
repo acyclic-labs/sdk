@@ -33,7 +33,7 @@ use crate::{
     store::StreamAggregate,
     tool::{ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
+use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
@@ -413,6 +413,25 @@ impl LocalFilesystemForkResolver {
             *key.finalize().as_bytes(),
             child.clone(),
         )
+    }
+
+    /// Returns the authenticated filesystem host owned by this resolver.
+    #[must_use]
+    pub fn host(&self) -> Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>> {
+        self.host.clone()
+    }
+
+    /// Returns the stream provider shared by all conversation aggregates in
+    /// this local composition.
+    #[must_use]
+    pub fn stream(&self) -> StreamClient<LocalStream> {
+        self.stream.clone()
+    }
+
+    /// Returns the provider identity used for stream history references.
+    #[must_use]
+    pub fn stream_provider(&self) -> ProviderRef {
+        self.stream_provider.clone()
     }
 }
 
@@ -1864,6 +1883,11 @@ pub struct PersistentLocalSwarm {
     bindings: LocalSwarmBindings,
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
+    /// Shared provider bindings used by the root and lazily reopened task
+    /// harnesses. The resolver must observe the same host and stream domain.
+    filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    conversation_stream: StreamClient<LocalStream>,
+    stream_provider: ProviderRef,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
@@ -1900,6 +1924,7 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
+        let root = root.as_ref().to_path_buf();
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
                 Error::Invalid(
@@ -1916,6 +1941,29 @@ impl PersistentLocalSwarm {
                 Some(_) => {}
             }
         }
+        let (filesystem_host, conversation_stream, stream_provider) =
+            if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
+                (
+                    resolver.host(),
+                    resolver.stream(),
+                    resolver.stream_provider(),
+                )
+            } else {
+                let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+                let host = Arc::new(FilesystemHost::new(
+                    LocalFs::local(LocalOptions::new(root.join("filesystem")))
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                    filesystem_provider,
+                )?);
+                let stream_provider = ProviderRef::new("local", "stream", "2")?;
+                let stream = StreamClient::new(Arc::new(
+                    LocalStream::open(root.join("conversation"), LocalStreamLimits::default())
+                        .await
+                        .map_err(|error| Error::Storage(error.to_string()))?,
+                ));
+                (host, stream, stream_provider)
+            };
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -1927,7 +1975,6 @@ impl PersistentLocalSwarm {
         } else {
             None
         };
-        let root = root.as_ref().to_path_buf();
         let registry = StreamClient::new(Arc::new(
             LocalStream::open(root.join("swarm"), LocalStreamLimits::default())
                 .await
@@ -1985,13 +2032,16 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
-            PersistentLocalHarness::open_with_tools_and_project(
+            PersistentLocalHarness::open_with_tools_and_project_on_providers(
                 root_session,
                 config.model.clone(),
                 provider.clone(),
                 config.limits,
                 bindings.tools_for(root_task)?,
                 config.project.clone(),
+                filesystem_host.clone(),
+                conversation_stream.clone(),
+                stream_provider.clone(),
             )
             .await?,
         );
@@ -2004,6 +2054,9 @@ impl PersistentLocalSwarm {
             bindings,
             model_fork_publisher,
             registry,
+            filesystem_host,
+            conversation_stream,
+            stream_provider,
             records: Mutex::new(sessions),
             requests: Mutex::new(requests),
             seeds: Mutex::new(seeds),
@@ -2779,7 +2832,7 @@ impl PersistentLocalSwarm {
                 .await?;
             }
         }
-        let harness = match PersistentLocalHarness::from_published_fork_with_tools(
+        let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
             self.config.model.clone(),
             self.provider.clone(),
             self.config.limits,
@@ -2789,6 +2842,7 @@ impl PersistentLocalSwarm {
             storage_parent,
             seed,
             self.bindings.tools_for(child)?,
+            self.stream_provider.clone(),
         )
         .await
         {
@@ -3451,12 +3505,16 @@ impl PersistentLocalSwarm {
             return Ok(existing);
         }
         let harness = Arc::new(
-            PersistentLocalHarness::open_with_tools(
+            PersistentLocalHarness::open_with_tools_and_project_on_providers(
                 open_session_path(&self.root, task),
                 self.config.model.clone(),
                 self.provider.clone(),
                 self.config.limits,
                 self.bindings.tools_for(task)?,
+                self.config.project.clone(),
+                self.filesystem_host.clone(),
+                self.conversation_stream.clone(),
+                self.stream_provider.clone(),
             )
             .await?,
         );

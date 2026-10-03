@@ -343,6 +343,33 @@ struct SessionDescriptor {
 
 impl SessionDescriptor {
     fn fresh(model: Model, limits: Limits, project: Option<VolumeRef>) -> Result<Self> {
+        Self::fresh_with_provider(
+            model,
+            limits,
+            project,
+            ProviderRef::new("local", "filesystem", "2")?,
+        )
+    }
+
+    fn fresh_with_provider(
+        model: Model,
+        limits: Limits,
+        project: Option<VolumeRef>,
+        filesystem_provider: ProviderRef,
+    ) -> Result<Self> {
+        filesystem_provider.validate()?;
+        if filesystem_provider.family() != "filesystem" {
+            return Err(Error::Invalid(
+                "local session requires a filesystem provider identity".into(),
+            ));
+        }
+        if let Some(project) = &project
+            && project.provider() != &filesystem_provider
+        {
+            return Err(Error::Invalid(
+                "local session project belongs to another filesystem provider".into(),
+            ));
+        }
         let agent = AgentId::new();
         let descriptor = Self {
             version: 1,
@@ -352,7 +379,7 @@ impl SessionDescriptor {
                 id: ConversationId::new().to_string(),
             },
             private_volume: VolumeRef::new(
-                ProviderRef::new("local", "filesystem", "2")?,
+                filesystem_provider,
                 OperationId::new().to_string(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
@@ -615,6 +642,36 @@ impl PersistentLocalHarness {
         seed: &ForkSeed,
         extension: LocalHarnessTools,
     ) -> Result<Self> {
+        Self::from_published_fork_with_tools_and_stream_provider(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+            extension,
+            ProviderRef::new("local", "stream", "2")?,
+        )
+        .await
+    }
+
+    /// Composes a published child while pinning the stream provider used by
+    /// its fork verifier to the surrounding local composition.
+    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    pub async fn from_published_fork_with_tools_and_stream_provider(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+        extension: LocalHarnessTools,
+        stream_provider: ProviderRef,
+    ) -> Result<Self> {
         limits.validate()?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
@@ -625,7 +682,11 @@ impl PersistentLocalHarness {
             seed,
         )
         .await?
-        .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
+        .with_fork_verifier(local_fork_verifier_with_stream_provider(
+            host.clone(),
+            stream_provider,
+            limits.file_bytes,
+        )?);
         let tools = storage.default_tools(limits)?;
         let builder = storage
             .builder()
@@ -672,6 +733,31 @@ impl PersistentLocalHarness {
         extension: LocalHarnessTools,
         project: Option<VolumeRef>,
     ) -> Result<Self> {
+        Self::open_with_tools_and_project_for_provider(
+            root,
+            model,
+            provider,
+            limits,
+            extension,
+            project,
+            ProviderRef::new("local", "filesystem", "2")?,
+        )
+        .await
+    }
+
+    /// Opens a durable local session using an explicit authenticated
+    /// filesystem provider identity for fresh descriptor creation. Reopens
+    /// always use the provider pinned in the descriptor.
+    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    pub async fn open_with_tools_and_project_for_provider(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        filesystem_provider: ProviderRef,
+    ) -> Result<Self> {
         limits.validate()?;
         let root = root.as_ref();
         let stream = StreamClient::new(Arc::new(
@@ -693,7 +779,12 @@ impl PersistentLocalHarness {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if missing {
-            let descriptor = SessionDescriptor::fresh(model.clone(), limits, project.clone())?;
+            let descriptor = SessionDescriptor::fresh_with_provider(
+                model.clone(),
+                limits,
+                project.clone(),
+                filesystem_provider,
+            )?;
             match metadata
                 .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
                 .await
@@ -754,6 +845,143 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
+        let tools = storage.default_tools(limits)?;
+        let builder = storage
+            .builder()
+            .model(model, provider)
+            .tools(tools)
+            .grant("model:generate")
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(limits);
+        let bundle = extension.install_into(builder)?.build()?;
+        Ok(Self { storage, bundle })
+    }
+
+    /// Opens a durable session using providers owned by a surrounding
+    /// composition.  Session metadata remains in `root/history`, while the
+    /// conversation aggregate and filesystem volumes use the supplied
+    /// provider instances.  This is required when a swarm resolver and its
+    /// task harnesses share one authenticated local provider domain.
+    #[allow(clippy::too_many_arguments, reason = "provider identities are explicit durable bindings")]
+    pub async fn open_with_tools_and_project_on_providers(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        stream_provider: ProviderRef,
+    ) -> Result<Self> {
+        limits.validate()?;
+        if stream_provider.family() != "stream" {
+            return Err(Error::Invalid(
+                "local session requires a stream provider identity".into(),
+            ));
+        }
+        if let Some(project) = &project
+            && (project.class() != VolumeClass::Project || project.provider() != &host.provider)
+        {
+            return Err(Error::Invalid(
+                "local session project belongs to another provider or class".into(),
+            ));
+        }
+        let root = root.as_ref();
+        let metadata = StreamClient::new(Arc::new(
+            LocalStream::open(root.join("history"), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let descriptor_stream = metadata
+            .stream("harness/session")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let missing = match descriptor_stream.tail().await {
+            Ok(1) => false,
+            Ok(0) | Err(StreamError::NotFound) => true,
+            Ok(_) => {
+                return Err(Error::Storage(
+                    "invalid local session descriptor tail".into(),
+                ));
+            }
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        if missing {
+            let descriptor = SessionDescriptor::fresh_with_provider(
+                model.clone(),
+                limits,
+                project.clone(),
+                host.provider.clone(),
+            )?;
+            match descriptor_stream
+                .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?
+            {
+                AppendOutcome::Committed(_) => {}
+                AppendOutcome::TailConflict { .. } => {
+                    return Err(Error::Conflict(
+                        "local initialization lost ownership".into(),
+                    ));
+                }
+            }
+        }
+        let mut records = descriptor_stream
+            .read(0, 1)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let record = records
+            .next()
+            .await
+            .ok_or_else(|| Error::Storage("local descriptor is missing".into()))?
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        validate_descriptor(&descriptor, &model, limits, project.as_ref())?;
+        if descriptor.private_volume.provider() != &host.provider
+            || descriptor
+                .project
+                .as_ref()
+                .is_some_and(|project| project.provider() != &host.provider)
+        {
+            return Err(Error::Conflict(
+                "local session descriptor belongs to another filesystem provider".into(),
+            ));
+        }
+        host.create_volume(&descriptor.private_volume).await?;
+        if let Some(project) = &descriptor.project {
+            host.create_volume(project).await?;
+        }
+        let issuer = AuthorityIssuer::new(
+            "local-harness",
+            descriptor.signing_key,
+            descriptor.conversation.clone(),
+        );
+        let project_capabilities = match descriptor.project.as_ref() {
+            Some(project) => Capabilities::new([
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+            ]),
+            None => Capabilities::new(std::iter::empty::<String>()),
+        };
+        let storage = DurableHarnessStorage::from_providers_with_reads(
+            descriptor.agent,
+            limits.file_bytes,
+            host.clone(),
+            stream,
+            descriptor.private_volume,
+            descriptor.conversation,
+            issuer,
+            project_capabilities,
+        )
+        .await?
+        .with_fork_verifier(local_fork_verifier_with_stream_provider(
+            host,
+            stream_provider,
+            limits.file_bytes,
+        )?);
         let tools = storage.default_tools(limits)?;
         let builder = storage
             .builder()
@@ -916,6 +1144,19 @@ fn local_fork_verifier(
     let stream = Arc::new(StreamHistoryForkVerifier::new(ProviderRef::new(
         "local", "stream", "2",
     )?)?);
+    Ok(Arc::new(CompositeForkVerifier::new(vec![
+        filesystem as Arc<dyn ForkSeedVerifier>,
+        stream as Arc<dyn ForkSeedVerifier>,
+    ])?))
+}
+
+fn local_fork_verifier_with_stream_provider(
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    stream_provider: ProviderRef,
+    maximum_bytes: u64,
+) -> Result<Arc<CompositeForkVerifier>> {
+    let filesystem = Arc::new(FilesystemForkVerifier::new(host, maximum_bytes)?);
+    let stream = Arc::new(StreamHistoryForkVerifier::new(stream_provider)?);
     Ok(Arc::new(CompositeForkVerifier::new(vec![
         filesystem as Arc<dyn ForkSeedVerifier>,
         stream as Arc<dyn ForkSeedVerifier>,
