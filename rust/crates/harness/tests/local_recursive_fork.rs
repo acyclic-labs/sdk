@@ -787,10 +787,28 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             reopened_recovery
                 .record_applied(receipt.clone(), &verifier)
                 .await?;
-            reopened_recovery.complete().await?;
+            // Simulate a restart after the provider receipt is durable but
+            // before the parent conversation publication is acknowledged.
+            drop(reopened_recovery);
+            drop(reopened_journal);
+            let post_apply_journal = FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                private.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                64 * 1_024,
+            )?;
+            let post_apply_recovery = ProjectMergeRecovery::new(&post_apply_journal, operation_id);
+            let applied_entry = post_apply_recovery
+                .reopen()
+                .await?
+                .ok_or_else(|| Error::Conflict("applied receipt was lost on reopen".into()))?;
+            assert_eq!(applied_entry.receipt.as_ref(), Some(&receipt));
+            post_apply_recovery.complete().await?;
             // A reply lost after publication is still idempotently
             // recoverable from the completed durable entry.
-            reopened_recovery
+            post_apply_recovery
                 .record_applied(receipt.clone(), &verifier)
                 .await?;
             aggregate
