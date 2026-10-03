@@ -1,0 +1,114 @@
+{
+  "created_utc": "2026-10-03T09:43:49.031596+00:00",
+  "complete": false,
+  "source_commit": "002f2da5e1710a3931519829c7d6846dac761955",
+  "source_dirty": "Filesystem generated TS bindings/test owned worker edits pending; native Rust source committed at71c641fe",
+  "branch": "codex/graphcoder-sdk",
+  "tests": [
+    {
+      "suite": "execution_journal",
+      "source": "a7aa0546",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0,
+      "binary": "target/debug/deps/execution_journal-f22b3d025305c991.exe",
+      "contract_scope": "real local journal admission, copied-operation ref rejection, interaction and task binding",
+      "artifact_sha256": "f512fc0d0eb9911bdab01076638ef9b1dacd6fa198c3ae12ae87f58bc8195c72"
+    },
+    {
+      "suite": "git_facade",
+      "source": "a7aa0546",
+      "passed": 7,
+      "failed": 2,
+      "ignored": 0,
+      "binary": "target/debug/deps/git_facade-50bac8843ffe519a.exe",
+      "failures": [
+        "recovery_continuation_and_abort_use_the_facade_sequencer: Storage Git compatibility state is invalid",
+        "recovery_rebase_and_hard_reset_use_the_facade_identity: Storage Git compatibility state is invalid"
+      ],
+      "artifact_sha256": "4a67bb9fa29266591060be51792d2539c52cf6ba5dc50dfeefd8702ec463c732"
+    },
+    {
+      "suite": "local_recursive_fork",
+      "source": "a7aa0546",
+      "passed": 1,
+      "failed": 1,
+      "ignored": 0,
+      "binary": "target/debug/deps/local_recursive_fork-b37c89eb3abdb480.exe",
+      "failures": [
+        "local_recursive_parent_forks_reopen_and_merge_project_only: forged notice error classification assertion at683"
+      ],
+      "contract_scope": "deep same-path recursive direct-parent controls pass; upward integration suite incomplete",
+      "artifact_sha256": "8f5f3b1493366f32ba63b99a8c698a87ed85dcf41f776de7874e36ed32ce68a1"
+    },
+    {
+      "suite": "model_fork_boundary",
+      "source": "a7aa0546",
+      "passed": 1,
+      "failed": 1,
+      "ignored": 0,
+      "binary": "target/debug/deps/model_fork_boundary-6a2b9ef46d1107ad.exe",
+      "failures": [
+        "native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix: inherited malformed call rejection evidence absent from completed child boundary"
+      ],
+      "contract_scope": "typed API fixture, not production PersistentLocalSwarm model-driven E2E",
+      "artifact_sha256": "dae2e7f93d01382b8b22016c9f1ecd731c06471fc851d9ff723d64c0deda2ea3"
+    },
+    {
+      "suite": "lib swarm_budget",
+      "source": "002f2da5e1710a3931519829c7d6846dac761955",
+      "passed": 21,
+      "failed": 2,
+      "ignored": 0,
+      "binary": "target/debug/deps/acyclic_harness-0a8588af6047f55e.exe",
+      "failures": [
+        "root_usage_reduces_descendant_remaining_budget",
+        "session_budget_enforces_each_resource_dimension_independently"
+      ],
+      "contract_scope": "native reducers and issuer tests, production hard limit wiring unqualified",
+      "artifact_sha256": "bfe1b73abed47cd68eb5d2ecfe67ee42a268f50dc472f0ae8a2d99abae36fbf5"
+    },
+    {
+      "suite": "GraphCoder TS dispatcher and UI",
+      "source": "002f2da5e1710a3931519829c7d6846dac761955",
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts typescript/packages/graphcoder/test/dispatcher.test.ts",
+      "passed": 25,
+      "failed": 0,
+      "assertions": 99,
+      "contract_scope": "source-level terminal transport, framing and cancellation queue tests; not installed/native PTY"
+    },
+    {
+      "suite": "native-stage provenance config",
+      "source": "002f2da5e1710a3931519829c7d6846dac761955",
+      "command": "node --test scripts/graphcoder-native-stage-config.test.mjs",
+      "passed": 2,
+      "failed": 0,
+      "contract_scope": "provenance validator source tests only"
+    }
+  ],
+  "input_digests": {
+    "docs/graphcoder-swarm/requirements.json": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+    "rust/crates/harness/tests/model_fork_boundary.rs": "28411d319bb3203286b24d4c63dbeb2776aac7e14e9ccdeb0a0dc07367e2084c",
+    "rust/crates/harness/tests/git_facade.rs": "884b783a5d1a8aff446b3be053326b83c06ba93449238caa0b18e58d4a1519a1",
+    "rust/crates/harness/tests/local_recursive_fork.rs": "5b82bf7c6f825ea30f3df1285422b5985fcebe105a6f34f8bde1891970d3f558",
+    "rust/crates/harness/tests/execution_journal.rs": "efacd2197b4f0a5def69eab1615c6994280ea182bccf853713993bf63e78034d",
+    "rust/crates/harness/src/swarm_budget.rs": "80ec73e0fb6d4608fbf0dca8c338d1692800066eae269a08de3794152e8886d2",
+    "typescript/packages/graphcoder/test/graphcoder.test.ts": "26f0837c3329b2ed720adb30f0bd955ecad72373e9584ae728bdb1f296a479fb",
+    "typescript/packages/graphcoder/test/dispatcher.test.ts": "b9b2d412d18264150b65d1b34abe40ca2f7f5cbeb545acb28aae9d5aba151685",
+    "scripts/graphcoder-native-stage-config.test.mjs": "3692ff81ce1c035e80f8b2f6635a95d4e4fe66171fa35f87f4109bad856f4a8f"
+  },
+  "remaining": [
+    "production model-driven root-two-child-grandchild positive swarm",
+    "inherited rejection evidence and actual serialized provider request bindings",
+    "receipt preflight and runtime hard ceilings",
+    "real plugin conflict/abort/source generation fencing",
+    "operator-authenticated effects and native uncertain subprocess faults",
+    "fresh matching artifact full matrix and hidden Windows PTY"
+  ],
+  "boundaries": [
+    "mocked models",
+    "no sandbox",
+    "no merge",
+    "no Vite or visible terminal launches"
+  ]
+}
