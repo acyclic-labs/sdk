@@ -2866,8 +2866,19 @@ impl PersistentLocalSwarm {
             }
             return self.outcome(task).await;
         }
+        let mut session = session;
         if session.operation.is_none() {
             self.reserve_session_operation(task, operation).await?;
+            // The reservation append is a cross-handle CAS. Reload the
+            // durable projection before using the parent or opening a model
+            // harness so a cancellation that won the adjacent race cannot
+            // fall through from a stale Ready snapshot.
+            session = self.session(task).await?;
+            if session.phase == LocalSessionPhase::Cancelled {
+                return Err(Error::Conflict(
+                    "cancelled local swarm task cannot run again".into(),
+                ));
+            }
         } else if session.operation != Some(operation) {
             return Err(Error::Conflict(
                 "local swarm task is bound to another operation".into(),
@@ -3605,7 +3616,7 @@ impl PersistentLocalSwarm {
         // A different process may have cancelled while this model turn was
         // running. Reconcile the durable terminal state before acknowledging
         // completion; a cancellation always wins over an uncommitted turn.
-        self.refresh_registry_state().await?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
         if self
             .records
             .lock()
@@ -3633,7 +3644,6 @@ impl PersistentLocalSwarm {
                 output: existing,
             });
         }
-        let observed_tail = self.refresh_registry_state_with_tail().await?;
         // The tail and projection above form one admission snapshot. Recheck
         // terminal state immediately before the CAS append so a cancellation
         // or completion that won the preceding refresh cannot be overwritten
@@ -3960,6 +3970,11 @@ impl PersistentLocalSwarm {
     ) -> Result<()> {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let current = self.session(task).await?;
+        if current.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "cancelled local swarm task cannot reserve another operation".into(),
+            ));
+        }
         if let Some(existing) = current.operation {
             return if existing == operation {
                 Ok(())
