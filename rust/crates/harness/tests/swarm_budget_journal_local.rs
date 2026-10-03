@@ -5,6 +5,7 @@ use acyclic_harness::{
     IdempotencyKey, OperationId,
     swarm_budget::{
         SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmResourceRequest, SwarmUsage,
+        SwarmUsageReceiptIssuer, SwarmUsageSource,
     },
     swarm_budget_journal::SwarmBudgetJournal,
 };
@@ -50,6 +51,26 @@ fn tight_limits() -> SwarmBudgetLimits {
     }
 }
 
+struct LocalMeasuredUsage;
+
+impl SwarmUsageSource for LocalMeasuredUsage {
+    fn provider_identity(&self) -> &str {
+        "local-stream-test-provider"
+    }
+
+    fn cumulative_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+    ) -> acyclic_harness::Result<SwarmUsage> {
+        Ok(SwarmUsage {
+            model_steps: 1,
+            output_bytes: 8,
+            execution_time_ms: 10,
+        })
+    }
+}
+
 #[tokio::test]
 async fn local_stream_budget_restarts_and_fences_stale_owner() {
     let root = tempdir().expect("temporary root");
@@ -66,15 +87,14 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
         .await
         .expect("start budget");
+    let mut root_usage = SwarmUsageReceiptIssuer::new(
+        LocalMeasuredUsage,
+        session,
+        IdempotencyKey::new("root-lease").expect("root dispatch"),
+    )
+    .expect("root usage issuer");
     journal
-        .report_root_usage(
-            &owner,
-            SwarmUsage {
-                model_steps: 1,
-                output_bytes: 8,
-                execution_time_ms: 10,
-            },
-        )
+        .report_root_usage_with_receipt(&owner, root_usage.issue().expect("root usage receipt"))
         .await
         .expect("report root usage");
     let child = OperationId::new();
