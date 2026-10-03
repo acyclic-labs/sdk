@@ -126,6 +126,7 @@ function validateCase(caseRecord, entry, suites, final) {
     if (!EXECUTION_KINDS.has(evidence.execution_kind)) failure(`${entry.id} evidence ${index} has invalid execution kind`);
     const suite = suiteById.get(evidence.suite);
     if (evidence.execution_kind !== suite.execution_kind) failure(`${entry.id} evidence ${index} execution kind does not match suite ${suite.id}`);
+    if (!entry.modes.includes(evidence.execution_kind)) failure(`${entry.id} evidence ${index} uses an execution kind not required by the matrix entry`);
     if (evidence.descriptor_sha256 !== suite.descriptor_sha256) failure(`${entry.id} evidence ${index} descriptor is not the referenced suite descriptor`);
     if (!Array.isArray(evidence.artifact_paths) || evidence.artifact_paths.some(path => typeof path !== "string" || path.trim() === "")) failure(`${entry.id} evidence ${index} has invalid artifact paths`);
     const evidenceArtifacts = [...new Set(evidence.artifact_paths)].sort();

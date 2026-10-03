@@ -152,6 +152,24 @@ test("evidence cannot relabel a compile suite as native", () => {
   }
 });
 
+test("evidence cannot claim a suite mode outside the matrix entry", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-mode-"));
+  try {
+    const suite = suiteFixture(directory, "mock");
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    receipt.cases[0] = {
+      id: receipt.cases[0].id,
+      status: "passed",
+      evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "mock", artifact_paths: [] }],
+    };
+    receipt.gate.missing--;
+    assert.throws(() => validate(receipt), /execution kind not required by the matrix entry/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("suite evidence is bound to the descriptor and transcript bytes on disk", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
@@ -200,16 +218,13 @@ test("a bystander artifact cannot satisfy a suite's consuming-artifact evidence"
     });
     receipt.suites = [suite];
     receipt.artifacts = [artifact(consumedPath, "consumed-build"), artifact(bystanderPath, "bystander-build")];
-    receipt.cases[0] = {
-      id: receipt.cases[0].id,
-      status: "passed",
-      evidence: [{
-        suite: suite.id,
-        descriptor_sha256: suite.descriptor_sha256,
-        execution_kind: "package",
-        artifact_paths: [bystanderPath],
-      }],
-    };
+    receipt.cases.find(item => item.id === "CLI-01").status = "passed";
+    receipt.cases.find(item => item.id === "CLI-01").evidence = [{
+      suite: suite.id,
+      descriptor_sha256: suite.descriptor_sha256,
+      execution_kind: "package",
+      artifact_paths: [bystanderPath],
+    }];
     receipt.gate.missing--;
     assert.throws(() => validate(receipt), /artifact use does not match suite/);
   } finally {

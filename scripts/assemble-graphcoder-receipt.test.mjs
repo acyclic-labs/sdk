@@ -58,14 +58,14 @@ test("assembler emits every matrix ID and binds only explicit suite cases", () =
     writeFileSync(recordPath, JSON.stringify(suiteRecord(directory)));
     writeFileSync(configPath, JSON.stringify({
       suite_records: [recordPath],
-      cases: [{ id: "SCOPE-01", suites: ["mock-suite"] }],
+      cases: [{ id: "SCOPE-03", suites: ["mock-suite"] }],
       output: receiptPath,
     }));
     run(configPath);
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
     assert.equal(receipt.cases.length, 68);
-    assert.equal(receipt.cases.find(item => item.id === "SCOPE-01").status, "passed");
-    assert.equal(receipt.cases.find(item => item.id === "SCOPE-01").evidence[0].suite, "mock-suite");
+    assert.equal(receipt.cases.find(item => item.id === "SCOPE-03").status, "passed");
+    assert.equal(receipt.cases.find(item => item.id === "SCOPE-03").evidence[0].suite, "mock-suite");
     assert.equal(receipt.gate.missing, 67);
     assert.equal(receipt.gate.failed, 0);
   } finally {
