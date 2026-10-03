@@ -7,8 +7,8 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
-        Attachment, ContentResidencyVerifier, ConversationMessage, Limits, MessageKind,
-        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+        Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, Limits,
+        MessageKind, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry,
@@ -20,8 +20,8 @@ use acyclic_harness::{
         WorkspaceMutation, workspace_ref,
     },
     fork::{
-        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision,
-        StreamHistoryForkVerifier,
+        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
+        ModelBoundaryReferences, ResourceRevision, StreamHistoryForkVerifier,
     },
     model::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -1583,6 +1583,214 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         record.event,
         ExecutionEvent::BatchPublicationCompleted { .. }
     )));
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = ProviderRef::new("model-fork-e2e", "filesystem", "2")?;
+    let stream_provider = ProviderRef::new("model-fork-e2e", "stream", "2")?;
+    let host = Arc::new(FilesystemHost::new(
+        Fs::local(LocalOptions::new(directory.path().join("fs")))
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        provider.clone(),
+    )?);
+    let stream = StreamClient::new(Arc::new(
+        LocalStream::open(
+            directory.path().join("streams"),
+            LocalStreamLimits::default(),
+        )
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?,
+    ));
+    let parent_agent = AgentId::from_bytes([1; 16]);
+    let child_agent = AgentId::from_bytes([2; 16]);
+    let parent = Authority {
+        kind: AggregateKind::Conversation,
+        id: "attestation-parent".into(),
+    };
+    let child = Authority {
+        kind: AggregateKind::Conversation,
+        id: "attestation-child".into(),
+    };
+    let issuer = AuthorityIssuer::new("model-fork-e2e", [7; 32], parent.clone());
+    let parent_private = VolumeRef::new(
+        provider.clone(),
+        "attestation-parent-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(parent_agent),
+    )?;
+    let parent_project = VolumeRef::new(
+        provider.clone(),
+        "attestation-parent-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+    )?;
+    let child_private = VolumeRef::new(
+        provider.clone(),
+        "attestation-child-private",
+        VolumeClass::AgentPrivate,
+        VolumeOwner::Agent(child_agent),
+    )?;
+    let child_project = VolumeRef::new(
+        provider.clone(),
+        "attestation-child-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("project".into()),
+    )?;
+    host.create_volume(&parent_private).await?;
+    let parent_project_head = host.create_volume(&parent_project).await?;
+    let scope = issuer.root_for_agent(
+        parent_agent,
+        "attestation-parent",
+        Capabilities::new([
+            "conversation:bind".to_owned(),
+            "fork:publish".to_owned(),
+            parent_private.capability(VolumeOperation::Read)?,
+            parent_private.capability(VolumeOperation::Write)?,
+            parent_project.capability(VolumeOperation::Read)?,
+        ]),
+    );
+    let resolver = Arc::new(FilesystemContentVerifier::new(
+        host.clone(),
+        issuer.verifier(),
+        scope.clone(),
+        Limits::default().file_bytes,
+    )?);
+    let mut aggregate = StreamAggregate::open(
+        &stream,
+        parent.clone(),
+        issuer.verifier(),
+        SchemaRegistry::new(),
+    )
+    .await?
+    .with_content_verifier(resolver.clone());
+    aggregate
+        .execute(Command {
+            operation_id: OperationId::from_bytes([3; 16]),
+            idempotency_key: IdempotencyKey::new("attestation-bind-parent")?,
+            expected_revision: 0,
+            scope: scope.clone(),
+            causal_parent: None,
+            action: Action::BindConversation {
+                agent: parent_agent,
+            },
+        })
+        .await?;
+    let write_grant = ContentGrant::verify(
+        &issuer.verifier(),
+        &scope,
+        &parent_private,
+        VolumeOperation::Write,
+    )?;
+    let model_file = host
+        .put_content(
+            &parent_private,
+            &write_grant,
+            "model/input.txt",
+            b"model input",
+            "text/plain",
+            "input.txt",
+            Limits::default().file_bytes,
+            &IdempotencyKey::new("attestation-model-file")?,
+        )
+        .await?;
+    let preparer = FilesystemForkPreparer::new(
+        host.clone(),
+        aggregate.reducer().clone(),
+        issuer.verifier(),
+        scope.clone(),
+        parent_project.clone(),
+        stream_provider.clone(),
+        resolver,
+    )?;
+    let parent_project_workspace =
+        workspace_ref(provider.clone(), &parent_project.storage_name()?)?;
+    let parent_private_workspace =
+        workspace_ref(provider.clone(), &parent_private.storage_name()?)?;
+    let child_project_workspace =
+        workspace_ref(provider.clone(), &child_project.storage_name()?)?;
+    let child_private_workspace =
+        workspace_ref(provider.clone(), &child_private.storage_name()?)?;
+    let parent_project_before = host.resolve(&parent_project_workspace).await?;
+    let parent_private_before = host.resolve(&parent_private_workspace).await?;
+    assert!(matches!(
+        host.resolve(&child_project_workspace).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        host.resolve(&child_private_workspace).await,
+        Err(Error::NotFound(_))
+    ));
+    let limits = Limits::default();
+    let request = ForkRequest {
+        operation_id: OperationId::from_bytes([4; 16]),
+        parent: parent.clone(),
+        parent_revision: aggregate.reducer().revision(),
+        child,
+        child_agent,
+        attached_agents: Vec::new(),
+        preparation: ForkPreparation {
+            child_project_volume: child_project,
+            child_private_volume: child_private,
+            inherited_through_sequence: 0,
+            maximum_inherited_messages: 64,
+            maximum_inherited_bytes: limits.file_bytes,
+            maximum_inherited_references: 64,
+        },
+        selections: vec![
+            ForkSelection {
+                required: true,
+                revision: ResourceRevision::History(StreamRef::new(
+                    stream_provider,
+                    parent.stream_path()?.into_bytes(),
+                    Some(aggregate.reducer().revision().to_string()),
+                )?),
+            },
+            ForkSelection {
+                required: true,
+                revision: ResourceRevision::Project {
+                    volume: parent_project,
+                    generation: parent_project_head.generation,
+                },
+            },
+        ],
+        boundary: None,
+        model_boundary: Some(ModelBoundaryReferences {
+            publication: OperationId::from_bytes([5; 16]),
+            publication_digest: [1; 32],
+            boundary_digest: [2; 32],
+            // Nonzero but forged: the parent issuer did not produce this proof.
+            attestation: [3; 32],
+            files: vec![model_file],
+        }),
+    };
+    let error = aggregate
+        .prepare_fork(&preparer, request)
+        .await
+        .expect_err("invalid model attestation reached preparation effects");
+    assert!(
+        matches!(error, Error::Unauthorized(message) | Error::Invalid(message) if message.contains("attestation")),
+        "unexpected invalid-attestation error: {error:?}"
+    );
+    assert_eq!(
+        host.resolve(&parent_project_workspace).await?.generation,
+        parent_project_before.generation
+    );
+    assert_eq!(
+        host.resolve(&parent_private_workspace).await?.generation,
+        parent_private_before.generation
+    );
+    assert!(matches!(
+        host.resolve(&child_project_workspace).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        host.resolve(&child_private_workspace).await,
+        Err(Error::NotFound(_))
+    ));
     Ok(())
 }
 
