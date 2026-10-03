@@ -72,6 +72,11 @@ pub struct LocalSwarmConfig {
     pub maximum_depth: usize,
     /// Optional task-local execution bounds retained with each child.
     pub run_limits: TaskRunLimits,
+    /// Owner-selected source project for root and recursive child forks.
+    /// When a concrete filesystem resolver is supplied, its project may fill
+    /// this field during swarm open, but a persisted session still pins the
+    /// resulting identity before any model work starts.
+    pub project: Option<VolumeRef>,
 }
 
 /// Owner authenticated services shared by every local session.
@@ -184,6 +189,10 @@ impl LocalSwarmBindings {
 pub struct LocalModelForkPlan {
     /// Local parent task whose completed model step owns this fork.
     pub parent: TaskId,
+    /// Completed model publication containing this child selection. Multiple
+    /// children from one batch share this identity while each receives a
+    /// distinct typed fork operation below.
+    pub publication_operation: OperationId,
     /// Exact local request and child turn identity.
     pub request: LocalForkRequest,
     /// Provider-prepared report retained for publication and recovery.
@@ -210,7 +219,11 @@ pub struct LocalForkIntent {
     pub parent_operation: OperationId,
     /// Completed model step.
     pub parent_step: u32,
-    /// Host-derived completed-batch publication identity.
+    /// Host-derived completed-batch publication identity. This remains the
+    /// same for all children selected by one model batch.
+    #[serde(default)]
+    pub publication_operation: Option<OperationId>,
+    /// Host-derived typed fork publication identity for this child.
     pub fork_operation: OperationId,
     /// Fresh child turn identity selected for the child task.
     pub child_operation: OperationId,
@@ -227,7 +240,11 @@ impl LocalForkIntent {
             || self.parent_step > 1_000_000
             || self.fork_operation.into_bytes() == [0; 16]
             || self.child_operation.into_bytes() == [0; 16]
+            || self
+                .publication_operation
+                .is_some_and(|operation| operation.into_bytes() == [0; 16])
             || self.fork_operation == self.child_operation
+            || self.publication_operation == Some(self.child_operation)
             || self.task.trim().is_empty()
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
@@ -236,6 +253,40 @@ impl LocalForkIntent {
         }
         Ok(())
     }
+}
+
+fn child_fork_operation(publication: OperationId, child: OperationId) -> OperationId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic.local-swarm.child-fork.v1\0");
+    hasher.update(&publication.into_bytes());
+    hasher.update(&child.into_bytes());
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
+fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Result<()> {
+    report.request.parent_revision = parent_revision;
+    for (selection, capture) in report
+        .request
+        .selections
+        .iter_mut()
+        .zip(report.captures.iter_mut())
+    {
+        if let ResourceRevision::History(reference) = &selection.revision {
+            let rebound = StreamRef::new(
+                reference.as_resource().provider().clone(),
+                reference.as_resource().key().to_vec(),
+                Some(parent_revision.to_string()),
+            )?;
+            selection.revision = ResourceRevision::History(rebound.clone());
+            if let crate::fork::Capture::Captured(resource) = capture {
+                resource.source = ResourceRevision::History(rebound.clone());
+                resource.revision = ResourceRevision::History(rebound);
+            }
+        }
+    }
+    report.validate()
 }
 
 /// Owner allocator invoked only after the parent completed batch is
@@ -253,6 +304,11 @@ pub trait LocalModelForkResolver: Send + Sync {
     /// child authorities. The fingerprint is journaled with each intent so a
     /// reopen using a different host secret fails closed.
     fn issuer_binding_digest(&self) -> Option<[u8; 32]> {
+        None
+    }
+
+    /// Returns the owner-selected source project when this resolver binds one.
+    fn source_project(&self) -> Option<VolumeRef> {
         None
     }
 
@@ -371,6 +427,10 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
         })
     }
 
+    fn source_project(&self) -> Option<VolumeRef> {
+        Some(self.project.clone())
+    }
+
     fn resolve<'a>(
         &'a self,
         intent: LocalForkIntent,
@@ -475,6 +535,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 request.validate()?;
                 return Ok(LocalModelForkPlan {
                     parent: intent.parent,
+                    publication_operation: publication.operation_id,
                     request,
                     report,
                     declaration,
@@ -635,6 +696,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             declaration.context(swarm.config.limits)?;
             Ok(LocalModelForkPlan {
                 parent: intent.parent,
+                publication_operation: publication.operation_id,
                 request: LocalForkRequest {
                     parent: intent.parent,
                     parent_operation: intent.parent_operation,
@@ -661,6 +723,11 @@ impl LocalModelForkPlan {
     /// model-facing tool.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
+        if self.publication_operation.into_bytes() == [0; 16] {
+            return Err(Error::Invalid(
+                "model fork plan publication identity is empty".into(),
+            ));
+        }
         self.report.validate()?;
         let seed = self.report.clone().into_seed()?;
         let fork_operation = self.request.fork_operation.ok_or_else(|| {
@@ -859,7 +926,7 @@ impl LocalModelForkPlans {
             .lock()
             .await
             .values()
-            .filter(|intent| intent.fork_operation == publication.operation_id)
+            .filter(|intent| intent.publication_operation == Some(publication.operation_id))
             .cloned()
             .collect::<Vec<_>>();
         if intents.is_empty() {
@@ -874,7 +941,7 @@ impl LocalModelForkPlans {
             .lock()
             .await
             .iter()
-            .filter(|((operation, _), _)| *operation == publication.operation_id)
+            .filter(|(_, plan)| plan.publication_operation == publication.operation_id)
             .map(|(key, plan)| (*key, plan.clone()))
             .collect::<BTreeMap<_, _>>();
         let resolver = self.resolver.clone();
@@ -882,7 +949,7 @@ impl LocalModelForkPlans {
         for intent in intents {
             if publication.parent_operation != intent.parent_operation
                 || publication.step != intent.parent_step
-                || publication.operation_id != intent.fork_operation
+                || intent.publication_operation != Some(publication.operation_id)
             {
                 return Err(Error::Conflict(
                     "completed fork publication does not match its selected intent".into(),
@@ -940,7 +1007,7 @@ impl LocalModelForkPlans {
             .lock()
             .await
             .iter()
-            .filter(|((fork_operation, _), _)| *fork_operation == operation)
+            .filter(|(_, plan)| plan.publication_operation == operation)
             .map(|(_, plan)| plan.clone())
             .collect()
     }
@@ -950,7 +1017,7 @@ impl LocalModelForkPlans {
             .lock()
             .await
             .values()
-            .any(|intent| intent.fork_operation == operation)
+            .any(|intent| intent.publication_operation == Some(operation))
     }
 
     async fn mark_completed(&self, operation: OperationId, digest: [u8; 32]) -> Result<()> {
@@ -1051,7 +1118,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 .await?;
             let mut prepared = Vec::with_capacity(plans.len());
             for mut plan in plans {
-                if Some(publication.operation_id) != plan.request.fork_operation
+                if publication.operation_id != plan.publication_operation
                     || publication.parent_operation != plan.request.parent_operation
                     || publication.step != plan.request.parent_step
                 {
@@ -1078,8 +1145,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 // current stream revision before its append.
                 let current_revision = parent.reducer().revision();
                 if plan.report.request.parent_revision != current_revision {
-                    plan.report.request.parent_revision = current_revision;
-                    plan.report.validate()?;
+                    rebind_report_history(&mut plan.report, current_revision)?;
                 }
                 let seed = swarm
                     .publish_child_seed_with_publication(
@@ -1134,7 +1200,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 return Ok(Some(()));
             }
             for plan in plans {
-                if Some(publication.operation_id) != plan.request.fork_operation {
+                if publication.operation_id != plan.publication_operation {
                     return Err(Error::Conflict(
                         "reconciled model publication does not match its fork plan".into(),
                     ));
@@ -1178,8 +1244,11 @@ impl ToolExecutor for LocalForkToolExecutor {
             context.validate_invocation(&invocation)?;
             let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
-            let fork_operation = context.publication_operation();
-            if input.fork_operation.is_some_and(|value| value != fork_operation)
+            let publication_operation = context.publication_operation();
+            let fork_operation = child_fork_operation(publication_operation, input.child_operation);
+            if input
+                .fork_operation
+                .is_some_and(|value| value != fork_operation)
                 || input.child_operation == fork_operation
             {
                 return Err(Error::Conflict(
@@ -1195,6 +1264,7 @@ impl ToolExecutor for LocalForkToolExecutor {
                 parent: self.parent,
                 parent_operation: context.parent_operation,
                 parent_step: context.step,
+                publication_operation: Some(publication_operation),
                 fork_operation,
                 child_operation: input.child_operation,
                 task: input.task,
@@ -1281,9 +1351,25 @@ impl LocalSwarmConfig {
             maximum_children: 8,
             maximum_depth: 8,
             run_limits: TaskRunLimits::default(),
+            project: None,
         };
         config.validate()?;
         Ok(config)
+    }
+
+    /// Pins the owner-selected source project used by recursive fork
+    /// publication. The volume identity is carried into every reopened root
+    /// session and is never accepted from a model request.
+    pub fn with_project(mut self, project: VolumeRef) -> Result<Self> {
+        if project.class() != VolumeClass::Project {
+            return Err(Error::Invalid(
+                "local swarm source project must be a project volume".into(),
+            ));
+        }
+        project.validate()?;
+        self.project = Some(project);
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validates application bounds before opening any provider.
@@ -1292,6 +1378,14 @@ impl LocalSwarmConfig {
         self.run_limits.validate()?;
         if self.maximum_children == 0 || self.maximum_depth == 0 {
             return Err(Error::Invalid("local swarm bounds must be positive".into()));
+        }
+        if let Some(project) = &self.project {
+            project.validate()?;
+            if project.class() != VolumeClass::Project {
+                return Err(Error::Invalid(
+                    "local swarm source project must be a project volume".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -1685,11 +1779,27 @@ impl PersistentLocalSwarm {
     /// the same authenticated providers after restart.
     pub async fn open_with_bindings(
         root: impl AsRef<Path>,
-        config: LocalSwarmConfig,
+        mut config: LocalSwarmConfig,
         provider: Arc<dyn ModelProvider>,
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
+        if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
+            let resolver_project = resolver.source_project().ok_or_else(|| {
+                Error::Invalid(
+                    "filesystem fork resolver must expose its owner-selected project".into(),
+                )
+            })?;
+            match config.project.as_ref() {
+                Some(project) if project != &resolver_project => {
+                    return Err(Error::Conflict(
+                        "swarm config project differs from filesystem resolver project".into(),
+                    ));
+                }
+                None => config.project = Some(resolver_project),
+                Some(_) => {}
+            }
+        }
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -1755,12 +1865,13 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
-            PersistentLocalHarness::open_with_tools(
+            PersistentLocalHarness::open_with_tools_and_project(
                 root_session,
                 config.model.clone(),
                 provider.clone(),
                 config.limits,
                 bindings.tools_for(root_task)?,
+                config.project.clone(),
             )
             .await?,
         );
