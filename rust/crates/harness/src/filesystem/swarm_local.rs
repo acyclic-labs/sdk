@@ -29,8 +29,9 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        ForkPublication, SwarmBudgetLimits, SwarmDispatchToken, SwarmForkRequest, SwarmOwnerFence,
-        SwarmProviderMeter, SwarmResourceRequest, SwarmUsage, SwarmUsageSource,
+        ForkPublication, SwarmBudgetLimits, SwarmBudgetUsage, SwarmDispatchToken,
+        SwarmForkRequest, SwarmOwnerFence, SwarmProviderMeter, SwarmResourceRequest, SwarmUsage,
+        SwarmUsageSource,
         VerifiedForkPublication,
     },
     swarm_budget_journal::SwarmBudgetJournal,
@@ -2400,6 +2401,16 @@ impl PersistentLocalSwarm {
     /// reading child filesystem content.
     pub async fn sessions(&self) -> Vec<LocalSwarmSession> {
         self.records.lock().await.values().cloned().collect()
+    }
+
+    /// Returns the durable session budget projection used by root and child
+    /// provider dispatches. A missing value means this swarm was opened with
+    /// an explicitly unconfigured budget binding.
+    pub async fn budget_usage(&self) -> Result<Option<SwarmBudgetUsage>> {
+        let Some(journal) = &self.budget_journal else {
+            return Ok(None);
+        };
+        Ok(Some(journal.lock().await.usage()?))
     }
 
     /// Reads one descriptor without opening its local journal or filesystem.
