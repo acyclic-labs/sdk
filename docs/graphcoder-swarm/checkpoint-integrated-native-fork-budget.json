@@ -302,6 +302,20 @@
       "assertions": 143,
       "log_sha256": "bef1d7aece0f90d246a7f124cee2ae05cf57e599a372d0d483cba1b9b64cc6e8",
       "contract_scope": "actual source control-capacity, queued UI generation, byte decoding, cancellation ID and public input bounds; not native durable cancellation or packaged PTY"
+    },
+    {
+      "suite": "production local model swarm",
+      "source": "657b1309",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -j 2 -- --nocapture",
+      "artifact_sha256": "ada95e10ffe0a3384fa4ba3d634f3db68c1da1a4f17d27d8f476564cb550a059",
+      "suite_sha256": "1cde229ed5fdd3377d779f5993520ab7ef4f0f2994c0d3ec9e0e377577272942",
+      "failures": [
+        "Storage local Stream root is already open"
+      ],
+      "contract_scope": "real production composition compiled after scoped approval caller fixes; first execution fails exclusive provider ownership before recursive swarm proof"
     }
   ],
   "input_digests": {
