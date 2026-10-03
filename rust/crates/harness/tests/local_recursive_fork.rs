@@ -1026,6 +1026,112 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 retried_outcome,
                 acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_)
             ));
+
+            // A fresh inspection after an overlapping target edit produces a
+            // real provider conflict. Its terminal result must survive a
+            // restart and remain idempotent without publishing a candidate.
+            let conflict_target = host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &project.storage_name()?,
+                )?)
+                .await?;
+            host.apply(
+                &conflict_target.workspace,
+                Some(&conflict_target.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/post-merge-child-edit.txt".into(),
+                    bytes: b"target conflict edit".to_vec(),
+                }],
+                &IdempotencyKey::new("conflicting-target-edit")?,
+            )
+            .await?;
+            let conflict_plan = reopened_facade
+                .prepare_project_merge_for_child(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                )
+                .await?;
+            let conflict_operation = OperationId::from_bytes([94; 16]);
+            let conflict_approval = RootWritebackApproval::issue(
+                &issuer.verifier(),
+                &grant_scope,
+                project.clone(),
+                conflict_operation,
+                host.generation_ref_id(conflict_plan.source_head())?,
+                host.generation_ref_id(conflict_plan.target_head())?,
+            )?;
+            let conflict_journal = FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                private.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                64 * 1_024,
+            )?;
+            let conflict_recovery =
+                ProjectMergeRecovery::new(&conflict_journal, conflict_operation);
+            let conflict_request = RootWritebackRequest::new(
+                conflict_approval,
+                grant_scope.clone(),
+            );
+            let conflict_outcome = reopened_facade
+                .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                    &conflict_request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority.clone(),
+                    &child_project,
+                    &conflict_plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &conflict_recovery,
+                )
+                .await?;
+            assert!(matches!(
+                conflict_outcome,
+                acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. }
+            ));
+            assert_eq!(
+                host.read(
+                    &conflict_target.workspace,
+                    None,
+                    "/post-merge-child-edit.txt",
+                    1_024,
+                )
+                .await?
+                .as_ref(),
+                b"target conflict edit",
+                "conflict publication must leave the concurrent target edit intact"
+            );
+            let conflict_entry = conflict_recovery
+                .reopen()
+                .await?
+                .ok_or_else(|| Error::Conflict("conflict terminal result was not retained".into()))?;
+            assert!(matches!(
+                conflict_entry.terminal,
+                Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
+            ));
+            assert!(conflict_entry.receipt.is_none());
+            let retried_conflict = reopened_facade
+                .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                    &conflict_request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority,
+                    &child_project,
+                    &conflict_plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message,
+                    &conflict_recovery,
+                )
+                .await?;
+            assert!(matches!(
+                retried_conflict,
+                acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. }
+            ));
         }
 
         final_child_issuer = Some(child_issuer.clone());
