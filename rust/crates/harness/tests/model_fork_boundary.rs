@@ -7,7 +7,8 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
-        ContentResidencyVerifier, ConversationMessage, Limits, MessageKind, VolumeClass,
+        Attachment, ContentResidencyVerifier, ConversationMessage, Limits, MessageKind,
+        VolumeClass,
         VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
@@ -20,7 +21,7 @@ use acyclic_harness::{
         WorkspaceMutation, workspace_ref,
     },
     fork::{
-        AttestedBoundary, CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
+        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
         ResourceRevision, StreamHistoryForkVerifier,
     },
     model::{
@@ -36,34 +37,50 @@ use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
+    StreamExt,
 };
 use serde_json::{Value, json};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use tokio::sync::{Barrier, Notify};
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
 struct CapturedModel {
     calls: AtomicUsize,
     requests: Mutex<Vec<ModelRequest>>,
+    serialized_requests: Mutex<Vec<Vec<u8>>>,
+    binding_digests: Mutex<Vec<[u8; 32]>>,
     root: bool,
     read_first: bool,
+    overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        let prepared = match PreparedModelInput::prepare(request.clone(), Limits::default()) {
+            Ok(prepared) => prepared,
+            Err(error) => return Box::pin(stream::iter(vec![Err(error)])),
+        };
         self.requests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(request);
+        self.serialized_requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(prepared.bytes().to_vec());
+        self.binding_digests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(prepared.manifest().binding_digest);
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         let events = if !self.root && self.read_first && first {
             let file = self.requests.lock().unwrap().last().and_then(|request| {
                 request
                     .messages
                     .iter()
-                    .rev()
                     .find_map(|message| match &message.content {
                         ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
                             ModelContentPart::File { file, .. } => Some(file.clone()),
@@ -116,10 +133,42 @@ impl ModelProvider for CapturedModel {
                 },
             ]
         };
+        if let Some(barrier) = self.overlap_barrier.clone().filter(|_| !self.root && first) {
+            let mut events = events;
+            let first_event = events.remove(0);
+            return Box::pin(
+                stream::once(async move {
+                    barrier.wait().await;
+                    Ok::<ModelEvent, Error>(first_event)
+                })
+                .chain(stream::iter(events.into_iter().map(Ok))),
+            );
+        }
         Box::pin(stream::iter(events.into_iter().map(Ok)))
     }
     fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Ok(None) })
+    }
+}
+
+impl CapturedModel {
+    fn evidence(&self) -> Result<(Vec<ModelRequest>, Vec<Vec<u8>>, Vec<[u8; 32]>)> {
+        let requests = self
+            .requests
+            .lock()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .clone();
+        let serialized = self
+            .serialized_requests
+            .lock()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .clone();
+        let bindings = self
+            .binding_digests
+            .lock()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .clone();
+        Ok((requests, serialized, bindings))
     }
 }
 
@@ -129,9 +178,11 @@ impl ModelProvider for CapturedModel {
 struct RecordingPublisher {
     identity: ComponentIdentity,
     admission: Mutex<Option<ModelBatchPublication>>,
+    ready: Option<Arc<Notify>>,
+    release: Option<Arc<Barrier>>,
 }
 impl RecordingPublisher {
-    fn new(index: u8) -> Self {
+    fn new(index: u8, ready: Option<Arc<Notify>>, release: Option<Arc<Barrier>>) -> Self {
         Self {
             identity: ComponentIdentity {
                 name: format!("test.recursive-model-batch-{index}"),
@@ -139,6 +190,8 @@ impl RecordingPublisher {
                 digest: [index.saturating_add(1); 32],
             },
             admission: Mutex::new(None),
+            ready,
+            release,
         }
     }
 
@@ -173,6 +226,13 @@ impl ModelBatchPublisher for RecordingPublisher {
                 }
             } else {
                 *admission = Some(request);
+            }
+            drop(admission);
+            if let Some(ready) = &self.ready {
+                ready.notify_one();
+            }
+            if let Some(release) = &self.release {
+                release.wait().await;
             }
             Ok(())
         })
@@ -209,6 +269,46 @@ struct ForkAtBatch {
     paused: bool,
 }
 impl ForkAtBatch {
+    fn assert_model_evidence(
+        &self,
+        model: &CapturedModel,
+        expected_binding: [u8; 32],
+    ) -> Result<Vec<ModelRequest>> {
+        let (requests, serialized, bindings) = model.evidence()?;
+        assert_eq!(requests.len(), serialized.len());
+        assert_eq!(requests.len(), bindings.len());
+        for ((request, bytes), binding) in requests.iter().zip(&serialized).zip(&bindings) {
+            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
+            assert_eq!(bytes, prepared.bytes());
+            assert_eq!(*binding, prepared.manifest().binding_digest);
+            assert_eq!(*binding, expected_binding);
+        }
+        Ok(requests)
+    }
+
+    async fn assert_model_read(
+        &self,
+        storage: &DurableHarnessStorage,
+        operation: OperationId,
+        expected: &str,
+    ) -> Result<()> {
+        let records = storage.journal().replay(operation).await?;
+        let result = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolCompleted {
+                call_id,
+                result,
+                ..
+            } if call_id == "read-inherited" => Some(result.clone()),
+            _ => None,
+        });
+        let result = result
+            .ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
+        let result: Value = serde_json::from_slice(&storage.journal().load(&result).await?)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(result.get("text").and_then(Value::as_str), Some(expected));
+        Ok(())
+    }
+
     async fn assert_child_unbound(
         &self,
         seed: &acyclic_harness::fork::ForkSeed,
@@ -307,6 +407,15 @@ impl ForkAtBatch {
             attached_scope,
             self.limits.file_bytes,
         )?;
+        let model_files = seed
+            .model_boundary
+            .as_ref()
+            .ok_or_else(|| Error::Storage("model boundary manifest missing".into()))?
+            .files
+            .clone();
+        for file in &model_files {
+            attached_reader.read(file).await?;
+        }
         for prefix in &seed.inherited_context {
             attached_reader.read(prefix).await?;
         }
@@ -328,6 +437,12 @@ impl ForkAtBatch {
         for prefix in &seed.inherited_context {
             assert!(matches!(
                 ungranted_reader.read(prefix).await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+        for file in &model_files {
+            assert!(matches!(
+                ungranted_reader.read(file).await,
                 Err(Error::Unauthorized(_))
             ));
         }
@@ -368,6 +483,16 @@ impl ForkAtBatch {
             seed,
         )
         .await?;
+        let model_files = seed
+            .model_boundary
+            .as_ref()
+            .ok_or_else(|| Error::Storage("model boundary manifest missing".into()))?
+            .files
+            .clone();
+        for file in &model_files {
+            let expected = self.storage.read(file).await?;
+            assert_eq!(storage.read(file).await?, expected);
+        }
         let primary = boundary
             .request
             .messages
@@ -490,6 +615,11 @@ impl ForkAtBatch {
         ])?);
         parent = parent.with_fork_verifier(forks.clone());
         let project_head = self.host.create_volume(&self.project).await?;
+        let sibling_barrier = Arc::new(Barrier::new(2));
+        let child_zero_ready = Arc::new(Notify::new());
+        let child_zero_release = Arc::new(Barrier::new(2));
+        let mut child_zero_context = None;
+        let mut child_runs = Vec::new();
         for index in 0..2_u8 {
             let child_agent = AgentId::from_bytes([index + 20; 16]);
             let child_authority = Authority {
@@ -602,6 +732,24 @@ impl ForkAtBatch {
             assert_ne!(references.boundary_digest, [0; 32]);
             assert!(!references.files.is_empty());
             assert_ne!(references.attestation, [0; 32]);
+            let mut forged = request.clone();
+            forged.operation_id = OperationId::from_bytes([45 + index; 16]);
+            forged
+                .model_boundary
+                .as_mut()
+                .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
+                .attestation[0] ^= 1;
+            let forged_report = parent.prepare_fork(&preparer, forged).await?;
+            let forged_seed = forged_report.clone().into_seed()?;
+            self.assert_child_unbound(&forged_seed, &child_issuer).await?;
+            let forged_error = parent
+                .publish_fork_report(forged_report, parent_scope.clone())
+                .await
+                .expect_err("forged model boundary was published");
+            assert!(
+                matches!(forged_error, Error::Invalid(message) if message.contains("manifest")),
+                "unexpected forged model boundary error: {forged_error:?}"
+            );
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;
@@ -650,7 +798,7 @@ impl ForkAtBatch {
                     child_scope.clone(),
                 )
                 .await?;
-            let storage = self
+            let storage = Arc::new(self
                 .verified_child_storage(
                     &parent,
                     &seed,
@@ -659,7 +807,7 @@ impl ForkAtBatch {
                     &admission,
                     index,
                 )
-                .await?;
+                .await?);
             let suffix = vec![ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(format!(
@@ -671,7 +819,11 @@ impl ForkAtBatch {
                 .get(index as usize)
                 .cloned()
                 .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
-            let child_publisher = Arc::new(RecordingPublisher::new(index));
+            let child_publisher = Arc::new(RecordingPublisher::new(
+                index,
+                (index == 0).then(|| child_zero_ready.clone()),
+                (index == 0).then(|| child_zero_release.clone()),
+            ));
             let bundle = storage
                 .inherited_builder(boundary.clone(), suffix, child_model, self.limits)?
                 .tools(storage.default_tools(self.limits)?)
@@ -681,6 +833,16 @@ impl ForkAtBatch {
                 .batch_publisher(child_publisher.clone())
                 .limits(self.limits)
                 .build()?;
+            if index == 0 {
+                child_zero_context = Some((
+                    storage.clone(),
+                    child_publisher.clone(),
+                    child_authority.clone(),
+                    child_issuer.clone(),
+                    child_scope.clone(),
+                    project.clone(),
+                ));
+            }
             let child_operation = OperationId::from_bytes([index + 60; 16]);
             let child_input = storage
                 .stage(
@@ -691,21 +853,77 @@ impl ForkAtBatch {
                     &format!("child-{index}.txt"),
                 )
                 .await?;
-            storage
-                .run_conversation(&bundle, child_operation, child_input, Vec::new(), 3)
-                .await?;
-            if index == 0 {
-                let child_admission = child_publisher.admission()?;
-                self.publish_grandchild(
-                    &storage,
-                    child_admission,
+            let barrier = sibling_barrier.clone();
+            child_runs.push(async move {
+                barrier.wait().await;
+                storage
+                    .run_conversation(&bundle, child_operation, child_input, Vec::new(), 3)
+                    .await?;
+                Ok::<_, Error>((
+                    index,
+                    storage,
+                    child_publisher,
                     child_authority,
                     child_issuer,
                     child_scope,
                     project,
-                )
-                .await?;
+                    child_operation,
+                ))
+            });
+        }
+        let all_children = futures::future::join_all(child_runs);
+        tokio::pin!(all_children);
+        let (
+            child_zero_storage,
+            child_zero_publisher,
+            child_zero_authority,
+            child_zero_issuer,
+            child_zero_scope,
+            child_zero_project,
+        ) = child_zero_context
+            .ok_or_else(|| Error::Storage("child zero context missing".into()))?;
+        tokio::select! {
+            _ = child_zero_ready.notified() => {}
+            _ = &mut all_children => {
+                return Err(Error::Conflict(
+                    "child completed before recursive boundary handoff".into(),
+                ));
             }
+        }
+        self.publish_grandchild(
+            &child_zero_storage,
+            child_zero_publisher.admission()?,
+            child_zero_authority,
+            child_zero_issuer,
+            child_zero_scope,
+            child_zero_project,
+        )
+        .await?;
+        child_zero_release.wait().await;
+
+        let mut completed_children = Vec::with_capacity(2);
+        for result in all_children.await {
+            completed_children.push(result?);
+        }
+        let boundary_binding =
+            PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
+                .manifest()
+                .binding_digest;
+        for (index, storage, _, _, _, _, _, operation) in &completed_children {
+            self.assert_model_read(storage, *operation, "root request").await?;
+            let child_model = self
+                .children
+                .get(*index as usize)
+                .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
+            let requests = self.assert_model_evidence(child_model, boundary_binding)?;
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                &requests[0].messages[..boundary.request.messages.len()],
+                boundary.request.messages
+            );
+            let actual = PreparedModelInput::prepare(requests[0].clone(), self.limits)?;
+            let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
+            assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
         }
         self.publications.fetch_add(1, Ordering::SeqCst);
         Ok(())
@@ -839,14 +1057,27 @@ impl ForkAtBatch {
             .attach_model_fork_references(&verified_references, &mut request)
             .await?;
 
-        // A provider-shaped boundary without an attestation from the bound
-        // provider must be refused before the child aggregate is visible.
+        // Model-boundary attestations bind the exact child identity and must
+        // be rejected at publication admission before the child is visible.
         let mut forged = request.clone();
-        forged.boundary = Some(AttestedBoundary {
-            provider: self.stream_provider.clone(),
-            evidence: b"forged recursive boundary".to_vec(),
-        });
-        assert!(parent.prepare_fork(&preparer, forged).await.is_err());
+        forged.operation_id = OperationId::from_bytes([145; 16]);
+        forged
+            .model_boundary
+            .as_mut()
+            .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
+            .attestation[0] ^= 1;
+        let forged_report = parent.prepare_fork(&preparer, forged).await?;
+        let forged_seed = forged_report.clone().into_seed()?;
+        self.assert_child_unbound(&forged_seed, &grandchild_issuer)
+            .await?;
+        let forged_error = parent
+            .publish_fork_report(forged_report, parent_scope.clone())
+            .await
+            .expect_err("forged recursive model boundary was published");
+        assert!(
+            matches!(forged_error, Error::Invalid(message) if message.contains("manifest")),
+            "unexpected forged recursive boundary error: {forged_error:?}"
+        );
 
         let report = parent.prepare_fork(&preparer, request).await?;
         let seed = report.clone().into_seed()?;
@@ -881,7 +1112,7 @@ impl ForkAtBatch {
                 .as_ref(),
             b"new parent generation".as_slice()
         );
-        assert!(
+        assert_eq!(
             self.host
                 .read(
                     &source.workspace,
@@ -889,19 +1120,45 @@ impl ForkAtBatch {
                     "/recursive-same-path.txt",
                     self.limits.file_bytes,
                 )
-                .await
-                .is_err()
+                .await?,
+            old_source_bytes
         );
 
         let storage = HarnessStorage::from_published_fork(
             self.limits.file_bytes,
             self.host.clone(),
             self.stream.clone(),
-            grandchild_issuer,
+            grandchild_issuer.clone(),
             &parent,
             &seed,
         )
         .await?;
+        let model_files = seed
+            .model_boundary
+            .as_ref()
+            .ok_or_else(|| Error::Storage("grandchild model boundary manifest missing".into()))?
+            .files
+            .clone();
+        for file in &model_files {
+            assert_eq!(storage.read(file).await?, self.storage.read(file).await?);
+        }
+        let ungranted_scope = grandchild_issuer.root_for_agent(
+            grandchild_agent,
+            "grandchild-no-model-grants",
+            Capabilities::new(std::iter::empty::<String>()),
+        );
+        let ungranted_reader = FilesystemContentVerifier::new(
+            self.host.clone(),
+            grandchild_issuer.verifier(),
+            ungranted_scope,
+            self.limits.file_bytes,
+        )?;
+        for file in &model_files {
+            assert!(matches!(
+                ungranted_reader.read(file).await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
         let child_project_workspace =
             workspace_ref(project.provider().clone(), &project.storage_name()?)?;
         let child_project = self.host.resolve(&child_project_workspace).await?;
@@ -973,16 +1230,28 @@ impl ForkAtBatch {
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             result.get("text").and_then(Value::as_str),
-            Some("grandchild explicit UTF-8 input α🦀\n")
+            Some("root request")
         );
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             projection,
-            Value::String("grandchild explicit UTF-8 input α🦀\n".into())
+            Value::String("root request".into())
         );
-        let captured = self.grandchild.requests.lock().unwrap();
+        let (captured, serialized, bindings) = self.grandchild.evidence()?;
         assert!(captured.len() >= 2);
+        assert_eq!(captured.len(), serialized.len());
+        assert_eq!(captured.len(), bindings.len());
+        let boundary_binding =
+            PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
+                .manifest()
+                .binding_digest;
+        for ((request, bytes), binding) in captured.iter().zip(&serialized).zip(&bindings) {
+            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
+            assert_eq!(bytes, prepared.bytes());
+            assert_eq!(*binding, prepared.manifest().binding_digest);
+            assert_eq!(*binding, boundary_binding);
+        }
         let actual = PreparedModelInput::prepare(captured[0].clone(), self.limits)?;
         let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
         assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
@@ -1065,27 +1334,37 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         .await?,
     );
     let model = Model::new("test", "frozen", "1", Value::Null)?;
+    let sibling_overlap_barrier = Arc::new(Barrier::new(2));
     let root_model = Arc::new(CapturedModel {
+        overlap_barrier: None,
         root: true,
         read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
     });
     let children = (0..2)
         .map(|_| {
             Arc::new(CapturedModel {
+                overlap_barrier: Some(sibling_overlap_barrier.clone()),
                 root: false,
                 read_first: true,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+                serialized_requests: Mutex::new(Vec::new()),
+                binding_digests: Mutex::new(Vec::new()),
             })
         })
         .collect::<Vec<_>>();
     let grandchild = Arc::new(CapturedModel {
+        overlap_barrier: None,
         root: false,
         read_first: true,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
     });
     let publisher = Arc::new(ForkAtBatch {
         storage: storage.clone(),
@@ -1121,15 +1400,67 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
             "root.txt",
         )
         .await?;
+    let root_attachment = storage
+        .stage(
+            operation,
+            "input/root-attachment.bin",
+            b"root attachment bytes",
+            "application/octet-stream",
+            "root-attachment.bin",
+        )
+        .await?;
+    let root_attachments = vec![Attachment {
+        file: root_attachment.clone(),
+        label: Some("root attachment".into()),
+    }];
     let output = storage
-        .run_conversation(&bundle, operation, input.clone(), Vec::new(), 3)
+        .run_conversation(
+            &bundle,
+            operation,
+            input.clone(),
+            root_attachments.clone(),
+            3,
+        )
         .await?;
     assert_eq!(output.text, " \nα🦀\t retained\nfinal only");
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
+    let (root_requests, root_serialized, root_bindings) = root_model.evidence()?;
+    assert_eq!(root_requests.len(), root_serialized.len());
+    assert_eq!(root_requests.len(), root_bindings.len());
+    let root_boundary_binding = root_bindings
+        .first()
+        .copied()
+        .ok_or_else(|| Error::Storage("root model binding digest missing".into()))?;
+    for ((request, bytes), binding) in root_requests
+        .iter()
+        .zip(&root_serialized)
+        .zip(&root_bindings)
+    {
+        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        assert_eq!(bytes, prepared.bytes());
+        assert_eq!(*binding, prepared.manifest().binding_digest);
+        assert_eq!(*binding, root_boundary_binding);
+    }
     let boundary = storage
         .completed_model_boundary(operation, 0, limits)
         .await?
         .ok_or_else(|| Error::Storage("test completed boundary missing".into()))?;
+    assert_eq!(boundary.rejection_evidence.len(), 1);
+    assert_eq!(boundary.rejection_evidence[0].call_id, "invalid");
+    assert_eq!(boundary.rejection_evidence[0].name, "acyclic.stage_file");
+    assert_eq!(
+        PreparedModelInput::prepare(boundary.request.clone(), limits)?
+            .manifest()
+            .binding_digest,
+        root_boundary_binding
+    );
+    assert!(boundary.request.messages.iter().any(|message| {
+        message
+            .content
+            .file_refs()
+            .iter()
+            .any(|file| *file == &root_attachment)
+    }));
     // Each sibling receives one read_file turn followed by its terminal
     // continuation. The first request for each sibling is the exact fork
     // boundary; the continuation is allowed to contain the paired result.
@@ -1176,7 +1507,7 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
     }
     storage
-        .run_conversation(&bundle, operation, input, Vec::new(), 3)
+        .run_conversation(&bundle, operation, input, root_attachments.clone(), 3)
         .await?;
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
     let next_operation = OperationId::from_bytes([3; 16]);
@@ -1281,26 +1612,35 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
     );
     let model = Model::new("test", "frozen", "1", Value::Null)?;
     let root_model = Arc::new(CapturedModel {
+        overlap_barrier: None,
         root: true,
         read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
     });
     let children = (0..2)
         .map(|_| {
             Arc::new(CapturedModel {
+                overlap_barrier: None,
                 root: false,
                 read_first: false,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
+                serialized_requests: Mutex::new(Vec::new()),
+                binding_digests: Mutex::new(Vec::new()),
             })
         })
         .collect::<Vec<_>>();
     let grandchild = Arc::new(CapturedModel {
+        overlap_barrier: None,
         root: false,
         read_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
     });
     let publisher = Arc::new(ForkAtBatch {
         storage: storage.clone(),
