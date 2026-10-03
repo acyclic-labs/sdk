@@ -16,7 +16,10 @@ use acyclic_harness::{
         FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
         PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
-    model::{Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
+    model::{
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
+        ModelRequest, ModelRole,
+    },
     resources::ProviderRef,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
@@ -81,11 +84,13 @@ fn has_read_result(request: &ModelRequest) -> bool {
 }
 
 struct DeterministicProvider {
+    requests_decoded: Mutex<Vec<ModelRequest>>,
     requests: Mutex<Vec<Vec<u8>>>,
     root_fork_sent: AtomicBool,
     child_fork_sent: AtomicBool,
     child_read_verified: AtomicBool,
     grandchild_inherited_read: AtomicBool,
+    sibling_fork_sent: AtomicBool,
     dispatches: AtomicUsize,
     swarm: Mutex<Option<Weak<PersistentLocalSwarm>>>,
     child_a: OperationId,
@@ -96,11 +101,13 @@ struct DeterministicProvider {
 impl DeterministicProvider {
     fn new(child_a: OperationId, child_b: OperationId, grandchild: OperationId) -> Arc<Self> {
         Arc::new(Self {
+            requests_decoded: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
             root_fork_sent: AtomicBool::new(false),
             child_fork_sent: AtomicBool::new(false),
             child_read_verified: AtomicBool::new(false),
             grandchild_inherited_read: AtomicBool::new(false),
+            sibling_fork_sent: AtomicBool::new(false),
             dispatches: AtomicUsize::new(0),
             swarm: Mutex::new(None),
             child_a,
@@ -115,6 +122,10 @@ impl DeterministicProvider {
 
     fn serialized_requests(&self) -> Vec<Vec<u8>> {
         self.requests.lock().expect("request lock").clone()
+    }
+
+    fn decoded_requests(&self) -> Vec<ModelRequest> {
+        self.requests_decoded.lock().expect("request lock").clone()
     }
 
     fn assert_request_round_trips(request: &ModelRequest) {
@@ -140,11 +151,16 @@ impl ModelProvider for DeterministicProvider {
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
         Self::assert_request_round_trips(&request);
         let bytes = serde_json::to_vec(&request).expect("serialize model request");
+        self.requests_decoded
+            .lock()
+            .expect("request lock")
+            .push(request.clone());
         self.requests.lock().expect("request lock").push(bytes);
         let dispatch = self.dispatches.fetch_add(1, Ordering::SeqCst);
         let is_child_a = message_contains(&request, "child task: child-a");
         let is_child_b = message_contains(&request, "child task: child-b");
         let is_grandchild = message_contains(&request, "child task: grandchild");
+        let sibling_fork_attempt = is_child_a && message_contains(&request, "attempt sibling fork");
         let root = !is_child_a && !is_child_b && !is_grandchild;
 
         if (is_child_a || is_child_b) && dispatch > 0 {
@@ -182,43 +198,58 @@ impl ModelProvider for DeterministicProvider {
                     delta: String::new(),
                 })
             };
-            let events = if is_child_a && self.child_fork_sent.swap(true, Ordering::SeqCst) == false
-            {
-                let file = staged_file(&request).ok_or_else(|| {
-                    Error::Conflict("child request did not inherit root staged file".into())
-                });
-                let file = match file {
-                    Ok(file) => file,
-                    Err(error) => return Box::pin(stream::once(async move { Err(error) })),
+            let events =
+                if sibling_fork_attempt && !self.sibling_fork_sent.swap(true, Ordering::SeqCst) {
+                    vec![
+                        ModelEvent::ToolCall {
+                            call_id: "fork-sibling".into(),
+                            name: "acyclic.fork_child".into(),
+                            arguments: json!({
+                                "child_operation": self.child_b.to_string(),
+                                "task": "sibling-from-child-a",
+                                "prompt": "sibling must be rejected"
+                            }),
+                        },
+                        ModelEvent::Completed {
+                            metadata: Value::Null,
+                        },
+                    ]
+                } else if is_child_a && self.child_fork_sent.swap(true, Ordering::SeqCst) == false {
+                    let file = staged_file(&request).ok_or_else(|| {
+                        Error::Conflict("child request did not inherit root staged file".into())
+                    });
+                    let file = match file {
+                        Ok(file) => file,
+                        Err(error) => return Box::pin(stream::once(async move { Err(error) })),
+                    };
+                    vec![
+                        ModelEvent::ToolCall {
+                            call_id: "child-read-root".into(),
+                            name: "acyclic.read_file".into(),
+                            arguments: json!({"file": file}),
+                        },
+                        ModelEvent::ToolCall {
+                            call_id: "fork-grandchild".into(),
+                            name: "acyclic.fork_child".into(),
+                            arguments: json!({
+                                "child_operation": self.grandchild.to_string(),
+                                "task": "grandchild",
+                                "prompt": "read the inherited root file"
+                            }),
+                        },
+                        ModelEvent::Completed {
+                            metadata: Value::Null,
+                        },
+                    ]
+                } else {
+                    if is_child_a && has_read_result(&request) {
+                        self.child_read_verified.store(true, Ordering::SeqCst);
+                    }
+                    if is_grandchild && has_read_result(&request) {
+                        self.grandchild_inherited_read.store(true, Ordering::SeqCst);
+                    }
+                    Self::ordinary()
                 };
-                vec![
-                    ModelEvent::ToolCall {
-                        call_id: "child-read-root".into(),
-                        name: "acyclic.read_file".into(),
-                        arguments: json!({"file": file}),
-                    },
-                    ModelEvent::ToolCall {
-                        call_id: "fork-grandchild".into(),
-                        name: "acyclic.fork_child".into(),
-                        arguments: json!({
-                            "child_operation": self.grandchild.to_string(),
-                            "task": "grandchild",
-                            "prompt": "read the inherited root file"
-                        }),
-                    },
-                    ModelEvent::Completed {
-                        metadata: Value::Null,
-                    },
-                ]
-            } else {
-                if is_child_a && has_read_result(&request) {
-                    self.child_read_verified.store(true, Ordering::SeqCst);
-                }
-                if is_grandchild && has_read_result(&request) {
-                    self.grandchild_inherited_read.store(true, Ordering::SeqCst);
-                }
-                Self::ordinary()
-            };
             return Box::pin(stream::once(barrier).chain(stream::iter(events.into_iter().map(Ok))));
         }
 
@@ -285,7 +316,11 @@ async fn local_project(
         provider.clone(),
     )?);
     let stream = StreamClient::new(Arc::new(
-        LocalStream::open(root.join("swarm"), LocalStreamLimits::default())
+        // The shared swarm owns root/swarm as its registry stream. The
+        // resolver's conversation stream is a separate provider-backed
+        // stream, so opening the composition does not double-open the
+        // registry path.
+        LocalStream::open(root.join("conversation"), LocalStreamLimits::default())
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
     ));
@@ -348,12 +383,47 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     assert_eq!(root_output.text, "ordinary completion");
     assert!(provider.child_read_verified.load(Ordering::SeqCst));
     assert!(provider.grandchild_inherited_read.load(Ordering::SeqCst));
+    let serialized_requests = provider.serialized_requests();
+    assert!(!serialized_requests.is_empty());
     assert!(
-        provider
-            .serialized_requests()
+        serialized_requests
             .iter()
             .all(|bytes| serde_json::from_slice::<ModelRequest>(bytes).is_ok())
     );
+
+    // The child request sent to the provider must contain the exact frozen
+    // parent wire prefix followed by the persisted declaration suffix. A
+    // later child turn must retain those bytes before adding its own exchange.
+    let decoded_requests = provider.decoded_requests();
+    let child_a_requests = decoded_requests
+        .iter()
+        .filter(|request| message_contains(request, "child task: child-a"))
+        .collect::<Vec<_>>();
+    assert!(child_a_requests.len() >= 2);
+    let root_task = swarm.root_task().await?;
+    let child_a_task = acyclic_harness::TaskId::from_bytes(child_a.into_bytes());
+    let declared_suffix = format!(
+        "child task: child-a; parent: {root_task}; identity: {child_a_task}; fresh scratch: true"
+    );
+    let suffix_index = child_a_requests[0]
+        .messages
+        .iter()
+        .position(|message| {
+            message.role == ModelRole::System
+                && message.content == ModelContent::Text(declared_suffix.clone())
+        })
+        .expect("child request must carry its declared model suffix");
+    assert!(suffix_index > 0);
+    for index in 0..=suffix_index {
+        let first = serde_json::to_vec(&child_a_requests[0].messages[index])
+            .expect("serialize first child wire message");
+        let later = serde_json::to_vec(&child_a_requests[1].messages[index])
+            .expect("serialize later child wire message");
+        assert_eq!(
+            first, later,
+            "child wire prefix/suffix byte changed at {index}"
+        );
+    }
 
     let sessions = swarm.sessions().await;
     assert_eq!(sessions.len(), 4);
@@ -365,6 +435,16 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         );
         assert_eq!(swarm.outcome(task).await?.text, "ordinary completion");
     }
+
+    // A completed child cannot select its sibling as a new child. The
+    // authenticated parent binding and durable operation index reject the
+    // forged sibling fork before another child is admitted.
+    let sibling_error = swarm
+        .run(child_a_task, id(0xA2), "attempt sibling fork")
+        .await;
+    assert!(sibling_error.is_err());
+    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
+
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
     drop(swarm);
@@ -398,5 +478,18 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         dispatches_before_restart
     );
     assert_eq!(provider.serialized_requests(), requests_before_restart);
+
+    // Reusing the root operation with changed settings is rejected by the
+    // durable prompt receipt before a provider dispatch can occur.
+    assert!(
+        reopened
+            .run_root(root_operation, "mutated root setting")
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        provider.dispatches.load(Ordering::SeqCst),
+        dispatches_before_restart
+    );
     Ok(())
 }
