@@ -59,13 +59,23 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         module_source.exists(),
         "native N-API module must be built before runtime qualification"
     );
-    let fixture_module =
-        std::env::temp_dir().join(format!("acyclic-stream-native-{}.node", std::process::id()));
-    std::fs::copy(&module_source, &fixture_module)?;
+    let fixture_package = std::env::temp_dir().join(format!(
+        "acyclic-stream-native-package-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&fixture_package)?;
+    let package_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64");
+    for file in ["package.json", "index.js"] {
+        std::fs::copy(package_source.join(file), fixture_package.join(file))?;
+    }
+    std::fs::copy(
+        &module_source,
+        fixture_package.join("acyclic_stream_native.node"),
+    )?;
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
     let output = Command::new("node")
         .arg(script)
-        .env("ACYCLIC_STREAM_NATIVE_MODULE", &fixture_module)
+        .env("ACYCLIC_STREAM_NATIVE_MODULE", &fixture_package)
         .env("ACYCLIC_STREAM_FIXTURE_ENDPOINT", endpoint)
         .env(
             "ACYCLIC_STREAM_FIXTURE_CA",
@@ -74,7 +84,7 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .output()?;
     let _ = shutdown_sender.send(());
     let _ = server.await?;
-    let _ = std::fs::remove_file(&fixture_module);
+    let _ = std::fs::remove_dir_all(&fixture_package);
     if !output.status.success() {
         return Err(format!(
             "native runtime fixture failed: {}{}",

@@ -768,7 +768,7 @@
       ],
       "outstanding": [
         "Extend qualification to every operation and model vector before making broader target claims.",
-        "Audit the individual CPAN dependency licenses before any redistribution claim.",
+        "Review the 70 installed CPAN distribution license records before any redistribution claim; the closure receipt is separate from the HTTP package.",
         "The generated Perl HTTP client has no operation cancellation primitive; native cancellation and endpoint-pool recovery remain unqualified."
       ]
     },
@@ -781,7 +781,7 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "Generated PowerShell/curl-style HTTP module; no protobuf/gRPC package target."
+        "notes": "Rust-owned adapted PowerShell HTTP module is installed and loopback-qualified for one Workers route; no protobuf/gRPC package target."
       },
       "embedded": {
         "level": "none",
@@ -798,17 +798,23 @@
       "package": {
         "ecosystem": "PowerShell Gallery/module",
         "artifact": "Acyclic.SDK",
-        "installable": false,
-        "notes": "Needs PowerShell module import smoke."
+        "installable": true,
+        "notes": "Local AcyclicWorkersHttp module package imports under PowerShell 7.6.5; artifact SHA-256 716C88031A65719D02194C050DB069AD2033978BC105C4D55C8BECE6FD6BCB9F; receipt: openapi-targets/receipt.json."
       },
       "evidence": [
         {
           "url": "https://openapi-generator.tech/docs/generators/powershell/",
           "claim": "PowerShell generator is listed with HTTP client output."
+        },
+        {
+          "url": "openapi-targets/receipt.json",
+          "claim": "Rust-derived Workers module imported under PowerShell 7.6.5 and passed direct byte[], base64 and uint64 loopback vectors."
         }
       ],
       "outstanding": [
-        "Qualify module signing/import and error mapping; keep HTTP-only label."
+        "Extend qualification from the Workers representative route to the other Rust HTTP family projections and model vectors.",
+        "Review generated module and PowerShell/runtime dependency licenses before redistribution; keep the package local-only.",
+        "PowerShell generated client has no native gRPC, endpoint-pool recovery or operation cancellation qualification."
       ]
     },
     {

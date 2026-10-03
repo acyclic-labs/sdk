@@ -32,7 +32,10 @@
     "version": "5.38.0",
     "license_scope": "Perl distribution licensing applies; no single license is asserted for the CPAN dependency closure",
     "dependency_installer": "cpanm local-lib-contained",
-    "dependency_install": "69 distributions installed into ignored target/perl/local-lib"
+    "dependency_install": "70 installed distribution metadata records in ignored target/perl/local-lib",
+    "license_closure": "research/additional-languages/openapi-targets/perl-license-closure.json",
+    "license_closure_sha256": "1E0E0FE78B89B5ED9D8FB936FF76314D58B0B997A4C87CC5D0F0EBD993B8C2FD",
+    "generated_cpanfile_sha256": "BA737D35B89FD166DE51A409014AF56D92B5DE6A413C7232837C0D0505586F27"
   },
   "package": {
     "name": "acyclic-http-perl-0.1.0.zip",
@@ -57,7 +60,7 @@
   "license_scope": {
     "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
     "perl_runtime": "Strawberry Perl licensing applies to the installed runtime",
-    "cpan_dependencies": "Each CPAN distribution retains its own license; dependency closure was installed for local qualification only",
+    "cpan_dependencies": "Each CPAN distribution retains its own license; the separate 70-record local closure is listed in perl-license-closure.json and remains unreviewed for redistribution",
     "transport": "LWP::UserAgent and its dependency licenses remain separate runtime obligations",
     "fixture_and_consumer": "Local qualification harness is repository research code; it does not change generated package licensing"
   },

@@ -1,0 +1,720 @@
+{
+  "receipt_version": 1,
+  "recorded_at": "2026-10-03",
+  "target": "perl",
+  "package": "acyclic-http-perl-0.1.0.zip",
+  "generated_cpanfile_sha256": "BA737D35B89FD166DE51A409014AF56D92B5DE6A413C7232837C0D0505586F27",
+  "package_scope": "Generated five-family Perl HTTP clients only; this receipt covers the separate local CPAN dependency closure and does not make the package redistributable.",
+  "installer": "cpanm --local-lib-contained --notest --skip-satisfied --installdeps",
+  "runtime": "Strawberry Perl 5.38.0",
+  "dependency_count": 70,
+  "metadata_root": "research/additional-languages/target/perl/local-lib/lib/perl5/MSWin32-x64-multi-thread/.meta",
+  "license_evidence": [
+    {
+      "distribution": "B-Hooks-EndOfScope",
+      "version": "0.28",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "9BB39F68FDE47E59F5755D22F49146A8923506F997EDDFF93A2784F10A7E1FC3",
+      "source_repository": "https://github.com/karenetheridge/B-Hooks-EndOfScope"
+    },
+    {
+      "distribution": "Class-Accessor",
+      "version": "0.51",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "F317F4E3EBBE2B7D98AC31E88BEF823589F02BC0ADE4E5E0E0C4B0E17D97474A",
+      "source_repository": null
+    },
+    {
+      "distribution": "Class-Data-Inheritable",
+      "version": "0.10",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "FF7766C6606F00E3296DE7B07BD92DBC9F1138CC27B6D5438CE8DD177370D292",
+      "source_repository": null
+    },
+    {
+      "distribution": "Class-Inspector",
+      "version": "1.36",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "FFED461FF7F9F5B268B6C1D4BB4545E6767817182CDD1138E27BEF1C0E0F2B13",
+      "source_repository": "https://github.com/plicease/Class-Inspector"
+    },
+    {
+      "distribution": "Class-Load",
+      "version": "0.25",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "861E2A21C825404DF0CC4B1DC333534B5EEBE95F53CB09ED1FE0E0CC061135F4",
+      "source_repository": "https://github.com/moose/Class-Load"
+    },
+    {
+      "distribution": "Class-Load-XS",
+      "version": "0.10",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": null,
+      "metadata_sha256": "38301A8518C655A60E070ED5DA175B8792A1CE6F5790C04A0A628BA685FC6F0E",
+      "source_repository": "https://github.com/moose/Class-Load-XS"
+    },
+    {
+      "distribution": "Class-Singleton",
+      "version": "1.6",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "18690A849ABF793EA53D1F5B952881C385C611D68176972A889B0529F8AB2DB8",
+      "source_repository": "https://github.com/steve-m-hay/Class-Singleton"
+    },
+    {
+      "distribution": "Clone",
+      "version": "0.51",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "AF93059B47F515DCA43E7167CEDA9E4DE827A56F9ABF295FC3A151426BD74EAC",
+      "source_repository": null
+    },
+    {
+      "distribution": "Clone-PP",
+      "version": "1.09",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "824F2AAB74E12022FF39334111DBF680AC06D6BD1A969337C3DA1086D1D289A0",
+      "source_repository": "https://github.com/neilbowers/Clone-PP"
+    },
+    {
+      "distribution": "Data-OptList",
+      "version": "0.115",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "FA2A3893BAB2DBEFD6C84AC3D45099D32C6830DA9EE7BE4D18DDE4D3213098F5",
+      "source_repository": "https://github.com/rjbs/Data-OptList"
+    },
+    {
+      "distribution": "DateTime",
+      "version": "1.67",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": "Artistic-2.0",
+      "metadata_sha256": "60374F26ECD8E97F63B3AFECA401E2420238D0BA7F02B17CC9EE02F2590EDABC",
+      "source_repository": "https://github.com/houseabsolute/DateTime.pm"
+    },
+    {
+      "distribution": "DateTime-Locale",
+      "version": "1.46",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "81D9B8F1FFB2E72BC9C2723CB327DFBA7B233715B4E86E46A1F3D598104B0E1F",
+      "source_repository": "https://github.com/houseabsolute/DateTime-Locale"
+    },
+    {
+      "distribution": "DateTime-TimeZone",
+      "version": "2.71",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "DB5A8A2F1952147878B31674ABF5E053BE78B10F3A3631358F9775E09C6FFDEF",
+      "source_repository": "https://github.com/houseabsolute/DateTime-TimeZone"
+    },
+    {
+      "distribution": "DateTime-TimeZone-Local-Win32",
+      "version": "2.06",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "2017F4D7D7D37DF9136531A26534D28F4C56872F3699BA0E6B650D475AF58A57",
+      "source_repository": "https://github.com/dapink/DateTime-TimeZone-Local-Win32"
+    },
+    {
+      "distribution": "Devel-GlobalDestruction",
+      "version": "0.14",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "5FF89B67A4D1930C0716ED749CECEBD1E3A3E0BB32D2A5DC3B6E1D5BA36A677F",
+      "source_repository": "http://git.shadowcat.co.uk/gitweb/gitweb.cgi?p=p5sagit/Devel-GlobalDestruction.git"
+    },
+    {
+      "distribution": "Devel-OverloadInfo",
+      "version": "0.008",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "18F79BE9999371FAE0EC677E533A11EC120C5BB9121FBBC7A472AEA31C5ED19F",
+      "source_repository": "https://codeberg.org/ilmari/Devel-OverloadInfo"
+    },
+    {
+      "distribution": "Devel-StackTrace",
+      "version": "2.05",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": "Artistic-2.0",
+      "metadata_sha256": "0F928C90BF9B86CA376783E1D59E3292B29F52EFF3BA1DE7A61B311D71C8DEE7",
+      "source_repository": "https://github.com/houseabsolute/Devel-StackTrace"
+    },
+    {
+      "distribution": "Dist-CheckConflicts",
+      "version": "0.11",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "DB9829C8EB9A15B56B6053F364A206C87FDC06B8963EF20ED446D751FE991189",
+      "source_repository": "https://github.com/doy/dist-checkconflicts"
+    },
+    {
+      "distribution": "Encode-Locale",
+      "version": "1.05",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "8C754EBCCCBF98A1C50A861F84C35D505E37D55BF00D3B043B74DA9524E93011",
+      "source_repository": null
+    },
+    {
+      "distribution": "Eval-Closure",
+      "version": "0.14",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "724F1C018F0FDE50577938B0E03B0C40F4F128B57526987A457AEA0397932F1C",
+      "source_repository": "https://github.com/doy/eval-closure"
+    },
+    {
+      "distribution": "Exception-Class",
+      "version": "1.46",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "63B97C2BB6EE16BB815760B305CA230E101EF88A9212CCD8BFD58A43DD38283C",
+      "source_repository": "https://github.com/houseabsolute/Exception-Class"
+    },
+    {
+      "distribution": "File-Listing",
+      "version": "6.16",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "1636F41755A0CB7B9C2CFAB9AF89C6D004AE174E9E94595A92CB63D70763423A",
+      "source_repository": "https://github.com/PerlAlien/File-Listing"
+    },
+    {
+      "distribution": "File-ShareDir",
+      "version": "1.118",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "C078C1DE6ECB2855879909BF4F7D63F2C65CEF05837F5D8CBABF89F2DBB990DF",
+      "source_repository": "https://github.com/perl5-utils/File-ShareDir"
+    },
+    {
+      "distribution": "File-ShareDir-Install",
+      "version": "0.14",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "29FC5A2D6C4741486488B4623D989E82202C9B7A86054ACEA80E5C602FDF0C4A",
+      "source_repository": "https://github.com/Perl-Toolchain-Gang/File-ShareDir-Install"
+    },
+    {
+      "distribution": "HTML-Parser",
+      "version": "3.86",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "EDD84B4F3FE1CBC68A7E1BA6663CBEA8F5EE3FE827673B5673E598426693991C",
+      "source_repository": "https://github.com/libwww-perl/HTML-Parser"
+    },
+    {
+      "distribution": "HTML-Tagset",
+      "version": "3.24",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": null,
+      "metadata_sha256": "54ADA46185730371A289F166015466F177F57734122D8C76E19B6BA95E379072",
+      "source_repository": null
+    },
+    {
+      "distribution": "HTTP-Cookies",
+      "version": "6.12",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "2768455A77F31C435B24F0C699AF5A83783DAB3C014ABE209B5F71B7B92B450D",
+      "source_repository": "https://github.com/libwww-perl/HTTP-Cookies"
+    },
+    {
+      "distribution": "HTTP-Date",
+      "version": "6.08",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "7DBBD59672F9CB9A05C3C6E8972B5071830050CA4ED9829B04092D0FFC344263",
+      "source_repository": "https://github.com/libwww-perl/HTTP-Date"
+    },
+    {
+      "distribution": "HTTP-Message",
+      "version": "7.04",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "6ADEF4650499BBC3C5885253B2ADB4E39F9E8C14989030058A8A11A77E5392B5",
+      "source_repository": "https://github.com/libwww-perl/HTTP-Message"
+    },
+    {
+      "distribution": "HTTP-Negotiate",
+      "version": "6.01",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "44ABA40723AE0C5D95D4CC8FA9322E0CDD20BA7210761B9133EA555213D8A03F",
+      "source_repository": null
+    },
+    {
+      "distribution": "IO-HTML",
+      "version": "1.004",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "E09FE9F491690FE86F4EA310BD442D335634E0DED49647F91531C33689A6BCCD",
+      "source_repository": "https://github.com/madsen/io-html"
+    },
+    {
+      "distribution": "JSON",
+      "version": "4.11",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "81E33FCC329F6C35A43930C3EFA0988738F2D113C34A6F3FACEBB25C80291432",
+      "source_repository": null
+    },
+    {
+      "distribution": "libwww-perl",
+      "version": "6.83",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "CD1FA67EC5101955447F2B372F57B623E8CEA8FE1FD5B17B893FAB3CA28EAB7F",
+      "source_repository": "https://github.com/libwww-perl/libwww-perl"
+    },
+    {
+      "distribution": "Log-Any",
+      "version": "1.720",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "8A05153166236737BE8865F66EED964878304F8A65E9B66580F0F732F18DFC7D",
+      "source_repository": "https://github.com/preaction/Log-Any"
+    },
+    {
+      "distribution": "LWP-MediaTypes",
+      "version": "6.05",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "55CF15C7D1159231C45252852345E55C1EA49AE212BB92EBE8D03DE937A65C8D",
+      "source_repository": "https://github.com/libwww-perl/LWP-MediaTypes"
+    },
+    {
+      "distribution": "MIME-Base32",
+      "version": "1.303",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "A946145D85EDD7E73201373619489D7C7F666D84649EF51EDA7A2926FE19F807",
+      "source_repository": "https://github.com/perl5-utils/MIME-Base32"
+    },
+    {
+      "distribution": "Module-Find",
+      "version": "0.17",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "98129F8F73B67B1C685769B1415C40F3513D0FC7947C05BDF84DF51E4D9395C7",
+      "source_repository": null
+    },
+    {
+      "distribution": "Module-Implementation",
+      "version": "0.09",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": null,
+      "metadata_sha256": "469C50C9FD667E98D3EB218C52EC0C890EA01F0C785CDFE0D6F4F58253A16486",
+      "source_repository": "https://github.com/autarch/Module-Implementation"
+    },
+    {
+      "distribution": "Module-Runtime",
+      "version": "0.018",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "78A57F160628ED0A7F20DA3DC0AF49A00C7B8ECDA5711D86AB1A547BA36F9599",
+      "source_repository": "https://github.com/haarg/Module-Runtime"
+    },
+    {
+      "distribution": "Module-Runtime-Conflicts",
+      "version": "0.003",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "845463BBBAA8F4715616739C26E264BE7F5DA657BB3D391678191A77692892C8",
+      "source_repository": "https://github.com/karenetheridge/Module-Runtime-Conflicts"
+    },
+    {
+      "distribution": "Moose",
+      "version": "2.4001",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "68DA6724408C1F33C34B065C3DCB091DC043FD95C13BBA8CA531E9B2853531F8",
+      "source_repository": "https://github.com/moose/Moose"
+    },
+    {
+      "distribution": "MRO-Compat",
+      "version": "0.15",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "25289DD221B3222078FFB789D35B45EE27B0859166B9904F3552CE1167526C69",
+      "source_repository": "https://github.com/moose/MRO-Compat"
+    },
+    {
+      "distribution": "namespace-autoclean",
+      "version": "0.31",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "1A6BB9099EFEBC1A4F1556F825AED3B5A7CBBEE05102DE6BBCC75B031BF5CC01",
+      "source_repository": "https://github.com/moose/namespace-autoclean"
+    },
+    {
+      "distribution": "namespace-clean",
+      "version": "0.27",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "B6AB9023C4C51D4175564D9702D5AF70CCEB5056BAEF673F37279426E20B2169",
+      "source_repository": "https://github.com/p5sagit/namespace-clean"
+    },
+    {
+      "distribution": "Net-HTTP",
+      "version": "6.24",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "46259329C3E2CF05270F921D220018127988AFD5071C36A12194D97AF614B7B0",
+      "source_repository": "https://github.com/libwww-perl/Net-HTTP"
+    },
+    {
+      "distribution": "Package-DeprecationManager",
+      "version": "0.18",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": "Artistic-2.0",
+      "metadata_sha256": "605437029429F16A7A262E011C1C843013B59FF8DF7ACE525A484F7C635DE9A4",
+      "source_repository": "https://github.com/moose/Package-DeprecationManager"
+    },
+    {
+      "distribution": "Package-Stash",
+      "version": "0.40",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "D967E88418BBB6C76AEE659C85DFE1FA8ADEAD1FF6A20BBA440C69C87505694C",
+      "source_repository": "https://github.com/moose/Package-Stash"
+    },
+    {
+      "distribution": "Package-Stash-XS",
+      "version": "0.30",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "499BE644ADE84C7669E6063B14B11216BE8F985906010C8EAD0C3AD84C7CAC0B",
+      "source_repository": "https://github.com/moose/Package-Stash-XS"
+    },
+    {
+      "distribution": "Params-SomeUtil",
+      "version": "1.12",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "0BE874199F0A38BAD4932D9A1D677685C02AF53E92717C5D0B41460D10653FA2",
+      "source_repository": "https://github.com/uperl/Params-SomeUtil"
+    },
+    {
+      "distribution": "Params-Util",
+      "version": "1.102",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "BE860D2719C8E7906EB55D512DFF5B5AF4039379EFD410A525065799014BBE6F",
+      "source_repository": "https://github.com/perl5-utils/Params-Util"
+    },
+    {
+      "distribution": "Params-ValidationCompiler",
+      "version": "0.31",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": "Artistic-2.0",
+      "metadata_sha256": "18593BF17D9AAC818B0576A196BAEE3431A662655FBD6C20337AB565CA243876",
+      "source_repository": "https://github.com/houseabsolute/Params-ValidationCompiler"
+    },
+    {
+      "distribution": "Role-Tiny",
+      "version": "2.002005",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "D9F55192F142CF93DAA151F93F943B37E996EDDC0C372AC60AB23442D03CEC61",
+      "source_repository": "https://github.com/moose/Role-Tiny"
+    },
+    {
+      "distribution": "Specio",
+      "version": "0.53",
+      "license": [
+        "artistic_2"
+      ],
+      "spdx": "Artistic-2.0",
+      "metadata_sha256": "D2114BD3B27A502CAB0EA23DDC8589B5BC724C062568345B243AAA49115F22F8",
+      "source_repository": "https://github.com/houseabsolute/Specio"
+    },
+    {
+      "distribution": "Sub-Exporter",
+      "version": "0.992",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "580CF23EF72534C0C78A33792EB1DF220AB595D2A2765B9528C3F02D0A6A5610",
+      "source_repository": "https://github.com/rjbs/Sub-Exporter"
+    },
+    {
+      "distribution": "Sub-Exporter-Progressive",
+      "version": "0.001013",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "A7C88296E9FBB4E76A8FA9BD20221BEB48B91924CD60D78849DB1F473FF8EED7",
+      "source_repository": "https://github.com/frioux/Sub-Exporter-Progressive"
+    },
+    {
+      "distribution": "Sub-Install",
+      "version": "0.929",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "43F96CCDC6F3D09B3A07DFF0944A4591209C3479A96F28240AFC217D3D245F98",
+      "source_repository": "https://github.com/rjbs/Sub-Install"
+    },
+    {
+      "distribution": "Sub-Quote",
+      "version": "2.006009",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "A60553075E00D8379BA925E20166C94513D060E3FAC83D044E83710E20799B10",
+      "source_repository": "https://github.com/moose/Sub-Quote"
+    },
+    {
+      "distribution": "Sub-Uplevel",
+      "version": "0.2800",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "250854E9369FC76B736E34460DBF4E13DB320B79368C99AB531DDDF00EA9BCDE",
+      "source_repository": "https://github.com/Perl-Toolchain-Gang/Sub-Uplevel"
+    },
+    {
+      "distribution": "Test-Exception",
+      "version": "0.43",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "2EB28AB75C0AF6527EBE55AD2ADB502EC37CA51C6DE9E1092B8CD3C8A2927233",
+      "source_repository": "https://github.com/Test-More/test-exception"
+    },
+    {
+      "distribution": "Test-Fatal",
+      "version": "0.019",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "F720FD7A37DF6F5AE72478D94CC6D3315A9C07F4F623E4F4B1311E83669A67EB",
+      "source_repository": "https://github.com/rjbs/Test-Fatal"
+    },
+    {
+      "distribution": "TimeDate",
+      "version": "2.35",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "1284F60D9DDC7D886FAE2EF4CDBECABE451DA0DCF9527F97C5DF2707108D33B8",
+      "source_repository": "https://github.com/cpan-authors/TimeDate"
+    },
+    {
+      "distribution": "Try-Tiny",
+      "version": "0.32",
+      "license": [
+        "mit"
+      ],
+      "spdx": "MIT",
+      "metadata_sha256": "DC12CE8073A8F86045327008EAA443027D3A08B2D6611B951B92D8C1FEC448D8",
+      "source_repository": "https://github.com/p5sagit/Try-Tiny"
+    },
+    {
+      "distribution": "URI",
+      "version": "5.37",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "759518B53663CE88D747A4A2D16B6E7A015741D75A518633EF804128E6F45A05",
+      "source_repository": "https://github.com/libwww-perl/URI"
+    },
+    {
+      "distribution": "URI-Query",
+      "version": "0.16",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "A372E589E824AEFE007BE23E3B176964A0BE07FCA9F7CF64424FC39688CE8866",
+      "source_repository": null
+    },
+    {
+      "distribution": "Variable-Magic",
+      "version": "0.65",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "A744588EB220A41AD1A21224076DFF103EC5979FA6AB0C6467C4B888FDCAC64C",
+      "source_repository": "http://git.vpit.fr/?p=perl%2Fmodules%2FVariable-Magic.git"
+    },
+    {
+      "distribution": "Win32-TieRegistry",
+      "version": "0.30",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "D7B4752F81F06A752A0DAF2E4A3CBA5DCA9CF8A508ECEFC5C56BFB5323677489",
+      "source_repository": null
+    },
+    {
+      "distribution": "Win32-WinError",
+      "version": "0.04",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "2295D811603B664B3D696EAA9B533A2875D538B445B53B7DD5CE32EE0B01D909",
+      "source_repository": null
+    },
+    {
+      "distribution": "Win32API-Registry",
+      "version": "0.33",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": null,
+      "metadata_sha256": "19842A98EB6A98F669E39D1A13C60514CF269196AD78560773E9E1F09FE1E574",
+      "source_repository": null
+    },
+    {
+      "distribution": "WWW-RobotRules",
+      "version": "6.03",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "4221173B922D9DF88AF26F4A3031D7713ED12700F4588F2C11042E08F2DC95F4",
+      "source_repository": "https://github.com/libwww-perl/WWW-RobotRules"
+    },
+    {
+      "distribution": "XString",
+      "version": "0.005",
+      "license": [
+        "perl_5"
+      ],
+      "spdx": "Artistic-1.0-Perl OR GPL-1.0-or-later",
+      "metadata_sha256": "D96CC355F28A72A04309F366FC5047C5C16937835D798A26F23C77103682611D",
+      "source_repository": "https://github.com/atoomic/XString.git"
+    }
+  ],
+  "limitations": [
+    "MYMETA records are installed-package metadata, not a legal redistribution review.",
+    "Strawberry Perl runtime and generated OAG source have separate license scopes.",
+    "Native XS/system libraries and transitive runtime obligations still require package-level review before redistribution.",
+    "The local-lib directory is ignored and is not embedded in the HTTP zip."
+  ]
+}
