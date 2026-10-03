@@ -502,6 +502,12 @@ impl StockExecutor {
         }
         for message in &context.messages {
             message.content.validate_limits(self.limits)?;
+            // Stages may introduce references beyond the original turn selection.
+            // Resolve each final reference under this journal's exact authority
+            // before admission, reconciliation, or dispatch reaches a provider.
+            for reference in message.content.file_refs() {
+                journal.verify_input_file(reference).await?;
+            }
         }
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();

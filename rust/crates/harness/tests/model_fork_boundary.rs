@@ -106,6 +106,86 @@ struct ForkAtBatch {
     paused: bool,
 }
 impl ForkAtBatch {
+    async fn assert_child_unbound(
+        &self,
+        seed: &acyclic_harness::fork::ForkSeed,
+        issuer: &AuthorityIssuer,
+    ) -> Result<()> {
+        let child = StreamAggregate::open(
+            &self.stream,
+            seed.child.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        assert_eq!(child.reducer().revision(), 0);
+        assert_eq!(
+            child.reducer().conversation().and_then(|state| state.agent),
+            None
+        );
+        Ok(())
+    }
+
+    async fn prebind_rejections(
+        &self,
+        parent: &StreamAggregate<LocalStream>,
+        report: &acyclic_harness::fork::ForkReport,
+        issuer: &AuthorityIssuer,
+    ) -> Result<()> {
+        let seed = report.clone().into_seed()?;
+        self.assert_child_unbound(&seed, issuer).await?;
+        let mut foreign = seed.clone();
+        let grant = foreign
+            .reference_grants
+            .first_mut()
+            .ok_or_else(|| Error::Storage("fixture reference grant missing".into()))?;
+        let volume = VolumeRef::new(
+            ProviderRef::new("foreign-filesystem", "filesystem", "2")?,
+            "foreign-source",
+            grant.file.volume().class(),
+            grant.file.volume().owner().clone(),
+        )?;
+        grant.file = acyclic_harness::conversation::FileRef::new(
+            volume,
+            grant.file.path(),
+            grant.file.version(),
+            grant.file.descriptor().clone(),
+            grant.file.display_name(),
+        )?;
+        foreign.validate()?;
+        assert!(matches!(HarnessStorage::from_published_fork(
+            self.limits.file_bytes, self.host.clone(), self.stream.clone(),
+            issuer.clone(), parent, &foreign,
+        ).await, Err(Error::Unauthorized(message)) if message.contains("another provider")));
+        self.assert_child_unbound(&seed, issuer).await?;
+        let mut unallocated = seed.clone();
+        unallocated.operation_id = OperationId::from_bytes([252; 16]);
+        unallocated.validate()?;
+        assert!(matches!(HarnessStorage::from_published_fork(
+            self.limits.file_bytes, self.host.clone(), self.stream.clone(),
+            issuer.clone(), parent, &unallocated,
+        ).await, Err(Error::Conflict(message)) if message.contains("another preparation")));
+        self.assert_child_unbound(&seed, issuer).await?;
+        let mut changed_project = seed.clone();
+        for resource in &mut changed_project.resources {
+            if let ResourceRevision::Project { volume, .. } = &mut resource.revision {
+                *volume = VolumeRef::new(
+                    volume.provider().clone(),
+                    "unallocated-project",
+                    VolumeClass::Project,
+                    volume.owner().clone(),
+                )?;
+            }
+        }
+        changed_project.validate()?;
+        assert!(matches!(HarnessStorage::from_published_fork(
+            self.limits.file_bytes, self.host.clone(), self.stream.clone(),
+            issuer.clone(), parent, &changed_project,
+        ).await, Err(Error::Conflict(message)) if message.contains("allocated publication")));
+        self.assert_child_unbound(&seed, issuer).await?;
+        Ok(())
+    }
+
     async fn attached_reader(
         &self,
         seed: &acyclic_harness::fork::ForkSeed,
@@ -392,6 +472,9 @@ impl ForkAtBatch {
                 boundary: None,
             };
             let report = parent.prepare_fork(&preparer, request).await?;
+            self.prebind_rejections(&parent, &report, &child_issuer)
+                .await?;
+
             let mut child = StreamAggregate::open(
                 &self.stream,
                 child_authority.clone(),
