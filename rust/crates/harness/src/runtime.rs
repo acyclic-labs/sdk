@@ -18,7 +18,7 @@ use crate::{
     },
     live::{TaskGroup, TaskHandle},
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelOptionPolicy,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
         ModelProvider, ModelRequest,
     },
     registry::{ComponentIdentity, validate_component_label},
@@ -5698,6 +5698,7 @@ impl std::ops::Deref for ToolContext {
 mod tests {
     use super::*;
     use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
+    use crate::model::ModelOptionPolicy;
     use crate::resources::ProviderRef;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::atomic::{AtomicUsize, Ordering};
