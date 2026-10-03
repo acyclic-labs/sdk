@@ -9,7 +9,10 @@ import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const RESPONSE_TIMEOUT_MS = 15_000;
+const CLOSE_TIMEOUT_MS = 5_000;
 
 function fail(message) {
   throw new Error(`graphcoder-native-stage-e2e: ${message}`);
@@ -44,6 +47,10 @@ function parseLine(line, label) {
   return value;
 }
 
+function assertNoAttachments(value, label) {
+  if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "attachments")) fail(`${label} unexpectedly exposed automatic attachments`);
+}
+
 function runDroppedStart(runtime, root) {
   const result = spawnSync(runtime, ["--root", root, "--model-fixture", "stage"], {
     cwd: resolve("."),
@@ -53,6 +60,7 @@ function runDroppedStart(runtime, root) {
     shell: false,
     windowsHide: true,
     maxBuffer: 16 * 1024 * 1024,
+    timeout: RESPONSE_TIMEOUT_MS,
   });
   if (result.error) fail(`initial native process failed: ${result.error.message}`);
   if (result.status !== 0) fail(`initial native process exited ${result.status}: ${result.stderr}`);
@@ -76,12 +84,49 @@ async function runReopen(runtime, root) {
   const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
   const stderr = [];
   child.stderr.on("data", value => stderr.push(String(value)));
+  const output = lines[Symbol.asyncIterator]();
+  let closeResolve;
+  const closed = new Promise(resolvePromise => { closeResolve = resolvePromise; });
+  child.once("close", (code, signal) => closeResolve({ code, signal }));
+  let errorReject;
+  const processError = new Promise((_resolve, reject) => { errorReject = reject; });
+  child.once("error", error => errorReject(error));
   const next = async label => {
-    const result = await new Promise((resolvePromise, reject) => {
-      const onLine = line => { lines.off("line", onLine); resolvePromise(parseLine(line, label)); };
-      lines.on("line", onLine);
-      child.once("error", reject);
-    });
+    let timer;
+    try {
+      const result = await Promise.race([
+        output.next(),
+        closed.then(value => ({ closed: value })),
+        processError.then(error => ({ error })),
+        new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), RESPONSE_TIMEOUT_MS); }),
+      ]);
+      if (result?.timeout) fail(`${label} response timed out after ${RESPONSE_TIMEOUT_MS}ms`);
+      if (result?.error) fail(`${label} native process failed: ${result.error.message}`);
+      if (result?.closed) fail(`${label} native process closed before its response (code ${result.closed.code}, signal ${result.closed.signal ?? "none"})`);
+      if (result.done) fail(`${label} native process ended before its response`);
+      return parseLine(result.value, label);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const waitForClose = async () => {
+    let timer;
+    const result = await Promise.race([
+      closed,
+      new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (result.timeout) {
+      child.kill();
+      let killTimer;
+      const killed = await Promise.race([
+        closed,
+        new Promise(resolvePromise => { killTimer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
+      ]);
+      clearTimeout(killTimer);
+      if (killed.timeout) fail(`native process did not close within ${CLOSE_TIMEOUT_MS}ms after termination`);
+      return killed;
+    }
     return result;
   };
   try {
@@ -91,36 +136,78 @@ async function runReopen(runtime, root) {
     const sessionId = retried.result?.summary?.id;
     const generation = retried.result?.workspace_generation;
     if (typeof sessionId !== "string" || typeof generation !== "string") fail("retry omitted session identity or generation");
+    if (!/^[1-9][0-9]*$/u.test(generation)) fail(`retry returned a nonzero decimal generation: ${generation}`);
+    assertNoAttachments(retried.result, "retry snapshot");
 
     child.stdin.write(request("stage-file", "read_file", { session_id: sessionId, path: "graphcoder-fixture.txt", generation }));
     const file = await next("read_file");
-    if (file.ok !== true || file.result?.path !== "graphcoder-fixture.txt" || file.result?.media_type !== "text/plain") fail(`staged file response was invalid: ${JSON.stringify(file)}`);
+    if (file.ok !== true) fail(`native read_file route failed instead of returning a file: ${JSON.stringify(file)}`);
+    if (file.result?.path !== "graphcoder-fixture.txt" || file.result?.media_type !== "text/plain" || file.result?.generation !== generation) fail(`staged file response was invalid: ${JSON.stringify(file)}`);
     const bytes = file.result?.bytes;
     if (!Array.isArray(bytes) || Buffer.from(bytes).toString("utf8") !== "fixture:stage") fail(`staged file bytes were invalid: ${JSON.stringify(file)}`);
+    assertNoAttachments(file.result, "file response");
 
     child.stdin.write(request("stage-reopen", "open_session", { session_id: sessionId }));
     const reopened = await next("reopen");
-    if (reopened.ok !== true || reopened.result?.summary?.state !== "completed") fail(`reopened session was invalid: ${JSON.stringify(reopened)}`);
+    if (reopened.ok !== true || reopened.result?.summary?.state !== "completed" || reopened.result?.workspace_generation !== generation) fail(`reopened session was invalid: ${JSON.stringify(reopened)}`);
+    assertNoAttachments(reopened.result, "reopened snapshot");
 
     child.stdin.write(request("stage-activity", "read_activity", { session_id: sessionId }));
     const activity = await next("activity");
     if (activity.ok !== true || !Array.isArray(activity.result?.items) || activity.result.items.length === 0) fail(`activity response was invalid: ${JSON.stringify(activity)}`);
 
-    return { retried, file, reopened, activity };
+    return { sessionId, generation, retried, file, reopened, activity };
   } finally {
     child.stdin.end();
-    await new Promise(resolvePromise => child.once("close", resolvePromise));
+    const exit = await waitForClose();
     lines.close();
-    if (child.exitCode !== 0) fail(`reopened native process exited ${child.exitCode}: ${stderr.join("")}`);
+    if (exit.code !== 0) fail(`reopened native process exited ${exit.code}: ${stderr.join("")}`);
+  }
+}
+
+async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId, generation }) {
+  const modulePath = join(packageRoot, "dist", "node.js");
+  if (!existsSync(modulePath)) fail(`installed GraphCoder package is missing its Node connection: ${modulePath}`);
+  const { createNodeGraphCoderConnection } = await import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`);
+  let exitResolve;
+  const exited = new Promise(resolvePromise => { exitResolve = resolvePromise; });
+  const connection = createNodeGraphCoderConnection({
+    executable: runtime,
+    args: ["--root", root, "--model-fixture", "stage"],
+    cwd: resolve("."),
+    env: childEnvironment(),
+    onDiagnostic: event => { if (event.kind === "exit") exitResolve(event); },
+  });
+  try {
+    const snapshot = await connection.transport.openSession(sessionId);
+    if (snapshot.workspaceGeneration <= 0n || snapshot.workspaceGeneration !== BigInt(generation)) fail(`installed consumer decoded an unexpected workspace generation: ${snapshot.workspaceGeneration}`);
+    assertNoAttachments(snapshot, "installed consumer snapshot");
+    const file = await connection.transport.readFile(sessionId, "graphcoder-fixture.txt", snapshot.workspaceGeneration);
+    if (typeof file.generation !== "bigint" || file.generation !== snapshot.workspaceGeneration) fail(`installed consumer did not preserve BigInt file generation: ${String(file.generation)}`);
+    if (file.mediaType !== "text/plain" || Buffer.from(file.bytes).toString("utf8") !== "fixture:stage") fail(`installed consumer decoded unexpected file body: ${JSON.stringify({ path: file.path, mediaType: file.mediaType, bytes: [...file.bytes] })}`);
+    assertNoAttachments(file, "installed consumer file");
+    return { generation: file.generation.toString(), mediaType: file.mediaType, bytes: [...file.bytes] };
+  } finally {
+    connection.bridge.close("native stage qualification finished");
+    let timer;
+    const result = await Promise.race([
+      exited,
+      new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
+    ]);
+    clearTimeout(timer);
+    if (result.timeout) fail(`installed consumer bridge did not close within ${CLOSE_TIMEOUT_MS}ms`);
   }
 }
 
 export async function runNativeStageScenario({ runtime = required("GRAPHCODER_NATIVE_RUNTIME"), root = process.env.GRAPHCODER_NATIVE_ROOT } = {}) {
   regularFile(runtime);
+  const packageRoot = required("GRAPHCODER_PACKAGE_ROOT");
   const ownedRoot = root === undefined ? mkdtempSync(join(tmpdir(), "graphcoder-native-stage-")) : resolve(root);
   try {
     runDroppedStart(runtime, ownedRoot);
-    return await runReopen(runtime, ownedRoot);
+    const result = await runReopen(runtime, ownedRoot);
+    const installed = await runInstalledConsumerRead({ packageRoot, runtime, root: ownedRoot, sessionId: result.sessionId, generation: result.generation });
+    return { ...result, installed };
   } finally {
     if (root === undefined) rmSync(ownedRoot, { recursive: true, force: true });
   }
@@ -128,7 +215,7 @@ export async function runNativeStageScenario({ runtime = required("GRAPHCODER_NA
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runNativeStageScenario().then(result => {
-    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["dropped-response", "retry", "read_file", "reopen", "activity"], result }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["dropped-response", "retry", "read_file", "reopen", "activity", "installed-consumer-read"], result }, null, 2)}\n`);
   }).catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

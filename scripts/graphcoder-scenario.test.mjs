@@ -43,7 +43,7 @@ test("the native stage lane locks public routes and dropped-response recovery", 
   assert.equal(nativeScenario.runtime.driver, "scripts/graphcoder-native-stage-e2e.mjs");
   assert.deepEqual(nativeScenario.public_routes, ["start_session", "read_file", "open_session", "read_activity"]);
   assert.match(nativeScenario.fault_boundary, /discarded after durable execution/u);
-  assert.deepEqual(nativeScenario.required_markers, ["dropped-response", "retry", "read_file", "reopen", "activity"]);
+  assert.deepEqual(nativeScenario.required_markers, ["dropped-response", "retry", "read_file", "reopen", "activity", "installed-consumer-read"]);
   assert.equal(nativeScenario.evidence.execution_kind, "native");
   assert.match(nativeScenario.evidence.artifact_binding, /exact native executable digest/u);
   assert.match(nativeScenario.evidence.fixture_boundary, /cannot satisfy production model/u);
