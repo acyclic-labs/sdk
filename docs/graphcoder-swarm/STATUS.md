@@ -26,7 +26,7 @@ The earlier source `c3a98adc`, handle 35128, produced these scoped results:
 
 The recursive workspace descriptor assertion was corrected in `813d2523` after tracing its rejection through `FileDescriptor::verify`. A focused rerun exposed a private-volume grant mismatch; `c1e167a1` aligns that fixture with its child scope. Execution approval resolution and bounded fixture cleanup were repaired in `bcf94efc`, with unreachable approval handling removed in `6c3fdae0`. These repairs still require fresh native verification. Budget tests expose missing authenticated admission and concurrent capacity accounting. Provider metering is under review and not yet fully wired into the persistent runtime.
 
-Native CLI source `0e15465d`, handle 86472, compiled and ran eight tests: six passed and two failed because fixture model options lacked a registered provider policy. Installed-artifact and interactive PTY qualification remain outstanding.
+Native CLI source `3ebc129d` (runtime source `c44432dc`), handle 66011, compiled and ran seven tests: six passed and the stage retry failed because its reopened path omitted the registered provider policy. Echo now passes. See [checkpoint-cli-composition-2026-10-03.json](checkpoint-cli-composition-2026-10-03.json). Installed-artifact and interactive PTY qualification remain outstanding.
 
 ## Other scoped evidence
 

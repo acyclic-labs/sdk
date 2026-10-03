@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-cli-composition-2026-10-03.json](checkpoint-cli-composition-2026-10-03.json) records the simplified native CLI: six tests passed and one stage retry failed because the reopened execution path omitted its registered model-option policy. This source-level test run does not qualify installed artifacts or PTY interaction.
+
 The latest broader run is [checkpoint-integration-2026-10-03.json](checkpoint-integration-2026-10-03.json), source `c44432dc`: compilation passed; recovery 7/7, execution journal 5/6, recursive workspace 1/2, model-fork boundary 1/3, and model-selected swarm 0/1. Fork attestation, command/revision binding, restart handle cleanup, and one exact approval fixture remain failed gates.
 
 Latest focused native results are in [checkpoint-host-execution-2026-10-03.json](checkpoint-host-execution-2026-10-03.json): source `91214d3a`, 18 execution tests passed and one Windows descendant-process fixture failed. Both previously stalled execution cases completed successfully. This is a focused source-bound result, not full qualification.
