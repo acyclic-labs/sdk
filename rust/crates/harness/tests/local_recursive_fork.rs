@@ -1133,17 +1133,17 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             let cold_grant_scope = grant_scope.clone();
             let cold_project = project.clone();
             let cold_private = private.clone();
+            drop(conflict_recovery);
+            drop(conflict_journal);
+            drop(reopened_facade);
+            drop(terminal_recovery);
+            drop(terminal_journal);
+            drop(child_aggregate);
+            drop(aggregate);
+            drop(stream);
+            drop(host);
             let (reopened_host, reopened_stream, reopened_child_aggregate, reopened_aggregate) =
                 std::pin::Pin::from(Box::new(async move {
-                    drop(conflict_recovery);
-                    drop(conflict_journal);
-                    drop(reopened_facade);
-                    drop(terminal_recovery);
-                    drop(terminal_journal);
-                    drop(child_aggregate);
-                    drop(aggregate);
-                    drop(stream);
-                    drop(host);
                     let host = Arc::new(FilesystemHost::new(
                         Fs::local(cold_fs_options)
                             .await
