@@ -29,6 +29,8 @@ test("native stage config binds package and runtime to one source provenance", (
     assert.ok(config.artifacts.every(item => item.source_tree === config.artifacts[0].source_tree));
     assert.equal(config.command.env.GRAPHCODER_PACKAGE_ROOT, directory);
     assert.equal(config.command.env.GRAPHCODER_PACKAGE_ARTIFACT, packageArchive);
+    assert.equal(config.command.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS, "1");
+    assert.equal(config.command.env.GRAPHCODER_LAZY_OBSERVATION_PATH, `${join(directory, "suites")}.lazy-observation.json`);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

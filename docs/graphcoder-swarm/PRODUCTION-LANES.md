@@ -45,11 +45,13 @@ the package manifest and archive SHA-256 values). Set
 `GRAPHCODER_REQUIRE_PACKAGE_IDENTITY=1` so a lane fails when the identity
 record was not requested.
 
-The real bridge may write a JSON observation file at
-`GRAPHCODER_LAZY_OBSERVATION_PATH` after handling `list_sessions`:
+The real bridge must write a JSON observation file at
+`GRAPHCODER_LAZY_OBSERVATION_PATH` after handling `list_sessions`. The receipt
+uses schema `graphcoder.lazy-observation.v1` and binds the measurement to the
+host PID/executable and exact request:
 
 ```json
-{"during_list_sessions":{"worker_starts":0,"workspace_reads":0,"model_dispatches":0}}
+{"schema":"graphcoder.lazy-observation.v1","runtime":{"pid":1234,"executable":"<runtime>"},"request":{"request_id":"list-1","method":"list_sessions"},"during_list_sessions":{"worker_starts":0,"workspace_reads":0,"model_dispatches":0}}
 ```
 
 Set `GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to require this observation. The

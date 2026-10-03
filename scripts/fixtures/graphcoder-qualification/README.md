@@ -45,9 +45,13 @@ possible native field combinations. The package consumer records the bridge
 executable and host-script identities and can consume a SHA-256 package archive
 with `--artifact`; it remains a protocol fixture until paired with a real
 local-runtime host. A real host can additionally write a lazy observation file
-with `during_list_sessions` counters (`worker_starts`, `workspace_reads`, and
-`model_dispatches`); pass it as `--lazy-observation` to require all three to be
-zero. `harness-model-consumer.mjs` uses a local
+using schema `graphcoder.lazy-observation.v1`. It must identify the host PID and
+executable, the exact `list_sessions` request, and counters (`worker_starts`,
+`workspace_reads`, and `model_dispatches`) measured during that request; pass it
+as `--lazy-observation` to require all three to be zero. The native stage driver
+forwards `GRAPHCODER_LAZY_OBSERVATION_PATH` and, in strict mode,
+`GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to the runtime, then checks that the
+receipt names the runtime executable and `list-1` request. `harness-model-consumer.mjs` uses a local
 assertion provider only to observe the installed Harness boundary; it does not
 qualify any production model provider. The installed Harness artifact must
 include the generated native `prepareModelRequest` export; a missing export is

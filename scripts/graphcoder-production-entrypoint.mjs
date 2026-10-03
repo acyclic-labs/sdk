@@ -137,4 +137,5 @@ try {
 }
 assertLazyCounters(lazyObservationPath, {
   require: process.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS === "1",
+  expectedMethod: "list_sessions",
 });

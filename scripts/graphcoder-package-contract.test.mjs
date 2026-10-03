@@ -46,13 +46,28 @@ test("real-host lazy observations require zero listing side effects", () => {
   const root = mkdtempSync(join(tmpdir(), "graphcoder-lazy-observation-"));
   try {
     const observation = join(root, "counters.json");
-    writeFileSync(observation, `${JSON.stringify({ during_list_sessions: { worker_starts: 0, workspace_reads: 0, model_dispatches: 0 } })}\n`);
-    assert.deepEqual(assertLazyCounters(observation, { require: true }).during_list_sessions, {
+    writeFileSync(observation, `${JSON.stringify({
+      schema: "graphcoder.lazy-observation.v1",
+      runtime: { pid: 42, executable: process.execPath },
+      request: { request_id: "list-1", method: "list_sessions" },
+      during_list_sessions: { worker_starts: 0, workspace_reads: 0, model_dispatches: 0 },
+    })}\n`);
+    assert.deepEqual(assertLazyCounters(observation, {
+      require: true,
+      expectedRequestId: "list-1",
+      expectedMethod: "list_sessions",
+      expectedExecutable: process.execPath,
+    }).during_list_sessions, {
       worker_starts: 0,
       workspace_reads: 0,
       model_dispatches: 0,
     });
-    writeFileSync(observation, `${JSON.stringify({ during_list_sessions: { worker_starts: 1, workspace_reads: 0, model_dispatches: 0 } })}\n`);
+    writeFileSync(observation, `${JSON.stringify({
+      schema: "graphcoder.lazy-observation.v1",
+      runtime: { pid: 42, executable: process.execPath },
+      request: { request_id: "list-1", method: "list_sessions" },
+      during_list_sessions: { worker_starts: 1, workspace_reads: 0, model_dispatches: 0 },
+    })}\n`);
     assert.throws(() => assertLazyCounters(observation, { require: true }), /worker starts/u);
   } finally {
     rmSync(root, { recursive: true, force: true });

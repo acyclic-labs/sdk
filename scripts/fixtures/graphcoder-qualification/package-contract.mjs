@@ -84,7 +84,12 @@ export function inspectInstalledPackage(packageRoot, { artifactPath } = {}) {
   return identity;
 }
 
-export function assertLazyCounters(observationPath, { require = false } = {}) {
+export function assertLazyCounters(observationPath, {
+  require = false,
+  expectedRequestId,
+  expectedMethod,
+  expectedExecutable,
+} = {}) {
   if (observationPath === undefined || observationPath.trim() === "") {
     if (require) fail("lazy observation path is required for a real-host qualification");
     return undefined;
@@ -94,6 +99,24 @@ export function assertLazyCounters(observationPath, { require = false } = {}) {
   let observation;
   try { observation = JSON.parse(readFileSync(path, "utf8")); }
   catch (error) { fail(`lazy observation is not valid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+  if (observation?.schema !== "graphcoder.lazy-observation.v1") fail("lazy observation has an unsupported schema");
+  const runtime = observation?.runtime;
+  if (runtime === null || typeof runtime !== "object" || Array.isArray(runtime)) fail("lazy observation must identify the runtime");
+  if (!Number.isSafeInteger(runtime.pid) || runtime.pid <= 0) fail("lazy observation runtime pid must be a positive integer");
+  if (typeof runtime.executable !== "string" || runtime.executable.trim() === "") fail("lazy observation runtime executable is required");
+  if (expectedExecutable !== undefined && resolve(runtime.executable) !== resolve(expectedExecutable)) {
+    fail(`lazy observation runtime executable does not match ${resolve(expectedExecutable)}`);
+  }
+  const request = observation?.request;
+  if (request === null || typeof request !== "object" || Array.isArray(request)) fail("lazy observation must identify the request");
+  if (typeof request.request_id !== "string" || request.request_id.trim() === "") fail("lazy observation request id is required");
+  if (typeof request.method !== "string" || request.method.trim() === "") fail("lazy observation request method is required");
+  if (expectedRequestId !== undefined && request.request_id !== expectedRequestId) {
+    fail(`lazy observation covers request ${JSON.stringify(request.request_id)} instead of ${JSON.stringify(expectedRequestId)}`);
+  }
+  if (expectedMethod !== undefined && request.method !== expectedMethod) {
+    fail(`lazy observation covers method ${JSON.stringify(request.method)} instead of ${JSON.stringify(expectedMethod)}`);
+  }
   const listing = observation?.during_list_sessions;
   if (listing === null || typeof listing !== "object" || Array.isArray(listing)) fail("lazy observation must contain during_list_sessions");
   for (const field of ["worker_starts", "workspace_reads", "model_dispatches"]) {

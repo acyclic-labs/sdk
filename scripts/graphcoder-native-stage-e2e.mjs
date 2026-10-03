@@ -11,7 +11,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
+import { assertLazyCounters, inspectInstalledPackage } from "./fixtures/graphcoder-qualification/package-contract.mjs";
 
 const RESPONSE_TIMEOUT_MS = 15_000;
 const CLOSE_TIMEOUT_MS = 5_000;
@@ -31,10 +31,15 @@ function regularFile(path) {
   if (!metadata?.isFile() || metadata.isSymbolicLink()) fail(`runtime must be a regular file: ${path}`);
 }
 
-function childEnvironment() {
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) =>
+function childEnvironment(extra = {}) {
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
     ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].includes(key),
   ));
+  for (const key of ["GRAPHCODER_LAZY_OBSERVATION_PATH", "GRAPHCODER_REQUIRE_LAZY_COUNTERS"]) {
+    const value = extra[key] ?? process.env[key];
+    if (typeof value === "string" && value.trim() !== "") environment[key] = value;
+  }
+  return environment;
 }
 
 function request(requestId, method, params) {
@@ -66,9 +71,10 @@ async function withDeadline(promise, label) {
 }
 
 function runPreflight(runtime, root) {
+  const observationPath = process.env.GRAPHCODER_LAZY_OBSERVATION_PATH;
   const result = spawnSync(runtime, ["--root", root, "--model-fixture", "stage"], {
     cwd: resolve("."),
-    env: childEnvironment(),
+    env: childEnvironment({ GRAPHCODER_LAZY_OBSERVATION_PATH: observationPath }),
     input: `${request("list-1", "list_sessions", {})}${request("invalid-fixture", "start_session", { prompt: "write fixture", operation_id: "op-invalid-fixture", model_fixture: "missing-fixture" })}`,
     encoding: "utf8",
     shell: false,
@@ -84,7 +90,13 @@ function runPreflight(runtime, root) {
   if (listed.ok !== true || !Array.isArray(listed.result?.items)) fail(`list_sessions response was invalid: ${JSON.stringify(listed)}`);
   const invalid = parseLine(lines[1], "invalid fixture", "invalid-fixture");
   if (invalid.ok !== false || invalid.error?.code !== "invalid_input") fail(`invalid fixture was not rejected as invalid_input: ${JSON.stringify(invalid)}`);
-  return { listed: listed.result.items.length, rejected: invalid.error.code };
+  const lazy = assertLazyCounters(observationPath, {
+    require: process.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS === "1",
+    expectedRequestId: "list-1",
+    expectedMethod: "list_sessions",
+    expectedExecutable: runtime,
+  });
+  return { listed: listed.result.items.length, rejected: invalid.error.code, lazy_observation: lazy?.path ?? null };
 }
 
 async function runSuppressedStart(runtime, root) {

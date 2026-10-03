@@ -49,6 +49,8 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
         GRAPHCODER_NATIVE_RUNTIME: executable,
         GRAPHCODER_PACKAGE_ROOT: installedPackage,
         GRAPHCODER_PACKAGE_ARTIFACT: archive,
+        GRAPHCODER_LAZY_OBSERVATION_PATH: `${outputPath}.lazy-observation.json`,
+        GRAPHCODER_REQUIRE_LAZY_COUNTERS: "1",
       },
     },
     artifacts: [nativeArtifact, packageArtifact, driverArtifact, packageContractArtifact],
