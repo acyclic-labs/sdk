@@ -1,0 +1,39 @@
+{
+  "schema": "acyclic.php.native-qualification.v3",
+  "status": "passed-with-native-shutdown-note",
+  "authority": {
+    "manifest": "Q:\\sdk\\work\\rust-source-root-authority\\rust-authority.json",
+    "manifest_sha256": "3a56db31e27584b49a7410342b03ad3f40cffad8ca9e9bf4746c25f643025d37",
+    "generated_provenance_sha256": "9d119e5e58c365fc6241d680c60cd2570895c11a464a1296ec57826631e35210",
+    "source_closure_sha256": "sha256:2bd62922f47b6036ef59aecc6b67d37e5849f106866db4a52ec6094161159626"
+  },
+  "runtime": {
+    "php_exe": "Q:\\sdk\\php-cache\\php-8.2.34\\php.exe",
+    "php_exe_sha256": "2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96",
+    "protobuf_dll": "Q:\\sdk\\php-cache\\php-protobuf-native\\php_protobuf.dll",
+    "protobuf_dll_sha256": "a6b466ec202afc304e0f091cc2f881126a2b26401142847310d08cee51caa909",
+    "protobuf_version": "5.36.2",
+    "grpc_dll": "Q:\\sdk\\php-cache\\php-grpc-native-1.82.0\\php_grpc.dll",
+    "grpc_dll_sha256": "021efdad8860e5d47c8c0e042c91d6c8545948b6c8fd7358d67cfd180ff9cdc0",
+    "grpc_version": "1.82.0"
+  },
+  "consumer": {
+    "package_root": "Q:\\sdk\\php-cache\\package-final",
+    "package_closure_sha256": "2a023d3c7cef7698246e14ded85ee78e93386001833c944377012d90b3f1bc90",
+    "provenance_sha256": "9d119e5e58c365fc6241d680c60cd2570895c11a464a1296ec57826631e35210",
+    "rendered_snippets": [
+      "actors-create-roundtrip.php",
+      "stream-append-read.php"
+    ],
+    "transport_output": "unary status=0 actor=fixture-actor region=fixture\nstream-unary status=0\nstream-cancel issued count=1\n",
+    "transport_output_sha256": "sha256:1e40f54fdb5ca1194863f42d174d068813f1e103c0206492b408cb0886b64743",
+    "process_exit_code": -1073741819,
+    "native_shutdown": "validated output emitted; PECL grpc process shutdown returned a native access violation"
+  },
+  "fixture_server": {
+    "binary": "Q:\\sdk\\.tmp-target-rubyphp\\debug\\fixture-server.exe",
+    "binary_sha256": "sha256:4ea635e14116b0fd2a022b6fcf0c3418f44635e9ef335267420be69c7488396d",
+    "grpc_address": "127.0.0.1:59072",
+    "source_sha256": "sha256:c6fb829355147f645b18d81c2f7a583887a29b0d34948f6eff53bac6c1ab89ea"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "authority_manifest": "Q:\\sdk\\work\\rust-source-root-authority\\rust-authority.json",
+  "authority_manifest_sha256": "3a56db31e27584b49a7410342b03ad3f40cffad8ca9e9bf4746c25f643025d37",
+  "fixture": "tests/fixtures/rust-family-goldens.json",
+  "fixture_sha256": "b5fcd6d8ff1b2da992dee2808420f36808e2088d08e4b6f70899eebb2c72eaae",
+  "families": [
+    {
+      "family": "actors",
+      "message": "acyclic.actors.v1.ActorLimits",
+      "kind": "uint64",
+      "wire_sha256": "99ef7fe3588ef1ec2dfe21c4901e9c3ff1d9412c32ef03f91c245c51b7a57b8d"
+    },
+    {
+      "family": "stream",
+      "message": "acyclic.stream.v2.Record",
+      "kind": "uint64",
+      "wire_sha256": "99ef7fe3588ef1ec2dfe21c4901e9c3ff1d9412c32ef03f91c245c51b7a57b8d"
+    },
+    {
+      "family": "objects",
+      "message": "acyclic.objects.v2.ObjectInfo",
+      "kind": "uint64",
+      "wire_sha256": "7989d948c2d92eb9a82a74476ab77cc8980f23dd3dcc973ef9a760883a3a3e6f"
+    },
+    {
+      "family": "workers",
+      "message": "acyclic.workers.v1.CodeVersion",
+      "kind": "uint64",
+      "wire_sha256": "7989d948c2d92eb9a82a74476ab77cc8980f23dd3dcc973ef9a760883a3a3e6f"
+    },
+    {
+      "family": "filesystem",
+      "message": "acyclic.filesystem.v2.WorkspaceContextSnapshot",
+      "kind": "uint64",
+      "wire_sha256": "7989d948c2d92eb9a82a74476ab77cc8980f23dd3dcc973ef9a760883a3a3e6f"
+    },
+    {
+      "family": "harness",
+      "message": "acyclic.harness.v2.OperationStatus",
+      "kind": "uint64",
+      "wire_sha256": "c4cb14418bf960e5c7d0f36999ceac19bcf0f3c645342e51381db1ba698a20f3"
+    },
+    {
+      "family": "inference",
+      "message": "inference.customer.v1.ModelCapability",
+      "kind": "uint64",
+      "wire_sha256": "bc514d3f6066429fab23f379d1e644c06453f4f6f0d73ac13f86ff1aa758db20"
+    },
+    {
+      "family": "machines",
+      "message": "acyclic.machines.v1.SuspensionPolicy",
+      "kind": "uint64",
+      "wire_sha256": "7989d948c2d92eb9a82a74476ab77cc8980f23dd3dcc973ef9a760883a3a3e6f"
+    },
+    {
+      "family": "protocol",
+      "message": "acyclic.protocol.v1.ProtocolIdentity",
+      "kind": "string",
+      "wire_sha256": "d381cb1e06fab90072ac4f2ee8855fb6dadaf402e25a59ee3a0f44f9a45a1f1d"
+    }
+  ],
+  "validation": "Rust-owned manifest source and descriptor hashes were checked by the PHP generator before this consumer run",
+  "native_test": "tests/uint64_rust_golden.php",
+  "result": "9/9 exact native protobuf wire and JSON round trips"
+}

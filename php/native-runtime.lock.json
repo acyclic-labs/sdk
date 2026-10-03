@@ -1,0 +1,35 @@
+{
+  "schema": "acyclic.php.native-runtime.v2",
+  "protobuf": {
+    "provider": "PECL",
+    "version": "5.36.2",
+    "asset": "php_protobuf-5.36.2-8.2-nts-vs16-x64.zip",
+    "sha256": "55de85882601a96d0287ea3342ddd4e5ed5633d5b14b53596c45db5e6d468ab2",
+    "url": "https://downloads.php.net/~windows/pecl/releases/protobuf/5.36.2/php_protobuf-5.36.2-8.2-nts-vs16-x64.zip",
+    "native_extension_loaded": true,
+    "native_version_reported": "5.36.2",
+    "native_generated_uint64": "exact string-preserving wire and JSON round trips qualified",
+    "pure_php_generated_uint64": "rejects values above PHP_INT_MAX; no clamp",
+    "pure_php_exact_path": "Acyclic\\Runtime\\UInt64"
+  },
+  "grpc": {
+    "provider": "PECL",
+    "version": "1.82.0",
+    "asset": "php_grpc-1.82.0-8.2-nts-vs16-x64.zip",
+    "sha256": "ffbdfd5eafa1e49bbae869b6e408c9065c87ca4a339823aeb886fac7e07e2e2a",
+    "url": "https://downloads.php.net/~windows/pecl/releases/grpc/1.82.0/php_grpc-1.82.0-8.2-nts-vs16-x64.zip",
+    "native_extension_loaded": true,
+    "native_version_reported": "1.82.0",
+    "transport_test": "tests/fixtures/native-qualification.receipt.json",
+    "transport_result": "unary, stream-unary, and server-stream cancellation passed against Rust fixture"
+  },
+  "rust_generated_family_fixture": {
+    "families": 9,
+    "uint64_max_families": 8,
+    "protocol_scalar_fallback": "Protocol v1 has no uint64 field; ProtocolIdentity.version is checked",
+    "fixture": "tests/fixtures/rust-family-goldens.json",
+    "test": "tests/uint64_rust_golden.php",
+    "result": "9/9 exact native protobuf wire and JSON round trips"
+  },
+  "receipt": "tests/fixtures/native-qualification.receipt.json"
+}

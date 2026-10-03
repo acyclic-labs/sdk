@@ -1,0 +1,13 @@
+generator: protoc_plugin
+generator_version: 25.1.0
+runtime:
+  grpc: 5.1.0
+  protobuf: 6.1.0
+  fixnum: 1.1.1
+source: rust-owned protobuf contracts
+sources:
+  - ../proto/actors/v1/actors.proto
+  - ../rust/crates/stream/proto/stream/v2/stream.proto
+output: lib/src/generated
+wire_mode: protobuf/grpc
+provenance_required: true

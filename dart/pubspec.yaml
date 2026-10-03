@@ -1,0 +1,19 @@
+name: acyclic_sdk
+description: Generated Acyclic Actors and Stream transport stubs.
+version: 0.1.0-dev.1
+repository: https://github.com/acyclic-labs/sdk
+issue_tracker: https://github.com/acyclic-labs/sdk/issues
+publish_to: none
+license: Apache-2.0
+environment:
+  sdk: ">=3.8.0 <4.0.0"
+dependencies:
+  crypto: ^3.0.7
+  fixnum: ^1.1.1
+  grpc: ^5.1.0
+  protobuf: ^6.1.0
+dev_dependencies:
+  lints: ^5.1.1
+  test: ^1.25.8
+  protoc_plugin: ^25.1.0
+  yaml: ^3.1.3

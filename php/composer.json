@@ -1,0 +1,24 @@
+{
+  "name": "acyclic/sdk",
+  "description": "Generated Acyclic Actors and Stream transport stubs",
+  "type": "library",
+  "license": "Apache-2.0",
+  "require": {
+    "php": ">=8.2",
+    "grpc/grpc": "1.82.0",
+    "google/protobuf": "5.36.2"
+  },
+  "autoload": {
+    "psr-4": {
+      "Acyclic\\": "src/Acyclic/",
+      "GPBMetadata\\": "src/GPBMetadata/",
+      "Inference\\": "src/Inference/"
+    }
+  },
+  "scripts": {
+    "generate": "php tools/generate.php",
+    "test": "php tests/transport_test.php"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

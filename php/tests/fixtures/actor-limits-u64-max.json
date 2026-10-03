@@ -1,0 +1,9 @@
+{
+  "producer": "acyclic-actors::wire::ActorLimits + prost::Message + prost-reflect",
+  "authority_manifest_sha256": "3a56db31e27584b49a7410342b03ad3f40cffad8ca9e9bf4746c25f643025d37",
+  "message": "acyclic.actors.v1.ActorLimits",
+  "field": "memoryBytes",
+  "value": "18446744073709551615",
+  "wire_hex": "10ffffffffffffffffff01",
+  "json": "{\"memoryBytes\":\"18446744073709551615\"}"
+}

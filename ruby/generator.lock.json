@@ -1,0 +1,15 @@
+{
+  "generator": "grpc-tools",
+  "generator_version": "1.82.0",
+  "runtime": "grpc",
+  "runtime_version": "1.82.0",
+  "protobuf_runtime": "google-protobuf 4.33.0",
+  "source": "rust-owned protobuf contracts",
+  "sources": [
+    "../proto/actors/v1/actors.proto",
+    "../rust/crates/stream/proto/stream/v2/stream.proto"
+  ],
+  "output": "generated",
+  "wire_mode": "protobuf/grpc",
+  "provenance_required": true
+}

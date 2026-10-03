@@ -1,0 +1,23 @@
+{
+  "generator": "grpc_php_plugin",
+  "generator_version": "1.82.0",
+  "protobuf_compiler": "3.25+",
+  "runtime": {
+    "grpc/grpc": "1.82.0",
+    "google/protobuf": "5.36.2"
+  },
+  "source": "rust-owned protobuf contracts",
+  "sources": [
+    "../proto/actors/v1/actors.proto",
+    "../rust/crates/stream/proto/stream/v2/stream.proto"
+  ],
+  "output": "src",
+  "wire_mode": "protobuf/grpc",
+  "uint64_policy": {
+    "scalar_accessor_max": "PHP_INT_MAX",
+    "above_scalar_max": "Acyclic\\Runtime\\UInt64",
+    "json_representation": "decimal-string",
+    "wire_representation": "exact-protobuf-varint"
+  },
+  "provenance_required": true
+}

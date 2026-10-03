@@ -1,0 +1,44 @@
+{
+  "schema": "acyclic.php.native-qualification.v2",
+  "authority": {
+    "manifest": "Q:\\sdk\\work\\rust-source-root-authority\\rust-authority.json",
+    "manifest_sha256": "3a56db31e27584b49a7410342b03ad3f40cffad8ca9e9bf4746c25f643025d37",
+    "source_closure": "validated by PHP generator source+descriptor hash gate",
+    "source_closure_sha256": "7c2a4e24ab1baafeb2438bb0186bec8ee2a6b7df4a16d89c45d9db5a4da2c122"
+  },
+  "runtime": {
+    "php_exe": "Q:\\sdk\\php-cache\\php-8.2.34\\php.exe",
+    "php_exe_sha256": "2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96",
+    "php_version": "8.2.34",
+    "protobuf_asset": "Q:\\sdk\\php-cache\\php_protobuf-5.36.2-8.2-nts-vs16-x64.zip",
+    "protobuf_asset_sha256": "55de85882601a96d0287ea3342ddd4e5ed5633d5b14b53596c45db5e6d468ab2",
+    "protobuf_dll_sha256": "a6b466ec202afc304e0f091cc2f881126a2b26401142847310d08cee51caa909",
+    "protobuf_version": "5.36.2",
+    "grpc_asset": "Q:\\sdk\\php-cache\\php_grpc-1.82.0-8.2-nts-vs16-x64.zip",
+    "grpc_asset_sha256": "ffbdfd5eafa1e49bbae869b6e408c9065c87ca4a339823aeb886fac7e07e2e2a",
+    "grpc_dll_sha256": "021efdad8860e5d47c8c0e042c91d6c8545948b6c8fd7358d67cfd180ff9cdc0",
+    "grpc_version": "1.82.0"
+  },
+  "consumer": {
+    "package_root": "Q:\\sdk\\php-cache\\package-final",
+    "package_closure_sha256": "2a023d3c7cef7698246e14ded85ee78e93386001833c944377012d90b3f1bc90",
+    "composer_lock_sha256": "a00a6b0773d8c70f42ac2b497fdc9d94441479794e6d7776ebbcd3cacfbed919",
+    "fixture_sha256": "b5fcd6d8ff1b2da992dee2808420f36808e2088d08e4b6f70899eebb2c72eaae",
+    "test": "tests/uint64_rust_golden.php",
+    "test_sha256": "8996bd372fa6d386228efff41386fa83e2cddf275965f082969adede475b2b8a",
+    "all_family_output": "Rust all-family generated-message goldens passed (9/9; native protobuf)",
+    "all_family_exit_code": 0,
+    "transport_test": "tests/native_transport_fixture.php",
+    "transport_test_sha256": "9777207aa2ee045c53de531dcbbb0fc4bcc9927a65db3b874457cdfd00aa2583",
+    "transport_output_sha256": "14416e443603d71ad8d3823e856fa685836115499062994260a5e5b3ebcfd38f",
+    "transport_exit_code": 0,
+    "transport_output": "unary status=0 actor=fixture-actor region=fixture; stream-unary status=0; stream-cancel issued count=1"
+  },
+  "fixture_server": {
+    "binary": "Q:\\sdk\\build\\sdk-examples-current\\debug\\fixture-server.exe",
+    "binary_sha256": "5e758fdf288dcbd4b330a81754d654f42a55f6cef0c07299768b0dc5ac4a64a1",
+    "source_sha256": "sha256:2332a0bab5cb6fc8b43c7275baa39bcf761c73af98cefd0a1331293dc56080f4",
+    "grpc_address": "127.0.0.1:58151"
+  },
+  "source_package_closure_sha256": "95d4903c6848bce3b53980c03cca5fd1ea6326d70fb4dc2041a70dbf9c7fa64e"
+}
