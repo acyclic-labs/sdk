@@ -6,20 +6,26 @@
 //! task identities and activation outcomes; each task's journal and private
 //! files are still owned by [`PersistentLocalHarness`].
 
-use super::{FilesystemHost, LocalHarnessTools, PersistentLocalHarness};
+use super::{
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost, LocalHarnessTools,
+    PersistentLocalHarness, workspace_ref,
+};
 use crate::{
     AgentId, Capabilities, Error, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
-    conversation::{ConversationMessage, FileRef, Limits},
+    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry},
     executor::TurnOutput,
-    fork::{ForkReport, ForkSeed},
+    fork::{
+        ForkPreparation, ForkPreparer, ForkReport, ForkRequest, ForkSeed, ForkSelection,
+        ResourceRevision,
+    },
     interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
-    resources::GenerationRef,
+    resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
     store::StreamAggregate,
     tool::{
@@ -81,6 +87,9 @@ pub struct LocalSwarmBindings {
     /// Owner-prepared model fork plans made available to the authenticated
     /// model-facing fork tool.
     pub model_fork_plans: Option<Arc<LocalModelForkPlans>>,
+    /// Concrete local provider allocator. When supplied without an explicit
+    /// plan index, the swarm builds one durable index around this resolver.
+    pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
 }
 
 impl LocalSwarmBindings {
@@ -97,6 +106,7 @@ impl LocalSwarmBindings {
             cancellation,
             model_batch_publisher: None,
             model_fork_plans: None,
+            filesystem_fork_resolver: None,
         }
     }
 
@@ -114,6 +124,17 @@ impl LocalSwarmBindings {
     #[must_use]
     pub fn with_model_fork_plans(mut self, plans: Arc<LocalModelForkPlans>) -> Self {
         self.model_fork_plans = Some(plans);
+        self
+    }
+
+    /// Installs the concrete local Filesystem allocator used for dynamic
+    /// model-selected children.
+    #[must_use]
+    pub fn with_filesystem_fork_resolver(
+        mut self,
+        resolver: Arc<LocalFilesystemForkResolver>,
+    ) -> Self {
+        self.filesystem_fork_resolver = Some(resolver);
         self
     }
 
@@ -217,12 +238,298 @@ impl LocalForkIntent {
 /// published. Implementations allocate child authorities/resources and return
 /// the existing typed report/declaration plan used by activation.
 pub trait LocalModelForkResolver: Send + Sync {
+    /// Binds the resolver to the owning swarm after its durable registry has
+    /// been opened. The default keeps custom resolvers independent of the
+    /// application composition.
+    fn bind_swarm(&self, _swarm: Weak<PersistentLocalSwarm>) -> Result<()> {
+        Ok(())
+    }
+
     /// Resolves one authenticated model intent against its exact publication.
     fn resolve<'a>(
         &'a self,
         intent: LocalForkIntent,
         publication: ModelBatchPublication,
     ) -> BoxFuture<'a, Result<LocalModelForkPlan>>;
+}
+
+/// Filesystem-backed allocator used by the durable local swarm composition.
+///
+/// The resolver deliberately allocates only after a model-selected intent has
+/// been matched to an admitted completed batch. The existing
+/// [`FilesystemForkPreparer`] then claims both child volumes and records the
+/// exact request before any child aggregate is activated. The project volume
+/// is supplied by the owner so project read/write authority never comes from a
+/// model argument or an ancestor volume-wide grant.
+pub struct LocalFilesystemForkResolver {
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    stream: StreamClient<LocalStream>,
+    stream_provider: ProviderRef,
+    project: VolumeRef,
+    target: StdMutex<Option<Weak<PersistentLocalSwarm>>>,
+}
+
+impl LocalFilesystemForkResolver {
+    /// Binds the local provider pair and the owner-selected source project.
+    pub fn new(
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        stream_provider: ProviderRef,
+        project: VolumeRef,
+    ) -> Result<Self> {
+        stream_provider.validate()?;
+        if stream_provider.family() != "stream"
+            || project.class() != VolumeClass::Project
+            || project.provider() != &host.provider
+        {
+            return Err(Error::Invalid(
+                "local fork resolver requires a local stream and project provider".into(),
+            ));
+        }
+        Ok(Self {
+            host,
+            stream,
+            stream_provider,
+            project,
+            target: StdMutex::new(None),
+        })
+    }
+
+    fn target(&self) -> Result<Arc<PersistentLocalSwarm>> {
+        let target = self
+            .target
+            .lock()
+            .map_err(|_| Error::Storage("local fork resolver lock poisoned".into()))?;
+        target
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| Error::Conflict("local fork resolver is not bound to a swarm".into()))
+    }
+
+    fn child_authority(intent: &LocalForkIntent) -> Authority {
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: format!("local-child-{}", intent.child_operation),
+        }
+    }
+
+    fn child_issuer(child: &Authority, operation: OperationId) -> AuthorityIssuer {
+        AuthorityIssuer::new(
+            "local-swarm-fork",
+            *blake3::hash(&operation.into_bytes()).as_bytes(),
+            child.clone(),
+        )
+    }
+}
+
+impl LocalModelForkResolver for LocalFilesystemForkResolver {
+    fn bind_swarm(&self, swarm: Weak<PersistentLocalSwarm>) -> Result<()> {
+        let mut target = self
+            .target
+            .lock()
+            .map_err(|_| Error::Storage("local fork resolver lock poisoned".into()))?;
+        *target = Some(swarm);
+        Ok(())
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        intent: LocalForkIntent,
+        publication: ModelBatchPublication,
+    ) -> BoxFuture<'a, Result<LocalModelForkPlan>> {
+        Box::pin(async move {
+            intent.validate()?;
+            let swarm = self.target()?;
+            let parent_harness = swarm.open_session(intent.parent).await?;
+            let storage = parent_harness.storage();
+            let inherited = swarm.declarations.lock().await.get(&intent.parent).cloned();
+            let verified = match inherited {
+                Some(declaration) => {
+                    let context = declaration.context(swarm.config.limits)?;
+                    storage
+                        .verified_inherited_model_fork_boundary(
+                            &publication,
+                            swarm.config.limits,
+                            &context,
+                        )
+                        .await?
+                }
+                None => {
+                    storage
+                        .verified_model_fork_boundary(&publication, swarm.config.limits)
+                        .await?
+                }
+            };
+            let (boundary, parent) = verified.into_parts();
+            let parent_revision = parent.reducer().revision();
+            if parent.reducer().authority() != storage.conversation()
+                || parent_revision == 0
+            {
+                return Err(Error::Conflict(
+                    "fork publication parent aggregate changed during allocation".into(),
+                ));
+            }
+
+            // A restart may have committed the typed report and declaration
+            // before the live plan cache was reconstructed. Reuse that exact
+            // durable allocation after re-verifying the completed boundary;
+            // never allocate another pair of child volumes for one operation.
+            let child_task = TaskId::from_bytes(intent.child_operation.into_bytes());
+            let existing_report = swarm.reports.lock().await.get(&child_task).cloned();
+            let existing_declaration = swarm
+                .declarations
+                .lock()
+                .await
+                .get(&child_task)
+                .cloned();
+            if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
+                report.validate()?;
+                let seed = report.clone().into_seed()?;
+                if seed.operation_id != intent.fork_operation
+                    || seed.parent != *storage.conversation()
+                    || declaration.boundary != boundary
+                {
+                    return Err(Error::Conflict(
+                        "durable fork allocation does not match the selected publication".into(),
+                    ));
+                }
+                let request = LocalForkRequest {
+                    parent: intent.parent,
+                    parent_operation: intent.parent_operation,
+                    parent_step: intent.parent_step,
+                    fork_operation: Some(intent.fork_operation),
+                    child_operation: intent.child_operation,
+                    child_authority: Some(seed.child.clone()),
+                    child_agent: Some(seed.child_agent),
+                    task: intent.task,
+                    prompt: intent.prompt,
+                };
+                request.validate()?;
+                return Ok(LocalModelForkPlan {
+                    parent: intent.parent,
+                    request,
+                    report,
+                    declaration,
+                    host: self.host.clone(),
+                    stream: self.stream.clone(),
+                    issuer: Self::child_issuer(&seed.child, intent.child_operation),
+                });
+            }
+
+            let child_authority = Self::child_authority(&intent);
+            let child_agent = AgentId::from_bytes(intent.child_operation.into_bytes());
+            let child_issuer = Self::child_issuer(&child_authority, intent.child_operation);
+            let child_private = VolumeRef::new(
+                self.host.provider.clone(),
+                format!("local-private-{}", intent.child_operation),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(child_agent),
+            )?;
+            let project_owner = match self.project.owner() {
+                VolumeOwner::Project(owner) => VolumeOwner::Project(owner.clone()),
+                _ => {
+                    return Err(Error::Invalid(
+                        "local fork resolver source project has an invalid owner".into(),
+                    ));
+                }
+            };
+            let child_project = VolumeRef::new(
+                self.host.provider.clone(),
+                format!("local-project-{}", intent.child_operation),
+                VolumeClass::Project,
+                project_owner,
+            )?;
+            let project_ref = workspace_ref(
+                self.project.provider().clone(),
+                &self.project.storage_name()?,
+            )?;
+            let project_head = self.host.resolve(&project_ref).await?;
+            let history = ResourceRevision::History(StreamRef::new(
+                self.stream_provider.clone(),
+                parent.reducer().authority().stream_path()?.into_bytes(),
+                Some(parent_revision.to_string()),
+            )?);
+            let request = ForkRequest {
+                operation_id: intent.fork_operation,
+                parent: parent.reducer().authority().clone(),
+                parent_revision,
+                child: child_authority.clone(),
+                child_agent,
+                attached_agents: Vec::new(),
+                preparation: ForkPreparation {
+                    child_project_volume: child_project,
+                    child_private_volume: child_private,
+                    inherited_through_sequence: parent_revision,
+                    maximum_inherited_messages: swarm.config.limits.context_messages as u64,
+                    maximum_inherited_bytes: swarm.config.limits.file_bytes,
+                    maximum_inherited_references: swarm.config.limits.attachments as u32,
+                },
+                selections: vec![
+                    ForkSelection {
+                        required: true,
+                        revision: history,
+                    },
+                    ForkSelection {
+                        required: true,
+                        revision: ResourceRevision::Project {
+                            volume: self.project.clone(),
+                            generation: project_head.generation,
+                        },
+                    },
+                ],
+                boundary: None,
+                model_boundary: None,
+            };
+            let parent_reader = Arc::new(FilesystemContentVerifier::new(
+                self.host.clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                swarm.config.limits.file_bytes,
+            )?);
+            let preparer = FilesystemForkPreparer::new(
+                self.host.clone(),
+                parent.reducer().clone(),
+                storage.verifier(),
+                storage.owner_scope().clone(),
+                self.project.clone(),
+                self.stream_provider.clone(),
+                parent_reader,
+            )?;
+            let report = parent.prepare_fork(&preparer, request.clone()).await?;
+            let declaration = LocalInheritedModelDeclaration {
+                boundary,
+                suffix: vec![ModelMessage {
+                    role: ModelRole::System,
+                    content: ModelContent::Text(format!(
+                        "child task: {}; parent: {}; identity: {}; fresh scratch: true",
+                        intent.task,
+                        intent.parent,
+                        TaskId::from_bytes(intent.child_operation.into_bytes())
+                    )),
+                }],
+            };
+            declaration.context(swarm.config.limits)?;
+            Ok(LocalModelForkPlan {
+                parent: intent.parent,
+                request: LocalForkRequest {
+                    parent: intent.parent,
+                    parent_operation: intent.parent_operation,
+                    parent_step: intent.parent_step,
+                    fork_operation: Some(intent.fork_operation),
+                    child_operation: intent.child_operation,
+                    child_authority: Some(child_authority),
+                    child_agent: Some(child_agent),
+                    task: intent.task,
+                    prompt: intent.prompt,
+                },
+                report,
+                declaration,
+                host: self.host.clone(),
+                stream: self.stream.clone(),
+                issuer: child_issuer,
+            })
+        })
+    }
 }
 
 impl LocalModelForkPlan {
@@ -282,6 +589,15 @@ impl LocalModelForkPlans {
     pub fn with_resolver(mut self, resolver: Arc<dyn LocalModelForkResolver>) -> Self {
         self.resolver = Some(resolver);
         self
+    }
+
+    /// Binds a concrete allocator to this opened swarm without exposing the
+    /// swarm's mutable registry to the model-facing tool.
+    pub fn bind_swarm(&self, swarm: Weak<PersistentLocalSwarm>) -> Result<()> {
+        if let Some(resolver) = &self.resolver {
+            resolver.bind_swarm(swarm)?;
+        }
+        Ok(())
     }
 
     /// Binds the owner registry used to persist model-selected intents before
@@ -1049,6 +1365,13 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
+        if bindings.model_fork_plans.is_none()
+            && let Some(resolver) = bindings.filesystem_fork_resolver.clone()
+        {
+            bindings.model_fork_plans = Some(Arc::new(LocalModelForkPlans::new().with_resolver(
+                resolver,
+            )));
+        }
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -1183,9 +1506,20 @@ impl PersistentLocalSwarm {
         let plans = bindings
             .model_fork_plans
             .clone()
+            .or_else(|| {
+                bindings.filesystem_fork_resolver.clone().map(|resolver| {
+                    Arc::new(LocalModelForkPlans::new().with_resolver(resolver))
+                })
+            })
             .unwrap_or_else(|| Arc::new(LocalModelForkPlans::new()));
         let bindings = bindings.with_model_fork_plans(plans);
         let swarm = Arc::new(Self::open_with_bindings(root, config, provider, bindings).await?);
+        swarm
+            .bindings
+            .model_fork_plans
+            .as_ref()
+            .ok_or_else(|| Error::Storage("local fork plans were not bound".into()))?
+            .bind_swarm(Arc::downgrade(&swarm))?;
         if let Some(publisher) = &swarm.model_fork_publisher {
             publisher.bind(Arc::downgrade(&swarm))?;
         }
