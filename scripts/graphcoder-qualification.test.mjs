@@ -39,6 +39,14 @@ test("the locked matrix has unique coverage for every requirement", () => {
   assert.ok(matrix.entries.every(entry => entry.contract && entry.verification && entry.modes.length > 0));
 });
 
+test("the gap audit names every locked row exactly once", () => {
+  const audit = readFileSync("docs/graphcoder-swarm/MATRIX-GAP-AUDIT.md", "utf8");
+  const ids = [...audit.matchAll(/\b[A-Z0-9]+-\d+\b/g)].map(match => match[0]);
+  const matrixIds = matrix.entries.map(entry => entry.id).sort();
+  assert.deepEqual([...new Set(ids)].sort(), matrixIds);
+  assert.equal(ids.length, matrixIds.length);
+});
+
 test("a pending receipt is structurally valid but cannot be final", () => {
   const receipt = makePendingReceipt();
   const result = validateReceipt(matrix, receipt);
