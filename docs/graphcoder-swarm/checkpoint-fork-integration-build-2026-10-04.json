@@ -1,0 +1,11 @@
+{
+  "qualification": "incomplete",
+  "source": "7404533af8447ae4442dc02e0fdb739984f66d55",
+  "worktree": "fork-boundary-tests/sdk",
+  "handle": 55365,
+  "exit_code": 1,
+  "tests_executed": false,
+  "platform": "Windows native compilation",
+  "diagnostic": "E0433 tests/model_fork_boundary.rs:60: crate::model_input refers to the integration test crate rather than acyclic_harness",
+  "scope": "Held library compiled; integration test compilation prevented execution. Signature paths subsequently repaired in 6c6ae5444, awaiting a new run."
+}
