@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // Drive the installed GraphCoder entrypoint through the native Windows
-// winpty adapter. The package and bridge are selected through the explicit
+// ConPTY adapter. The package and bridge are selected through the explicit
 // environment consumed by graphcoder-production-entrypoint.mjs.
 
 import { existsSync } from "node:fs";
@@ -28,20 +28,21 @@ function fail(message) {
   throw new Error(`graphcoder-production-pty: ${message}`);
 }
 
-function nativeWinpty() {
+function nativeConhost() {
   const candidates = [
-    process.env.GRAPHCODER_WINPTY,
-    join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "usr", "bin", "winpty.exe"),
-    join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "mingw64", "bin", "winpty.exe"),
+    process.env.GRAPHCODER_CONHOST,
+    join(process.env.WINDIR ?? "C:\\Windows", "System32", "conhost.exe"),
   ].filter(value => typeof value === "string" && value.trim() !== "");
   const path = candidates.find(candidate => existsSync(candidate));
-  if (path === undefined) fail("native winpty.exe was not found; set GRAPHCODER_WINPTY");
+  if (path === undefined) fail("native conhost.exe was not found; set GRAPHCODER_CONHOST");
   return path;
 }
 
 function bridgeEnvironment() {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => key === "PATH" || key.startsWith("GRAPHCODER_")),
+    Object.entries(process.env).filter(([key]) =>
+      ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].includes(key) || key.startsWith("GRAPHCODER_"),
+    ),
   );
 }
 
@@ -110,7 +111,11 @@ async function run(commands) {
   const sdkRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const entrypoint = join(sdkRoot, "scripts", "graphcoder-production-entrypoint.mjs");
   if (!existsSync(entrypoint)) fail(`missing entrypoint: ${entrypoint}`);
-  const child = spawn(nativeWinpty(), [process.env.GRAPHCODER_NODE ?? process.execPath, entrypoint], {
+  // conhost --headless creates a real Windows pseudoconsole while exposing
+  // byte streams to this driver. winpty requires the caller itself to own a
+  // console, which makes it unusable for the qualification runner's captured
+  // headless process boundary.
+  const child = spawn(nativeConhost(), ["--headless", process.env.GRAPHCODER_NODE ?? process.execPath, entrypoint], {
     cwd: sdkRoot,
     env: bridgeEnvironment(),
     stdio: ["pipe", "pipe", "pipe"],
