@@ -5,7 +5,10 @@ use acyclic_sdk_contract_wire::{
     stream::stream_descriptor, workers::workers_descriptor,
 };
 use prost::Message;
-use prost_types::{DescriptorProto, EnumDescriptorProto, FileDescriptorProto, FileDescriptorSet};
+use prost_types::{
+    DescriptorProto, EnumDescriptorProto, FieldDescriptorProto, FileDescriptorProto,
+    FileDescriptorSet,
+};
 
 fn fixture(name: &str) -> &'static [u8] {
     match name {
@@ -74,6 +77,22 @@ fn first_message_with_oneof(messages: &mut [DescriptorProto]) -> Option<&mut Des
             return Some(message);
         }
         if let Some(nested) = first_message_with_oneof(&mut message.nested_type) {
+            return Some(nested);
+        }
+    }
+    None
+}
+
+fn first_presence_field(messages: &mut [DescriptorProto]) -> Option<&mut FieldDescriptorProto> {
+    for message in messages {
+        if let Some(field) = message
+            .field
+            .iter_mut()
+            .find(|field| field.proto3_optional == Some(true) || field.oneof_index.is_some())
+        {
+            return Some(field);
+        }
+        if let Some(nested) = first_presence_field(&mut message.nested_type) {
             return Some(nested);
         }
     }
@@ -155,7 +174,9 @@ fn every_declared_family_rejects_wire_shape_mutations() {
             machines_descriptor(),
         ),
     ];
+    let family_count = families.len();
     let mut oneof_families = Vec::new();
+    let mut presence_families = Vec::new();
 
     for (name, file_name, canonical) in families {
         let baseline = fixture(name);
@@ -179,7 +200,12 @@ fn every_declared_family_rejects_wire_shape_mutations() {
         let message = first_message_with_field(&mut file.message_type)
             .unwrap_or_else(|| panic!("{name} message with a field"));
         message.field[0].json_name = Some("wireIdentityChanged".to_owned());
-        assert_rejected(name, baseline, json_name.encode_to_vec(), None);
+        assert_rejected(
+            name,
+            baseline,
+            json_name.encode_to_vec(),
+            Some(DifferenceKind::Other),
+        );
 
         let mut option = FileDescriptorSet::decode(canonical.as_slice())
             .unwrap_or_else(|error| panic!("{name} descriptor: {error}"));
@@ -225,18 +251,68 @@ fn every_declared_family_rejects_wire_shape_mutations() {
             Some(DifferenceKind::ServiceStreaming),
         );
 
+        let mut rpc_identity = FileDescriptorSet::decode(canonical.as_slice())
+            .unwrap_or_else(|error| panic!("{name} descriptor: {error}"));
+        let file = declared_file(&mut rpc_identity, name, file_name);
+        let service = file
+            .service
+            .iter_mut()
+            .find(|service| !service.method.is_empty())
+            .unwrap_or_else(|| panic!("{name} service with a method"));
+        service.method[0].input_type = Some(".wire.identity.changed.Request".to_owned());
+        assert_rejected(
+            name,
+            baseline,
+            rpc_identity.encode_to_vec(),
+            Some(DifferenceKind::Other),
+        );
+
+        let mut presence = FileDescriptorSet::decode(canonical.as_slice())
+            .unwrap_or_else(|error| panic!("{name} descriptor: {error}"));
+        let file = declared_file(&mut presence, name, file_name);
+        if let Some(field) = first_presence_field(&mut file.message_type) {
+            presence_families.push(name);
+            if field.proto3_optional == Some(true) {
+                field.proto3_optional = Some(false);
+                assert_rejected(
+                    name,
+                    baseline,
+                    presence.encode_to_vec(),
+                    Some(DifferenceKind::Presence),
+                );
+            } else {
+                field.oneof_index = None;
+                assert_rejected(
+                    name,
+                    baseline,
+                    presence.encode_to_vec(),
+                    Some(DifferenceKind::Oneof),
+                );
+            }
+        }
+
         let mut oneof = FileDescriptorSet::decode(canonical.as_slice())
             .unwrap_or_else(|error| panic!("{name} descriptor: {error}"));
         let file = declared_file(&mut oneof, name, file_name);
         if let Some(message) = first_message_with_oneof(&mut file.message_type) {
             oneof_families.push(name);
             message.oneof_decl[0].name = Some("wireIdentityChanged".to_owned());
-            assert_rejected(name, baseline, oneof.encode_to_vec(), None);
+            assert_rejected(
+                name,
+                baseline,
+                oneof.encode_to_vec(),
+                Some(DifferenceKind::Oneof),
+            );
         }
     }
 
     assert!(
         !oneof_families.is_empty(),
         "no family exercised oneof identity mutation"
+    );
+    assert_eq!(
+        presence_families.len(),
+        family_count,
+        "presence/oneof field coverage was incomplete: {presence_families:?}"
     );
 }
