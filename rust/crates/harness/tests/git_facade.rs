@@ -749,6 +749,10 @@ async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()
         aborted,
         acyclic_fs::GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
     ));
+    assert!(
+        facade.resume(executor.as_ref()).await?.is_none(),
+        "merge abort must close the pending transition"
+    );
     assert_eq!(executor.operations().len(), 3);
     Ok(())
 }
@@ -798,6 +802,10 @@ async fn recovery_rebase_and_hard_reset_use_the_facade_identity() -> Result<()> 
         resumed,
         acyclic_fs::GitCommandOutput::Committed(_)
     ));
+    assert!(
+        facade.resume(executor.as_ref()).await?.is_none(),
+        "rebase continuation must close the pending transition"
+    );
 
     executor.fail_once();
     assert!(
@@ -821,6 +829,10 @@ async fn recovery_rebase_and_hard_reset_use_the_facade_identity() -> Result<()> 
         resumed,
         acyclic_fs::GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
     ));
+    assert!(
+        facade.resume(executor.as_ref()).await?.is_none(),
+        "hard reset discard must close the pending transition"
+    );
     assert_eq!(executor.operations().len(), 6);
     Ok(())
 }
