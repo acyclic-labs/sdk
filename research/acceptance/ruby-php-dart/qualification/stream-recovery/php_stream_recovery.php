@@ -1,0 +1,36 @@
+<?php
+require getenv('PHP_PACKAGE') . '/vendor/autoload.php';
+$endpoint = getenv('FIXTURE_GRPC_ADDRESS');
+$path = getenv('RECOVERY_PATH');
+$id = getenv('RECOVERY_ID');
+$creds = ['credentials' => \Grpc\ChannelCredentials::createInsecure()];
+$stream = new \Acyclic\Stream\V2\StreamServiceClient($endpoint, $creds);
+$append = new \Acyclic\Stream\V2\AppendRequest();
+$append->setPath($path); $append->setRecords(['php-recovery-0', 'php-recovery-1']); $append->setIfTail(0); $append->setIdempotencyKey('php-recovery-append-' . $id);
+list($appendResponse, $appendStatus) = $stream->Append($append)->wait();
+if ($appendStatus->code !== \Grpc\STATUS_OK) throw new RuntimeException('append status ' . $appendStatus->code . ': ' . $appendStatus->details);
+if ($appendResponse->getCommitted()->getEnd() !== 2) throw new RuntimeException('append end mismatch');
+$read = new \Acyclic\Stream\V2\ReadRequest();
+$read->setPath($path); $read->setFrom(0); $read->setLimit(2);
+$items = [];
+foreach ($stream->Read($read)->responses() as $item) $items[] = [$item->getRecord()->getSequence(), $item->getRecord()->getValue()];
+if ($items !== [[0, 'php-recovery-0'], [1, 'php-recovery-1']]) throw new RuntimeException('page mismatch ' . json_encode($items));
+$resume = new \Acyclic\Stream\V2\ReadRequest();
+$resume->setPath($path); $resume->setFrom(1); $resume->setLimit(1);
+$resumed = [];
+foreach ($stream->Read($resume)->responses() as $item) $resumed[] = [$item->getRecord()->getSequence(), $item->getRecord()->getValue()];
+if ($resumed !== [[1, 'php-recovery-1']]) throw new RuntimeException('resume mismatch ' . json_encode($resumed));
+$follow = new \Acyclic\Stream\V2\FollowRequest();
+$follow->setPath($path); $follow->setFrom(0);
+$call = $stream->Follow($follow);
+$first = null;
+foreach ($call->responses() as $item) { $first = $item->getRecord()->getSequence(); $call->cancel(); break; }
+$cancelStatus = $call->getStatus();
+$stream->close();
+unset($call, $stream);
+if ($first !== 0 || $cancelStatus->code !== \Grpc\STATUS_CANCELLED) throw new RuntimeException('cancel status mismatch');
+echo 'append_end=' . $appendResponse->getCommitted()->getEnd() . PHP_EOL;
+echo 'page=' . implode(',', array_column($items, 0)) . PHP_EOL;
+echo 'resume=' . implode(',', array_column($resumed, 0)) . PHP_EOL;
+echo 'cancel_first=' . $first . PHP_EOL;
+echo 'cancel_status=' . $cancelStatus->code . ':' . $cancelStatus->details . PHP_EOL;

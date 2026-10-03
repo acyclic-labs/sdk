@@ -1,0 +1,202 @@
+{
+  "schema": "acyclic.sdk.portable-stream-recovery.v1",
+  "generated_at_utc": "2026-10-03T19:55:37.4142601Z",
+  "endpoint": "127.0.0.1:59073",
+  "source_binding": {
+    "status": "deferred-producer-dynamic-closure",
+    "reason": "sdk-examples source closure is actively changing; this supplemental receipt binds installed language artifacts and repaired PHP provenance only",
+    "authority_manifest": {
+      "path": "Q:\\sdk\\work\\rust-source-root-authority\\rust-authority.json",
+      "sha256": "3a56db31e27584b49a7410342b03ad3f40cffad8ca9e9bf4746c25f643025d37",
+      "bytes": 8740
+    },
+    "php_provenance": {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\php\\src\\provenance.json",
+      "sha256": "9d119e5e58c365fc6241d680c60cd2570895c11a464a1296ec57826631e35210",
+      "bytes": 30841
+    },
+    "php_provenance_nul_count": 0
+  },
+  "runtimes": {
+    "ruby": {
+      "path": "Q:\\sdk\\ruby-cache\\ruby\\rubyinstaller-3.2.11-1-x64\\bin\\ruby.exe",
+      "sha256": "522bec55ce15ae724222207930222c4fd85b9688fec155093067872872e9b7bb",
+      "bytes": 35840
+    },
+    "php": {
+      "path": "Q:\\sdk\\php-cache\\php-8.2.34\\php.exe",
+      "sha256": "2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96",
+      "bytes": 144384
+    },
+    "php_protobuf": {
+      "path": "Q:\\sdk\\php-cache\\php-protobuf-native\\php_protobuf.dll",
+      "sha256": "a6b466ec202afc304e0f091cc2f881126a2b26401142847310d08cee51caa909",
+      "bytes": 339456
+    },
+    "php_grpc": {
+      "path": "Q:\\sdk\\php-cache\\php-grpc-native-1.82.0\\php_grpc.dll",
+      "sha256": "021efdad8860e5d47c8c0e042c91d6c8545948b6c8fd7358d67cfd180ff9cdc0",
+      "bytes": 10057216
+    },
+    "dart": {
+      "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\dart\\.toolchain\\dart-sdk\\bin\\dart.exe",
+      "sha256": "cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c",
+      "bytes": 39998976
+    }
+  },
+  "packages": {
+    "ruby_source": {
+      "root": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\ruby",
+      "files": 11,
+      "sha256": "3380ea504212507df7816753d49da26d730dc4778a5688f4826e9142a3697138"
+    },
+    "ruby_package": {
+      "root": "Q:\\sdk\\ruby-cache\\package-all",
+      "files": 31,
+      "sha256": "4978e81087a1a837b51b4fe5945577c3b8b80177fb1a5666ff96cb6d9a41a913"
+    },
+    "ruby_gem": {
+      "path": "Q:\\sdk\\ruby-cache\\consumer-all\\cache\\acyclic-sdk-0.1.0.pre.1.gem",
+      "sha256": "17ade90f25f7b97b4068d1411bf80800b6b2672c5476b95e4eb13d63c3136ea5",
+      "bytes": 40448
+    },
+    "php_source": {
+      "root": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\php\\src",
+      "files": 480,
+      "sha256": "7e55de7fc8bb0a10be852dc873d9d731fb09c267032e42916c1f8a2d6ba7a047"
+    },
+    "php_package": {
+      "root": "Q:\\sdk\\php-cache\\package-final",
+      "files": 665,
+      "sha256": "a817895c8f65d9e88571d9a36813665946898dc887d3bc486220df22271b9a0b"
+    },
+    "dart_source": {
+      "root": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\dart\\lib",
+      "files": 2,
+      "sha256": "dd83dfe9b2bf5492cb535eb09283bcc3c25c0af9c82ee810d4109e36f566c593"
+    },
+    "dart_package": {
+      "root": "Q:\\sdk\\dart-cache\\package-all",
+      "files": 56,
+      "sha256": "67fb2a2efd8ba1f65245ec9e5c19f64c3424a11b693d60782d23a37d33bbe297"
+    }
+  },
+  "tests": {
+    "ruby": {
+      "status": "passed",
+      "exit_code": 0,
+      "log": {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\ruby_stream_recovery.log",
+        "sha256": "7b85a5c27d3031fd15947b18e567b8bb3eedba3f68cef81f39243b40875f79d3",
+        "bytes": 238
+      },
+      "coverage": [
+        "append records 0,1",
+        "bounded read from 0 returns 0,1",
+        "resume read from 1 returns 1",
+        "Follow receives 0 then operation.cancel; drained status is GRPC CANCELLED (code 1)"
+      ]
+    },
+    "dart": {
+      "status": "passed",
+      "exit_code": 0,
+      "log": {
+        "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\dart_stream_recovery.log",
+        "sha256": "fae5bc2afdf126ec653132812236000adc92a543a3f19e417c7f2c150fd76963",
+        "bytes": 225
+      },
+      "coverage": [
+        "append records 0,1",
+        "bounded read from 0 returns 0,1",
+        "resume read from 1 returns 1",
+        "Follow subscription receives 0 then subscription.cancel completes"
+      ]
+    },
+    "php": {
+      "status": "passed",
+      "recovery_runner": {
+        "status": "passed",
+        "exit_code": 0,
+        "log": {
+          "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\php_stream_recovery.log",
+          "sha256": "11996f59ce89ea51939639def955b1ace7753d65cf8ccdd974d79270853a3723",
+          "bytes": 243
+        },
+        "coverage": [
+          "append records 0,1",
+          "bounded read from 0 returns 0,1",
+          "resume read from 1 returns 1",
+          "Follow receives 0, ServerStreamingCall::cancel, getStatus returns code 1, generated client close exits cleanly"
+        ]
+      },
+      "cancellation_status_probe": {
+        "status": "passed",
+        "exit_code": 0,
+        "log": {
+          "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\php_cancel_status_probe.log",
+          "sha256": "56b2424788c52c3a5696fc0a58bf7a54883dfc9bb223008011b151230a079cbc",
+          "bytes": 206
+        },
+        "observed": "getStatus returned code 1 Stream removed (CANCELLED); generated BaseStub::close then object cleanup completed with process exit 0",
+        "qualification": "passed with explicit close-after-getStatus lifecycle"
+      },
+      "lifecycle_investigation": {
+        "status": "resolved",
+        "runner": {
+          "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\lifecycle\\php_lifecycle_probe.php",
+          "sha256": "ee235238de23cc5fb107d27e2183783a695fd8b8d859cda0348f6a91b0794f67",
+          "bytes": 1372
+        },
+        "variants": [
+          {
+            "case": "plain",
+            "status": "failed",
+            "exit_code": -1073741819,
+            "log": {
+              "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\lifecycle\\plain.log",
+              "sha256": "5b34c2d53be43b2f0054a82f0d00c9f4430f83ab1a05d6e6edc0f92e29adb27b",
+              "bytes": 178
+            },
+            "observed": "cancel followed by getStatus without client close reproduces PECL shutdown access violation"
+          },
+          {
+            "case": "close-after-status",
+            "status": "passed",
+            "exit_code": 0,
+            "log": {
+              "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\lifecycle\\close-after-status.log",
+              "sha256": "00fea3683a12126f1205a467cbdcf03bd13bf66b61fff6c4636feaf147a9401a",
+              "bytes": 194
+            },
+            "observed": "getStatus returns CANCELLED, then generated client close exits cleanly"
+          },
+          {
+            "case": "close-before-status",
+            "status": "failed_expected_ordering",
+            "exit_code": 255,
+            "log": {
+              "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\lifecycle\\close-before-status.log",
+              "sha256": "17e6f48ee175c87e36deebbfdfb4b31232eb81c6e57a144c352450f81a131151",
+              "bytes": 1135
+            },
+            "observed": "getStatus after channel close fails with Channel is closed"
+          },
+          {
+            "case": "unset",
+            "status": "passed",
+            "exit_code": 0,
+            "log": {
+              "path": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\research\\acceptance\\ruby-php-dart\\qualification\\stream-recovery\\lifecycle\\unset.log",
+              "sha256": "f88c184143b2c46a68233bbbc74eae056bde828771a1c11fd527d7e7ae54e7ca",
+              "bytes": 168
+            },
+            "observed": "object cleanup after getStatus exits cleanly"
+          }
+        ],
+        "resolution": "Use ServerStreamingCall::cancel, then getStatus, then generated BaseStub::close, then unset call/client",
+        "failure_policy": "The reproduced plain lifecycle failure remains retained as evidence; only the explicit close-after-status sequence is qualified"
+      }
+    }
+  },
+  "failure_policy": "Any nonzero or timeout process status remains failed; output is never promoted to success"
+}

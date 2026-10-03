@@ -1,0 +1,121 @@
+{
+  "schema": "acyclic.sdk.remote-transport-capability.receipt.v1",
+  "status": "prototype",
+  "scope": "ruby-php-dart-owned-facades",
+  "source_binding": {
+    "owner": "rust-wire",
+    "status": "captured-snapshot-requires-refresh",
+    "transport_source": {
+      "path": "rust/crates/sdk-contract-wire/src/transport.rs",
+      "sha256": "4B30AAAFE1F2C2644D42E3BAB91E2035ECC3EBB11B8F9AE3C21B07974D84D580"
+    },
+    "family_registry_source": {
+      "path": "rust/crates/sdk-contract-wire/src/family_registry.rs",
+      "sha256": "C8F6A1ADC987EE850A3F936B7F41A4B1FE2FC010FC63AFAB80D3E788137C7EC9"
+    },
+    "credential_source": {
+      "path": "rust/crates/sdk-contract-wire/src/credential.rs",
+      "sha256": "F682372D0C905820A6D384CC02A6D5269F7E06B2FA3D065E39FCD3A2E5925C3E"
+    }
+  },
+  "policy": {
+    "default_runtime": "native",
+    "default_transport": "grpc",
+    "credential_policy": "bearer-no-crlf",
+    "selection": "ordered compatible option; explicit override is validated before invocation",
+    "native": {
+      "actors": ["grpc", "http-json-unary"],
+      "workers": ["grpc", "http-json-unary"],
+      "objects": ["grpc", "http-json-streaming"],
+      "stream": ["grpc", "http-json-streaming"],
+      "inference": ["grpc"],
+      "machines": ["grpc"],
+      "filesystem": ["grpc"],
+      "harness": ["grpc"]
+    },
+    "browser": {
+      "actors": ["http-json-unary"],
+      "workers": ["http-json-unary"],
+      "objects": ["http-json-streaming"],
+      "stream": ["http-json-streaming"],
+      "inference": ["http-json-streaming"],
+      "machines": [],
+      "filesystem": ["grpc-web-streaming"],
+      "harness": []
+    }
+  },
+  "facades": [
+    {
+      "language": "ruby",
+      "runtime": "rubyinstaller-3.2.11-1-x64",
+      "source": "ruby/lib/acyclic_sdk/remote_policy.rb",
+      "source_sha256": "A4E21AA240110FF0515A360354C862ABC2113C253F79FC06E0CE0948E285DD39",
+      "test": "ruby/test/remote_policy_test.rb",
+      "test_sha256": "EE03AB924209E5F583FD09951D44756E6BA523B7206B2236A4F13AAB73E55098",
+      "result": "prototype-not-qualification",
+      "gRPC": {
+        "runtime": "grpc 1.82.0",
+        "capability": "full generated unary, server-streaming, client-streaming, and bidirectional API",
+        "qualified_generated_stream": "Q:/sdk/ruby-cache/consumer-all/gems/acyclic-sdk-0.1.0.pre.1/generated/stream/v2/stream_services_pb.rb",
+        "qualified_generated_stream_sha256": "5ACDCF2B58CBC4BE3C8523ED912B95B98387B770EC64ACE8BBB0FD293A68D055"
+      },
+      "http_json": {
+        "rust_policy_subset": "unary for actors/workers; streaming for objects/stream",
+        "native_adapter": "injected invoker only; no handwritten HTTP encoder is claimed"
+      }
+    },
+    {
+      "language": "php",
+      "runtime": "php 8.2.34; PECL grpc 1.82.0; protobuf 5.36.2",
+      "source": "php/src/Acyclic/Runtime/RemotePolicy.php; php/src/Acyclic/Runtime/RemoteClient.php",
+      "source_sha256": [
+        "35F4EA12055A5728585C96AD637E1C95811238BC9BF47B25A734B2EEA727EA5E",
+        "9DE714093548CBA51423949313692DFD96D38196AA4A69A1662511A70DD6F4F3"
+      ],
+      "test": "php/tests/remote_policy_test.php",
+      "test_sha256": "2DD6FBCCB501395A7DCF47A34FB4D6E865712AAFC7D782F51E3E65B9AE4CAF64",
+      "result": "prototype-not-qualification",
+      "gRPC": {
+        "capability": "full generated unary and server-streaming methods; client/bidirectional forms are emitted where present",
+        "qualified_generated_stream": "php/src/Acyclic/Stream/V2/StreamServiceClient.php",
+        "qualified_generated_stream_sha256": "DA9BDC2E7F189C3FE2D6920759EEF76BF6458BE42493CB0659A8EC0F9FC1ABD7"
+      },
+      "http_json": {
+        "rust_policy_subset": "unary for actors/workers; streaming for objects/stream",
+        "native_adapter": "injected callable only; no handwritten HTTP encoder is claimed"
+      }
+    },
+    {
+      "language": "dart",
+      "runtime": "Dart 3.8.3; grpc 5.1.0",
+      "source": "dart/lib/src/remote_policy.dart",
+      "source_sha256": "2AC8E14E3223E2806A05DE57FF590EBA774D0351D1F8A8ECE4D8147C09020133",
+      "test": "dart/test/remote_policy_test.dart",
+      "test_sha256": "3A696D730B30F870FAC6E5B634B3D87E1BA4D279CA4FE409B5BDE0F49A57E091",
+      "result": "prototype-not-qualification",
+      "gRPC": {
+        "capability": "full generated unary and server-streaming methods; runtime also supports client/bidirectional forms",
+        "qualified_generated_stream": "Q:/sdk/dart-cache/live-rendered/lib/src/generated/stream/v2/stream.pbgrpc.dart",
+        "qualified_generated_stream_sha256": "38F54E24029A3C8748FDEDD1E81508797046FE89A60928EBC0B3278E419F179D"
+      },
+      "http_json": {
+        "rust_policy_subset": "unary for actors/workers; streaming for objects/stream",
+        "native_adapter": "injected invoker only; no handwritten HTTP encoder is claimed"
+      }
+    }
+  ],
+  "checks": {
+    "default_native_is_grpc": true,
+    "explicit_streaming_http_override": true,
+    "unary_http_override_rejects_streaming_requirement": true,
+    "unknown_or_unqualified_override_rejected": true,
+    "bearer_empty_and_crlf_rejected": true,
+    "request_is_not_sent_before_selection_validation": true,
+    "generated_policy_emission": false
+  },
+  "limitations": [
+    "The facade delegates protobuf-JSON or gRPC-Web encoding to an injected adapter; this receipt does not claim a native HTTP implementation in Ruby, PHP, or Dart.",
+    "These facades are handwritten prototypes. The Rust generator must emit the policy metadata and selection contract into each target before any facade can be called generated or qualified.",
+    "The source binding is a captured Rust policy snapshot and must be refreshed with the final producer closure before aggregate qualification is sealed."
+  ]
+}
