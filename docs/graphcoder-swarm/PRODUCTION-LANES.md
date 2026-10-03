@@ -73,8 +73,10 @@ node scripts/graphcoder-production-pty.mjs "start inspect the repository" "activ
 Capture each lane with
 `node scripts/graphcoder-qualification-suite.mjs capture CONFIG.json`. The
 configuration must list the installed GraphCoder package archive and every
-bridge executable consumed by the command, each with the qualified source
-commit, source tree, build ID, build timestamp, and `fresh: true`. Use separate
+bridge executable consumed by the command, each with its exact SHA-256 digest,
+qualified source commit, source tree, build ID, build timestamp, and `fresh:
+true`. The capture runner checks the declared digest against the bytes before
+dispatch, then checks the digest again after the suite. Use separate
 suite IDs and output directories for headless and PTY runs. Reusing an output
 directory after a crash is rejected by the runner's exclusive descriptor and
 transcript creation; resume with a new suite ID after confirming the previous
