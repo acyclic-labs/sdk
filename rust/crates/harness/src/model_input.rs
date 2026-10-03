@@ -298,6 +298,29 @@ impl InheritedModelContext {
         boundary.prefix.verify(&prepared)?;
         Ok(Self { boundary, suffix })
     }
+
+    /// Require exactly the frozen inherited request, declared suffix, and all
+    /// current authoritative own messages, with no undeclared middle context.
+    pub fn verify_composition(
+        &self,
+        request: &ModelRequest,
+        authoritative: &[ModelMessage],
+        limits: Limits,
+    ) -> Result<()> {
+        self.boundary.verify(limits)?;
+        let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+        prepared.validate_complete_exchange()?;
+        self.boundary.prefix.verify(&prepared)?;
+        let mut expected = self.boundary.request.messages.clone();
+        expected.extend(self.suffix.iter().cloned());
+        expected.extend(authoritative.iter().cloned());
+        if expected != request.messages {
+            return Err(Error::Conflict(
+                "recursive fork differs from declared inherited composition".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 impl crate::context::ContextStage for InheritedModelContext {
     fn name(&self) -> &str {
@@ -437,6 +460,43 @@ mod tests {
             max_output_tokens: Some(100),
         })
     }
+    #[test]
+    fn recursive_composition_rejects_undeclared_context_and_changed_suffix() -> Result<()> {
+        let limits = Limits::default();
+        let boundary = CompletedModelBoundary::capture(request()?, limits)?;
+        let suffix = vec![text("notification; explicit task; fresh scratch")];
+        let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
+        let own = vec![text("authoritative child input λ\n"), text("child result")];
+        let mut completed = boundary.request.clone();
+        completed.messages.extend(suffix);
+        completed.messages.extend(own.iter().cloned());
+        declaration.verify_composition(&completed, &own, limits)?;
+        let mut hidden = completed.clone();
+        hidden.messages.insert(
+            boundary.request.messages.len() + 1,
+            text("undeclared sibling history"),
+        );
+        assert!(
+            declaration
+                .verify_composition(&hidden, &own, limits)
+                .is_err()
+        );
+        let changed = InheritedModelContext::new(boundary, vec![text("changed task")], limits)?;
+        assert!(
+            changed
+                .verify_composition(&completed, &own, limits)
+                .is_err()
+        );
+        let mut reordered = own;
+        reordered.reverse();
+        assert!(
+            declaration
+                .verify_composition(&completed, &reordered, limits)
+                .is_err()
+        );
+        Ok(())
+    }
+
     #[test]
     fn recursive_prefix_survives_persistence_with_suffix_only_context() -> Result<()> {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;

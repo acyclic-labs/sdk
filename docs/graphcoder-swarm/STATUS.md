@@ -159,3 +159,23 @@ it does not independently qualify missing project allocation recovery.
 checkpoint-final-context-authority.json records scoped source and executable
 digests. This is focused checkpoint evidence, not full-tree, recursive, WASM,
 packaged terminal, fault-matrix, or final qualification.
+
+## Recursive declaration and WASM admission checkpoint
+
+prepareModelRequest shares PreparedModelInput admission and completed exchange
+validation with TypeScript. Actual wasm32 compilation and wasm-release artifact
+generation passed at 50e334ad. Generated public declarations expose the export.
+Provider dispatch parity and lossless normalized request consumption remain pending.
+
+The recursive fork helper now accepts an explicit InheritedModelContext and checks
+the complete frozen prefix, exact declared suffix, and all authoritative own messages.
+The root helper retains exact full conversation equality. The negative composition
+test passed; real native fork boundary scenarios passed 2/2 (8.20 seconds).
+Production persistence of that declaration and recursive activation remain required.
+
+Broader model_input unit selection produced 8 passes and 1 required failure:
+production_batch_pins_text_and_all_ordered_results rejects exact file read authority.
+Its old recursion loop creates independent child stores then inherits references
+without published seed grants. The new final-context verifier exposes this gap.
+No bypass or skip was introduced; replacement with typed published recursion and
+ancestor reference propagation remains an unmet acceptance gate.

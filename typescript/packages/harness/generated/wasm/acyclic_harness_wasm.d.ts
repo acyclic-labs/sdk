@@ -697,6 +697,13 @@ export function forkSeedFromReport(report: any): any;
 export function prepareConversationTurn(conversation: any, operation_id: string, content: any, attachments: any, limits: any, existing_selection: any, has_completed_output: boolean, can_reconcile: boolean): WasmTurnPreparation;
 
 /**
+ * Canonical model-request admission shared by native and TypeScript execution.
+ * Content authority must first be checked by the caller's bound content resolver;
+ * this export performs no retrieval and grants no filesystem permissions.
+ */
+export function prepareModelRequest(request: WasmModelRequestWire, limits: WasmModelLimitsInput): any;
+
+/**
  * Runs the canonical Rust conversation projection over bytes captured by the
  * owner.  TypeScript supplies a map rather than a callback so authorization
  * and async reads finish before this deterministic core is entered.
@@ -878,6 +885,7 @@ export interface InitOutput {
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
+    readonly prepareModelRequest: (a: any, b: any) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
