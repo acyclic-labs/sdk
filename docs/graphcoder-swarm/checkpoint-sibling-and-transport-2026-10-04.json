@@ -1,0 +1,43 @@
+{
+  "qualification": "incomplete",
+  "sibling_test": {
+    "source_at_build_start": "8423ca7a0",
+    "handle": 79605,
+    "platform": "Windows native execution",
+    "case": "thirty_two_sibling_forks_reject_stale_and_conflicting_merges",
+    "exit_code": 0,
+    "passed": 1,
+    "failed": 0,
+    "filtered": 2,
+    "duration_seconds": 0.30,
+    "suite_sha256": "4E2D18579FC8520FB2EE2515918BAAFBCF60723DDFBA3CAC067CBCAEA87F5585",
+    "artifact_sha256": "9A5BACC79A5A7E93F82B04E7312781C899A4368761B6D7BF045DC950291521A9",
+    "repair": "Fixture children no longer reuse the parent's identity; approval pins the target after merge notice staging.",
+    "scope": "Focused sibling scenario only. Earlier 1024-depth proof remains bound to its original source."
+  },
+  "transport_test": {
+    "source": "43e396708",
+    "suite": "typescript/packages/harness/test/runtime.test.ts",
+    "suite_sha256": "BC9E797B0D8ECB1867032954808565A91247574AF2D186FD432190B308DF00BB",
+    "wasm_sha256": "568B87CB08BFF9F5FF3B8A0FEA8676F30EF9921C5FF53600C4AD021A195E5900",
+    "passed": 81,
+    "failed": 0,
+    "assertions": 469,
+    "scope": "Bun execution using previously built WASM; provider wrapper projection cannot replace admitted transport body."
+  },
+  "boundary_suite": {
+    "source": "db86d614a",
+    "suite_sha256": "CAB49A2923FB980920D90C4CD89FEB1FA7141929B49432C1E3320DFA3C759DA4",
+    "passed": 5,
+    "failed": 0,
+    "scope": "Static package/import/domain ownership checks, not installed lazy-load execution."
+  },
+  "serialization_suite_attempt": {
+    "source": "58a8ecc1f",
+    "suite": "typescript/packages/harness/test/native-wasm-equivalence.test.ts",
+    "exit_code": 1,
+    "tests_executed": false,
+    "diagnostic": "Unexpected end of file at 279; type checker TS1005 at 280: closing brace expected.",
+    "status": "Returned to owner for repair; no recursive serialization evidence claimed."
+  }
+}
