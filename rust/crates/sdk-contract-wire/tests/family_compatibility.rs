@@ -1,12 +1,14 @@
 use acyclic_sdk_contract_validation::compare_bytes;
 use acyclic_sdk_contract_wire::{
-    ACTORS, ContractSpec, INFERENCE, MACHINES, OBJECTS_V2, STREAM, WORKERS, actors_descriptor,
-    filesystem::filesystem_descriptor, harness::harness_descriptor,
-    inference::inference_descriptor, machines::machines_descriptor, objects::objects_descriptor,
-    stream::stream_descriptor, workers::workers_descriptor,
+    actors_descriptor, family_view, filesystem::filesystem_descriptor,
+    filesystem::filesystem_file_descriptor, filesystem::FILESYSTEM, harness::harness_descriptor,
+    harness::harness_file_descriptor, harness::HARNESS, inference::inference_descriptor,
+    machines::machines_descriptor, objects::objects_descriptor, stream::stream_descriptor,
+    workers::workers_descriptor, ContractSpec, FamilyModel, HttpProjection, ACTORS, FAMILY_VIEWS,
+    INFERENCE, MACHINES, OBJECTS_V2, STREAM, WORKERS,
 };
 use prost::Message;
-use prost_types::{FileDescriptorSet, field_descriptor_proto};
+use prost_types::{field_descriptor_proto, FileDescriptorSet};
 use std::collections::BTreeSet;
 
 fn fixture(path: &str) -> &'static [u8] {
@@ -138,7 +140,14 @@ fn routed_contracts_cover_every_rpc_with_explicit_projection_metadata() {
 
 #[test]
 fn modeled_operation_policies_cover_each_policy_backed_rpc() {
-    for contract in [&ACTORS, &STREAM, &WORKERS] {
+    for contract in [
+        &ACTORS,
+        &STREAM,
+        &WORKERS,
+        &OBJECTS_V2,
+        &INFERENCE,
+        &MACHINES,
+    ] {
         let policies = contract.operation_policies();
         let method_count: usize = contract
             .services
@@ -190,6 +199,74 @@ fn modeled_operation_policies_cover_each_policy_backed_rpc() {
                 "policy RPC is not a modeled method: {}",
                 policy.rpc
             );
+        }
+    }
+
+    for (name, contract, method_count) in [
+        (
+            "filesystem",
+            FILESYSTEM.operation_policies(),
+            filesystem_file_descriptor()
+                .service
+                .iter()
+                .map(|service| service.method.len())
+                .sum::<usize>(),
+        ),
+        (
+            "harness",
+            HARNESS.operation_policies(),
+            harness_file_descriptor()
+                .service
+                .iter()
+                .map(|service| service.method.len())
+                .sum::<usize>(),
+        ),
+    ] {
+        assert_eq!(contract.len(), method_count, "{name} policy count drifted");
+        assert!(contract.iter().all(|policy| {
+            !policy.capabilities.is_empty()
+                && !policy.errors.is_empty()
+                && !policy.validations.is_empty()
+        }));
+    }
+}
+
+#[test]
+fn unified_family_registry_covers_all_models_and_transport_projections() {
+    let expected = [
+        ("actors", "acyclic.actors.v1"),
+        ("workers", "acyclic.workers.v1"),
+        ("objects", "acyclic.objects.v2"),
+        ("stream", "acyclic.stream.v2"),
+        ("inference", "inference.customer.v1"),
+        ("machines", "acyclic.machines.v1"),
+        ("filesystem", "acyclic.filesystem.v2"),
+        ("harness", "acyclic.harness.v2"),
+    ];
+    assert_eq!(FAMILY_VIEWS.len(), expected.len());
+    for (family, package) in expected {
+        let view = family_view(family).expect("family is registered");
+        assert_eq!(view.package(), package);
+        assert!(!view.file_name().is_empty());
+        assert!(!view.model.syntax().is_empty());
+        assert!(!view.model.descriptor().is_empty());
+    }
+
+    for view in FAMILY_VIEWS {
+        match view.name {
+            "actors" | "workers" | "objects" | "stream" | "inference" => {
+                assert!(
+                    matches!(view.http, HttpProjection::Explicit(routes) if !routes.is_empty())
+                );
+                assert!(view.has_http_projection());
+                assert!(matches!(view.model, FamilyModel::ContractSpec(_)));
+            }
+            "machines" | "filesystem" | "harness" => {
+                assert!(matches!(view.http, HttpProjection::Unavailable));
+                assert!(!view.has_http_projection());
+                assert!(!view.operation_policies.is_empty());
+            }
+            other => panic!("unrecognized registered family: {other}"),
         }
     }
 }

@@ -9,6 +9,8 @@ use acyclic_sdk_contract_options::RawOptions;
 use prost::Message;
 
 pub mod bindings;
+pub mod credential;
+pub mod family_registry;
 pub mod filesystem;
 pub mod harness;
 pub mod inference;
@@ -22,9 +24,17 @@ pub use bindings::{
     BindingFamily, BindingGenerationError, BindingOutput, BindingTransport, ProductBindingConfig,
     descriptor_set_with_docs, generate_product_bindings, generate_rust_bindings,
 };
+pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
-pub use filesystem::{FILESYSTEM, filesystem_descriptor, filesystem_proto};
-pub use harness::{HARNESS, harness_descriptor, harness_proto};
+pub use family_registry::{FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, family_view};
+pub use filesystem::{
+    FILESYSTEM, FILESYSTEM_OPERATION_POLICIES, FILESYSTEM_SERVICE_AVAILABILITY,
+    ServiceAvailability as FilesystemServiceAvailability, filesystem_descriptor, filesystem_proto,
+};
+pub use harness::{
+    HARNESS, HARNESS_OPERATION_POLICIES, HARNESS_SERVICE_AVAILABILITY,
+    ServiceAvailability as HarnessServiceAvailability, harness_descriptor, harness_proto,
+};
 pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
@@ -186,7 +196,7 @@ const ACTOR_ERRORS: &[&str] = &[
 ];
 const ACTOR_IDEMPOTENCY_VALIDATIONS: &[&str] = &["idempotency_key.non_empty_utf8"];
 
-const ACTOR_POLICIES: &[OperationPolicy] = &[
+pub(crate) const ACTOR_POLICIES: &[OperationPolicy] = &[
     OperationPolicy {
         rpc: "acyclic.actors.v1.ActorsService/CreateActor",
         capabilities: ACTOR_MUTATION_CAPABILITIES,
@@ -248,7 +258,7 @@ const STREAM_ERRORS: &[&str] = &[
 ];
 const STREAM_WRITE_CAPABILITIES: &[&str] = &["stream.write"];
 const STREAM_READ_CAPABILITIES: &[&str] = &["stream.read"];
-const STREAM_POLICIES: &[OperationPolicy] = &[
+pub(crate) const STREAM_POLICIES: &[OperationPolicy] = &[
     OperationPolicy {
         rpc: "acyclic.stream.v2.StreamService/InspectIdempotency",
         capabilities: STREAM_READ_CAPABILITIES,
@@ -322,7 +332,7 @@ const WORKER_ERRORS: &[&str] = &[
 const WORKER_MUTATION_CAPABILITIES: &[&str] = &["workers.write", "workers.idempotent_mutation"];
 const WORKER_READ_CAPABILITIES: &[&str] = &["workers.read"];
 const WORKER_INVOKE_CAPABILITIES: &[&str] = &["workers.invoke"];
-const WORKER_POLICIES: &[OperationPolicy] = &[
+pub(crate) const WORKER_POLICIES: &[OperationPolicy] = &[
     OperationPolicy {
         rpc: "acyclic.workers.v1.WorkersService/PublishVersion",
         capabilities: WORKER_MUTATION_CAPABILITIES,
@@ -370,6 +380,431 @@ const WORKER_POLICIES: &[OperationPolicy] = &[
     },
 ];
 
+const OBJECTS_ERRORS: &[&str] = &[
+    "ERROR_CODE_INVALID_ARGUMENT",
+    "ERROR_CODE_NOT_FOUND",
+    "ERROR_CODE_ALREADY_EXISTS",
+    "ERROR_CODE_PRECONDITION_FAILED",
+    "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+    "ERROR_CODE_QUOTA_EXCEEDED",
+    "ERROR_CODE_UNSUPPORTED",
+    "ERROR_CODE_UNAVAILABLE",
+    "ERROR_CODE_ACCESS_DENIED",
+    "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+    "ERROR_CODE_NOT_MODIFIED",
+];
+const OBJECTS_BUCKET_READ_CAPABILITIES: &[&str] = &["objects.bucket.read"];
+const OBJECTS_BUCKET_WRITE_CAPABILITIES: &[&str] =
+    &["objects.bucket.write", "objects.idempotent_mutation"];
+const OBJECTS_OBJECT_READ_CAPABILITIES: &[&str] = &["objects.object.read"];
+const OBJECTS_OBJECT_WRITE_CAPABILITIES: &[&str] =
+    &["objects.object.write", "objects.idempotent_mutation"];
+const OBJECTS_MULTIPART_READ_CAPABILITIES: &[&str] = &["objects.multipart.read"];
+const OBJECTS_MULTIPART_WRITE_CAPABILITIES: &[&str] =
+    &["objects.multipart.write", "objects.idempotent_mutation"];
+
+pub(crate) const OBJECTS_POLICIES: &[OperationPolicy] = &[
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.BucketsService/CreateBucket",
+        capabilities: OBJECTS_BUCKET_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["bucket.name.non_empty", "idempotency_key.non_empty"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.BucketsService/HeadBucket",
+        capabilities: OBJECTS_BUCKET_READ_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["bucket.name.non_empty"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.BucketsService/DeleteBucket",
+        capabilities: OBJECTS_BUCKET_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "bucket.name.non_empty",
+            "bucket.empty",
+            "idempotency_key.non_empty",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.ObjectsService/PutObject",
+        capabilities: OBJECTS_OBJECT_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "preconditions.atomic",
+            "idempotency_key.non_empty",
+            "upload.completion_frame",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.ObjectsService/GetObject",
+        capabilities: OBJECTS_OBJECT_READ_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "range.valid",
+            "response.bounded",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.ObjectsService/HeadObject",
+        capabilities: OBJECTS_OBJECT_READ_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["bucket.name.non_empty", "object.key.non_empty"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.ObjectsService/DeleteObject",
+        capabilities: OBJECTS_OBJECT_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "preconditions.atomic",
+            "idempotency_key.non_empty",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.ObjectsService/ListObjects",
+        capabilities: OBJECTS_OBJECT_READ_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["bucket.name.non_empty", "pagination.bounded"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.MultipartService/CreateMultipart",
+        capabilities: OBJECTS_MULTIPART_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "bucket.name.non_empty",
+            "object.key.non_empty",
+            "idempotency_key.non_empty",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.MultipartService/UploadPart",
+        capabilities: OBJECTS_MULTIPART_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "upload_id.non_empty",
+            "part_number.positive",
+            "upload.completion_frame",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.MultipartService/ListParts",
+        capabilities: OBJECTS_MULTIPART_READ_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["upload_id.non_empty", "pagination.bounded"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.MultipartService/CompleteMultipart",
+        capabilities: OBJECTS_MULTIPART_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &[
+            "upload_id.non_empty",
+            "parts.ordered_exact",
+            "idempotency_key.non_empty",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.objects.v2.MultipartService/AbortMultipart",
+        capabilities: OBJECTS_MULTIPART_WRITE_CAPABILITIES,
+        errors: OBJECTS_ERRORS,
+        validations: &["upload_id.non_empty", "idempotency_key.non_empty"],
+    },
+];
+
+// Inference exposes these categories through its Rust client Error enum. The
+// customer service remains responsible for its own backend admission details.
+const INFERENCE_ERRORS: &[&str] = &[
+    "inference.invalid",
+    "inference.transport",
+    "inference.observation",
+];
+const INFERENCE_MODELS_READ_CAPABILITIES: &[&str] = &["inference.models.read"];
+const INFERENCE_CONTEXT_READ_CAPABILITIES: &[&str] = &["inference.context.read"];
+const INFERENCE_CONTEXT_WRITE_CAPABILITIES: &[&str] =
+    &["inference.context.write", "inference.idempotent_mutation"];
+const INFERENCE_WARM_READ_CAPABILITIES: &[&str] = &["inference.warm.read"];
+const INFERENCE_WARM_WRITE_CAPABILITIES: &[&str] =
+    &["inference.warm.write", "inference.idempotent_mutation"];
+const INFERENCE_RUN_READ_CAPABILITIES: &[&str] = &["inference.runs.read"];
+const INFERENCE_RUN_WRITE_CAPABILITIES: &[&str] =
+    &["inference.runs.write", "inference.idempotent_mutation"];
+const INFERENCE_EVALUATION_READ_CAPABILITIES: &[&str] = &["inference.evaluations.read"];
+const INFERENCE_EVALUATION_WRITE_CAPABILITIES: &[&str] = &[
+    "inference.evaluations.write",
+    "inference.idempotent_mutation",
+];
+
+pub(crate) const INFERENCE_POLICIES: &[OperationPolicy] = &[
+    OperationPolicy {
+        rpc: "inference.customer.v1.ModelsService/List",
+        capabilities: INFERENCE_MODELS_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["model_capabilities.bounded", "retention_profiles.valid"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.ContextsService/Create",
+        capabilities: INFERENCE_CONTEXT_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "model.non_empty",
+            "items.bounded",
+            "message.bounded",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.ContextsService/Inspect",
+        capabilities: INFERENCE_CONTEXT_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["revision.length_32"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.ContextsService/Mutate",
+        capabilities: INFERENCE_CONTEXT_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "source.present",
+            "action.present",
+            "message.bounded",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.WarmContextsService/Retain",
+        capabilities: INFERENCE_WARM_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "context.length_32",
+            "policy.valid",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.WarmContextsService/Inspect",
+        capabilities: INFERENCE_WARM_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["commitment.length_32"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.WarmContextsService/Renew",
+        capabilities: INFERENCE_WARM_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "commitment.length_32",
+            "policy.valid",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.WarmContextsService/Release",
+        capabilities: INFERENCE_WARM_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["request_identity.nonzero", "commitment.length_32"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.RunsService/Generate",
+        capabilities: INFERENCE_RUN_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "context.length_32",
+            "maximum_output.positive",
+            "message.bounded",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.RunsService/Inspect",
+        capabilities: INFERENCE_RUN_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["run_id.length_16"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.RunsService/Watch",
+        capabilities: INFERENCE_RUN_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["run_id.length_16", "cursor.monotonic", "terminal.required"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.RunsService/Cancel",
+        capabilities: INFERENCE_RUN_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["run_id.length_16"],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.EvaluationsService/Create",
+        capabilities: INFERENCE_EVALUATION_WRITE_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &[
+            "request_identity.nonzero",
+            "candidates.bounded",
+            "cases.bounded",
+            "metrics.bounded",
+            "spec_digest.length_32",
+            "message.bounded",
+        ],
+    },
+    OperationPolicy {
+        rpc: "inference.customer.v1.EvaluationsService/Inspect",
+        capabilities: INFERENCE_EVALUATION_READ_CAPABILITIES,
+        errors: INFERENCE_ERRORS,
+        validations: &["evaluation_id.length_16"],
+    },
+];
+
+// Machines exposes these categories through its ProviderError enum. They are
+// local/runtime policy categories, not claims about a hosted backend.
+const MACHINES_ERRORS: &[&str] = &[
+    "invalid",
+    "not_found",
+    "conflict",
+    "unsupported",
+    "rejected",
+    "unavailable",
+    "operation_indeterminate",
+    "operation_observation_indeterminate",
+    "operation_failed",
+    "operation_cancelled",
+];
+const MACHINES_QUALIFY_CAPABILITIES: &[&str] = &["machines.qualify"];
+const MACHINES_READ_CAPABILITIES: &[&str] = &["machines.read"];
+const MACHINES_MUTATION_CAPABILITIES: &[&str] = &["machines.write", "machines.idempotent_mutation"];
+const MACHINES_FORK_CAPABILITIES: &[&str] = &["machines.fork", "machines.idempotent_mutation"];
+const MACHINES_OPERATION_CAPABILITIES: &[&str] = &["machines.operations"];
+
+pub(crate) const MACHINES_POLICIES: &[OperationPolicy] = &[
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/QualifyImage",
+        capabilities: MACHINES_QUALIFY_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["image.immutable_digest", "capabilities.proven"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Create",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["idempotency_key.nonzero", "contract.valid", "limits.valid"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Checkpoint",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Fork",
+        capabilities: MACHINES_FORK_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &[
+            "checkpoint_id.nonzero",
+            "count.bounded",
+            "idempotency_key.nonzero",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/ForkMachine",
+        capabilities: MACHINES_FORK_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "fidelity.declared", "count.bounded"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Suspend",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Wake",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &[
+            "machine_id.nonzero",
+            "policy.valid",
+            "idempotency_key.nonzero",
+        ],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/DestroyMachine",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+        capabilities: MACHINES_MUTATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["checkpoint_id.nonzero", "idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Recover",
+        capabilities: MACHINES_OPERATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["idempotency_key.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/InspectMachine",
+        capabilities: MACHINES_READ_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+        capabilities: MACHINES_READ_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["checkpoint_id.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/ListMachines",
+        capabilities: MACHINES_READ_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["page_limit.bounded", "cursor.valid"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Events",
+        capabilities: MACHINES_READ_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "page_limit.bounded", "cursor.valid"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Usage",
+        capabilities: MACHINES_READ_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["machine_id.nonzero", "time_range.valid"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/Cancel",
+        capabilities: MACHINES_OPERATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["operation_id.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/InspectOperation",
+        capabilities: MACHINES_OPERATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &["operation_id.nonzero"],
+    },
+    OperationPolicy {
+        rpc: "acyclic.machines.v1.MachinesService/WatchOperation",
+        capabilities: MACHINES_OPERATION_CAPABILITIES,
+        errors: MACHINES_ERRORS,
+        validations: &[
+            "operation_id.nonzero",
+            "cursor.monotonic",
+            "terminal.required",
+        ],
+    },
+];
+
 impl ContractSpec {
     pub fn raw_options(&self, subject: &str) -> RawOptions {
         match self.package {
@@ -384,6 +819,9 @@ impl ContractSpec {
             "acyclic.actors.v1" => ACTOR_POLICIES,
             "acyclic.stream.v2" => STREAM_POLICIES,
             "acyclic.workers.v1" => WORKER_POLICIES,
+            "acyclic.objects.v2" => OBJECTS_POLICIES,
+            "inference.customer.v1" => INFERENCE_POLICIES,
+            "acyclic.machines.v1" => MACHINES_POLICIES,
             _ => &[],
         }
     }
