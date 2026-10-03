@@ -1566,7 +1566,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             kind: AggregateKind::Conversation,
             id: format!("wide-child-{index}"),
         };
-        let child_agent = AgentId::from_bytes([index; 16]);
+        // Keep every child agent distinct from the parent agent ([31; 16])
+        // and the auxiliary unauthorized scope ([32; 16]); index 31 would
+        // otherwise reuse the parent's identity and fail fork ownership.
+        let child_agent = AgentId::from_bytes([index.saturating_add(32); 16]);
         let child_private = volume(
             &provider,
             VolumeClass::AgentPrivate,
