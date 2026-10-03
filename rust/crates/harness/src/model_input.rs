@@ -303,7 +303,7 @@ fn validate_exchanges(
                             .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
                         let error = value
                             .get("error")
-                            .and_then(Value::as_str)
+                            .and_then(serde_json::Value::as_str)
                             .ok_or_else(|| Error::Invalid("rejection error is missing".into()))?;
                         let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
                             &crate::tool::ToolInvocation {
@@ -465,7 +465,7 @@ fn validate_rejection_evidence(
                         };
                         let error = value
                             .get("error")
-                            .and_then(Value::as_str)
+                            .and_then(serde_json::Value::as_str)
                             .ok_or_else(|| Error::Invalid("rejection error is missing".into()))?;
                         let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
                             &invocation,
@@ -671,7 +671,7 @@ mod tests {
         Ok(ModelRequest {
             model: Model::new("mock", "swarm", "1", json!({}))?,
             messages: vec![
-                text("  λ 🦀\r\n"),
+                text("  Î» ðŸ¦€\r\n"),
                 text("task"),
                 ModelMessage {
                     role: ModelRole::Assistant,
@@ -707,7 +707,7 @@ mod tests {
         let boundary = CompletedModelBoundary::capture(request()?, limits)?;
         let suffix = vec![text("notification; explicit task; fresh scratch")];
         let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
-        let own = vec![text("authoritative child input λ\n"), text("child result")];
+        let own = vec![text("authoritative child input Î»\n"), text("child result")];
         let mut completed = boundary.request.clone();
         completed.messages.extend(suffix);
         completed.messages.extend(own.iter().cloned());
@@ -772,7 +772,7 @@ mod tests {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
         let prefix = FrozenModelPrefix::capture(&parent, 4)?;
         let mut changed = request()?;
-        changed.messages[0] = text(" λ 🦀\r\n");
+        changed.messages[0] = text(" Î» ðŸ¦€\r\n");
         assert!(
             prefix
                 .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
@@ -1232,7 +1232,7 @@ mod tests {
             .stage(
                 operation,
                 "input.txt",
-                "Whitespace:  λ 🦀\r\n".as_bytes(),
+                "Whitespace:  Î» ðŸ¦€\r\n".as_bytes(),
                 "text/plain",
                 "input.txt",
             )

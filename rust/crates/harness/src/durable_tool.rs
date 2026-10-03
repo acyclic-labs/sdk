@@ -637,7 +637,7 @@ impl DurableToolRunner {
                 format!("tool:completed:{}", OperationId::new()),
                 ExecutionEvent::ToolCompleted {
                     step: 0,
-                    call_id: invocation.call_id,
+                    call_id: invocation.call_id.clone(),
                     invocation_digest: crate::contract::canonical_json_digest(&invocation)?,
                     result: result_ref,
                     projection: projection_ref,
