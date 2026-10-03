@@ -422,11 +422,10 @@ where
             } else {
                 InteractionOutcome::Declined
             };
-            let action_digest = approval.request.digest()?;
             if resolution.outcome != expected_outcome
                 || !ticket.approval.as_ref().is_some_and(|binding| {
                     binding.operation_id == approval.operation_id
-                        && binding.action_digest == action_digest
+                        && binding.action_digest == context.request_digest
                 })
             {
                 return Err(Error::Unauthorized(

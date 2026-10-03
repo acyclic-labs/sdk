@@ -125,6 +125,27 @@ where
         })
     }
 
+    fn validate_key(&self, key: &ExecutionReceiptKey) -> Result<()> {
+        if key.operation_id.into_bytes() == [0; 16]
+            || key.effect_id.into_bytes() == [0; 16]
+            || key.attempt_id.into_bytes() == [0; 16]
+            || key.request_digest == [0; 32]
+        {
+            return Err(Error::Invalid(
+                "execution receipt key contains an empty identity or request digest".into(),
+            ));
+        }
+        if key.provider != "harness.native-execution.v1"
+            || key.effect_kind != "host.process"
+            || key.guarantee != crate::core::EffectGuarantee::AtMostOnce
+        {
+            return Err(Error::Unauthorized(
+                "execution receipt key is not for the authenticated native provider".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn events(&self) -> Result<(u64, Vec<ExecutionReceiptEvent>)> {
         let mut replay = self.stream.replay(0);
         let mut events = Vec::new();
@@ -155,6 +176,7 @@ where
                     owner_token,
                     generation,
                 } => {
+                    self.validate_key(key)?;
                     if finalized.iter().any(|candidate| candidate == key)
                         || pending.iter().any(|(candidate, _, _)| candidate == key)
                     {
@@ -171,6 +193,7 @@ where
                     generation,
                     operator_resolution,
                 } => {
+                    self.validate_key(key)?;
                     self.validate_result_ref(key, result)?;
                     let bytes = self
                         .host
@@ -372,9 +395,7 @@ where
 {
     fn claim<'a>(&'a self, key: &'a ExecutionReceiptKey) -> BoxFuture<'a, Result<ExecutionClaim>> {
         Box::pin(async move {
-            if key.provider.is_empty() || key.effect_kind.is_empty() {
-                return Err(Error::Invalid("execution receipt key is incomplete".into()));
-            }
+            self.validate_key(key)?;
             loop {
                 let (tail, events) = self.events().await?;
                 if let Some(record) = self.terminal_for(&events, key).await? {
@@ -408,6 +429,7 @@ where
         key: &'a ExecutionReceiptKey,
     ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
         Box::pin(async move {
+            self.validate_key(key)?;
             let (_, events) = self.events().await?;
             self.terminal_for(&events, key).await
         })
@@ -418,6 +440,11 @@ where
         attempt_id: crate::EffectAttemptId,
     ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
         Box::pin(async move {
+            if attempt_id.into_bytes() == [0; 16] {
+                return Err(Error::Invalid(
+                    "execution receipt attempt identity cannot be empty".into(),
+                ));
+            }
             let (_, events) = self.events().await?;
             let mut record = None;
             for event in &events {
@@ -446,6 +473,7 @@ where
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
+            self.validate_key(key)?;
             receipt.validate()?;
             let bytes =
                 serde_json::to_vec(receipt).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1040,13 +1068,38 @@ impl PersistentLocalHarness {
     }
 
     /// Returns the host application's separately authenticated authority for
-    /// resolving uncertain process attempts after review.
-    pub fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
+    /// resolving uncertain process attempts after review. This constructor is
+    /// crate-private; applications use [`Self::resolve_unknown_execution`]
+    /// so model-visible code cannot mint an operator capability.
+    pub(crate) fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
         ExecutionResolutionCapability::issue(
             self.storage.session_id(),
             self.storage.volume(),
             self.storage.owner_scope(),
         )
+    }
+
+    /// Resolves one protected pending execution after an authenticated host
+    /// operator has reviewed its outcome. The provider remains unable to
+    /// retry the command until this explicit transition is durable.
+    pub async fn resolve_unknown_execution(
+        &self,
+        key: &ExecutionReceiptKey,
+        reason: impl Into<String>,
+    ) -> Result<FileRef> {
+        let store = self.execution_receipt_store()?;
+        let resolution = self.execution_resolution_capability()?;
+        let (_, _, _, resolver, _) = self.storage.execution_binding();
+        let pending = store.pending_claims(&resolution, &resolver).await?;
+        let Some((candidate, handle)) = pending.into_iter().find(|(candidate, _)| candidate == key)
+        else {
+            return Err(Error::NotFound(
+                "execution attempt is not pending operator resolution".into(),
+            ));
+        };
+        store
+            .resolve_unknown(&candidate, &resolution, &resolver, &handle, reason)
+            .await
     }
 
     /// Composes the production native provider around this session's
