@@ -89,6 +89,11 @@ async fn payload(fixture: &Fixture, _operation: OperationId) -> Result<FileRef> 
     Ok(fixture.fs.put_content(&fixture.volume, &grant, "messages/body.json", b"{}", "application/json", "body.json", fixture.runtime_scope.limits().file_bytes, &IdempotencyKey::new("message-payload")?).await?)
 }
 
+async fn alternate_payload(fixture: &Fixture) -> Result<FileRef> {
+    let grant = acyclic_harness::conversation::ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.volume, VolumeOperation::Write)?;
+    Ok(fixture.fs.put_content(&fixture.volume, &grant, "messages/alternate.json", b"{\"alternate\":true}", "application/json", "alternate.json", fixture.runtime_scope.limits().file_bytes, &IdempotencyKey::new("alternate-message-payload")?).await?)
+}
+
 #[tokio::test]
 async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
@@ -103,6 +108,9 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let communication = DurableCommunication::new(host.clone());
     communication.send(request.clone()).await?;
     communication.send(request.clone()).await?;
+    let mut conflicting = request.clone();
+    conflicting.payload = alternate_payload(&fixture).await?;
+    assert!(matches!(communication.send(conflicting).await, Err(Error::Conflict(_))));
     drop(communication);
     drop(host);
     drop(fixture);
