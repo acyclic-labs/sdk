@@ -42,4 +42,17 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     await serving;
     expect(JSON.parse(lines.join(""))).toEqual({ request_id: "r7", ok: true, result: { items: [] } });
   });
+
+  test("node entrypoint bounds a frame and continues with the following request", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const lines: string[] = [];
+    output.on("data", chunk => lines.push(String(chunk)));
+    const serving = runNodeGraphCoderDispatcher({ transport: createMockTransport(), input, output, maximumLineBytes: 128 });
+    input.end("x".repeat(256) + "\n" + JSON.stringify({ request_id: "r8", method: "list_sessions", params: {} }) + "\n");
+    await serving;
+    const responses = lines.join("").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(responses[0]).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
+    expect(responses[1]).toEqual({ request_id: "r8", ok: true, result: { items: [] } });
+  });
 });
