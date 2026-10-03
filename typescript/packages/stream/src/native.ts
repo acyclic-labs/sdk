@@ -1,7 +1,8 @@
 import { arch, platform } from "node:process";
 import { Buffer } from "node:buffer";
-import { GrpcStreamProvider } from "./grpc.js";
 import { commitId, StreamError } from "./types.js";
+import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { normalizeWireCommitBytes, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import type {
   AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope,
   CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt,
@@ -53,6 +54,10 @@ interface NativeStreamClient {
   follow(path: string, from: string, cancellation?: NativeCancellation): Promise<NativeRecordBatch>;
   fork(source: string, destination: string, atTail?: string, idempotencyKey?: Uint8Array): Promise<NativeForkReceipt>;
   children(parent: string | undefined, limit: number): Promise<readonly NativeChild[]>;
+  inspectIdempotency(request: Uint8Array): Promise<Uint8Array>;
+  childrenPage(request: Uint8Array): Promise<Uint8Array>;
+  commit(request: Uint8Array): Promise<Uint8Array>;
+  readCommit(request: Uint8Array): Promise<Uint8Array>;
 }
 interface NativeStreamModule {
   readonly NativeStreamClient: { connect(options: {
@@ -104,11 +109,9 @@ function nativeError(operation: string, error: unknown): Error {
 /** Stream provider using the Rust N-API bridge for the operations it exposes. */
 export class NativeStreamProvider implements StreamProvider {
   readonly #client: NativeStreamClient;
-  readonly #fallback: GrpcStreamProvider;
 
-  private constructor(client: NativeStreamClient, fallback: GrpcStreamProvider) {
+  private constructor(client: NativeStreamClient) {
     this.#client = client;
-    this.#fallback = fallback;
   }
 
   static async connect(options: NativeStreamOptions): Promise<NativeStreamProvider> {
@@ -118,10 +121,16 @@ export class NativeStreamProvider implements StreamProvider {
       bearerToken: options.token,
       ...(options.caCertificate === undefined ? {} : { caCertificatePem: Buffer.from(options.caCertificate) }),
     });
-    return new NativeStreamProvider(client, new GrpcStreamProvider({ endpoint: options.endpoints[0]!, token: options.token, ...(options.caCertificate === undefined ? {} : { caCertificate: options.caCertificate }), ...(options.maximumMessageBytes === undefined ? {} : { maximumMessageBytes: options.maximumMessageBytes }) }));
+    return new NativeStreamProvider(client);
   }
 
-  async inspectIdempotency(key: IdempotencyKey, _signal?: AbortSignal): Promise<IdempotencyObservation | undefined> { return this.#fallback.inspectIdempotency(key); }
+  async inspectIdempotency(key: IdempotencyKey, signal?: AbortSignal): Promise<IdempotencyObservation | undefined> {
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    try {
+      const response = await this.#client.inspectIdempotency(Buffer.from(wireInspectIdempotencyRequest(key)));
+      return projectMemoryResponse("inspect_idempotency", Uint8Array.from(response)) as IdempotencyObservation | undefined;
+    } catch (error) { throw nativeError("inspect_idempotency", error); }
+  }
   async tail(path: string, _signal?: AbortSignal): Promise<Sequence> { try { return decimal(await this.#client.tail(path), "tail"); } catch (error) { throw nativeError("tail", error); } }
   async append(path: string, values: readonly Uint8Array[], options?: AppendOptions, _signal?: AbortSignal): Promise<AppendResult> {
     try {
@@ -156,7 +165,31 @@ export class NativeStreamProvider implements StreamProvider {
     } catch (error) { if (!options.signal?.aborted) throw nativeError("follow", error); }
     finally { options.signal?.removeEventListener("abort", cancel); }
   }
-  async childrenPage(request: ChildrenPageRequest, _signal?: AbortSignal): Promise<ChildrenPage> { return this.#fallback.childrenPage(request); }
-  async commit(request: ProviderCommitRequest, options: CommitOptions, _signal?: AbortSignal): Promise<CommitResult> { return this.#fallback.commit(request, options); }
-  async readCommit(commitIdValue: CommitId, _signal?: AbortSignal): Promise<CommittedEnvelope> { return this.#fallback.readCommit(commitIdValue); }
+  async childrenPage(request: ChildrenPageRequest, signal?: AbortSignal): Promise<ChildrenPage> {
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    try {
+      const input = wireRequest({ kind: "children_page", limit: request.limit,
+        ...(request.parent === undefined ? {} : { parent: request.parent }),
+        ...(request.after === undefined ? {} : { after: request.after }),
+        ...(request.hierarchyVersion === undefined ? {} : { hierarchyVersion: request.hierarchyVersion }),
+      });
+      const response = await this.#client.childrenPage(Buffer.from(input));
+      return projectMemoryResponse("children_page", Uint8Array.from(response)) as ChildrenPage;
+    } catch (error) { throw nativeError("children_page", error); }
+  }
+  async commit(request: ProviderCommitRequest, options: CommitOptions, signal?: AbortSignal): Promise<CommitResult> {
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    try {
+      const input = await normalizeWireCommitBytes(structuredClone(request), structuredClone(options));
+      const response = await this.#client.commit(Buffer.from(input));
+      return projectMemoryResponse("commit", Uint8Array.from(response)) as CommitResult;
+    } catch (error) { throw nativeError("commit", error); }
+  }
+  async readCommit(commitIdValue: CommitId, signal?: AbortSignal): Promise<CommittedEnvelope> {
+    if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
+    try {
+      const response = await this.#client.readCommit(Buffer.from(wireReadCommitRequest(commitIdValue)));
+      return projectMemoryResponse("read_commit", Uint8Array.from(response)) as CommittedEnvelope;
+    } catch (error) { throw nativeError("read_commit", error); }
+  }
 }

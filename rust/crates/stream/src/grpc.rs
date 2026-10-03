@@ -223,6 +223,89 @@ impl Client {
         })
     }
 
+    /// Executes one canonical wire request through the Rust provider. Native
+    /// bindings use these methods so protobuf projection and domain admission
+    /// remain in this crate instead of being reimplemented by consumers.
+    pub async fn inspect_idempotency_wire(
+        &self,
+        request: wire::InspectIdempotencyRequest,
+    ) -> Result<wire::InspectIdempotencyResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let key = IdempotencyKey::new(request.idempotency_key)?;
+        let observation = StreamProvider::inspect_idempotency(self, key)
+            .await?
+            .map(observation_wire);
+        Ok(wire::InspectIdempotencyResponse { observation })
+    }
+
+    /// Executes one paged hierarchy request through the canonical Rust client.
+    pub async fn children_page_wire(
+        &self,
+        request: wire::ChildrenPageRequest,
+    ) -> Result<wire::ChildrenPageResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let request = ChildrenPageRequest {
+            parent: request.parent.map(path).transpose()?,
+            after: request.after.map(path).transpose()?,
+            hierarchy_version: request
+                .hierarchy_version
+                .as_deref()
+                .map(commit_id)
+                .transpose()?,
+            limit: request.limit,
+        };
+        let page = StreamProvider::children_page(self, request).await?;
+        Ok(wire::ChildrenPageResponse {
+            hierarchy_version: Bytes::copy_from_slice(page.hierarchy_version.as_bytes()),
+            children: page
+                .children
+                .into_iter()
+                .map(|child| wire::Child {
+                    path: child.path.to_string(),
+                })
+                .collect(),
+            next_after: page.next_after.map(|path| path.to_string()),
+        })
+    }
+
+    /// Executes one coordinated commit through the canonical Rust client.
+    pub async fn commit_wire(
+        &self,
+        request: wire::CommitRequest,
+    ) -> Result<wire::CommitResponse, StreamError> {
+        check_native_command_size(&request)?;
+        let deadline = request.deadline_unix_millis;
+        let request = CommitRequest {
+            conditions: request
+                .conditions
+                .into_iter()
+                .map(condition_from_wire)
+                .collect::<Result<_, _>>()?,
+            mutations: request
+                .mutations
+                .into_iter()
+                .map(mutation_from_wire)
+                .collect::<Result<_, _>>()?,
+            idempotency_key: IdempotencyKey::new(request.idempotency_key)?,
+        };
+        let outcome = match deadline {
+            Some(deadline) => StreamProvider::commit_before(self, request, deadline).await?,
+            None => StreamProvider::commit(self, request).await?,
+        };
+        Ok(commit_outcome_wire(outcome))
+    }
+
+    /// Reads one immutable envelope through the canonical Rust client.
+    pub async fn read_commit_wire(
+        &self,
+        request: wire::ReadCommitRequest,
+    ) -> Result<wire::CommittedEnvelope, StreamError> {
+        check_native_command_size(&request)?;
+        let id = commit_id(&request.commit_id)?;
+        let envelope = StreamProvider::read_commit(self, id).await?;
+        Ok(envelope_wire(envelope))
+    }
+
     #[allow(
         clippy::indexing_slicing,
         reason = "callers derive index via `(start + offset) % channels.len()` against this same slice, so it is always in-bounds"
@@ -384,6 +467,14 @@ impl Client {
             },
         )
         .boxed())
+    }
+}
+
+fn check_native_command_size<T: Message>(request: &T) -> Result<(), StreamError> {
+    if request.encoded_len() > crate::MAX_COMMAND_BYTES {
+        Err(StreamError::LimitExceeded)
+    } else {
+        Ok(())
     }
 }
 

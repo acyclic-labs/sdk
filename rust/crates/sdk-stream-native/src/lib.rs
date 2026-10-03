@@ -14,6 +14,7 @@ use bytes::Bytes;
 use futures::StreamExt as _;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
+use prost::Message;
 use tokio::sync::Notify;
 
 const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -34,6 +35,18 @@ fn stream_error(error: StreamError) -> Error {
 
 fn connect_error(error: grpc::ConnectError) -> Error {
     native_error("Stream connection failed", error)
+}
+
+fn decode_wire<T: Message + Default>(value: &Buffer, operation: &str) -> Result<T> {
+    T::decode(value.as_ref()).map_err(|error| native_error(operation, error))
+}
+
+fn encode_wire<T: Message>(value: &T, operation: &str) -> Result<Buffer> {
+    let mut bytes = Vec::with_capacity(value.encoded_len());
+    value
+        .encode(&mut bytes)
+        .map_err(|error| native_error(operation, error))?;
+    Ok(Buffer::from(bytes))
 }
 
 fn id(value: &[u8]) -> Buffer {
@@ -148,7 +161,7 @@ impl NativeStreamCancellation {
     }
 }
 
-/// Native remote Stream client backed directly by `acyclic_stream::grpc::Client`.
+/// Native remote Stream client backed directly by the canonical `acyclic_stream::grpc::Client`.
 #[napi]
 pub struct NativeStreamClient {
     inner: Arc<Client>,
@@ -241,6 +254,21 @@ impl NativeStreamClient {
                 commit_id: None,
             }),
         }
+    }
+
+    /// Inspects one idempotency identity using the canonical protobuf boundary.
+    #[napi]
+    pub async fn inspect_idempotency(&self, request: Buffer) -> Result<Buffer> {
+        let request = decode_wire::<acyclic_stream::wire::InspectIdempotencyRequest>(
+            &request,
+            "inspect_idempotency request",
+        )?;
+        let response = self
+            .inner
+            .inspect_idempotency_wire(request)
+            .await
+            .map_err(stream_error)?;
+        encode_wire(&response, "inspect_idempotency response")
     }
 
     /// Reads a bounded finite page through the Rust provider.
@@ -353,6 +381,49 @@ impl NativeStreamClient {
             });
         }
         Ok(values)
+    }
+
+    /// Reads one paged hierarchy response through the canonical protobuf boundary.
+    #[napi]
+    pub async fn children_page(&self, request: Buffer) -> Result<Buffer> {
+        let request = decode_wire::<acyclic_stream::wire::ChildrenPageRequest>(
+            &request,
+            "children_page request",
+        )?;
+        let response = self
+            .inner
+            .children_page_wire(request)
+            .await
+            .map_err(stream_error)?;
+        encode_wire(&response, "children_page response")
+    }
+
+    /// Executes one coordinated commit through the canonical protobuf boundary.
+    #[napi]
+    pub async fn commit(&self, request: Buffer) -> Result<Buffer> {
+        let request =
+            decode_wire::<acyclic_stream::wire::CommitRequest>(&request, "commit request")?;
+        let response = self
+            .inner
+            .commit_wire(request)
+            .await
+            .map_err(stream_error)?;
+        encode_wire(&response, "commit response")
+    }
+
+    /// Reads one immutable envelope through the canonical protobuf boundary.
+    #[napi]
+    pub async fn read_commit(&self, request: Buffer) -> Result<Buffer> {
+        let request = decode_wire::<acyclic_stream::wire::ReadCommitRequest>(
+            &request,
+            "read_commit request",
+        )?;
+        let response = self
+            .inner
+            .read_commit_wire(request)
+            .await
+            .map_err(stream_error)?;
+        encode_wire(&response, "read_commit response")
     }
 }
 
