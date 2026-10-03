@@ -385,6 +385,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 let seed = report.clone().into_seed()?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
+                    || seed.child != Self::child_authority(&intent)
+                    || seed.child_agent
+                        != AgentId::from_bytes(intent.child_operation.into_bytes())
                     || declaration.boundary != boundary
                 {
                     return Err(Error::Conflict(
