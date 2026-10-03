@@ -7,6 +7,7 @@ import {
   type ApprovalRequest,
   type ChangeBody,
   type ChangeSummary,
+  type FileBody,
   type GraphCoderTransport,
   type GraphMessage,
   type MessageId,
@@ -36,6 +37,7 @@ interface MockSession {
   approvals: ApprovalRequest[];
   changes: ChangeSummary[];
   bodies: Map<string, ChangeBody>;
+  files: Map<string, FileBody>;
 }
 
 export interface MockTransportOptions {
@@ -113,7 +115,8 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     ];
     const messages: GraphMessage[] = [];
     const bodies = new Map<string, ChangeBody>([["README.md", { path: "README.md", unifiedDiff: "+GraphCoder fixture output\n", generation }]]);
-    this.#sessions.set(sessionId, { summary, snapshot, activity, messages, approvals: [approval], changes, bodies });
+    const files = new Map<string, FileBody>([["README.md", { path: "README.md", mediaType: "text/markdown", bytes: new TextEncoder().encode("# GraphCoder fixture\n"), generation }]]);
+    this.#sessions.set(sessionId, { summary, snapshot, activity, messages, approvals: [approval], changes, bodies, files });
     return Promise.resolve(snapshot);
   }
 
@@ -190,6 +193,15 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     const body = session.bodies.get(path);
     if (body === undefined) return Promise.reject(new GraphCoderError("not_found", "change was not found"));
     return Promise.resolve(body);
+  }
+
+  readFile(sessionId: SessionId, path: string, generation: bigint): Promise<FileBody> {
+    this.calls.push({ method: "readFile", sessionId });
+    const session = this.#session(sessionId);
+    if (generation !== session.snapshot.workspaceGeneration) return Promise.reject(new GraphCoderError("stale", "workspace generation changed"));
+    const body = session.files.get(path);
+    if (body === undefined) return Promise.reject(new GraphCoderError("not_found", "file was not found"));
+    return Promise.resolve({ ...body, bytes: Uint8Array.from(body.bytes) });
   }
 
   approveWriteback(input: WritebackApproval): Promise<WritebackReceipt> {
