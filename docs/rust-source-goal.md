@@ -157,3 +157,5 @@ Next bounded milestones: complete compiled dependency authority, capture a coher
 - All sixteen agent slots remain occupied and replenished. No main merge, auto-merge, registry publication or production deployment. The goal remains active.
 
 Next bounded milestones: fix and rerun product artifact parity; finalize deterministic compiled producer identity; capture coherent immutable generation inputs; execute all strict docs graphs and package-backed snippets; qualify remaining transports/languages; import and render the fresh website bundle.
+
+Fresh iteration 10 root verification: after 60737b3d product regeneration and b503907a source identity correction, the locked offline full wire suite passed 88 tests across 15 result groups. research/acceptance/wire-current-products.receipt.json records the exact log hash and dirty live-source limitation. The previous Objects parity failure is resolved for this run; clean full-pipeline generation, later edits, package/snippet binding and fresh website verification remain unqualified.

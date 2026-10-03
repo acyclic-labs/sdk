@@ -1,0 +1,27 @@
+{
+  "schema": "acyclic.sdk.root-verification.v1",
+  "status": "passed",
+  "checked_at_utc": "2026-10-03T19:30:46.7615162Z",
+  "source_root": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk",
+  "observed_revision_after_run": "60737b3d6ec08cb810b8386bec4b969df1d68b25",
+  "source_state": "live isolated worktree; concurrent uncommitted changes; not clean-checkout proof",
+  "command": "cargo test --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --offline",
+  "exit_code": 0,
+  "passed_tests": 88,
+  "result_groups": 15,
+  "log": "Q:/sdk/work/rust-source-root-wire-current-products.log",
+  "log_sha256": "74ca61481c258045a023c953b37b0e9a928bdbc8b0714c105ec159329079041a",
+  "qualifies": [
+    "current wire test suite",
+    "committed product artifact parity",
+    "archived protocol compatibility",
+    "registry and credential model provenance"
+  ],
+  "excludes": [
+    "clean full-pipeline generation",
+    "later source edits",
+    "all language packages and exact snippets",
+    "fresh website presentation"
+  ],
+  "supersedes_failure_scope": "wire-family-registry-failed.receipt.json Objects product drift; historical failure retained"
+}
