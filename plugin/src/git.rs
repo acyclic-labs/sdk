@@ -631,27 +631,70 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 let expected_generation = self
                     .expected_workspace_generation(Some(*target_tree))
                     .await?;
-                let source = self.workspace(*source_workspace).await?;
-                let source_head = if let Some(source_tree) = source_tree {
-                    let source_reference = self.exact(*source_tree, "git join source").await?;
-                    let current_source = source.head().await.map_err(display)?;
-                    if source_reference.workspace_id != *source_workspace
-                        || current_source.id() != source_reference.generation
-                    {
-                        return Err(Self::error(
-                            "Git join source changed while preparing the provider plan",
-                        ));
+                let source_workspace_handle = self.workspace(*source_workspace).await?;
+                let (source, source_head) = if let Some(source_tree) = source_tree {
+                    match *source_tree {
+                        GitTreeRef::Exact(source_reference) => {
+                            let current_source =
+                                source_workspace_handle.head().await.map_err(display)?;
+                            if source_reference.workspace_id != *source_workspace
+                                || current_source.id() != source_reference.generation
+                            {
+                                return Err(Self::error(
+                                    "Git join source changed while preparing the provider plan",
+                                ));
+                            }
+                            let source_head = source_workspace_handle
+                                .generation(source_reference.generation)
+                                .await
+                                .map_err(display)?;
+                            (source_workspace_handle.clone(), source_head)
+                        }
+                        GitTreeRef::Lazy(snapshot) => {
+                            if snapshot.workspace_id != *source_workspace {
+                                return Err(Self::error(
+                                    "Git join source changed while preparing the provider plan",
+                                ));
+                            }
+                            let source_lazy = self
+                                .lazy_current
+                                .open_related(source_workspace_handle.clone())
+                                .await
+                                .map_err(display)?;
+                            let current_snapshot = source_lazy.snapshot().await.map_err(display)?;
+                            if current_snapshot.workspace_id != snapshot.workspace_id
+                                || current_snapshot.authored_generation
+                                    != snapshot.authored_generation
+                                || current_snapshot.source.identity != snapshot.source.identity
+                                || current_snapshot.overlay != snapshot.overlay
+                                || current_snapshot.shadows != snapshot.shadows
+                            {
+                                return Err(Self::error(
+                                    "Git join source changed while preparing the provider plan",
+                                ));
+                            }
+                            // The validated lazy snapshot is now materialized as an
+                            // immutable provider input. Its exactified child has a
+                            // distinct workspace identity by design.
+                            let source_reference = self
+                                .exact(GitTreeRef::Lazy(snapshot), "git join source")
+                                .await?;
+                            let exact_source =
+                                self.workspace(source_reference.workspace_id).await?;
+                            let source_head = exact_source
+                                .generation(source_reference.generation)
+                                .await
+                                .map_err(display)?;
+                            (exact_source, source_head)
+                        }
                     }
-                    source
-                        .generation(source_reference.generation)
-                        .await
-                        .map_err(display)?
                 } else {
                     // An unborn compatibility branch has no commit tree to
                     // persist, but its SDK workspace still has an exact fork
                     // generation. Pin that generation so a concurrent source
                     // writer cannot be folded into this join implicitly.
-                    source.head().await.map_err(display)?
+                    let source_head = source_workspace_handle.head().await.map_err(display)?;
+                    (source_workspace_handle, source_head)
                 };
                 let mut builder = source.join_into(&self.current);
                 if *rebase {
