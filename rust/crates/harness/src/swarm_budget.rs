@@ -1020,7 +1020,7 @@ impl SwarmBudget {
     }
 
     /// Reports cumulative usage and retains the unconsumed remainder.
-    pub fn report_usage(
+    pub(crate) fn report_usage(
         &self,
         operation_id: OperationId,
         owner: &SwarmOwnerFence,
@@ -1032,7 +1032,7 @@ impl SwarmBudget {
     }
 
     /// Completes a child and releases only its unconsumed active reservation.
-    pub fn complete(
+    pub(crate) fn complete(
         &self,
         operation_id: OperationId,
         owner: &SwarmOwnerFence,
@@ -1046,7 +1046,7 @@ impl SwarmBudget {
     /// Reports cumulative root usage against the same session-wide limits as
     /// descendants. Root consumption is never refunded and reduces the
     /// resources that descendants may reserve.
-    pub fn report_root_usage(
+    pub(crate) fn report_root_usage(
         &self,
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
