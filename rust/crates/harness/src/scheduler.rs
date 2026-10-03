@@ -1042,8 +1042,8 @@ impl Scheduler {
                     },
                     true,
                 )?;
-                next.mutable(operation_id)?.swarm_dispatch_id = Some(dispatch_id);
-                next.apply_swarm_dispatch_started(operation_id, owner, publication)?;
+                next.mutable(operation_id)?.swarm_dispatch_id = Some(dispatch_id.clone());
+                next.apply_swarm_dispatch_started(operation_id, dispatch_id, owner, publication)?;
                 *self = next;
             }
             SchedulerEvent::SwarmUsageReported {
@@ -1357,15 +1357,18 @@ impl Scheduler {
     fn apply_swarm_dispatch_started(
         &mut self,
         operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
         owner: SwarmOwnerFence,
         publication: ForkPublication,
     ) -> Result<()> {
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
-        let token = budget.activate(operation_id, owner, publication)?;
+        let token =
+            budget.activate_with_dispatch(operation_id, owner, publication, Some(dispatch_id))?;
         self.swarm_events.push(SwarmBudgetEvent::ChildActivated {
             operation_id,
             owner: token.owner().clone(),
             publication: token.publication(),
+            dispatch_id: token.dispatch_id().cloned(),
         });
         Ok(())
     }

@@ -167,6 +167,81 @@ impl SwarmUsage {
     }
 }
 
+/// Provider-side guard that stops work before it crosses a child ceiling.
+///
+/// A runtime should call the step guard before starting a model step, the
+/// output guard before accepting emitted bytes, and the elapsed-time guard at
+/// each provider scheduling boundary.  Receipt issuance remains a second
+/// check against the provider's measured cumulative counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SwarmUsageLimiter {
+    limits: SwarmResourceRequest,
+    usage: SwarmUsage,
+}
+
+impl SwarmUsageLimiter {
+    /// Creates a provider guard from the exact admitted child ceiling.
+    pub fn new(limits: SwarmResourceRequest) -> Result<Self> {
+        limits.validate()?;
+        Ok(Self {
+            limits,
+            usage: SwarmUsage::default(),
+        })
+    }
+
+    /// Returns cumulative usage admitted by the provider guard.
+    #[must_use]
+    pub const fn usage(self) -> SwarmUsage {
+        self.usage
+    }
+
+    /// Reserves one model step before invoking the model.
+    pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        let next = self
+            .usage
+            .model_steps
+            .checked_add(1)
+            .ok_or_else(|| Error::Conflict("provider model step ceiling exhausted".into()))?;
+        if next > self.limits.model_steps {
+            return Err(Error::Conflict(
+                "provider model step ceiling exhausted".into(),
+            ));
+        }
+        self.usage.model_steps = next;
+        Ok(self.usage)
+    }
+
+    /// Reserves output bytes before accepting them from the provider.
+    pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        let next = self
+            .usage
+            .output_bytes
+            .checked_add(bytes)
+            .ok_or_else(|| Error::Conflict("provider output ceiling exhausted".into()))?;
+        if next > self.limits.output_bytes {
+            return Err(Error::Conflict("provider output ceiling exhausted".into()));
+        }
+        self.usage.output_bytes = next;
+        Ok(self.usage)
+    }
+
+    /// Advances measured elapsed time before allowing another provider slice.
+    pub fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        let next = self
+            .usage
+            .execution_time_ms
+            .checked_add(elapsed_ms)
+            .ok_or_else(|| Error::Conflict("provider execution time ceiling exhausted".into()))?;
+        if next > self.limits.execution_time_ms {
+            return Err(Error::Conflict(
+                "provider execution time ceiling exhausted".into(),
+            ));
+        }
+        self.usage.execution_time_ms = next;
+        Ok(self.usage)
+    }
+}
+
 /// Provider-issued cumulative usage evidence bound to one dispatch attempt.
 ///
 /// A coordinator persists this receipt alongside the usage projection. Hosts
@@ -546,6 +621,9 @@ pub struct SwarmForkReservation {
     /// Last durable provider receipt sequence accepted for this child.
     #[serde(default)]
     pub usage_sequence: u64,
+    /// Provider dispatch identity recorded when publication is activated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_id: Option<IdempotencyKey>,
     /// Current reservation lifecycle.
     pub state: SwarmReservationState,
     /// Publication evidence, present before activation.
@@ -597,6 +675,10 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Complete model/workspace publication evidence.
         publication: ForkPublication,
+        /// Provider dispatch identity, when activation crossed a provider
+        /// dispatch boundary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dispatch_id: Option<IdempotencyKey>,
     },
     /// Adds cumulative measured usage to a live child.
     UsageReported {
@@ -675,6 +757,8 @@ pub struct SwarmDispatchToken {
     completed_boundary_digest: [u8; 32],
     /// Exact workspace generation published for this child.
     workspace_generation_digest: [u8; 32],
+    /// Provider dispatch identity bound to this activation, when available.
+    dispatch_id: Option<IdempotencyKey>,
 }
 
 impl SwarmDispatchToken {
@@ -688,6 +772,12 @@ impl SwarmDispatchToken {
     #[must_use]
     pub const fn parent_operation_id(&self) -> Option<OperationId> {
         self.parent_operation_id
+    }
+
+    /// Returns the provider dispatch identity bound to this activation.
+    #[must_use]
+    pub const fn dispatch_id(&self) -> Option<&IdempotencyKey> {
+        self.dispatch_id.as_ref()
     }
 
     /// Returns the owner fence bound to this dispatch authorization.
@@ -952,6 +1042,7 @@ impl SwarmBudget {
             idempotency_key: request.idempotency_key.clone(),
             usage: SwarmUsage::default(),
             usage_sequence: 0,
+            dispatch_id: None,
             state: SwarmReservationState::Reserved,
             publication: None,
             request_digest: digest,
@@ -976,7 +1067,21 @@ impl SwarmBudget {
         owner: SwarmOwnerFence,
         publication: ForkPublication,
     ) -> Result<SwarmDispatchToken> {
+        self.activate_with_dispatch(operation_id, owner, publication, None)
+    }
+
+    /// Records publication and the provider attempt identity atomically.
+    pub(crate) fn activate_with_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: ForkPublication,
+        dispatch_id: Option<IdempotencyKey>,
+    ) -> Result<SwarmDispatchToken> {
         publication.validate()?;
+        if let Some(dispatch_id) = &dispatch_id {
+            IdempotencyKey::new(dispatch_id.0.clone())?;
+        }
         let mut state = self.lock()?;
         require_owner(&state, &owner)?;
         let mut reservation = state
@@ -998,10 +1103,14 @@ impl SwarmBudget {
             SwarmReservationState::Reserved => {
                 reservation.state = SwarmReservationState::Active;
                 reservation.publication = Some(publication);
+                reservation.dispatch_id = dispatch_id.clone();
             }
             SwarmReservationState::Active => {
                 if reservation.publication.as_ref() != Some(&publication) {
                     return Err(Error::Conflict("fork activation retry differs".into()));
+                }
+                if reservation.dispatch_id != dispatch_id {
+                    return Err(Error::Conflict("fork dispatch retry differs".into()));
                 }
             }
             SwarmReservationState::Completed | SwarmReservationState::Cancelled => {
@@ -1016,6 +1125,7 @@ impl SwarmBudget {
             owner,
             completed_boundary_digest: publication.completed_boundary_digest,
             workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id,
         })
     }
 
@@ -1187,7 +1297,10 @@ impl SwarmBudget {
                 operation_id,
                 owner,
                 publication,
-            } => self.activate(operation_id, owner, publication).map(|_| ()),
+                dispatch_id,
+            } => self
+                .activate_with_dispatch(operation_id, owner, publication, dispatch_id)
+                .map(|_| ()),
             SwarmBudgetEvent::UsageReported {
                 operation_id,
                 owner,
@@ -1518,6 +1631,10 @@ fn validate_child_receipt(
     if receipt.operation_id != operation_id
         || receipt.usage != usage
         || receipt.sequence != expected_sequence
+        || reservation
+            .dispatch_id
+            .as_ref()
+            .is_some_and(|dispatch_id| dispatch_id != &receipt.dispatch_id)
     {
         return Err(Error::Conflict(
             "swarm child usage receipt is stale or mismatched".into(),
@@ -1810,6 +1927,68 @@ mod tests {
             },
         )?;
         assert!(matches!(issuer.issue(), Err(Error::Conflict(_))));
+        Ok(())
+    }
+
+    #[test]
+    fn provider_limiter_stops_before_each_independent_dimension_exceeds() -> Result<()> {
+        let limits = SwarmResourceRequest {
+            model_steps: 1,
+            output_bytes: 4,
+            execution_time_ms: 10,
+        };
+        let mut limiter = SwarmUsageLimiter::new(limits)?;
+        limiter.admit_model_step()?;
+        assert!(matches!(
+            limiter.admit_model_step(),
+            Err(Error::Conflict(_))
+        ));
+        limiter.admit_output(4)?;
+        assert!(matches!(limiter.admit_output(1), Err(Error::Conflict(_))));
+        limiter.admit_execution_time(10)?;
+        assert!(matches!(
+            limiter.admit_execution_time(1),
+            Err(Error::Conflict(_))
+        ));
+        assert_eq!(
+            limiter.usage(),
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 4,
+                execution_time_ms: 10,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn durable_receipt_must_match_activated_dispatch_identity() -> Result<()> {
+        let budget = SwarmBudget::new(id(20), owner(0), limits())?;
+        let child = budget.reserve_child(request(21, None))?.reservation;
+        let dispatch_id = IdempotencyKey::new("dispatch-bound")?;
+        budget.activate_with_dispatch(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, None),
+            Some(dispatch_id),
+        )?;
+        let usage = SwarmUsage::default();
+        let receipt = SwarmUsageReceipt::new(
+            child.operation_id,
+            IdempotencyKey::new("dispatch-forged")?,
+            1,
+            usage,
+            "provider",
+        )?;
+        assert!(matches!(
+            budget.apply_event(SwarmBudgetEvent::UsageReported {
+                operation_id: child.operation_id,
+                owner: owner(0),
+                usage,
+                receipt,
+            }),
+            Err(Error::Conflict(_))
+        ));
         Ok(())
     }
 
