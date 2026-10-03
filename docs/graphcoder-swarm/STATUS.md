@@ -56,13 +56,32 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - checkpoint-provenance.json binds these results to source, suite and test executable digests.
 - None of these results qualify the complete swarm or terminal product.
 
+## Current execution checkpoint
+
+The model-input and local composition paths are implemented but remain under
+qualification. Production project grants, per-child fork identities, durable
+operator principals, and receipt preflight are committed on the isolated branch.
+
+Latest scoped results (see checkpoint-integrated-native-fork-budget.json):
+- Terminal TypeScript transport and UI: 40 passed, zero failed.
+- Durable LocalStream swarm budget: 8 passed, one replay-classification failure.
+  A subsequent CAS repair is committed and requires a new run.
+- Harness TypeScript runtime/memory: 95 passed, three failed; WASM is stale.
+- Model fork boundary: one passed, one stale-boundary fixture failure.
+- Typed recursive fork suite: the 1024-level fixture passed; two facade cases failed.
+- Filesystem Git compatibility: 40 passed, two fixture failures.
+- Recovery tests are committed, but current native compilation exposed approval
+  wrappers still calling a removed unauthenticated method. These callers must
+  carry explicit operator authority before the recovery suite can execute.
+
 ## Next
-Implement production fork intent tools, session budget admission and durable child activation.
-Pinned task prerequisites and restart-safe dependency scheduling are now implemented.
-The native fixture now connects the stock publisher to existing typed workspace
-forks and child models; application-facing swarm activation remains pending.
-Extend durable composition with scoped swarm communication and git integration,
-effect recovery, terminal app, and installed-artifact acceptance evidence.
+
+Repair and verify exact fork publication timing, recursive production swarm
+composition, terminal cancellation at saturation, and authenticated approval
+callers. Finish registry CAS/reconciliation and wire measured provider ceilings.
+Refresh WASM and generated contracts, then build fresh installed artifacts and
+run the locked matrix including hidden native PTY and real process fault cases.
+No passing narrow suite establishes completion of the full swarm goal.
 
 The locked requirements matrix remains authoritative. No Cloud, web UI,
 production models, migration or sandbox. Arbitrary host commands and root
