@@ -622,8 +622,12 @@ function requireByteVector(value: unknown, label: string): readonly number[] {
   return value;
 }
 
-function equalBytes(left: readonly number[], right: readonly number[]): boolean {
-  return left.length === right.length && left.every((byte, index) => byte === right[index]);
+function equalBytes(left: ArrayLike<number>, right: ArrayLike<number>): boolean {
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index++) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
 }
 
 function modelMessageFiles(content: unknown): readonly unknown[] {
