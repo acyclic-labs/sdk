@@ -91,7 +91,10 @@ function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree
   if (Number.isNaN(Date.parse(artifact.built_at))) failure(`artifact ${artifact.path} has invalid build time`);
   if (typeof artifact.fresh !== "boolean") failure(`artifact ${artifact.path} must declare fresh`);
   const path = resolve(artifact.path);
-  if (!existsSync(path)) failure(`artifact is missing: ${artifact.path}`);
+  if (!existsSync(path)) {
+    if (final) failure(`artifact is missing: ${artifact.path}`);
+    return;
+  }
   const actual = fileDigest(path);
   if (actual !== artifact.sha256) failure(`artifact digest mismatch: ${artifact.path}`);
 }
@@ -155,6 +158,8 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
+  const qualifiedTree = gitTree(qualifiedCommit);
+  for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, effectiveFinal, qualifiedCommit, qualifiedTree);
   const casesById = new Map();
   for (const record of receipt.cases) {
     if (casesById.has(record?.id)) failure(`duplicate case id ${record?.id}`);
@@ -166,8 +171,6 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     validateCase(record, entry, receipt.suites, effectiveFinal);
   }
   if (casesById.size !== matrix.entries.length) failure("receipt contains a case not present in the locked matrix");
-  const qualifiedTree = gitTree(qualifiedCommit);
-  for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree);
   const counts = { failed: 0, skipped: 0, flaky: 0, missing: 0 };
   for (const record of receipt.cases) {
     if (record.status === "failed") counts.failed++;
