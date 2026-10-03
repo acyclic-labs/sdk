@@ -79,7 +79,9 @@ fn has_read_result(request: &ModelRequest) -> bool {
         else {
             return false;
         };
-        name == "acyclic.read_file" && value.get("text").and_then(Value::as_str) == Some(ROOT_FILE)
+        name == "acyclic.read_file"
+            && (value.as_str() == Some(ROOT_FILE)
+                || value.get("text").and_then(Value::as_str) == Some(ROOT_FILE))
     })
 }
 
