@@ -213,7 +213,11 @@ impl Fixture {
             .coordinator
             .pull(&Worker {
                 id: "budget-worker".into(),
-                available: ResourceSnapshot::default(),
+                available: ResourceSnapshot(BTreeMap::from([
+                    ("model_steps".into(), 64),
+                    ("output_bytes".into(), 640),
+                    ("execution_time_ms".into(), 6_400),
+                ])),
                 labels: BTreeMap::new(),
             })
             .await?

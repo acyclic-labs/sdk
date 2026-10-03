@@ -13,7 +13,8 @@ use crate::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest,
         SwarmForkReservation,
-        SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptCursor,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmRootDispatchContext, SwarmUsage,
+        SwarmUsageReceiptCursor,
         VerifiedForkPublication, VerifiedSwarmUsageReceipt,
     },
 };
@@ -210,6 +211,16 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_usage_receipt_issuer(source)
     }
 
+    /// Creates the complete provider boundary for root work from the current
+    /// durable projection. The returned limiter starts from accepted root
+    /// usage and excludes descendant capacity already held in the journal.
+    pub fn root_usage_context<S: crate::swarm_budget::SwarmUsageSource>(
+        &self,
+        source: S,
+    ) -> Result<SwarmRootDispatchContext<S>> {
+        self.budget.root_usage_context(source)
+    }
+
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;
@@ -332,6 +343,21 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             publication.into_publication(),
         )
         .await
+    }
+
+    /// Reopens a child provider context from the receipt cursor currently
+    /// retained in this journal. This is the restart-safe entry point for
+    /// both a fresh dispatch and a resumed dispatch; callers cannot silently
+    /// reset a child limiter to zero after a committed provider receipt.
+    pub fn usage_context<S: crate::swarm_budget::SwarmUsageSource>(
+        &self,
+        token: &SwarmDispatchToken,
+        source: S,
+    ) -> Result<SwarmDispatchContext<S>> {
+        let cursor = self
+            .usage_cursor(token.operation_id())?
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {}", token.operation_id())))?;
+        token.resume_usage_context(source, cursor)
     }
 
     /// Activates verified publication evidence and invokes the production dispatcher.

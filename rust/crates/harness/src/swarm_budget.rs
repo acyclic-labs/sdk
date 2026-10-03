@@ -650,6 +650,49 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
     }
 }
 
+/// The complete authorization and measurement boundary for root provider
+/// work. Root work has no child publication token, so its context is bound to
+/// the canonical root scheduler lease and the session's current remaining
+/// ceiling instead.
+pub struct SwarmRootDispatchContext<S> {
+    limiter: SwarmUsageLimiter,
+    issuer: SwarmUsageReceiptIssuer<S>,
+}
+
+impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
+    fn new(limiter: SwarmUsageLimiter, issuer: SwarmUsageReceiptIssuer<S>) -> Self {
+        Self { limiter, issuer }
+    }
+
+    /// Returns the mutable pre-work provider limiter.
+    pub fn limiter_mut(&mut self) -> &mut SwarmUsageLimiter {
+        &mut self.limiter
+    }
+
+    /// Returns the mutable provider receipt issuer.
+    pub fn issuer_mut(&mut self) -> &mut SwarmUsageReceiptIssuer<S> {
+        &mut self.issuer
+    }
+
+    /// Reads provider counters and creates the next verified root receipt.
+    pub fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue()
+    }
+
+    /// Returns the latest provider measurement accepted by this context.
+    #[must_use]
+    pub const fn usage(&self) -> SwarmUsage {
+        self.limiter.usage()
+    }
+
+    /// Returns the issuer cursor, which becomes durable only after the caller
+    /// commits the corresponding verified receipt to the journal.
+    #[must_use]
+    pub fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
+        self.issuer.cursor()
+    }
+}
+
 fn validate_issuer_cursor(sequence: u64, last_usage: Option<SwarmUsage>) -> Result<()> {
     if (sequence == 0) != last_usage.is_none() {
         return Err(Error::Invalid(
@@ -1300,6 +1343,33 @@ impl SwarmBudget {
         )
     }
 
+    /// Creates the complete provider boundary for root work from the current
+    /// session projection. The limiter includes root usage already accepted
+    /// and excludes both measured and reserved descendant capacity.
+    pub fn root_usage_context<S: SwarmUsageSource>(
+        &self,
+        source: S,
+    ) -> Result<SwarmRootDispatchContext<S>> {
+        let state = self.lock()?;
+        let limits = root_resource_limits(&state)?;
+        let limiter = SwarmUsageLimiter::resume(limits, state.root_usage)?;
+        let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
+            Error::Unauthorized("canonical root dispatch lease required".into())
+        })?;
+        let cursor = SwarmUsageReceiptCursor::new(
+            state.root_usage_sequence,
+            (state.root_usage_sequence != 0).then_some(state.root_usage),
+        )?;
+        let issuer = SwarmUsageReceiptIssuer::resume_with_cursor_and_limits(
+            source,
+            state.session_id,
+            dispatch_id,
+            cursor,
+            limits,
+        )?;
+        Ok(SwarmRootDispatchContext::new(limiter, issuer))
+    }
+
     /// Atomically admits one child. Persist the corresponding
     /// `ChildReserved` event before invoking any fork/model provider.
     pub fn reserve_child(&self, request: SwarmForkRequest) -> Result<SwarmAdmissionReceipt> {
@@ -1828,9 +1898,8 @@ fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
 
 fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest> {
     let ceiling = |limit: u64, consumed: u64, root: u64, reserved: u64| {
-        consumed
-            .checked_sub(root)
-            .and_then(|descendant_consumed| limit.checked_sub(descendant_consumed))
+        limit
+            .checked_sub(consumed)
             .and_then(|value| value.checked_sub(reserved))
             .and_then(|remaining| root.checked_add(remaining))
             .ok_or_else(|| Error::Storage("swarm root resource projection underflow".into()))
