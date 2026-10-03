@@ -104,6 +104,12 @@ pub mod multi_root;
 #[cfg(feature = "native-watch")]
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native_capture;
+#[cfg(all(
+    feature = "native-watch",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+mod native_checkout;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_exchange;
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
@@ -274,6 +280,12 @@ pub use native_capture::{
     capture_subtrees_with_policy, capture_watch_batch, capture_watch_batch_with_policy,
     host_path_to_namespace, namespace_to_host_path,
 };
+#[cfg(all(
+    feature = "native-watch",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+pub use native_checkout::{HostCheckout, HostCheckoutError, HostCheckoutRestore};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,
@@ -334,7 +346,9 @@ pub use simulation::{
     SimulationError, SimulationFault, SimulationOperation, SimulationOptions, SimulationTrace,
 };
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-pub use source::{ReconcileOutcome, Source, SourceError, SourceMode, SourceOptions, SourceState};
+pub use source::{
+    ReconcileOutcome, Source, SourceBinding, SourceError, SourceMode, SourceOptions, SourceState,
+};
 pub use speculation::{
     ObjectResidency, PromotionAdmission, PromotionCandidate, PromotionDestination,
     PromotionExecutor, PromotionMetrics, PromotionPlan, PromotionRejection, PromotionSpeculator,
