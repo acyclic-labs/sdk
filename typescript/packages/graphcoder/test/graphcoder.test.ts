@@ -22,8 +22,8 @@ describe("GraphCoder UI transport boundary", () => {
         switch (request.method) {
           case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] }));
           case "list_changes": return Promise.resolve(response({ session_id: "session-1", generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
-          case "read_change": return Promise.resolve(response({ path: "README.md", unified_diff: "@@ -1 +1 @@", generation: "7" }));
-          case "read_file": return Promise.resolve(response({ path: "README.md", media_type: "text/markdown", bytes: [72, 105], generation: "7" }));
+          case "read_change": return Promise.resolve(response({ session_id: "session-1", path: "README.md", unified_diff: "@@ -1 +1 @@", generation: "7" }));
+          case "read_file": return Promise.resolve(response({ session_id: "session-1", path: "README.md", media_type: "text/markdown", bytes: [72, 105], generation: "7" }));
           default: return Promise.resolve({ request_id: request.request_id, ok: false, error: { code: "unsupported", message: `fixture does not implement ${request.method}` } });
         }
       },
@@ -52,6 +52,7 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedPage.listSessions()).rejects.toMatchObject({ code: "transport" });
     await expect(malformedPage.listSessions({ limit: 0 })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", -1n)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(malformedPage.readFile(sessionId("session-1"), 7 as unknown as string, 1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "../secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", 1 as unknown as bigint)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "C:\\secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
@@ -68,7 +69,7 @@ describe("GraphCoder UI transport boundary", () => {
     const wrongSession = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: snapshot }) });
     await expect(wrongSession.openSession(sessionId("session-1"))).rejects.toMatchObject({ code: "transport" });
 
-    const wrongBody = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { path: "other.txt", unified_diff: "", generation: "8" } }) });
+    const wrongBody = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { session_id: "other", path: "README.md", unified_diff: "", generation: "7" } }) });
     await expect(wrongBody.readChange(sessionId("session-1"), "README.md", 7n)).rejects.toMatchObject({ code: "transport" });
 
     const wrongReceipt = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { operation_id: "other", session_id: "session-1", generation: "7", applied: "yes" } }) });

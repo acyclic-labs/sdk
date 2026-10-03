@@ -28,6 +28,10 @@
     "./node": {
       "types": "./dist/node.d.ts",
       "default": "./dist/node.js"
+    },
+    "./node-dispatcher": {
+      "types": "./dist/node-dispatcher.d.ts",
+      "default": "./dist/node-dispatcher.js"
     }
   },
   "scripts": {

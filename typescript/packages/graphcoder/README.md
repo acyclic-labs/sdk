@@ -102,6 +102,16 @@ fixture flags are rejected by this production runner. The fixture-only
 `runCli` entry point requires an explicit supported `--fixture` and remains a
 test/demo surface.
 
+Native hosts that own the durable runtime can expose the same contract with
+`GraphCoderWireDispatcher` from the package root and
+`runNodeGraphCoderDispatcher` from `@acyclic-labs/graphcoder/node-dispatcher`.
+The dispatcher parses and validates each request, invokes the injected
+transport, converts BigInts and byte bodies to the wire representation, and
+returns typed errors. It does not open storage, start workers, or implement a
+second merge path; the injected transport remains the LocalSwarm/Harness
+owner. Requests are processed concurrently and correlated by `request_id`,
+so a host can keep cancellation and recovery responsive while a turn runs.
+
 Node hosts that explicitly own a local runtime executable can use
 `@acyclic-labs/graphcoder/node`'s `JsonLineGraphCoderBridge`. It correlates
 concurrent requests, rejects pending requests on process errors or EOF, bounds

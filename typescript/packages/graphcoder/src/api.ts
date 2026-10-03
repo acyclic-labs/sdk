@@ -144,7 +144,7 @@ export interface GraphCoderTransport {
   readMessages(sessionId: SessionId, query?: PageQuery): Promise<MessagePage>;
   sendMessage(input: { readonly sessionId: SessionId; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }): Promise<GraphMessage>;
   listApprovals(sessionId: SessionId, query?: PageQuery): Promise<ApprovalPage>;
-  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId?: SessionId }): Promise<ApprovalRequest>;
+  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId: SessionId }): Promise<ApprovalRequest>;
   cancelSession(sessionId: SessionId): Promise<SessionSnapshot>;
   listChanges(sessionId: SessionId): Promise<{ readonly generation: bigint; readonly items: readonly ChangeSummary[] }>;
   readChange(sessionId: SessionId, path: string, generation: bigint): Promise<ChangeBody>;

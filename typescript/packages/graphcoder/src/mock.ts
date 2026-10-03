@@ -158,7 +158,7 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     return Promise.resolve(page(this.#session(sessionId).approvals, query));
   }
 
-  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId?: SessionId }): Promise<ApprovalRequest> {
+  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId: SessionId }): Promise<ApprovalRequest> {
     this.calls.push({ method: "resolveApproval" });
     for (const session of this.#sessions.values()) {
       const index = session.approvals.findIndex(approval => approval.id === input.approvalId);

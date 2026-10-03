@@ -14,6 +14,7 @@ import {
   type GraphMessage,
   type PageQuery,
   type SessionPage,
+  type SessionId,
   type SessionSnapshot,
   type SessionSummary,
   type StartSessionInput,
@@ -63,7 +64,7 @@ export interface GraphCoderWireParamsByMethod {
   readonly read_messages: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
   readonly send_message: { readonly session_id: string; readonly sender_id: string; readonly recipient_id: string; readonly body: string };
   readonly list_approvals: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
-  readonly resolve_approval: { readonly approval_id: string; readonly approved: boolean; readonly session_id?: string };
+  readonly resolve_approval: { readonly approval_id: string; readonly approved: boolean; readonly session_id: string };
   readonly cancel_session: { readonly session_id: string };
   readonly list_changes: { readonly session_id: string };
   readonly read_change: { readonly session_id: string; readonly path: string; readonly generation: string };
@@ -104,8 +105,8 @@ export type GraphCoderWireActivityEvent = Omit<ActivityEvent, "sequence" | "acto
 export type GraphCoderWireMessage = Omit<GraphMessage, "id" | "sessionId" | "senderId" | "recipientId"> & { readonly id: string; readonly session_id: string; readonly sender_id: string; readonly recipient_id: string };
 export type GraphCoderWireApproval = Omit<ApprovalRequest, "id" | "sessionId" | "agentId"> & { readonly id: string; readonly session_id: string; readonly agent_id: string };
 export type GraphCoderWireChangeSummary = Omit<ChangeSummary, "oldPath"> & { readonly old_path?: string };
-export type GraphCoderWireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly generation: string; readonly unified_diff: string };
-export type GraphCoderWireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
+export type GraphCoderWireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly session_id: string; readonly generation: string; readonly unified_diff: string };
+export type GraphCoderWireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly session_id: string; readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
 export type GraphCoderWireSnapshot = Omit<SessionSnapshot, "summary" | "agents" | "workspaceGeneration"> & { readonly summary: GraphCoderWireSessionSummary; readonly agents: readonly GraphCoderWireAgentSummary[]; readonly workspace_generation: string };
 
 export interface GraphCoderWireResultByMethod {
@@ -187,12 +188,10 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
     return this.#page("list_approvals", { session_id: id, ...queryParams(query) }, decodeApproval, id);
   }
 
-  async resolveApproval(input: { readonly approvalId: ApprovalRequest["id"]; readonly approved: boolean; readonly sessionId?: SessionSummary["id"] }): Promise<ApprovalRequest> {
-    const params: GraphCoderWireParams<"resolve_approval"> = input.sessionId === undefined
-      ? { approval_id: input.approvalId, approved: input.approved }
-      : { approval_id: input.approvalId, approved: input.approved, session_id: input.sessionId };
+  async resolveApproval(input: { readonly approvalId: ApprovalRequest["id"]; readonly approved: boolean; readonly sessionId: SessionSummary["id"] }): Promise<ApprovalRequest> {
+    const params: GraphCoderWireParams<"resolve_approval"> = { approval_id: input.approvalId, approved: input.approved, session_id: input.sessionId };
     const approval = decodeApproval(await this.#call("resolve_approval", params));
-    if (approval.id !== input.approvalId || (input.sessionId !== undefined && approval.sessionId !== input.sessionId)) throw new GraphCoderError("transport", "approval response is not bound to its request");
+    if (approval.id !== input.approvalId || approval.sessionId !== input.sessionId) throw new GraphCoderError("transport", "approval response is not bound to its request");
     return approval;
   }
 
@@ -211,7 +210,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   async readChange(id: SessionSnapshot["summary"]["id"], path: string, generation: bigint): Promise<ChangeBody> {
     const requestedPath = checkedPath(path);
     const requestedGeneration = checkedGeneration(generation, "change generation");
-    const body = decodeChangeBody(await this.#call("read_change", { session_id: id, path: requestedPath, generation: requestedGeneration }));
+    const body = decodeChangeBody(await this.#call("read_change", { session_id: id, path: requestedPath, generation: requestedGeneration }), id);
     if (body.path !== requestedPath || body.generation !== generation) throw new GraphCoderError("transport", "change response is not bound to its request");
     return body;
   }
@@ -219,7 +218,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   async readFile(id: SessionSnapshot["summary"]["id"], path: string, generation: bigint): Promise<FileBody> {
     const requestedPath = checkedPath(path);
     const requestedGeneration = checkedGeneration(generation, "file generation");
-    const body = decodeFileBody(await this.#call("read_file", { session_id: id, path: requestedPath, generation: requestedGeneration }), this.maximumFileBytes);
+    const body = decodeFileBody(await this.#call("read_file", { session_id: id, path: requestedPath, generation: requestedGeneration }), this.maximumFileBytes, id);
     if (body.path !== requestedPath || body.generation !== generation) throw new GraphCoderError("transport", "file response is not bound to its request");
     return body;
   }
@@ -270,7 +269,8 @@ export { BridgeGraphCoderTransport as HarnessGraphCoderTransport };
 
 function wireQuery(query: PageQuery | undefined): GraphCoderWirePageQuery | undefined {
   if (query === undefined) return undefined;
-  if (query.after !== undefined && query.after.trim() === "") throw new GraphCoderError("invalid_input", "page cursor must not be empty");
+  if (typeof query !== "object" || query === null || Array.isArray(query)) throw new GraphCoderError("invalid_input", "page query must be an object");
+  if (query.after !== undefined && (typeof query.after !== "string" || query.after.trim() === "")) throw new GraphCoderError("invalid_input", "page cursor must be nonempty text");
   if (query.limit !== undefined && (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1_024)) throw new GraphCoderError("invalid_input", "page limit must be between 1 and 1024");
   const value: { after?: string; limit?: number } = {};
   if (query.after !== undefined) value.after = query.after;
@@ -283,7 +283,8 @@ function queryParams(query: PageQuery | undefined): { readonly query?: GraphCode
   return value === undefined ? {} : { query: value };
 }
 
-function checkedPath(path: string): string {
+function checkedPath(path: unknown): string {
+  if (typeof path !== "string") throw new GraphCoderError("invalid_input", "path must be text");
   const bytes = new TextEncoder().encode(path);
   if (bytes.byteLength === 0 || bytes.byteLength > 4_096) throw new GraphCoderError("invalid_input", "path must be between 1 and 4096 UTF-8 bytes");
   if (path.includes("\\") || path.startsWith("/") || /^[A-Za-z]:/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)) {
@@ -396,13 +397,15 @@ function checkedCount(value: unknown, label: string): number {
   return value as number;
 }
 
-function decodeChangeBody(value: unknown): ChangeBody {
+function decodeChangeBody(value: unknown, expectedSession: SessionId): ChangeBody {
   const raw = record(value, "change body");
+  if (sessionId(text(raw.session_id, "change session id")) !== expectedSession) throw new GraphCoderError("transport", "change response is not bound to its session");
   return { path: text(raw.path, "change path"), unifiedDiff: text(raw.unified_diff, "unified diff"), generation: wireBigInt(raw.generation, "change generation") };
 }
 
-function decodeFileBody(value: unknown, maximumBytes = MAX_BRIDGE_FILE_BYTES): FileBody {
+function decodeFileBody(value: unknown, maximumBytes = MAX_BRIDGE_FILE_BYTES, expectedSession?: SessionId): FileBody {
   const raw = record(value, "file body");
+  if (expectedSession !== undefined && sessionId(text(raw.session_id, "file session id")) !== expectedSession) throw new GraphCoderError("transport", "file response is not bound to its session");
   const bytes = array(raw.bytes, "file bytes");
   if (bytes.length > maximumBytes) throw new GraphCoderError("transport", "file body exceeds the configured file size limit");
   if (!bytes.every(byte => Number.isInteger(byte) && (byte as number) >= 0 && (byte as number) <= 255)) throw new GraphCoderError("transport", "file bytes contain an invalid octet");
