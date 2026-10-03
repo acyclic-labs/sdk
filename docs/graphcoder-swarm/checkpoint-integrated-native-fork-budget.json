@@ -84,6 +84,32 @@
       "passed": 2,
       "failed": 0,
       "contract_scope": "provenance validator source tests only"
+    },
+    {
+      "suite": "acyclic-graphcoder-cli native",
+      "source": "3949d29d",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-graphcoder-cli -j 2 -- --nocapture",
+      "artifact_sha256": "a99e200c8a5e5489fc455c00c35654d5477de01fc9f28c39e6e8179188f971b1",
+      "contract_scope": "real JSONL framing, flush-before-EOF, explicit echo/stage fixtures and lazy listing response; no installed PTY or saturation cancel proof"
+    },
+    {
+      "suite": "local recursive runtime library",
+      "source": "2c6ddf5d",
+      "passed_observed": 1,
+      "final_result": "not captured; observation handle44332 disappeared and exactprocessscan found no matching process",
+      "complete": false,
+      "contract_scope": "negative fork fixtures only; scripted model emits a tool call every step and requires repair"
+    },
+    {
+      "suite": "qualification source validator/scenario",
+      "source": "c6f51750",
+      "passed": 5,
+      "failed": 0,
+      "command": "node --test scripts/graphcoder-qualification-suite.test.mjs scripts/graphcoder-scenario.test.mjs",
+      "contract_scope": "freshness/timeout/scenario descriptor tests; no native fault or PTY execution"
     }
   ],
   "input_digests": {
@@ -110,5 +136,6 @@
     "no sandbox",
     "no merge",
     "no Vite or visible terminal launches"
-  ]
+  ],
+  "follow_up_source": "f8295eb9ae648464c53cf5b45cd6371bbc307190"
 }
