@@ -76,9 +76,9 @@ try {
           if (line.trim() === "") continue;
           try {
             const value = JSON.parse(line).value;
-            const selected = value?.selectedSession?.summary?.id;
+            const selected = value?.selectedSession?.summary?.id ?? value?.selectedSession?.id;
             if (typeof selected === "string") context.set("session_id", selected);
-            const approvals = Array.isArray(value?.approvals) ? value.approvals : [];
+            const approvals = Array.isArray(value) ? value : Array.isArray(value?.approvals) ? value.approvals : [];
             const pending = approvals.find(item => item?.state === "pending");
             if (typeof pending?.id === "string") context.set("approval_id", pending.id);
             if (typeof pending?.operationId === "string") context.set("writeback_operation_id", pending.operationId);
