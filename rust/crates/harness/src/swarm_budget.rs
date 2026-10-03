@@ -183,7 +183,7 @@ pub struct SwarmForkRequest {
     pub resources: SwarmResourceRequest,
     /// Canonical task admission digest, including its prerequisite set.
     /// `None` is retained for low-level projection tests; production callers
-    /// should use `SwarmBudgetJournal::reserve_after_admission`.
+    /// should use `DistributedCoordinator::admit_swarm_after`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub admission_digest: Option<[u8; 32]>,
 }
@@ -647,25 +647,27 @@ impl SwarmBudget {
             // A parent may admit more than one child. Each live direct child
             // holds a portion of the parent's ceiling, so a retry or a
             // concurrent sibling cannot reserve the same remainder twice.
+            // A completed child has consumed part of its parent's ceiling.
+            // Keep that usage charged when admitting a later sibling; only
+            // the still-unspent portion of a live child is available again.
             let allocated_to_children = state
                 .reservations
                 .values()
-                .filter(|child| {
-                    child.parent_operation_id == Some(parent.operation_id)
-                        && matches!(
-                            child.state,
-                            SwarmReservationState::Reserved | SwarmReservationState::Active
-                        )
-                })
+                .filter(|child| child.parent_operation_id == Some(parent.operation_id))
                 .try_fold(SwarmUsage::default(), |allocated, child| {
-                    add_usage(
-                        allocated,
-                        SwarmUsage {
-                            model_steps: child.resources.model_steps,
-                            output_bytes: child.resources.output_bytes,
-                            execution_time_ms: child.resources.execution_time_ms,
-                        },
-                    )
+                    let child_usage = match child.state {
+                        SwarmReservationState::Reserved | SwarmReservationState::Active => {
+                            SwarmUsage {
+                                model_steps: child.resources.model_steps,
+                                output_bytes: child.resources.output_bytes,
+                                execution_time_ms: child.resources.execution_time_ms,
+                            }
+                        }
+                        SwarmReservationState::Completed | SwarmReservationState::Cancelled => {
+                            reservation_subtree_usage(&state, child.operation_id)?
+                        }
+                    };
+                    add_usage(allocated, child_usage)
                 })?;
             let remaining = SwarmResourceRequest {
                 model_steps: remaining
@@ -1022,6 +1024,25 @@ fn add_usage(current: SwarmUsage, delta: SwarmUsage) -> Result<SwarmUsage> {
     })
 }
 
+fn reservation_subtree_usage(
+    state: &SwarmBudgetState,
+    operation_id: OperationId,
+) -> Result<SwarmUsage> {
+    let reservation = state
+        .reservations
+        .get(&operation_id)
+        .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+    let mut total = reservation.usage;
+    for child in state
+        .reservations
+        .values()
+        .filter(|child| child.parent_operation_id == Some(operation_id))
+    {
+        total = add_usage(total, reservation_subtree_usage(state, child.operation_id)?)?;
+    }
+    Ok(total)
+}
+
 fn reserve_resources(
     usage: &mut SwarmBudgetUsage,
     request: SwarmResourceRequest,
@@ -1359,6 +1380,111 @@ mod tests {
             execution_time_ms: 600,
         };
         assert!(budget.reserve_child(second_request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn completed_child_usage_remains_charged_to_parent_ceiling() -> Result<()> {
+        let mut limits = limits();
+        limits.max_model_steps = 32;
+        limits.max_output_bytes = 320;
+        limits.max_execution_time_ms = 3_200;
+        let budget = SwarmBudget::new(id(9), owner(0), limits)?;
+        let mut parent_request = request(1, None);
+        parent_request.resources = SwarmResourceRequest {
+            model_steps: 10,
+            output_bytes: 100,
+            execution_time_ms: 1_000,
+        };
+        let parent = budget.reserve_child(parent_request)?.reservation;
+        let mut child_request = request(2, Some(parent.operation_id));
+        child_request.resources = SwarmResourceRequest {
+            model_steps: 6,
+            output_bytes: 60,
+            execution_time_ms: 600,
+        };
+        let child = budget.reserve_child(child_request)?.reservation;
+        budget.activate(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, Some(parent.operation_id)),
+        )?;
+        budget.complete(
+            child.operation_id,
+            &owner(0),
+            SwarmUsage {
+                model_steps: 6,
+                output_bytes: 60,
+                execution_time_ms: 600,
+            },
+        )?;
+        let mut sibling = request(3, Some(parent.operation_id));
+        sibling.resources = SwarmResourceRequest {
+            model_steps: 5,
+            output_bytes: 50,
+            execution_time_ms: 500,
+        };
+        assert!(budget.reserve_child(sibling).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn completed_grandchild_usage_remains_charged_to_all_ancestors() -> Result<()> {
+        let mut limits = limits();
+        limits.max_recursion_depth = 3;
+        limits.max_model_steps = 40;
+        limits.max_output_bytes = 400;
+        limits.max_execution_time_ms = 4_000;
+        let budget = SwarmBudget::new(id(9), owner(0), limits)?;
+        let mut parent_request = request(1, None);
+        parent_request.resources = SwarmResourceRequest {
+            model_steps: 10,
+            output_bytes: 100,
+            execution_time_ms: 1_000,
+        };
+        let parent = budget.reserve_child(parent_request)?.reservation;
+        let mut child_request = request(2, Some(parent.operation_id));
+        child_request.resources = SwarmResourceRequest {
+            model_steps: 10,
+            output_bytes: 100,
+            execution_time_ms: 1_000,
+        };
+        let child = budget.reserve_child(child_request)?.reservation;
+        budget.activate(
+            child.operation_id,
+            owner(0),
+            publication(child.operation_id, Some(parent.operation_id)),
+        )?;
+        let mut grandchild_request = request(3, Some(child.operation_id));
+        grandchild_request.depth = 3;
+        grandchild_request.resources = SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 40,
+            execution_time_ms: 400,
+        };
+        let grandchild = budget.reserve_child(grandchild_request)?.reservation;
+        budget.activate(
+            grandchild.operation_id,
+            owner(0),
+            publication(grandchild.operation_id, Some(child.operation_id)),
+        )?;
+        budget.complete(
+            grandchild.operation_id,
+            &owner(0),
+            SwarmUsage {
+                model_steps: 4,
+                output_bytes: 40,
+                execution_time_ms: 400,
+            },
+        )?;
+        budget.complete(child.operation_id, &owner(0), SwarmUsage::default())?;
+        let mut sibling = request(4, Some(parent.operation_id));
+        sibling.resources = SwarmResourceRequest {
+            model_steps: 7,
+            output_bytes: 70,
+            execution_time_ms: 700,
+        };
+        assert!(budget.reserve_child(sibling).is_err());
         Ok(())
     }
 
