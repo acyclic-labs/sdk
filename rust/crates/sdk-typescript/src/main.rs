@@ -751,22 +751,45 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         .methods
         .iter()
         .flat_map(|method| {
-            [
-                local_type(&method.request_type),
-                local_type(&method.response_type),
-            ]
+            [method.request_type.as_str(), method.response_type.as_str()]
         })
+        .chain(service.grpc_methods.iter().flat_map(|method| {
+            [method.request_type.as_str(), method.response_type.as_str()]
+        }))
         .collect::<BTreeSet<_>>();
-    let message_imports = message_types.iter().copied().collect::<Vec<_>>().join(", ");
+    let family_message_imports = message_types
+        .iter()
+        .filter(|qualified| !qualified.starts_with("acyclic.protocol.v1."))
+        .map(|qualified| local_type(qualified))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let protocol_message_imports = message_types
+        .iter()
+        .filter(|qualified| qualified.starts_with("acyclic.protocol.v1."))
+        .map(|qualified| local_type(qualified))
+        .collect::<Vec<_>>()
+        .join(", ");
     let family_path = proto_import_path(&service.family);
-    if message_imports.is_empty() {
+    let protocol_path = format!(
+        "../../../../typescript/packages/{}/generated/proto/protocol/v1/protocol_pb.js",
+        service.family
+    );
+    if message_types.is_empty() {
         output.push_str(
             "// This family has no HTTP method projection in the current Rust model.\n\n",
         );
     } else {
-        output.push_str(&format!(
-            "import type {{ {message_imports} }} from \"{family_path}\";\n\n"
-        ));
+        if !family_message_imports.is_empty() {
+            output.push_str(&format!(
+                "import type {{ {family_message_imports} }} from \"{family_path}\";\n"
+            ));
+        }
+        if !protocol_message_imports.is_empty() {
+            output.push_str(&format!(
+                "import type {{ {protocol_message_imports} }} from \"{protocol_path}\";\n"
+            ));
+        }
+        output.push('\n');
     }
     output.push_str("export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }\n\n");
     output.push_str("export interface RustOwnedMethodMetadata {\n  readonly operationId: string;\n  readonly rpc: string;\n  readonly docs: string;\n  readonly path: string;\n  readonly pathParameters: readonly string[];\n  readonly httpMethod: \"POST\";\n  readonly requestType: string;\n  readonly responseType: string;\n  readonly clientStreaming: boolean;\n  readonly serverStreaming: boolean;\n  readonly requestEncoding: \"protobuf-json\";\n  readonly responseEncoding: \"protobuf-json\";\n  readonly auth: \"bearer\";\n  readonly credentialPolicy: \"bearer-no-crlf\";\n  readonly responseLimitPolicy: \"bounded-cumulative-utf8\";\n  readonly requestFields: readonly RustOwnedFieldMetadata[];\n  readonly responseFields: readonly RustOwnedFieldMetadata[];\n}\n\n");
@@ -869,6 +892,31 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         "export const {}_GRPC_METHODS = {{\n{grpc_methods}\n}} as const satisfies Record<string, RustOwnedGrpcMethodMetadata>;\n\n",
         service.family.to_ascii_uppercase(),
     ));
+    if !service.grpc_methods.is_empty() {
+        output.push_str("export interface RustOwnedGrpcInvoker {\n  invokeGrpc<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest): Promise<TResponse>;\n  invokeGrpcStream<TRequest, TResponse>(method: RustOwnedGrpcMethodMetadata, request: TRequest): AsyncIterable<TResponse>;\n}\n\n");
+        output.push_str(&format!(
+            "export function create{title}GrpcClient(invoker: RustOwnedGrpcInvoker) {{\n  return {{\n"
+        ));
+        for method in &service.grpc_methods {
+            let operation = lower_camel(&method.rpc_name);
+            let request_type = local_type(&method.request_type);
+            let response_type = local_type(&method.response_type);
+            if method.server_streaming {
+                output.push_str(&format!(
+                    "    {operation}(request: {request_type}): AsyncIterable<{response_type}> {{\n      return invoker.invokeGrpcStream<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
+                    grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
+                    rpc_name = method.rpc_name,
+                ));
+            } else {
+                output.push_str(&format!(
+                    "    {operation}(request: {request_type}): Promise<{response_type}> {{\n      return invoker.invokeGrpc<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
+                    grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
+                    rpc_name = method.rpc_name,
+                ));
+            }
+        }
+        output.push_str("  } as const;\n}\n\n");
+    }
     if service.remote_policy.is_some() {
         output.push_str(&format!(
             "export const {family}_ROUTES = {constant};\n\n",
@@ -882,14 +930,21 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         .as_ref()
         .map(|policy| policy.credential_policy.as_str())
         .unwrap_or("bearer-no-crlf");
-    output.push_str(&format!("export const RUST_OWNED_CREDENTIAL_POLICY = {:?} as const;\n\n", credential_policy));
-    output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if (RUST_OWNED_CREDENTIAL_POLICY === \"bearer-no-crlf\" && (!token.trim() || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n");
-    output.push_str("export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {\n  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);\n}\n\n");
+    output.push_str(&format!(
+        "export const RUST_OWNED_CREDENTIAL_POLICY = {:?} as const;\n\n",
+        credential_policy
+    ));
+    output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === \"bearer-no-crlf\" && (!token.trim() || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n");
+    output.push_str("export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {\n  if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) validateRustOwnedCredentialPolicy(token);\n}\n\n");
     output.push_str(&format!(
         "export type {title}Method = keyof typeof {constant};\n\n"
     ));
     output.push_str("export interface RustOwnedInvoker {\n  invoke<TRequest, TResponse>(method: RustOwnedMethodMetadata, request: TRequest): Promise<TResponse>;\n}\n\n");
-    let invoker_parameter = if service.methods.is_empty() { "_invoker" } else { "invoker" };
+    let invoker_parameter = if service.methods.is_empty() {
+        "_invoker"
+    } else {
+        "invoker"
+    };
     output.push_str(&format!(
         "export function create{title}Client({invoker_parameter}: RustOwnedInvoker) {{\n  return {{\n"
     ));
@@ -1182,10 +1237,12 @@ mod tests {
             assert!(service.methods.is_empty());
             assert!(!service.http_projection);
         }
-        assert!(manifest
-            .services
-            .iter()
-            .all(|service| { service.source_content_sha256 == service.source_model_sha256 }));
+        assert!(
+            manifest
+                .services
+                .iter()
+                .all(|service| { service.source_content_sha256 == service.source_model_sha256 })
+        );
         let machines = generated_files(&manifest)
             .expect("generated files")
             .into_iter()

@@ -8,7 +8,13 @@
   "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/machines" },
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    ".": {
+      "browser": { "types": "./dist/browser.d.ts", "default": "./dist/browser.js" },
+      "node": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./grpc": { "node": { "types": "./dist/grpc.d.ts", "default": "./dist/grpc.js" } },
     "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" }
   },
   "types": "./dist/index.d.ts",
@@ -19,6 +25,6 @@
     "test": "bun run build && bun test test",
     "pack:dry": "bun pm pack --dry-run"
   },
-  "dependencies": { "@bufbuild/protobuf": "2.15.0" },
+  "dependencies": { "@bufbuild/protobuf": "2.15.0", "@connectrpc/connect": "2.1.1", "@connectrpc/connect-node": "2.1.1" },
   "devDependencies": { "typescript": "7.0.2", "@types/node": "26.4.1" }
 }
