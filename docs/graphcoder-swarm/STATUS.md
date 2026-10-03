@@ -8,7 +8,9 @@ GraphCoder is a terminal composition wrapper. Harness owns model requests, recur
 
 ## Latest native evidence
 
-The latest run used source `a9ca8ff4`, handle 66153, and exited 1 during compilation: integration-test providers referenced the library through an invalid crate-relative path. No tests executed in that run. The mandatory prepared-request provider contract compiled in the library; this does not prove runtime behavior. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for source and suite hashes.
+The focused execution run on source `91214d3a`, handle 50667, completed: 18 passed and one failed. Both previously stalled cases passed. The remaining failure is the hidden descendant-process fixture's missing startup marker. See [checkpoint-host-execution-2026-10-03.json](checkpoint-host-execution-2026-10-03.json); the full matrix remains unqualified.
+
+The latest broader run used source `a9ca8ff4`, handle 66153, and exited 1 during compilation: integration-test providers referenced the library through an invalid crate-relative path. No tests executed in that run. The mandatory prepared-request provider contract compiled in the library; this does not prove runtime behavior. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for source and suite hashes.
 
 The earlier source `c3a98adc`, handle 35128, produced these scoped results:
 
