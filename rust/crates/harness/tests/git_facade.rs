@@ -9,6 +9,7 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
 use acyclic_harness::resources::GenerationRef;
 use acyclic_harness::{
+    AgentId, Capabilities, Error, Result,
     conversation::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
@@ -17,12 +18,11 @@ use acyclic_harness::{
     filesystem::{FilesystemGitFacade, FilesystemHost},
     merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan},
     resources::ProviderRef,
-    AgentId, Capabilities, Error, Result,
 };
 use futures::future::BoxFuture;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -187,8 +187,8 @@ fn transition_facade() -> Result<(FilesystemGitFacade<MemoryGitCompatStore>, Wor
         Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-            "fork:publish",
-            "project:merge",
+            "fork:publish".to_owned(),
+            "project:merge".to_owned(),
         ]),
     );
     let workspace_id = WorkspaceId::from_bytes([43; 16]);
@@ -468,16 +468,18 @@ async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()
         )
         .await?;
     executor.fail_once();
-    assert!(facade
-        .run(
-            GitCommand::Merge {
-                branch: "feature".into(),
-            },
-            live_tree(workspace_id),
-            executor.as_ref(),
-        )
-        .await
-        .is_err());
+    assert!(
+        facade
+            .run(
+                GitCommand::Merge {
+                    branch: "feature".into(),
+                },
+                live_tree(workspace_id),
+                executor.as_ref(),
+            )
+            .await
+            .is_err()
+    );
     let aborted = facade
         .run(
             GitCommand::MergeAbort,

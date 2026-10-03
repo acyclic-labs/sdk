@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_lines)]
 
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_harness::communication::DurableWaitStore;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
     communication::{

@@ -920,6 +920,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                     })
                     .collect(),
                 boundary: seed.boundary.clone(),
+                model_boundary: seed.model_boundary.clone(),
             },
             captures: seed
                 .resources
@@ -1939,6 +1940,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
                 private_generation: &GenerationRef|
      -> Result<ForkSeed> {
         Ok(ForkSeed {
+            model_boundary: None,
             operation_id: OperationId::from_bytes(identity(operation)),
             parent: parent.clone(),
             parent_revision,

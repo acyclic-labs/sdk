@@ -46,8 +46,6 @@ mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
-mod model_fork;
-pub use model_fork::VerifiedModelForkBoundary;
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;

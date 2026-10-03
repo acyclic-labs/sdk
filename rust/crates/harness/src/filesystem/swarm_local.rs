@@ -8,10 +8,10 @@
 
 use super::{FilesystemHost, LocalHarnessTools, PersistentLocalHarness};
 use crate::{
+    AgentId, Capabilities, Error, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
-    AgentId, Error, OperationId, Result, TaskId,
     conversation::Limits,
-    core::{AggregateKind, Authority, AuthorityIssuer, Capabilities, SchemaRegistry},
+    core::{AggregateKind, Authority, AuthorityIssuer, SchemaRegistry},
     executor::TurnOutput,
     fork::{ForkReport, ForkSeed},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
@@ -61,8 +61,7 @@ pub struct LocalSwarmBindings {
     /// Live cancellation bridge for admitted tasks.
     pub cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
     /// Owner mediated publication of completed model/tool batches.
-    pub model_batch_publisher:
-        Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    pub model_batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
 }
 
 impl LocalSwarmBindings {
@@ -141,7 +140,8 @@ impl LocalSwarmConfig {
 
 /// A requested child activation. Its model is intentionally absent: the
 /// parent operation and completed boundary determine what can be inherited.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalForkRequest {
     /// Parent task in the durable session registry.
     pub parent: TaskId,
@@ -170,14 +170,20 @@ impl LocalForkRequest {
             || self.parent_operation.into_bytes() == [0; 16]
             || self.child_operation.into_bytes() == [0; 16]
         {
-            return Err(Error::Invalid("local fork identities must be nonzero".into()));
+            return Err(Error::Invalid(
+                "local fork identities must be nonzero".into(),
+            ));
         }
         if self.task.trim().is_empty() || self.task.len() > 4 * 1024 {
-            return Err(Error::Invalid("local fork task is empty or too large".into()));
+            return Err(Error::Invalid(
+                "local fork task is empty or too large".into(),
+            ));
         }
         if let Some(child) = &self.child_authority {
             if child.kind != AggregateKind::Conversation {
-                return Err(Error::Invalid("local fork child authority is not a conversation".into()));
+                return Err(Error::Invalid(
+                    "local fork child authority is not a conversation".into(),
+                ));
             }
             child.stream_path()?;
         }
@@ -310,7 +316,10 @@ enum StoredEvent {
         #[serde(default)]
         output: Option<TurnOutput>,
     },
-    ForkFailed { child: TaskId, reason: String },
+    ForkFailed {
+        child: TaskId,
+        reason: String,
+    },
 }
 
 impl From<StoredPhase> for LocalSessionPhase {
@@ -439,11 +448,7 @@ impl PersistentLocalSwarm {
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
-            append_record(
-                &stream,
-                StoredEvent::Session(root_session.clone().into()),
-            )
-            .await?;
+            append_record(&stream, StoredEvent::Session(root_session.clone().into())).await?;
             sessions.insert(root_task, root_session);
         }
         let root_task = sessions
@@ -606,7 +611,9 @@ impl PersistentLocalSwarm {
         request.validate()?;
         let parent = self.session(request.parent).await?;
         if parent.depth >= self.config.maximum_depth {
-            return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+            return Err(Error::Unauthorized(
+                "local swarm depth limit exceeded".into(),
+            ));
         }
         let parent_harness = self.open_session(request.parent).await?;
         let _boundary = parent_harness
@@ -677,13 +684,19 @@ impl PersistentLocalSwarm {
             None => true,
             Some(session) => {
                 if self.requests.lock().await.get(&child) != Some(&request) {
-                    return Err(Error::Conflict("child operation is already a different session".into()));
+                    return Err(Error::Conflict(
+                        "child operation is already a different session".into(),
+                    ));
                 }
                 if session.phase == LocalSessionPhase::Completed {
-                    return Err(Error::Conflict("child operation is already complete".into()));
+                    return Err(Error::Conflict(
+                        "child operation is already complete".into(),
+                    ));
                 }
                 if self.seeds.lock().await.get(&child) != Some(seed) {
-                    return Err(Error::Conflict("existing child seed differs from published fork".into()));
+                    return Err(Error::Conflict(
+                        "existing child seed differs from published fork".into(),
+                    ));
                 }
                 false
             }
@@ -760,7 +773,7 @@ impl PersistentLocalSwarm {
             harness,
             declared_suffix,
         )
-            .await
+        .await
     }
 
     async fn preadmit_published_child(
@@ -791,7 +804,9 @@ impl PersistentLocalSwarm {
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         let parent = self.session(request.parent).await?;
         if parent.depth >= self.config.maximum_depth {
-            return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+            return Err(Error::Unauthorized(
+                "local swarm depth limit exceeded".into(),
+            ));
         }
         let child_count = self
             .records
@@ -801,7 +816,9 @@ impl PersistentLocalSwarm {
             .filter(|session| session.parent == Some(request.parent) && session.task != child)
             .count();
         if child_count >= self.config.maximum_children {
-            return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+            return Err(Error::Unauthorized(
+                "local swarm child limit exceeded".into(),
+            ));
         }
         if let Some(existing) = self.records.lock().await.get(&child).cloned() {
             if self.requests.lock().await.get(&child) != Some(request)
@@ -813,7 +830,9 @@ impl PersistentLocalSwarm {
                 ));
             }
             if existing.phase == LocalSessionPhase::Completed {
-                return Err(Error::Conflict("child operation is already complete".into()));
+                return Err(Error::Conflict(
+                    "child operation is already complete".into(),
+                ));
             }
             if self.publications.lock().await.get(&child) != Some(&publication)
                 || self.declarations.lock().await.get(&child) != Some(&declaration)
@@ -913,7 +932,7 @@ impl PersistentLocalSwarm {
             .is_some_and(|authority| authority != &report.request.child)
             || request
                 .child_agent
-                .is_some_and(|agent| *agent != report.request.child_agent)
+                .is_some_and(|agent| agent != report.request.child_agent)
         {
             return Err(Error::Conflict(
                 "fork report child authority or agent differs from request".into(),
@@ -978,12 +997,7 @@ impl PersistentLocalSwarm {
         });
         let bundle = match harness
             .storage()
-            .inherited_builder(
-                boundary,
-                suffix,
-                self.provider.clone(),
-                self.config.limits,
-            )
+            .inherited_builder(boundary, suffix, self.provider.clone(), self.config.limits)
             .and_then(|builder| {
                 let builder = builder
                     .tools(harness.storage().default_tools(self.config.limits)?)
@@ -999,10 +1013,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        let output = match self
-            .run_child_turn(&harness, &bundle, &request)
-            .await
-        {
+        let output = match self.run_child_turn(&harness, &bundle, &request).await {
             Ok(output) => output,
             Err(error) => {
                 self.mark_failed(child, error.to_string()).await?;
@@ -1180,9 +1191,7 @@ fn fork_seed_digest(seed: &ForkSeed) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(seed)
 }
 
-async fn load_records(
-    stream: &acyclic_stream::Stream<LocalStream>,
-) -> Result<Vec<StoredRecord>> {
+async fn load_records(stream: &acyclic_stream::Stream<LocalStream>) -> Result<Vec<StoredRecord>> {
     let tail = match stream.tail().await {
         Ok(tail) => tail,
         Err(StreamError::NotFound) => 0,
@@ -1192,7 +1201,11 @@ async fn load_records(
         return Ok(Vec::new());
     }
     let mut records = stream
-        .read(0, u32::try_from(tail).map_err(|_| Error::Storage("swarm registry is too large".into()))?)
+        .read(
+            0,
+            u32::try_from(tail)
+                .map_err(|_| Error::Storage("swarm registry is too large".into()))?,
+        )
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut decoded = Vec::new();
@@ -1201,7 +1214,9 @@ async fn load_records(
         let value: StoredRecord = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if value.version != REGISTRY_VERSION {
-            return Err(Error::Conflict("unsupported local swarm registry version".into()));
+            return Err(Error::Conflict(
+                "unsupported local swarm registry version".into(),
+            ));
         }
         decoded.push(value);
     }
@@ -1276,7 +1291,7 @@ fn apply_record(
                     task: child,
                     parent: Some(parent),
                     depth: parent_session.depth + 1,
-                    task_description: task,
+                    task_description: task.clone(),
                     operation: Some(child_operation),
                     phase: LocalSessionPhase::Activating,
                 },
@@ -1339,9 +1354,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        model::{ModelAttempt, ModelEvent, ModelRequest},
-    };
+    use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
     use serde_json::{Value, json};
     use std::sync::{
@@ -1432,13 +1445,9 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
-        let swarm = PersistentLocalSwarm::open_with_model(
-            root.path(),
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await?;
+        let swarm =
+            PersistentLocalSwarm::open_with_model(root.path(), model, provider, Limits::default())
+                .await?;
         let error = swarm
             .fork(LocalForkRequest {
                 parent: swarm.root_task().await?,

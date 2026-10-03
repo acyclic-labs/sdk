@@ -349,6 +349,7 @@ struct WasmModelRequestWire {
     model: WasmModelWire,
     messages: Vec<WasmModelMessageWire>,
     tools: Vec<WasmModelToolDefinitionWire>,
+    #[tsify(type = "number | null")]
     max_output_tokens: Option<u32>,
 }
 

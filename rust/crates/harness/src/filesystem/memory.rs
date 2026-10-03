@@ -84,6 +84,7 @@ pub type MemoryHarnessStorage =
 pub struct HarnessStorage<P, A, O> {
     journal: Arc<FilesystemExecutionJournal<P, A, O>>,
     content_verifier: Arc<FilesystemContentVerifier<A, O>>,
+    fork_verifier: Option<Arc<crate::fork::CompositeForkVerifier>>,
     publisher: Arc<FilesystemContentPublisher<A, O>>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
@@ -910,6 +911,7 @@ where
         Ok(Self {
             journal,
             content_verifier: input,
+            fork_verifier: None,
             publisher,
             host,
             volume,
@@ -924,6 +926,13 @@ where
             maximum_file_bytes,
             memory_store,
         })
+    }
+
+    /// Binds the authoritative fork verifier without granting additional resources.
+    #[must_use]
+    pub fn with_fork_verifier(mut self, verifier: Arc<crate::fork::CompositeForkVerifier>) -> Self {
+        self.fork_verifier = Some(verifier);
+        self
     }
 
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.
@@ -1142,7 +1151,7 @@ where
     }
 
     async fn open_conversation(&self, limits: Limits) -> Result<StreamAggregate<P>> {
-        StreamAggregate::open(
+        let mut aggregate = StreamAggregate::open(
             &self.stream,
             self.conversation.clone(),
             self.issuer.verifier(),
@@ -1150,7 +1159,11 @@ where
         )
         .await?
         .with_content_verifier(self.content_verifier.clone())
-        .with_limits(limits)
+        .with_limits(limits)?;
+        if let Some(verifier) = &self.fork_verifier {
+            aggregate = aggregate.with_fork_verifier(verifier.clone());
+        }
+        Ok(aggregate)
     }
 
     async fn append_conversation(

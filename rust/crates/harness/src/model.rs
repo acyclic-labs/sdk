@@ -7,6 +7,7 @@ use serde_json::Value;
 
 /// Immutable provider-owned model selection; there is no global catalog.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Model {
     /// Provider selected by application code.
     pub provider: String,
@@ -46,6 +47,7 @@ impl Model {
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelMessage {
     /// Semantic role (`system`, `user`, `assistant`, or `tool`).
     pub role: ModelRole,
@@ -258,6 +260,7 @@ pub enum FileProjectionPolicy {
 
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRequest {
     /// Selected model value.
     pub model: Model,
@@ -346,4 +349,61 @@ pub trait ModelProvider: Send + Sync {
         &'a self,
         attempt: ModelAttempt,
     ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>>;
+}
+
+#[cfg(test)]
+mod wire_contract_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn request() -> serde_json::Value {
+        json!({
+            "model": {"provider": "mock", "name": "local", "revision": "1", "options": {}},
+            "messages": [{"role": "user", "content": "exact input"}],
+            "tools": [],
+            "max_output_tokens": null
+        })
+    }
+
+    #[test]
+    fn model_request_rejects_discarded_transport_and_nested_fields() {
+        let original = request();
+        assert!(serde_json::from_value::<ModelRequest>(original.clone()).is_ok());
+        for layer in ["request", "model", "message", "part"] {
+            let mut altered = original.clone();
+            match layer {
+                "request" => altered["transport_metadata"] = json!({"secret": "hidden"}),
+                "model" => altered["model"]["transport_metadata"] = json!("hidden"),
+                "message" => altered["messages"][0]["ui_state"] = json!("hidden"),
+                "part" => {
+                    altered["messages"][0]["content"] =
+                        json!({"kind": "text", "text": "exact input", "ui_state": "hidden"})
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                serde_json::from_value::<ModelRequest>(altered).is_err(),
+                "{layer}"
+            );
+        }
+    }
+
+    #[test]
+    fn omitted_and_null_token_bounds_have_identical_canonical_bytes() -> Result<()> {
+        let explicit: ModelRequest =
+            serde_json::from_value(request()).map_err(|error| Error::Invalid(error.to_string()))?;
+        let mut omitted = request();
+        omitted
+            .as_object_mut()
+            .expect("request object")
+            .remove("max_output_tokens");
+        let omitted: ModelRequest =
+            serde_json::from_value(omitted).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(explicit, omitted);
+        assert_eq!(
+            crate::contract::canonical_json_bytes(&explicit)?,
+            crate::contract::canonical_json_bytes(&omitted)?
+        );
+        Ok(())
+    }
 }

@@ -8,15 +8,15 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer},
     effects::EffectRegistry,
     executor::TurnOutput,
-    host_execution::{
-        ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey, ExecutionReceiptRecord,
-        ExecutionApprovalVerifier, ExecutionReceiptStore, NativeExecutionProvider,
-    },
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
+    host_execution::{
+        ExecutionApprovalVerifier, ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey,
+        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
+    },
     model::{Model, ModelProvider},
-    tool::ToolRegistry,
     resources::ProviderRef,
     store::StreamAggregate,
+    tool::ToolRegistry,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{
@@ -57,7 +57,11 @@ pub struct FilesystemExecutionReceiptStore<A, O> {
     maximum_bytes: u64,
 }
 
-impl<A, O> FilesystemExecutionReceiptStore<A, O> {
+impl<A, O> FilesystemExecutionReceiptStore<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     /// Binds one local stream and owner-authorized private volume.
     pub fn new(
         stream: StreamClient<LocalStream>,
@@ -83,7 +87,7 @@ impl<A, O> FilesystemExecutionReceiptStore<A, O> {
             host,
             volume,
             write,
-            maximum_bytes: maximum_bytes.min(EXECUTION_RECEIP_MAX_BYTES),
+            maximum_bytes: maximum_bytes.min(EXECUTION_RECEIPT_MAX_BYTES),
         })
     }
 
@@ -432,7 +436,9 @@ impl LocalHarnessTools {
                 .tools
                 .get_version(&definition.name, &definition.revision)
                 .cloned()
-                .ok_or_else(|| Error::Storage("local tool registry lost selected revision".into()))?;
+                .ok_or_else(|| {
+                    Error::Storage("local tool registry lost selected revision".into())
+                })?;
             builder = builder.tool(tool)?;
             builder = builder.grant(format!("tool:call:{}", definition.name));
         }
@@ -713,7 +719,8 @@ impl PersistentLocalHarness {
     /// callers cannot redirect it to a model-visible workspace path.
     pub fn execution_receipt_store(
         &self,
-    ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>> {
+    ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>>
+    {
         let (host, stream, write, maximum_bytes) = self.storage.execution_binding();
         Ok(Arc::new(FilesystemExecutionReceiptStore::new(
             stream,
@@ -730,11 +737,13 @@ impl PersistentLocalHarness {
         &self,
         approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<Arc<NativeExecutionProvider>> {
-        Ok(Arc::new(NativeExecutionProvider::native_with_receipt_store(
-            self.storage.content_verifier(),
-            self.execution_receipt_store()?,
-            approval_verifier,
-        )?))
+        Ok(Arc::new(
+            NativeExecutionProvider::native_with_receipt_store(
+                self.storage.content_verifier(),
+                self.execution_receipt_store()?,
+                approval_verifier,
+            )?,
+        ))
     }
 
     /// Creates the explicit effect registry used by the local host.
@@ -742,8 +751,8 @@ impl PersistentLocalHarness {
         &self,
         approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<EffectRegistry> {
-        let mut registry = EffectRegistry::default()
-            .with_result_resolver(self.storage.content_verifier());
+        let mut registry =
+            EffectRegistry::default().with_result_resolver(self.storage.content_verifier());
         registry.register(self.native_execution_provider(approval_verifier)?)?;
         Ok(registry)
     }
@@ -767,7 +776,7 @@ fn local_fork_verifier(
 mod tests {
     use super::*;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
-    use crate::{EffectAttemptId, EffectGuarantee, EffectId};
+    use crate::{EffectAttemptId, EffectId, core::EffectGuarantee};
     use futures::{future::BoxFuture, stream::BoxStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Mock(AtomicUsize);
@@ -939,7 +948,14 @@ mod tests {
             assert_eq!(record.result, first);
             assert_eq!(record.receipt, receipt);
             assert_eq!(store.load_attempt(key.attempt_id).await?, Some(record));
-            assert!(session.storage().content_verifier().read(&first).await.is_err());
+            assert!(
+                session
+                    .storage()
+                    .content_verifier()
+                    .read(&first)
+                    .await
+                    .is_err()
+            );
         }
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
