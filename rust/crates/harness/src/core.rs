@@ -1579,22 +1579,27 @@ impl Reducer {
             attached_agents,
             model_boundary,
         )?;
-        let parent_agent = self
-            .conversation
-            .agent
-            .ok_or_else(|| Error::Invalid("fork parent conversation agent is missing".into()))?;
         if model_boundary.inherited_parent_revision > self.revision {
             return Err(Error::Invalid(
                 "model boundary inherited prefix revision is newer than parent".into(),
             ));
         }
+        // The inherited revision is an immutable capture point. Selecting
+        // the first N messages from today's projection would let a caller
+        // relabel a later conversation as an earlier fork boundary. Replay
+        // the retained event prefix once and validate the digest against that
+        // authoritative historical conversation.
+        let historical = self.conversation_at_revision(model_boundary.inherited_parent_revision)?;
+        let historical_agent = historical
+            .agent
+            .ok_or_else(|| Error::Invalid("historical parent conversation agent is missing".into()))?;
         let prefix = InheritedConversationPrefix::select(
             self.authority.clone(),
             model_boundary.inherited_parent_revision,
-            parent_agent,
+            historical_agent,
             model_boundary.inherited_through_sequence,
             attached_agents,
-            &self.conversation.messages,
+            &historical.messages,
         )?;
         if crate::contract::canonical_json_digest(&prefix)?
             != model_boundary.inherited_prefix_digest
@@ -1604,6 +1609,31 @@ impl Reducer {
             ));
         }
         Ok(())
+    }
+
+    fn conversation_at_revision(&self, revision: u64) -> Result<ConversationState> {
+        if revision > self.revision {
+            return Err(Error::Invalid(
+                "historical conversation revision is newer than parent".into(),
+            ));
+        }
+        if revision == self.revision {
+            return Ok(self.conversation.clone());
+        }
+        let mut historical = Self::new(
+            self.authority.clone(),
+            self.authority_verifier.clone(),
+            self.schemas.clone(),
+        );
+        for event in self.events.iter().take_while(|event| event.revision <= revision) {
+            historical.apply_committed(event.clone())?;
+        }
+        if historical.revision != revision {
+            return Err(Error::Conflict(
+                "historical parent revision is not present in retained events".into(),
+            ));
+        }
+        Ok(historical.conversation)
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.

@@ -1760,7 +1760,8 @@ pub struct LocalForkOutcome {
     pub output: TurnOutput,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StoredCompletionRef {
     operation: OperationId,
     file: FileRef,
@@ -1803,6 +1804,11 @@ struct StoredSession {
     task_description: String,
     operation: Option<OperationId>,
     phase: StoredPhase,
+    /// Replayable output for a completed root session. Child completions use
+    /// the dedicated ForkCompleted event, while root sessions are terminal
+    /// Session records and therefore carry their artifact reference here.
+    #[serde(default)]
+    completion: Option<StoredCompletionRef>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1961,6 +1967,22 @@ impl From<LocalSwarmSession> for StoredSession {
             task_description: value.task_description,
             operation: value.operation,
             phase: value.phase.into(),
+            completion: None,
+        }
+    }
+}
+
+impl StoredSession {
+    fn completed(value: &LocalSwarmSession, completion: StoredCompletionRef) -> Self {
+        Self {
+            version: REGISTRY_VERSION,
+            task: value.task,
+            parent: value.parent,
+            depth: value.depth,
+            task_description: value.task_description.clone(),
+            operation: value.operation,
+            phase: value.phase.clone().into(),
+            completion: Some(completion),
         }
     }
 }
@@ -2410,11 +2432,16 @@ impl PersistentLocalSwarm {
     /// Lists canonical session descriptors without starting workers or
     /// reading child filesystem content.
     pub async fn sessions(&self) -> Vec<LocalSwarmSession> {
+        // A sibling handle may have appended an admission or terminal record
+        // since this process last observed the registry. Keep this legacy
+        // infallible listing API live while making its projection durable.
+        let _ = self.refresh_registry_state().await;
         self.records.lock().await.values().cloned().collect()
     }
 
     /// Reads one descriptor without opening its local journal or filesystem.
     pub async fn session(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        self.refresh_registry_state().await?;
         self.records
             .lock()
             .await
@@ -2798,17 +2825,16 @@ impl PersistentLocalSwarm {
         let output: TurnOutput = serde_json::from_slice(&bytes).map_err(|error| {
             Error::Storage(format!("invalid child completion artifact: {error}"))
         })?;
-        if reference.operation
-            != self
-                .requests
-                .lock()
-                .await
-                .get(&task)
-                .map(|request| request.child_operation)
-                .ok_or_else(|| Error::NotFound(format!("local swarm request {task}")))?
-        {
+        let expected_operation = if let Some(request) = self.requests.lock().await.get(&task) {
+            request.child_operation
+        } else {
+            self.session(task).await?.operation.ok_or_else(|| {
+                Error::NotFound(format!("local swarm operation {task}"))
+            })?
+        };
+        if reference.operation != expected_operation {
             return Err(Error::Conflict(
-                "durable child completion artifact operation changed".into(),
+                "durable completion artifact operation changed".into(),
             ));
         }
         self.outcomes.lock().await.insert(task, output.clone());
@@ -2894,6 +2920,30 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
+        // Opening a harness can cross a process boundary. Reconcile the
+        // durable terminal fence once more immediately before model
+        // admission so a cancellation committed after reservation cannot
+        // fall through from this handle's stale session snapshot.
+        self.refresh_registry_state().await?;
+        let admitted = self.session(task).await?;
+        if admitted.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "cancelled local swarm task cannot dispatch a model turn".into(),
+            ));
+        }
+        if admitted.phase == LocalSessionPhase::Completed {
+            if admitted.operation != Some(operation) {
+                return Err(Error::Conflict(
+                    "local swarm task already completed under another operation".into(),
+                ));
+            }
+            return self.outcome(task).await;
+        }
+        if admitted.operation != Some(operation) {
+            return Err(Error::Conflict(
+                "local swarm task lost its durable operation reservation".into(),
+            ));
+        }
         let output = harness
             .run_with_max_steps(operation, prompt, max_steps)
             .await?;
@@ -2902,7 +2952,8 @@ impl PersistentLocalSwarm {
         // registry must be refreshed before the terminal Session event is
         // appended.  `complete_session` also makes same-operation recovery
         // idempotent while rejecting a different operation key.
-        self.complete_session(task, operation).await?;
+        self.complete_session(task, operation, &harness, &output).await?;
+        self.outcomes.lock().await.insert(task, output.clone());
         Ok(output)
     }
 
@@ -3916,20 +3967,113 @@ impl PersistentLocalSwarm {
             .await
     }
 
-    /// Reopens a child lazily after recovery. No child is dispatched merely
-    /// because it has an activating registry record.
+    /// Reopens a child after recovery. An activating record is reconstructed
+    /// from its durable request, seed, report, publication, and declaration;
+    /// only that exact owner binding may resume its pending turn.
     pub async fn resume(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        self.refresh_registry_state().await?;
         let session = self.session(task).await?;
         if session.phase == LocalSessionPhase::Activating {
-            return Err(Error::Conflict(
-                "activation requires an explicit retry with its original fork request".into(),
-            ));
+            let request = self
+                .requests
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Conflict(
+                        "activating child has no durable fork request to resume".into(),
+                    )
+                })?;
+            let seed = self
+                .seeds
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| Error::Conflict("activating child has no durable fork seed".into()))?;
+            let report = self
+                .reports
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Conflict("activating child has no durable fork report".into())
+                })?;
+            let publication = self
+                .publications
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Conflict("activating child has no durable model publication".into())
+                })?;
+            let declaration = self
+                .declarations
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| {
+                    Error::Conflict("activating child has no durable recursive declaration".into())
+                })?;
+            let plans = self.bindings.model_fork_plans.as_ref().ok_or_else(|| {
+                Error::Conflict("activating child cannot reconstruct its owner issuer".into())
+            })?;
+            let resolver = plans.resolver.clone().ok_or_else(|| {
+                Error::Conflict("activating child has no durable fork resolver".into())
+            })?;
+            let fork_operation = request.fork_operation.ok_or_else(|| {
+                Error::Conflict("activating child request has no fork operation".into())
+            })?;
+            let intent = LocalForkIntent {
+                parent: request.parent,
+                parent_operation: request.parent_operation,
+                parent_step: request.parent_step,
+                publication_operation: Some(publication.operation_id),
+                fork_operation,
+                child_operation: request.child_operation,
+                call_id: None,
+                task: request.task.clone(),
+                prompt: request.prompt.clone(),
+            };
+            let plan = resolver.resolve(intent, publication.clone()).await?;
+            plan.validate()?;
+            if plan.publication_operation != publication.operation_id
+                || plan.request != request
+                || plan.report != report
+                || plan.declaration != declaration
+                || plan.report.clone().into_seed()? != seed
+            {
+                return Err(Error::Conflict(
+                    "durable activating child reconstruction changed its fork binding".into(),
+                ));
+            }
+            let parent = self.open_session(request.parent).await?;
+            let parent_aggregate = parent
+                .storage()
+                .conversation_aggregate(self.config.limits)
+                .await?;
+            let _ = self
+                .activate_published_child(
+                    request,
+                    plan.host,
+                    plan.stream,
+                    plan.issuer,
+                    &parent_aggregate,
+                    &seed,
+                )
+                .await?;
+            return self.session(task).await;
         }
         let _ = self.open_session(task).await?;
-        Ok(session)
+        self.session(task).await
     }
 
     async fn open_session(&self, task: TaskId) -> Result<Arc<PersistentLocalHarness>> {
+        self.refresh_registry_state().await?;
         if let Some(existing) = self.sessions.lock().await.get(&task).cloned() {
             return Ok(existing);
         }
@@ -4038,8 +4182,14 @@ impl PersistentLocalSwarm {
     /// fresh replay is required immediately before the append.  A retry of
     /// the same operation is an acknowledgement of the already committed
     /// terminal state; a different operation or a cancellation is a conflict.
-    async fn complete_session(&self, task: TaskId, operation: OperationId) -> Result<()> {
-        let observed_tail = self.refresh_registry_state_with_tail().await?;
+    async fn complete_session(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        harness: &PersistentLocalHarness,
+        output: &TurnOutput,
+    ) -> Result<()> {
+        self.refresh_registry_state().await?;
         let current = self.session(task).await?;
         if current.phase == LocalSessionPhase::Cancelled {
             return Err(Error::Conflict(
@@ -4047,11 +4197,16 @@ impl PersistentLocalSwarm {
             ));
         }
         if current.phase == LocalSessionPhase::Completed {
-            return if current.operation == Some(operation) {
+            if current.operation != Some(operation) {
+                return Err(Error::Conflict(
+                    "local swarm task already completed under another operation".into(),
+                ));
+            }
+            return if self.outcome(task).await? == *output {
                 Ok(())
             } else {
                 Err(Error::Conflict(
-                    "local swarm task already completed under another operation".into(),
+                    "local swarm task completed with a different output".into(),
                 ))
             };
         }
@@ -4062,14 +4217,74 @@ impl PersistentLocalSwarm {
                 "local swarm task is bound to another operation".into(),
             ));
         }
+        let output_bytes = crate::contract::canonical_json_bytes(output)?;
+        let output_digest = crate::contract::canonical_json_digest(&output_bytes)?;
+        let output_file = harness
+            .storage()
+            .stage(
+                operation,
+                &format!("system/swarm/completions/{task}.json"),
+                &output_bytes,
+                "application/json",
+                "root-completion.json",
+            )
+            .await?;
+        let completion = StoredCompletionRef {
+            operation,
+            file: output_file,
+            digest: output_digest,
+        };
+        // Staging the artifact may itself cross a process boundary. Reload
+        // the session after staging and use that exact registry tail for the
+        // terminal Session CAS, so cancellation remains authoritative.
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let current = self.session(task).await?;
+        if current.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "local swarm task was cancelled before completion acknowledgement".into(),
+            ));
+        }
+        if current.phase == LocalSessionPhase::Completed {
+            if current.operation != Some(operation) {
+                return Err(Error::Conflict(
+                    "local swarm task already completed under another operation".into(),
+                ));
+            }
+            return if self.outcome(task).await? == *output {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "local swarm task completed with a different output".into(),
+                ))
+            };
+        }
+        if current.operation != Some(operation) {
+            return Err(Error::Conflict(
+                "local swarm task lost its durable operation reservation".into(),
+            ));
+        }
+        let next = LocalSwarmSession {
+            operation: Some(operation),
+            phase: LocalSessionPhase::Completed,
+            ..current.clone()
+        };
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
         match self
-            .update_session_at(observed_tail, task, |session| {
-                session.operation = Some(operation);
-                session.phase = LocalSessionPhase::Completed;
-            })
+            .append_session_completion_at(&stream, observed_tail, &next, completion.clone())
             .await
         {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                let mut records = self.records.lock().await;
+                let current = records
+                    .get_mut(&task)
+                    .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))?;
+                *current = next;
+                self.completion_refs.lock().await.insert(task, completion);
+                Ok(())
+            }
             Err(error) => {
                 // Another handle may have won the append between the refresh
                 // and our CAS.  Reconcile once and only accept an identical
@@ -4079,12 +4294,33 @@ impl PersistentLocalSwarm {
                 if latest.phase == LocalSessionPhase::Completed
                     && latest.operation == Some(operation)
                 {
-                    Ok(())
+                    if self.outcome(task).await? == *output {
+                        Ok(())
+                    } else {
+                        Err(Error::Conflict(
+                            "local swarm task completed with a different output".into(),
+                        ))
+                    }
                 } else {
                     Err(error)
                 }
             }
         }
+    }
+
+    async fn append_session_completion_at(
+        &self,
+        stream: &acyclic_stream::Stream<LocalStream>,
+        observed_tail: u64,
+        session: &LocalSwarmSession,
+        completion: StoredCompletionRef,
+    ) -> Result<()> {
+        append_record_at(
+            stream,
+            StoredEvent::Session(StoredSession::completed(session, completion)),
+            observed_tail,
+        )
+        .await
     }
 
     async fn task_gate(&self, task: TaskId) -> Arc<Mutex<()>> {
@@ -4307,6 +4543,7 @@ fn apply_record(
             if session.version != REGISTRY_VERSION {
                 return Err(Error::Conflict("unsupported local session version".into()));
             }
+            let completion = session.completion.clone();
             let next: LocalSwarmSession = session.into();
             if let Some(existing) = sessions.get(&next.task) {
                 if existing.operation.is_some() && existing.operation != next.operation {
@@ -4334,6 +4571,24 @@ fn apply_record(
                     }
                     _ => {}
                 }
+            }
+            if let Some(reference) = completion {
+                if next.phase != LocalSessionPhase::Completed
+                    || next.operation != Some(reference.operation)
+                {
+                    return Err(Error::Conflict(
+                        "persisted session completion is not bound to its terminal operation"
+                            .into(),
+                    ));
+                }
+                if let Some(existing) = completion_refs.get(&next.task)
+                    && existing != &reference
+                {
+                    return Err(Error::Conflict(
+                        "persisted session completion reference changed".into(),
+                    ));
+                }
+                completion_refs.insert(next.task, reference);
             }
             sessions.insert(next.task, next);
         }
