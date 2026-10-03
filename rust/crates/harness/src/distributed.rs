@@ -32,7 +32,12 @@ use std::{
 
 const COORDINATOR_PATH: &str = "harness/v2/coordinator/events";
 const COORDINATOR_WIRE_VERSION: &str = "2";
-const COORDINATOR_WIRE_CONTRACT: &[u8] = b"acyclic.harness.coordinator.scheduler-event-envelope.v2";
+// Keep the stream path and wire version stable while fencing records written
+// before receipt-backed swarm usage became mandatory.  The descriptor is
+// validated before decoding or projecting any event, so an old tail fails
+// closed instead of entering the new reducer with a weaker contract.
+const COORDINATOR_WIRE_CONTRACT: &[u8] =
+    b"acyclic.harness.coordinator.scheduler-event-envelope.v2.receipt-schema";
 const READ_PAGE_SIZE: u32 = 1_024;
 fn validate_child_page_request(
     parent: OperationId,

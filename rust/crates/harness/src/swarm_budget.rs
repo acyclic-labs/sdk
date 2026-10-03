@@ -712,6 +712,10 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Immutable session budget.
         limits: SwarmBudgetLimits,
+        /// Canonical provider lease for root usage receipts, when the host
+        /// opened the session with an active root scheduler reservation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        root_dispatch_id: Option<IdempotencyKey>,
     },
     /// Persists an admission before a fork is dispatched.
     ChildReserved {
@@ -840,6 +844,13 @@ impl SwarmDispatchToken {
         self.resources
     }
 
+    /// Creates the provider-side guard from the exact admitted ceiling.  A
+    /// dispatcher should hold this guard for the whole model invocation and
+    /// call it before each step, output write, and elapsed-time slice.
+    pub fn usage_limiter(&self) -> Result<SwarmUsageLimiter> {
+        SwarmUsageLimiter::new(self.resources)
+    }
+
     /// Returns the owner fence bound to this dispatch authorization.
     #[must_use]
     pub const fn owner(&self) -> &SwarmOwnerFence {
@@ -884,11 +895,27 @@ impl SwarmBudget {
         owner: SwarmOwnerFence,
         limits: SwarmBudgetLimits,
     ) -> Result<Self> {
+        Self::new_with_root_dispatch(session_id, owner, limits, None)
+    }
+
+    /// Opens a session and binds root usage to the host-issued scheduler
+    /// lease.  Durable providers should use this constructor whenever root
+    /// work has a real lease; the compatibility constructor above leaves the
+    /// in-memory, receipt-free projection usable for scheduler setup.
+    pub fn new_with_root_dispatch(
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+        root_dispatch_id: Option<IdempotencyKey>,
+    ) -> Result<Self> {
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid("swarm session identity is empty".into()));
         }
         owner.validate()?;
         limits.validate()?;
+        if let Some(dispatch_id) = &root_dispatch_id {
+            IdempotencyKey::new(dispatch_id.0.clone())?;
+        }
         let usage = SwarmBudgetUsage {
             active_agents: 1,
             total_agents: 1,
@@ -906,7 +933,7 @@ impl SwarmBudget {
                 usage,
                 root_usage: SwarmUsage::default(),
                 root_usage_sequence: 0,
-                root_dispatch_id: None,
+                root_dispatch_id,
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -924,9 +951,15 @@ impl SwarmBudget {
                         session_id,
                         owner,
                         limits,
+                        root_dispatch_id,
                     },
                 ) => {
-                    projection = Some(Self::new(*session_id, owner.clone(), *limits)?);
+                    projection = Some(Self::new_with_root_dispatch(
+                        *session_id,
+                        owner.clone(),
+                        *limits,
+                        root_dispatch_id.clone(),
+                    )?);
                 }
                 (None, _) => {
                     return Err(Error::Conflict("swarm events start without session".into()));
@@ -965,6 +998,11 @@ impl SwarmBudget {
     /// Returns the current owner fence.
     pub fn owner(&self) -> Result<SwarmOwnerFence> {
         Ok(self.lock()?.owner.clone())
+    }
+
+    /// Returns the canonical provider lease bound to root usage receipts.
+    pub fn root_dispatch_id(&self) -> Result<Option<IdempotencyKey>> {
+        Ok(self.lock()?.root_dispatch_id.clone())
     }
 
     /// Atomically admits one child. Persist the corresponding
@@ -1485,6 +1523,109 @@ fn reservation_subtree_usage(
     Ok(total)
 }
 
+fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
+    SwarmUsage {
+        model_steps: reservation.resources.model_steps,
+        output_bytes: reservation.resources.output_bytes,
+        execution_time_ms: reservation.resources.execution_time_ms,
+    }
+}
+
+/// Returns the commitment held by an operation's direct descendants.  A live
+/// descendant retains its full admitted ceiling until it completes or is
+/// cancelled; a terminal descendant contributes only measured usage.  This is
+/// the same distinction used by sibling admission and prevents a parent from
+/// spending capacity that is already held by a descendant provider.
+fn direct_descendant_commitment(
+    state: &SwarmBudgetState,
+    operation_id: OperationId,
+    replacing: OperationId,
+    replacement_usage: SwarmUsage,
+    replacement_complete: bool,
+) -> Result<SwarmUsage> {
+    state
+        .reservations
+        .values()
+        .filter(|child| child.parent_operation_id == Some(operation_id))
+        .try_fold(SwarmUsage::default(), |total, child| {
+            let commitment = if child.operation_id == replacing {
+                if replacement_complete {
+                    let mut measured = replacement_usage;
+                    for descendant in state.reservations.values().filter(|descendant| {
+                        descendant.parent_operation_id == Some(child.operation_id)
+                    }) {
+                        measured = add_usage(
+                            measured,
+                            reservation_subtree_usage(state, descendant.operation_id)?,
+                        )?;
+                    }
+                    measured
+                } else {
+                    reservation_resources(child)
+                }
+            } else if matches!(
+                child.state,
+                SwarmReservationState::Reserved | SwarmReservationState::Active
+            ) {
+                reservation_resources(child)
+            } else {
+                reservation_subtree_usage(state, child.operation_id)?
+            };
+            add_usage(total, commitment)
+        })
+}
+
+/// Checks the operation's own ceiling and every ancestor ceiling before a
+/// cumulative usage transition mutates the projection.  Session-wide limits
+/// alone are insufficient: a parent can otherwise consume its full ceiling
+/// after already reserving the same capacity for a grandchild.
+fn validate_ancestor_ceilings(
+    state: &SwarmBudgetState,
+    reservation: &SwarmForkReservation,
+    usage: SwarmUsage,
+    complete: bool,
+) -> Result<()> {
+    let own_descendants = direct_descendant_commitment(
+        state,
+        reservation.operation_id,
+        reservation.operation_id,
+        usage,
+        complete,
+    )?;
+    let own_total = add_usage(usage, own_descendants)?;
+    if own_total.model_steps > reservation.resources.model_steps
+        || own_total.output_bytes > reservation.resources.output_bytes
+        || own_total.execution_time_ms > reservation.resources.execution_time_ms
+    {
+        return Err(Error::Conflict(
+            "swarm usage exceeds its remaining descendant resource budget".into(),
+        ));
+    }
+
+    let mut child_id = reservation.operation_id;
+    let mut parent_id = reservation.parent_operation_id;
+    while let Some(parent_operation_id) = parent_id {
+        let parent = state
+            .reservations
+            .get(&parent_operation_id)
+            .ok_or_else(|| Error::Storage("swarm ancestor reservation is missing".into()))?;
+        let descendants =
+            direct_descendant_commitment(state, parent_operation_id, child_id, usage, complete)?;
+        let total = add_usage(parent.usage, descendants)?;
+        if total.model_steps > parent.resources.model_steps
+            || total.output_bytes > parent.resources.output_bytes
+            || total.execution_time_ms > parent.resources.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "swarm usage exceeds an ancestor resource budget".into(),
+            ));
+        }
+        child_id = parent_operation_id;
+        parent_id = parent.parent_operation_id;
+    }
+    Ok(())
+}
+
 fn reserve_resources(
     usage: &mut SwarmBudgetUsage,
     request: SwarmResourceRequest,
@@ -1514,27 +1655,27 @@ fn reserve_resources(
             request.execution_time_ms,
         ),
     ];
-    let values = [
-        next(
-            values[0].0,
-            values[0].1,
-            values[0].2,
-            limits.max_model_steps,
-        ),
-        next(
-            values[1].0,
-            values[1].1,
-            values[1].2,
-            limits.max_output_bytes,
-        ),
-        next(
-            values[2].0,
-            values[2].1,
-            values[2].2,
-            limits.max_execution_time_ms,
-        ),
-    ];
-    let _ = values;
+    // Evaluate each dimension as a fallible operation.  Keeping these as an
+    // array of `Result`s would only construct the errors and then discard
+    // them, allowing a request that exceeds one dimension to be admitted.
+    next(
+        values[0].0,
+        values[0].1,
+        values[0].2,
+        limits.max_model_steps,
+    )?;
+    next(
+        values[1].0,
+        values[1].1,
+        values[1].2,
+        limits.max_output_bytes,
+    )?;
+    next(
+        values[2].0,
+        values[2].1,
+        values[2].2,
+        limits.max_execution_time_ms,
+    )?;
     usage.reserved.model_steps = usage
         .reserved
         .model_steps
@@ -1632,6 +1773,7 @@ fn update_usage(
             "child usage exceeds its reservation".into(),
         ));
     }
+    validate_ancestor_ceilings(state, &reservation, usage, complete)?;
     state.usage.reserved.model_steps = state
         .usage
         .reserved
@@ -1719,13 +1861,13 @@ fn update_root_usage(
             .root_usage_sequence
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm root usage receipt sequence exhausted".into()))?;
+        let root_dispatch_id = state.root_dispatch_id.as_ref().ok_or_else(|| {
+            Error::Unauthorized("canonical root dispatch lease required".into())
+        })?;
         if receipt.operation_id != state.session_id
             || receipt.usage != usage
             || receipt.sequence != expected_sequence
-            || state
-                .root_dispatch_id
-                .as_ref()
-                .is_some_and(|dispatch_id| dispatch_id != &receipt.dispatch_id)
+            || root_dispatch_id != &receipt.dispatch_id
         {
             return Err(Error::Conflict(
                 "swarm root usage receipt is stale or mismatched".into(),
@@ -1755,9 +1897,6 @@ fn update_root_usage(
     state.usage.consumed = next;
     if let Some(receipt) = receipt {
         state.root_usage_sequence = receipt.sequence;
-        if state.root_dispatch_id.is_none() {
-            state.root_dispatch_id = Some(receipt.dispatch_id.clone());
-        }
     }
     Ok(usage)
 }
@@ -2183,6 +2322,7 @@ mod tests {
                 session_id: session,
                 owner,
                 limits,
+                root_dispatch_id: None,
             },
             SwarmBudgetEvent::ChildReserved {
                 reservation: reservation.clone(),
@@ -2505,6 +2645,7 @@ mod tests {
             session_id: id(9),
             owner: owner(0),
             limits: limits(),
+            root_dispatch_id: None,
         }];
         let restored = SwarmBudget::replay(events)?;
         assert!(
@@ -2526,6 +2667,7 @@ mod tests {
             session_id: id(9),
             owner: owner(0),
             limits: limits(),
+            root_dispatch_id: None,
         };
         let replayed = SwarmBudget::replay([started, receipt.durable_event()])?;
         assert_eq!(replayed.usage()?, budget.usage()?);

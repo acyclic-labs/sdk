@@ -1301,14 +1301,25 @@ impl Scheduler {
                 "swarm child admission requires a running root lease".into(),
             ));
         }
+        let root_dispatch_id = session_operation
+            .reservation
+            .as_ref()
+            .map(|reservation| IdempotencyKey::new(reservation.id.clone()))
+            .transpose()?;
         let budget = if first {
-            SwarmBudget::new(session_id, owner.clone(), limits)?
+            SwarmBudget::new_with_root_dispatch(
+                session_id,
+                owner.clone(),
+                limits,
+                root_dispatch_id.clone(),
+            )?
         } else {
             let budget = SwarmBudget::replay(self.swarm_events.clone())?;
             let (observed_session, observed_owner, observed_limits) = budget.descriptor()?;
             if observed_session != session_id
                 || observed_owner != owner
                 || observed_limits != limits
+                || budget.root_dispatch_id()? != root_dispatch_id
             {
                 return Err(Error::Conflict(
                     "swarm budget descriptor differs from scheduler projection".into(),
@@ -1322,6 +1333,7 @@ impl Scheduler {
                 session_id,
                 owner,
                 limits,
+                root_dispatch_id,
             });
         }
         self.swarm_events.push(receipt.durable_event());
