@@ -1,6 +1,6 @@
 # OpenAPI Generator target qualification
 
-This lane qualifies bounded Rust, PowerShell, Java, Perl, C, and Dart HTTP clients from the Rust-owned
+This lane qualifies bounded Rust, PowerShell, Java, Perl, C, Dart, and Julia HTTP clients from the Rust-owned
 Workers projection at `Q:/sdk/tmp-openapi-integrated2/artifacts/workers.json`.
 Neither client defines a second contract. The pinned OpenAPI Generator release
 is 7.25.0 (`ef964b0`) with the CLI JAR hash recorded in `receipt.json`.
@@ -93,11 +93,21 @@ The generated Rust reqwest package now has a separate semantic receipt lane:
 the compiled consumer passes base64 bytes, the maximum uint64 decimal string,
 and the typed 409 error response against the canonical fixtures.
 
+The Julia target is a Rust-owned Workers adapter emitted by
+`sdk-openapi --julia-adaptation`. The official Julia 1.13.1 Windows portable
+runtime installs the `AcyclicWorkers` 1.0.0 package from its pinned archive
+with only the standard `Base64` and `Downloads` dependencies. The packaged
+consumer passes eight tests against the canonical loopback fixtures: request
+and response bytes, exact maximum `UInt64`, typed HTTP 409 errors, and a
+pre-cancelled token. The package license is Apache-2.0; Julia, stdlib, and
+transitive runtime licenses remain explicitly outside that package claim.
+
 `c-portable-manifest.json` and `dart-portable-manifest.json` record archive
 hashes and file inventories. `c-install-license-manifest.json` and
 `dart-license-manifest.json` record the license evidence for each target.
 
 The runnable consumer snippets are `rust-consumer.rs`,
-`powershell-consumer.ps1`, `JavaConsumer.java`, `perl-consumer.pl`,
-`c-consumer.c`, and `dart-consumer.dart`; they exercise generated packages
-without redeclaring the Workers contract.
+`rust-reqwest-semantic-consumer.rs`, `powershell-consumer.ps1`,
+`JavaConsumer.java`, `perl-consumer.pl`, `c-consumer.c`,
+`dart-consumer.dart`, and `julia-consumer.jl`; they exercise generated
+packages without redeclaring the Workers contract.

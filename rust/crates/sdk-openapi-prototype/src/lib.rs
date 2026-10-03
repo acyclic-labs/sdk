@@ -1138,6 +1138,120 @@ pub fn dart_workers_adaptation_script(contract: &ContractSpec) -> Result<String,
     Ok(DART_WORKERS_ADAPTATION_SCRIPT.to_owned())
 }
 
+const JULIA_WORKERS_ADAPTATION_SOURCE: &str = r#"module AcyclicWorkers
+
+using Base64
+using Downloads
+
+export InvokeDeploymentRequest, InvokeResponse, ApiError, CancellationToken,
+       cancel!, invoke_deployment
+
+struct InvokeDeploymentRequest
+    body::Vector{UInt8}
+end
+
+struct InvokeResponse
+    body::Vector{UInt8}
+    resolved_sha256::Vector{UInt8}
+    resolved_revision::UInt64
+    status::Int
+end
+
+struct ApiError <: Exception
+    status::Int
+    body::String
+end
+
+struct CancellationToken
+    cancelled::Base.RefValue{Bool}
+end
+
+CancellationToken() = CancellationToken(Ref(false))
+cancel!(token::CancellationToken) = (token.cancelled[] = true)
+
+function _json_string(payload::AbstractString, name::AbstractString)
+    match_result = match(Regex("\\\"" * name * "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\""), payload)
+    match_result === nothing && error("missing JSON field: " * name)
+    return match_result.captures[1]
+end
+
+function _invoke_url(base_url::AbstractString, alias::AbstractString)
+    return rstrip(base_url, '/') * "__INVOKE_PATH__" |> url -> replace(url, "{alias}" => alias)
+end
+
+function invoke_deployment(base_url::AbstractString, alias::AbstractString,
+                           request::InvokeDeploymentRequest;
+                           token::CancellationToken=CancellationToken())
+    token.cancelled[] && throw(InterruptException())
+    payload = "{\"body\":\"" * base64encode(request.body) * "\"}"
+    response_output = IOBuffer()
+    response = Downloads.request(
+        _invoke_url(base_url, alias);
+        method="POST",
+        headers=["content-type" => "application/json"],
+        input=IOBuffer(payload),
+        output=response_output,
+        throw=false,
+    )
+    token.cancelled[] && throw(InterruptException())
+    response_body = String(take!(response_output))
+    if response.status >= 400
+        throw(ApiError(response.status, response_body))
+    end
+    return InvokeResponse(
+        base64decode(_json_string(response_body, "body")),
+        base64decode(_json_string(response_body, "resolvedSha256")),
+        parse(UInt64, _json_string(response_body, "resolvedRevision")),
+        response.status,
+    )
+end
+
+Base.showerror(io::IO, error::ApiError) = print(io, "HTTP ", error.status, ": ", error.body)
+
+end
+"#;
+
+/// Render the Rust-owned Julia HTTP package source for the Workers model.
+///
+/// This emits only the target transport/model boundary. The route and field
+/// anchors are checked against `ContractSpec`; no handwritten contract table
+/// or independent shared schema is accepted.
+pub fn julia_workers_adaptation_source(contract: &ContractSpec) -> Result<String, Error> {
+    if contract.package != "acyclic.workers.v1" {
+        return Err(Error::MissingContract(format!(
+            "Julia Workers adapter requires acyclic.workers.v1, got {}",
+            contract.package
+        )));
+    }
+    required_workers_field(
+        contract,
+        "InvokeDeploymentRequest",
+        "body",
+        FieldType::Bytes,
+    )?;
+    required_workers_field(contract, "InvokeResponse", "body", FieldType::Bytes)?;
+    required_workers_field(
+        contract,
+        "InvokeResponse",
+        "resolvedSha256",
+        FieldType::Bytes,
+    )?;
+    required_workers_field(
+        contract,
+        "InvokeResponse",
+        "resolvedRevision",
+        FieldType::Uint64,
+    )?;
+    let route = contract
+        .routes
+        .iter()
+        .find(|route| route.operation_id == "invokeDeployment")
+        .ok_or_else(|| Error::MissingContract("Workers invokeDeployment route".into()))?;
+    let mut source = JULIA_WORKERS_ADAPTATION_SOURCE.to_owned();
+    source = source.replace("__INVOKE_PATH__", route.path);
+    Ok(source)
+}
+
 /// Return whether an existing generated artifact matches the current model.
 /// This is the stale-output guard used by CI and local generation checks.
 pub fn check_json_file(path: impl AsRef<std::path::Path>) -> Result<bool, Error> {
@@ -1276,6 +1390,24 @@ mod tests {
     fn dart_adapter_rejects_a_non_workers_contract_before_emission() {
         let error = dart_workers_adaptation_script(&ACTORS)
             .expect_err("Actors must not receive Workers Dart adaptation");
+        assert!(error.to_string().contains("requires acyclic.workers.v1"));
+    }
+
+    #[test]
+    fn julia_adapter_is_rust_owned_and_anchors_transport_semantics() {
+        let source =
+            julia_workers_adaptation_source(&WORKERS).expect("Workers Julia adapter renders");
+        assert!(source.contains("base64encode"));
+        assert!(source.contains("parse(UInt64"));
+        assert!(source.contains("CancellationToken"));
+        assert!(source.contains("/v1/workers/deployments/{alias}/invoke"));
+        assert!(!source.contains("__INVOKE_PATH__"));
+    }
+
+    #[test]
+    fn julia_adapter_rejects_a_non_workers_contract_before_emission() {
+        let error = julia_workers_adaptation_source(&ACTORS)
+            .expect_err("Actors must not receive Workers Julia adaptation");
         assert!(error.to_string().contains("requires acyclic.workers.v1"));
     }
 

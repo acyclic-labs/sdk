@@ -69,6 +69,27 @@ fn main() -> ExitCode {
         println!("wrote Rust-owned Dart adaptation to {}", path.display());
         return ExitCode::SUCCESS;
     }
+    if first.as_deref() == Some(std::ffi::OsStr::new("--julia-adaptation")) {
+        let Some(path) = args.next().map(PathBuf::from) else {
+            eprintln!("usage: sdk-openapi --julia-adaptation <generated-client.jl>");
+            return ExitCode::FAILURE;
+        };
+        let source = match sdk_openapi_prototype::julia_workers_adaptation_source(
+            &acyclic_sdk_contract_wire::workers::WORKERS,
+        ) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = fs::write(&path, source) {
+            eprintln!("failed writing {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!("wrote Rust-owned Julia adaptation to {}", path.display());
+        return ExitCode::SUCCESS;
+    }
     let check = first.as_deref() == Some(std::ffi::OsStr::new("--check"));
     let family = if check {
         "actors".to_owned()

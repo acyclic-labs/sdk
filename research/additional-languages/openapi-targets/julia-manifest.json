@@ -1,0 +1,57 @@
+{
+  "schema": "acyclic.openapi.julia-target-manifest.v1",
+  "target": "julia",
+  "generator": "Rust-owned sdk-openapi --julia-adaptation",
+  "contract": "acyclic.workers.v1",
+  "source_artifact": {
+    "path": "Q:/sdk/tmp-openapi-extra/julia-acyclic-workers/src/AcyclicWorkers.jl",
+    "sha256": "24d9723fe5be6cbc8c363887843b43199658de0a4b9fc3d818d20abc6cc3a84f",
+    "route_anchor": "/v1/workers/deployments/{alias}/invoke",
+    "fields": [
+      "body:bytes",
+      "resolvedSha256:bytes",
+      "resolvedRevision:uint64"
+    ]
+  },
+  "package": {
+    "name": "AcyclicWorkers",
+    "version": "1.0.0",
+    "archive": "Q:/sdk/tmp-openapi-extra/julia-acyclic-workers-1.0.0.zip",
+    "archive_bytes": 6869,
+    "archive_sha256": "b8771edefb75900701980cc0c925ed37d3919414845206fbec16ae2633d53c1f",
+    "project_toml_sha256": "e2feeee44a7f8670e852236e8aa6784d787eede3cc340d180003c7cd3cd8f9f5",
+    "manifest_toml_sha256": "bd01b176ec32fb32deeb7ebc4cff06febce90606e0324bad9d7408e4d965f4f4",
+    "installation": "pass: official Julia Pkg.instantiate update_registry=false with JULIA_PKG_OFFLINE=true from portable archive",
+    "license": "Apache-2.0",
+    "license_file_sha256": "dd4ab0fb7c00c1c80ce70dea9fe961875ac4bdc0fabeffc6c7c362838d3915b4",
+    "license_scope": "generated AcyclicWorkers package only; Julia, Base64, Downloads, and transitive runtime licenses remain external"
+  },
+  "runtime": {
+    "version": "1.13.1",
+    "channel": "stable",
+    "archive_url": "https://julialang-s3.julialang.org/bin/winnt/x64/1.13/julia-1.13.1-win64.zip",
+    "archive_sha256": "648e39c58158c5c8dde08bb0df0b5bce51d517be1396a37a539bb61bc241c8b4",
+    "archive_bytes": 294376490,
+    "executable_sha256": "d8804b0d175337edbe69db6dba8a71b389335b06ce82382ce6dd614c429675b6",
+    "source": "official Julia manual downloads stable v1.13.1"
+  },
+  "semantic_consumer": {
+    "test_source": "research/additional-languages/openapi-targets/julia-consumer.jl",
+    "test_source_sha256": "372c8fffb41642feb9a8318379eac4fa91d810f9d07b647180037e89f6bc2856",
+    "result": "pass: 8 tests against packaged artifact",
+    "request_bytes": "pass: UInt8[1,2,3] serialized as base64 AQID",
+    "response_bytes": "pass: b2s= decoded to UInt8[0x6f,0x6b] and resolvedSha256 AQID",
+    "uint64": "pass: resolvedRevision preserved exact UInt64 18446744073709551615",
+    "error": "pass: typed ApiError preserved HTTP 409 and canonical conflict body",
+    "cancellation": "pass: pre-cancelled CancellationToken raises InterruptException before transport",
+    "fixture_exits": [
+      0
+    ]
+  },
+  "rust_stage": {
+    "entrypoint": "sdk-openapi --julia-adaptation",
+    "library": "rust/crates/sdk-openapi-prototype/src/lib.rs",
+    "contract_guard": "acyclic.workers.v1",
+    "authority": "Rust ContractSpec and route table; no separately authored shared schema"
+  }
+}

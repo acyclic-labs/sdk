@@ -50,3 +50,15 @@ consumer: it passes base64 bytes, maximum uint64 decimal-string preservation,
 and typed 409 error decoding. The per-target license and archive manifests
 remain recorded in `receipt.json`; they do not make a global Apache claim for
 third-party dependencies.
+
+## Julia
+
+The Rust-owned `sdk-openapi --julia-adaptation` emits the Workers package
+source from the `ContractSpec` route and field anchors. The official Julia
+1.13.1 Windows portable archive is pinned by URL, archive hash, and executable
+hash. The packaged `AcyclicWorkers` 1.0.0 archive installs offline with its
+stdlib-only `Project.toml`/`Manifest.toml` and Apache-2.0 package license.
+Eight packaged tests pass against the loopback fixtures: request and response
+bytes, exact maximum uint64, typed 409 errors, and pre-transport cancellation.
+The target remains an HTTP projection; Julia and all stdlib/transitive runtime
+licenses are tracked outside the generated package’s Apache-2.0 scope.
