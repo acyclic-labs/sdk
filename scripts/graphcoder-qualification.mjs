@@ -120,8 +120,8 @@ function validateCase(caseRecord, entry, suites, final) {
     const suite = suiteById.get(evidence.suite);
     if (evidence.execution_kind !== suite.execution_kind) failure(`${entry.id} evidence ${index} execution kind does not match suite ${suite.id}`);
     if (evidence.descriptor_sha256 !== suite.descriptor_sha256) failure(`${entry.id} evidence ${index} descriptor is not the referenced suite descriptor`);
-    if (evidence.artifact_paths !== undefined && (!Array.isArray(evidence.artifact_paths) || evidence.artifact_paths.some(path => typeof path !== "string"))) failure(`${entry.id} evidence ${index} has invalid artifact paths`);
-    const evidenceArtifacts = [...new Set(evidence.artifact_paths ?? [])].sort();
+    if (!Array.isArray(evidence.artifact_paths) || evidence.artifact_paths.some(path => typeof path !== "string" || path.trim() === "")) failure(`${entry.id} evidence ${index} has invalid artifact paths`);
+    const evidenceArtifacts = [...new Set(evidence.artifact_paths)].sort();
     const suiteArtifacts = [...new Set(suite.artifact_paths)].sort();
     if (JSON.stringify(evidenceArtifacts) !== JSON.stringify(suiteArtifacts)) failure(`${entry.id} evidence ${index} artifact use does not match suite ${suite.id}`);
     modes.add(evidence.execution_kind);
