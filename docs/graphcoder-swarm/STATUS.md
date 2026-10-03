@@ -4,9 +4,11 @@ Goal active; qualification incomplete. All changes stay in the managed worktree 
 
 ## Ownership
 
-GraphCoder is a terminal composition wrapper. Harness owns model requests, recursive forks, sessions, communication, budgets, approvals, effects, and recovery. Filesystem owns workspace lifecycle and direct-parent integration. CLI approval bookkeeping and manual host composition still need consolidation into Harness; their presence is not accepted as final architecture.
+GraphCoder is a terminal composition wrapper. Harness owns model requests, recursive forks, sessions, communication, budgets, approvals, effects, and recovery. Filesystem owns workspace lifecycle and direct-parent integration. CLI approval bookkeeping and recursive host composition moved into Harness in `fbfedbda`, `1f4ee16b`, and `dd023c42`; the composition reuses the durable session key. Runtime and package qualification are still required.
 
 ## Latest native evidence
+
+Source `c44432dc`, handle 93437, compiled and completed all five selected integration suites: recovery 7/7, execution journal 5/6, recursive workspace 1/2, model-fork boundary 1/3, and model-selected swarm 0/1. Open failures concern exact approval fixture grants, command/revision binding, invalid attestation allocating a workspace, positive fork attestation, and a live child stream handle preventing restart. See [checkpoint-integration-2026-10-03.json](checkpoint-integration-2026-10-03.json).
 
 The focused execution run on source `91214d3a`, handle 50667, completed: 18 passed and one failed. Both previously stalled cases passed. The remaining failure is the hidden descendant-process fixture's missing startup marker. See [checkpoint-host-execution-2026-10-03.json](checkpoint-host-execution-2026-10-03.json); the full matrix remains unqualified.
 

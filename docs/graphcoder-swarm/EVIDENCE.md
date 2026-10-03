@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+The latest broader run is [checkpoint-integration-2026-10-03.json](checkpoint-integration-2026-10-03.json), source `c44432dc`: compilation passed; recovery 7/7, execution journal 5/6, recursive workspace 1/2, model-fork boundary 1/3, and model-selected swarm 0/1. Fork attestation, command/revision binding, restart handle cleanup, and one exact approval fixture remain failed gates.
+
 Latest focused native results are in [checkpoint-host-execution-2026-10-03.json](checkpoint-host-execution-2026-10-03.json): source `91214d3a`, 18 execution tests passed and one Windows descendant-process fixture failed. Both previously stalled execution cases completed successfully. This is a focused source-bound result, not full qualification.
 
 [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) retains earlier results: source `c3a98adc` recovery 7/7, recursive workspace 1/2, budget boundaries 1/2, scheduler 0/2; library run terminated incomplete. It also records the source `813d2523` recursive followup and source `a9ca8ff4` integration compilation failure, where no tests executed. See [STATUS.md](STATUS.md) for the current scope; older results below apply only to their recorded source and artifacts.
