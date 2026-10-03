@@ -681,6 +681,18 @@ impl PersistentLocalHarness {
     }
     /// Runs or recovers an exact prompt with a caller-retained operation identity.
     pub async fn run(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
+        let max_steps = u32::try_from(self.bundle.limits().model_steps)
+            .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?;
+        self.run_with_max_steps(operation, prompt, max_steps).await
+    }
+
+    /// Runs an exact prompt under an owner-pinned model step budget.
+    pub async fn run_with_max_steps(
+        &self,
+        operation: OperationId,
+        prompt: &str,
+        max_steps: u32,
+    ) -> Result<TurnOutput> {
         let content = self
             .storage
             .stage(
@@ -691,8 +703,6 @@ impl PersistentLocalHarness {
                 "prompt.txt",
             )
             .await?;
-        let max_steps = u32::try_from(self.bundle.limits().model_steps)
-            .map_err(|_| Error::Invalid("model step limit exceeds u32".into()))?;
         self.storage
             .run_conversation(&self.bundle, operation, content, vec![], max_steps)
             .await

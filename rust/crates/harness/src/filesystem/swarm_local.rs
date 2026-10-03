@@ -1949,10 +1949,25 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
-        let parent = self.session(task).await?.parent;
+        let session = self.session(task).await?;
+        if session.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "cancelled local swarm task cannot run again".into(),
+            ));
+        }
+        let parent = session.parent;
         self.verify_admitted_task(task, parent).await?;
         let harness = self.open_session(task).await?;
-        let output = harness.run(operation, prompt).await?;
+        let max_steps = u32::try_from(
+            self.config
+                .run_limits
+                .max_steps
+                .unwrap_or(self.config.limits.model_steps),
+        )
+        .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
+        let output = harness
+            .run_with_max_steps(operation, prompt, max_steps)
+            .await?;
         self.update_session(task, |session| {
             session.operation = Some(operation);
             session.phase = LocalSessionPhase::Completed;
