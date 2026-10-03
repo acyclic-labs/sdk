@@ -3592,6 +3592,7 @@ fn collect_artifacts(output: &Path) -> Result<Vec<Artifact>, CliError> {
                 || path.starts_with("qualification/packages/"))
             && !path.starts_with(".check/")
             && path != "sdk-generation-manifest.json"
+            && path != "sdk-generation-drift.json"
             && path != "qualification.json"
             && path != "language-inventory.json"
     });
@@ -3615,9 +3616,16 @@ fn collect_output_files(
 ) -> Result<(), CliError> {
     for entry in fs::read_dir(directory)? {
         let path = entry?.path();
-        if path.is_dir() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            return Err(CliError::new(format!(
+                "output contains a symlink entry: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
             collect_output_files(root, &path, paths)?;
-        } else if path.is_file() {
+        } else if metadata.is_file() {
             paths.push(
                 path.strip_prefix(root)
                     .map_err(|_| CliError::new("output path escaped root"))?
@@ -3631,8 +3639,15 @@ fn collect_output_files(
 
 fn verify_artifacts(output: &Path, artifacts: &[Artifact]) -> Result<(), CliError> {
     for artifact in artifacts {
+        if !is_portable_relative(&artifact.path) {
+            return Err(CliError::new(format!(
+                "generated artifact path is not portable: {}",
+                artifact.path
+            )));
+        }
         let path = output.join(&artifact.path);
-        if !path.is_file() {
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.file_type().is_file() {
             return Err(CliError::new(format!(
                 "generated artifact is missing: {}",
                 artifact.path
