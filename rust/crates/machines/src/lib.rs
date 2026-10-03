@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/guide.md")]
 #![allow(
     missing_docs,
     reason = "field-level wire semantics are canonical in proto/machines/v1/machines.proto"
