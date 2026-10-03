@@ -1578,7 +1578,32 @@ impl Reducer {
             child_agent,
             attached_agents,
             model_boundary,
-        )
+        )?;
+        let parent_agent = self
+            .conversation
+            .agent
+            .ok_or_else(|| Error::Invalid("fork parent conversation agent is missing".into()))?;
+        if model_boundary.inherited_parent_revision > self.revision {
+            return Err(Error::Invalid(
+                "model boundary inherited prefix revision is newer than parent".into(),
+            ));
+        }
+        let prefix = InheritedConversationPrefix::select(
+            self.authority.clone(),
+            model_boundary.inherited_parent_revision,
+            parent_agent,
+            model_boundary.inherited_through_sequence,
+            attached_agents,
+            &self.conversation.messages,
+        )?;
+        if crate::contract::canonical_json_digest(&prefix)?
+            != model_boundary.inherited_prefix_digest
+        {
+            return Err(Error::Invalid(
+                "model boundary inherited prefix digest differs from parent history".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Validates exact staged extension bytes at the provider admission boundary.
@@ -2204,6 +2229,40 @@ impl Reducer {
         } else {
             std::collections::BTreeSet::new()
         };
+        if let Some(model_boundary) = &seed.model_boundary {
+            let parent_agent = self
+                .conversation
+                .agent
+                .ok_or_else(|| Error::Invalid("fork parent conversation agent is missing".into()))?;
+            if model_boundary.inherited_parent_revision > self.revision {
+                return Err(Error::Invalid(
+                    "model boundary inherited prefix revision is newer than parent".into(),
+                ));
+            }
+            if model_boundary.inherited_parent_revision != seed.inherited_parent_revision
+                || model_boundary.inherited_through_sequence
+                    != seed.inherited_through_sequence
+            {
+                return Err(Error::Invalid(
+                    "model boundary inherited prefix binding differs from the fork seed".into(),
+                ));
+            }
+            let prefix = InheritedConversationPrefix::select(
+                self.authority.clone(),
+                model_boundary.inherited_parent_revision,
+                parent_agent,
+                model_boundary.inherited_through_sequence,
+                &seed.attached_agents,
+                &self.conversation.messages,
+            )?;
+            if crate::contract::canonical_json_digest(&prefix)?
+                != model_boundary.inherited_prefix_digest
+            {
+                return Err(Error::Invalid(
+                    "model boundary inherited prefix digest differs from parent history".into(),
+                ));
+            }
+        }
         for reader in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied())
         {
             for (capability, file) in &published_refs {
@@ -3176,6 +3235,9 @@ fn model_boundary_proof(
         model_boundary.publication,
         model_boundary.publication_digest,
         model_boundary.boundary_digest,
+        model_boundary.inherited_parent_revision,
+        model_boundary.inherited_through_sequence,
+        model_boundary.inherited_prefix_digest,
         &model_boundary.files,
     ))?;
     let mut hasher = blake3::Hasher::new_keyed(key);

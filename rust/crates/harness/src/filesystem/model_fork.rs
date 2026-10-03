@@ -8,6 +8,7 @@ use crate::{
     model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
     tool::ModelToolContext,
 };
+use crate::fork::InheritedConversationPrefix;
 
 /// Exact completed model boundary and its authoritative parent conversation.
 /// Workspace preparation and publication remain owned by the existing typed
@@ -76,6 +77,22 @@ where
             publication: verified.publication.operation_id,
             publication_digest: crate::contract::canonical_json_digest(&verified.publication)?,
             boundary_digest: crate::contract::canonical_json_digest(&verified.boundary)?,
+            inherited_parent_revision: request.parent_revision,
+            inherited_through_sequence: request.preparation.inherited_through_sequence,
+            inherited_prefix_digest: {
+                let parent_agent = messages
+                    .agent
+                    .ok_or_else(|| Error::Storage("verified fork parent agent is missing".into()))?;
+                let prefix = InheritedConversationPrefix::select(
+                    request.parent.clone(),
+                    request.parent_revision,
+                    parent_agent,
+                    request.preparation.inherited_through_sequence,
+                    &request.attached_agents,
+                    &messages.messages,
+                )?;
+                crate::contract::canonical_json_digest(&prefix)?
+            },
             attestation: [0; 32],
             files,
         };
@@ -178,12 +195,17 @@ where
         let boundary: CompletedModelBoundary =
             load_json(self.journal.as_ref(), &publication.boundary).await?;
         boundary.verify(limits)?;
-        let original = PreparedModelInput::prepare(request, limits)?;
+        let original = PreparedModelInput::prepare_with_policy(
+            request,
+            limits,
+            boundary.option_policy.as_ref(),
+        )?;
         let original_prefix =
             FrozenModelPrefix::capture(&original, original.request().messages.len())?;
-        original_prefix.verify(&PreparedModelInput::prepare(
+        original_prefix.verify(&PreparedModelInput::prepare_with_policy(
             boundary.request.clone(),
             limits,
+            boundary.option_policy.as_ref(),
         )?)?;
         let parent = self
             .completed_conversation(publication.parent_operation, publication.step, limits)

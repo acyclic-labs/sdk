@@ -51,6 +51,18 @@ export interface AttestedBoundary {
   readonly evidence: readonly number[];
 }
 
+/** Parent-issued proof binding a completed model exchange to its exact fork prefix. */
+export interface ModelBoundaryReferences {
+  readonly publication: OperationId;
+  readonly publication_digest: readonly number[];
+  readonly boundary_digest: readonly number[];
+  readonly inherited_parent_revision: bigint;
+  readonly inherited_through_sequence: bigint;
+  readonly inherited_prefix_digest: readonly number[];
+  readonly attestation: readonly number[];
+  readonly files: readonly FileRef[];
+}
+
 export interface SharedGrant {
   readonly volume: VolumeRef<"session_shared">;
   readonly child_agent: AgentId;
@@ -74,6 +86,7 @@ export interface ForkRequest {
   readonly preparation: ForkPreparation;
   readonly selections: readonly ForkSelection[];
   readonly boundary: AttestedBoundary | null;
+  readonly model_boundary?: ModelBoundaryReferences | null;
 }
 
 export interface ForkPreparation {
@@ -130,6 +143,8 @@ export interface ForkOmission {
 
 export interface ForkReport {
   readonly request: ForkRequest;
+  /** Exact parent revision whose immutable inherited prefix was captured. */
+  readonly inherited_parent_revision: bigint;
   readonly captures: readonly Capture[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;
   readonly child_private_generation: ResourceRef<"generation">;
@@ -142,6 +157,8 @@ export interface ForkReport {
 }
 
 export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"> {
+  /** Exact parent revision whose immutable inherited prefix is retained. */
+  readonly inherited_parent_revision: bigint;
   readonly resources: readonly CapturedResource[];
   readonly omissions: readonly ForkOmission[];
   readonly child_private_volume: VolumeRef<"agent_private", "filesystem">;

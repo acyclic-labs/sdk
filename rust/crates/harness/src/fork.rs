@@ -1067,6 +1067,12 @@ pub struct ModelBoundaryReferences {
     pub publication_digest: [u8; 32],
     /// Digest of the verified completed model prefix and suffix messages.
     pub boundary_digest: [u8; 32],
+    /// Exact parent revision whose inherited conversation prefix was captured.
+    pub inherited_parent_revision: u64,
+    /// Exact number of parent messages retained by the child.
+    pub inherited_through_sequence: u64,
+    /// Canonical digest of the parent-issued inherited conversation prefix.
+    pub inherited_prefix_digest: [u8; 32],
     /// Parent issuer attestation over the seed identities and this manifest.
     pub attestation: [u8; 32],
     /// Every exact file ref used by that model request, including inherited
@@ -1086,7 +1092,11 @@ impl ModelBoundaryReferences {
 
     /// Validates the manifest fields before the parent issuer signs them.
     pub(crate) fn validate_envelope(&self) -> Result<()> {
-        if self.publication_digest == [0; 32] || self.boundary_digest == [0; 32] {
+        if self.publication_digest == [0; 32]
+            || self.boundary_digest == [0; 32]
+            || self.inherited_prefix_digest == [0; 32]
+            || self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
+        {
             return Err(Error::Invalid(
                 "model boundary publication digest is empty".into(),
             ));
@@ -2221,6 +2231,9 @@ mod tests {
             publication: OperationId::from_bytes([91; 16]),
             publication_digest: [92; 32],
             boundary_digest: [93; 32],
+            inherited_parent_revision: seed.inherited_parent_revision,
+            inherited_through_sequence: 0,
+            inherited_prefix_digest: [95; 32],
             attestation: [94; 32],
             files: vec![FileRef::new(
                 seed.child_private_volume.clone(),

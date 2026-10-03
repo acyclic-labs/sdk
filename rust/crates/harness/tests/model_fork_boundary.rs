@@ -1838,6 +1838,9 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
             publication: OperationId::from_bytes([5; 16]),
             publication_digest: [1; 32],
             boundary_digest: [2; 32],
+            inherited_parent_revision: aggregate.reducer().revision(),
+            inherited_through_sequence: 0,
+            inherited_prefix_digest: [4; 32],
             // Nonzero but forged: the parent issuer did not produce this proof.
             attestation: [3; 32],
             files: vec![model_file],

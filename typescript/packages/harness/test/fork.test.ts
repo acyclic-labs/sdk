@@ -63,8 +63,15 @@ test("Rust and TypeScript share the canonical v2 resource revision fixture", asy
 
 test("Rust and TypeScript share the canonical v2 fork seed fixture", async () => {
   const fixture = (await Bun.file(new URL("../../../../fixtures/harness/v2/fork-seed.json", import.meta.url)).text()).trim();
-  const decoded = JSON.parse(fixture) as Omit<ForkSeed, "parent_revision"> & { parent_revision: number };
-  const seed = { ...decoded, parent_revision: BigInt(decoded.parent_revision) };
+  const decoded = JSON.parse(fixture) as Omit<ForkSeed, "parent_revision" | "inherited_parent_revision"> & {
+    parent_revision: number;
+    inherited_parent_revision: number;
+  };
+  const seed = {
+    ...decoded,
+    parent_revision: BigInt(decoded.parent_revision),
+    inherited_parent_revision: BigInt(decoded.inherited_parent_revision),
+  };
   await validateForkSeed(seed);
   expect(JSON.stringify(seed, (_key, value: unknown) => typeof value === "bigint" ? Number(value) : value)).toBe(fixture);
 });
@@ -121,6 +128,7 @@ function report(): ForkReport {
       ],
       boundary: null,
     },
+    inherited_parent_revision: 3n,
     captures: [
       { kind: "captured", value: { source: history, revision: history } },
       { kind: "captured", value: { source: parentProject, revision: childProject } },
