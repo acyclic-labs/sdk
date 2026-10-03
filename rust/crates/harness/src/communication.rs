@@ -10,7 +10,7 @@ use crate::{
     Error, OperationId, Outcome, Result, TaskId, conversation::FileRef, runtime::DurableTaskHost,
     scheduler::InboxItem,
 };
-use futures::future::join_all;
+use futures::future::{BoxFuture, join_all};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -385,16 +385,39 @@ pub enum WaitCompletion {
 /// This adapter only composes the existing durable host boundary.  It does
 /// not own a second journal or a process-local mailbox.  The host remains the
 /// authority for admission, grants, idempotent publication, and recovery.
+pub trait DurableWaitStore: Send + Sync {
+    /// Persists one immutable wait admission before observation begins.
+    /// Returns a previously retained terminal completion during recovery.
+    fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>>;
+
+    /// Persists a terminal result before exposing it to the caller. A
+    /// concurrent owner must return the already retained winner.
+    fn complete<'a>(
+        &'a self,
+        request: WaitRequest,
+        completion: WaitCompletion,
+    ) -> BoxFuture<'a, Result<WaitCompletion>>;
+}
+
 #[derive(Clone)]
+/// Host-backed task messages and restart-safe waits.
 pub struct DurableCommunication {
     host: Arc<dyn DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
 }
 
 impl DurableCommunication {
     /// Binds communication to one owner-retained durable host.
     #[must_use]
     pub fn new(host: Arc<dyn DurableTaskHost>) -> Self {
-        Self { host }
+        Self { host, waits: None }
+    }
+
+    /// Binds owner-retained wait admission and completion persistence.
+    #[must_use]
+    pub fn with_wait_store(mut self, waits: Arc<dyn DurableWaitStore>) -> Self {
+        self.waits = Some(waits);
+        self
     }
 
     /// Validates target authorization from owner-retained admissions before
@@ -437,8 +460,33 @@ impl DurableCommunication {
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
         let now = unix_millis()?;
-        request.validate(Some(now))?;
+        // A request whose timeout has already elapsed is a valid replay of a
+        // previously admitted wait. Preserve the typed terminal result rather
+        // than turning recovery into an invalid-input error. Zero remains
+        // invalid through the ordinary validation path.
+        let expired = request
+            .timeout_epoch_ms
+            .is_some_and(|deadline| deadline <= now);
+        if expired {
+            request.validate(None)?;
+        } else {
+            request.validate(Some(now))?;
+        }
         self.authorize_wait(&request).await?;
+        if let Some(waits) = &self.waits {
+            if let Some(completion) = waits.open(request.clone()).await? {
+                return Ok(completion);
+            }
+        }
+        if expired {
+            return self.finish(request, WaitCompletion::TimedOut).await;
+        }
+        if cancellation
+            .as_ref()
+            .is_some_and(|receiver| *receiver.borrow())
+        {
+            return self.finish(request, WaitCompletion::Cancelled).await;
+        }
         let timeout = request
             .timeout_epoch_ms
             .map(|deadline| Duration::from_millis(deadline.saturating_sub(now)));
@@ -454,8 +502,8 @@ impl DurableCommunication {
         tokio::pin!(timeout_sleep);
         loop {
             tokio::select! {
-                result = &mut wait => return result,
-                () = &mut timeout_sleep => return Ok(WaitCompletion::TimedOut),
+                result = &mut wait => return self.finish(request.clone(), result?).await,
+                () = &mut timeout_sleep => return self.finish(request.clone(), WaitCompletion::TimedOut).await,
                 changed = async {
                     match cancellation.as_mut() {
                         Some(receiver) => receiver.changed().await.map_err(|_| ()),
@@ -463,10 +511,27 @@ impl DurableCommunication {
                     }
                 } => {
                     if changed.is_ok() && cancellation.as_ref().is_some_and(|receiver| *receiver.borrow()) {
-                        return Ok(WaitCompletion::Cancelled);
+                        return self.finish(request.clone(), WaitCompletion::Cancelled).await;
+                    }
+                    // A dropped sender is not cancellation. Remove the
+                    // receiver so the select loop does not spin on an error
+                    // forever while the durable observation remains pending.
+                    if changed.is_err() {
+                        cancellation = None;
                     }
                 }
             }
+        }
+    }
+
+    async fn finish(
+        &self,
+        request: WaitRequest,
+        completion: WaitCompletion,
+    ) -> Result<WaitCompletion> {
+        match &self.waits {
+            Some(waits) => waits.complete(request, completion).await,
+            None => Ok(completion),
         }
     }
 
@@ -606,6 +671,64 @@ mod tests {
     };
     use serde_json::json;
     use std::{collections::BTreeMap, sync::Mutex};
+
+    struct MemoryWaitStore {
+        records: Mutex<BTreeMap<OperationId, (WaitRequest, Option<WaitCompletion>)>>,
+    }
+
+    impl MemoryWaitStore {
+        fn new() -> Self {
+            Self {
+                records: Mutex::new(BTreeMap::new()),
+            }
+        }
+    }
+
+    impl DurableWaitStore for MemoryWaitStore {
+        fn open<'a>(
+            &'a self,
+            request: WaitRequest,
+        ) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
+            Box::pin(async move {
+                let mut records = self
+                    .records
+                    .lock()
+                    .map_err(|_| Error::Storage("wait store lock poisoned".into()))?;
+                if let Some((retained, completion)) = records.get(&request.operation_id) {
+                    if retained != &request {
+                        return Err(Error::Conflict("wait identity was reused".into()));
+                    }
+                    return Ok(completion.clone());
+                }
+                records.insert(request.operation_id, (request, None));
+                Ok(None)
+            })
+        }
+
+        fn complete<'a>(
+            &'a self,
+            request: WaitRequest,
+            completion: WaitCompletion,
+        ) -> BoxFuture<'a, Result<WaitCompletion>> {
+            Box::pin(async move {
+                let mut records = self
+                    .records
+                    .lock()
+                    .map_err(|_| Error::Storage("wait store lock poisoned".into()))?;
+                let Some((retained, current)) = records.get_mut(&request.operation_id) else {
+                    return Err(Error::Conflict("wait completion has no admission".into()));
+                };
+                if retained != &request {
+                    return Err(Error::Conflict("wait identity was reused".into()));
+                }
+                if let Some(current) = current {
+                    return Ok(current.clone());
+                }
+                *current = Some(completion.clone());
+                Ok(completion)
+            })
+        }
+    }
 
     fn task(value: u8) -> TaskId {
         TaskId::from_bytes([value; 16])
@@ -958,6 +1081,112 @@ mod tests {
                 .map_err(|error| Error::Storage(error.to_string()))??,
             WaitCompletion::Cancelled
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_replays_an_expired_timeout_as_typed_terminal_state() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let now = unix_millis()?;
+        let completion = DurableCommunication::new(host)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(35),
+                    waiter: task(1),
+                    target: WaitTarget::Messages {
+                        task_id: task(1),
+                        after: 0,
+                        limit: 10,
+                    },
+                    timeout_epoch_ms: Some(now.saturating_sub(1)),
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::TimedOut);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_observes_already_cancelled_and_closed_channels_without_spinning() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let communication = DurableCommunication::new(host.clone());
+        let (sender, receiver) = tokio::sync::watch::channel(true);
+        let completion = communication
+            .wait(
+                WaitRequest {
+                    operation_id: operation(36),
+                    waiter: task(1),
+                    target: WaitTarget::Messages {
+                        task_id: task(1),
+                        after: 0,
+                        limit: 10,
+                    },
+                    timeout_epoch_ms: None,
+                    cancellation_id: None,
+                },
+                Some(receiver),
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::Cancelled);
+        drop(sender);
+        let now = unix_millis()?;
+        let completion = tokio::time::timeout(
+            Duration::from_millis(250),
+            communication.wait(
+                WaitRequest {
+                    operation_id: operation(37),
+                    waiter: task(1),
+                    target: WaitTarget::Messages {
+                        task_id: task(1),
+                        after: 0,
+                        limit: 10,
+                    },
+                    timeout_epoch_ms: Some(now + 40),
+                    cancellation_id: None,
+                },
+                Some(tokio::sync::watch::channel(false).1),
+            ),
+        )
+        .await
+        .map_err(|_| Error::Storage("closed cancellation wait exceeded bound".into()))??;
+        assert_eq!(completion, WaitCompletion::TimedOut);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_store_replays_terminal_completion_before_observation() -> Result<()> {
+        let host = host(BTreeMap::from([(
+            task(2),
+            Outcome::Succeeded(json!("first")),
+        )]))?;
+        let store = Arc::new(MemoryWaitStore::new());
+        let request = WaitRequest {
+            operation_id: operation(38),
+            waiter: task(1),
+            target: WaitTarget::Tasks {
+                task_ids: vec![task(2)],
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        let communication = DurableCommunication::new(host.clone()).with_wait_store(store.clone());
+        assert_eq!(
+            communication.wait(request.clone(), None).await?,
+            WaitCompletion::Tasks {
+                outcomes: vec![(task(2), Outcome::Succeeded(json!("first")))],
+            }
+        );
+        // The second call returns the retained completion from the admission
+        // store before asking the host for a new observation.
+        assert_eq!(
+            communication.wait(request, None).await?,
+            WaitCompletion::Tasks {
+                outcomes: vec![(task(2), Outcome::Succeeded(json!("first")))],
+            }
+        );
+        assert_eq!(store.records.lock().expect("wait store lock").len(), 1);
         Ok(())
     }
 }

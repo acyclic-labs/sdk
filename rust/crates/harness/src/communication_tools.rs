@@ -8,8 +8,8 @@
 use crate::{
     Error, Outcome, Result, TaskId,
     communication::{
-        DurableCommunication, MessageRequest, MessageTarget, WaitCompletion, WaitRequest,
-        WaitTarget,
+        DurableCommunication, DurableWaitStore, MessageRequest, MessageTarget, WaitCompletion,
+        WaitRequest, WaitTarget,
     },
     conversation::FileRef,
     runtime::ToolContext,
@@ -176,11 +176,24 @@ pub enum WaitToolOutput {
 
 /// Returns the two model-facing communication tools bound to one durable host.
 pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Result<ToolRegistry> {
+    communication_tools_with_wait_store(host, None)
+}
+
+/// Returns the communication tools with owner-retained wait persistence.
+///
+/// The wait store is deliberately supplied separately from the task host so a
+/// coordinator can bind its existing journal without exposing that journal to
+/// model content or creating a second orchestration engine.
+pub fn communication_tools_with_wait_store(
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         definition: message_definition(),
         executor: Arc::new(CommunicationExecutor {
             host: host.clone(),
+            waits: waits.clone(),
             kind: CommunicationToolKind::Message,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -189,6 +202,7 @@ pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Re
         definition: wait_definition(),
         executor: Arc::new(CommunicationExecutor {
             host,
+            waits,
             kind: CommunicationToolKind::Wait,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -230,6 +244,7 @@ enum CommunicationToolKind {
 
 struct CommunicationExecutor {
     host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
     kind: CommunicationToolKind,
 }
 
@@ -287,9 +302,12 @@ impl CommunicationExecutor {
                     timeout_epoch_ms,
                     cancellation_id: None,
                 };
-                let completion = DurableCommunication::new(self.host.clone())
-                    .wait(request, None)
-                    .await?;
+                let communication = DurableCommunication::new(self.host.clone());
+                let communication = match &self.waits {
+                    Some(waits) => communication.with_wait_store(waits.clone()),
+                    None => communication,
+                };
+                let completion = communication.wait(request, None).await?;
                 Ok(ToolResult {
                     value: serde_json::to_value(wait_output(completion))
                         .map_err(|error| Error::Invalid(error.to_string()))?,
