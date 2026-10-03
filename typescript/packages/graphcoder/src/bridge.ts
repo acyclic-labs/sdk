@@ -427,8 +427,8 @@ function decodeChangeBody(value: unknown, expectedSession: SessionId): ChangeBod
 function decodeFileBody(value: unknown, maximumBytes = MAX_BRIDGE_FILE_BYTES, expectedSession?: SessionId): FileBody {
   const raw = record(value, "file body");
   if (expectedSession !== undefined && sessionId(text(raw.session_id, "file session id")) !== expectedSession) throw new GraphCoderError("transport", "file response is not bound to its session");
-  const bytes = array(raw.bytes, "file bytes");
+  const bytes = raw.bytes instanceof Uint8Array ? raw.bytes : array(raw.bytes, "file bytes");
   if (bytes.length > maximumBytes) throw new GraphCoderError("transport", "file body exceeds the configured file size limit");
   if (!bytes.every(byte => Number.isInteger(byte) && (byte as number) >= 0 && (byte as number) <= 255)) throw new GraphCoderError("transport", "file bytes contain an invalid octet");
-  return { path: text(raw.path, "file path"), mediaType: text(raw.media_type, "file media type"), bytes: Uint8Array.from(bytes as number[]), generation: wireBigInt(raw.generation, "file generation") };
+  return { path: text(raw.path, "file path"), mediaType: text(raw.media_type, "file media type"), bytes: Uint8Array.from(bytes as ArrayLike<number>), generation: wireBigInt(raw.generation, "file generation") };
 }

@@ -66,4 +66,33 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     await serving;
     expect(JSON.parse(lines.join("").trim())).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
   });
+
+  test("node entrypoint keeps reading control requests while a model request waits", async () => {
+    const input = new PassThrough();
+    const lines: string[] = [];
+    const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
+    const transport = createMockTransport();
+    let releaseList!: () => void;
+    transport.listSessions = async () => {
+      await new Promise<void>(resolve => { releaseList = resolve; });
+      return { items: [] };
+    };
+    transport.cancelSession = async id => ({ summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1" }, agents: [], workspaceGeneration: 0n });
+    const serving = runNodeGraphCoderDispatcher({ transport, input, output });
+    input.write(JSON.stringify({ request_id: "model-1", method: "list_sessions", params: {} }) + "\n");
+    input.write(JSON.stringify({ request_id: "cancel-1", method: "cancel_session", params: { session_id: "session-1" } }) + "\n");
+    const deadline = Date.now() + 500;
+    while (!lines.join("").includes('"request_id":"cancel-1"') && Date.now() < deadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
+    if (!lines.join("").includes('"request_id":"cancel-1"')) throw new Error("control request remained blocked");
+    expect(lines.join("")).toContain('"request_id":"cancel-1"');
+    releaseList();
+    input.end();
+    await serving;
+  });
+
+  test("uses a neutral request id when an invalid id cannot be echoed safely", async () => {
+    const dispatcher = new GraphCoderWireDispatcher(createMockTransport());
+    const response = JSON.parse(await dispatcher.dispatchLine(JSON.stringify({ request_id: "é".repeat(129), method: "unknown", params: {} }))) as { request_id: string; ok: boolean; error: { code: string } };
+    expect(response).toMatchObject({ request_id: "unknown", ok: false, error: { code: "invalid_input" } });
+  });
 });

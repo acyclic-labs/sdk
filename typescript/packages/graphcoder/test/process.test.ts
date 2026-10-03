@@ -76,6 +76,21 @@ describe("JSON-lines process bridge", () => {
     bridge.close();
   });
 
+  test("rejects a cancel control that collides with the retired request id", async () => {
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => request(requestId) });
+    const pending = bridge.request(request("collision", 20));
+    expect(bridge.cancel("collision")).toBe(true);
+    await expect(pending).rejects.toMatchObject({ code: "transport" });
+    expect(diagnostics).toContainEqual({ kind: "cancel_control_failed", requestId: "collision", message: "cancel control request id collides with an active or retired request" });
+    const deadline = Date.now() + 2_000;
+    while (!diagnostics.some(event => event.kind === "cancelled_response" && event.requestId === "collision") && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 20));
+    }
+    expect(diagnostics).toContainEqual({ kind: "cancelled_response", requestId: "collision" });
+    bridge.close();
+  });
+
   test("rejects pending calls on clean EOF and reports malformed output", async () => {
     const eof = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
     await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });
@@ -83,6 +98,11 @@ describe("JSON-lines process bridge", () => {
     const malformed = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
     await expect(malformed.request(request("malformed"))).rejects.toMatchObject({ code: "transport" });
     expect(diagnostics.some(event => event.kind === "malformed_line")).toBe(true);
+  });
+
+  test("rejects output with invalid UTF-8 before JSON decoding", async () => {
+    const malformed = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]))"], env: env() });
+    await expect(malformed.request(request("invalid-utf8"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bounds a response line before parsing it", async () => {

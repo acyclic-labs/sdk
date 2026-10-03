@@ -28,11 +28,11 @@ export async function runNodeGraphCoderDispatcher(options: NodeGraphCoderDispatc
   for await (const frame of boundedFrames(input, maximumLineBytes)) {
     while (pending.size >= maximumInFlight) await Promise.race(pending);
     const response = frame.kind === "too_long"
-      ? JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line exceeds the configured size" } })
+      ? Promise.resolve(JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line exceeds the configured size" } }))
       : frame.kind === "invalid_utf8"
-        ? JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line is not valid UTF-8" } })
-        : await dispatcher.dispatchLine(frame.value);
-    const write = new Promise<void>((resolve, reject) => output.write(`${response}\n`, error => error == null ? resolve() : reject(error)));
+        ? Promise.resolve(JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line is not valid UTF-8" } }))
+        : dispatcher.dispatchLine(frame.value);
+    const write = response.then(value => new Promise<void>((resolve, reject) => output.write(`${value}\n`, error => error == null ? resolve() : reject(error))));
     pending.add(write);
     void write.finally(() => pending.delete(write));
   }

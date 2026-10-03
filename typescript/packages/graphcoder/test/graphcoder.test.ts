@@ -23,7 +23,7 @@ describe("GraphCoder UI transport boundary", () => {
           case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] }));
           case "list_changes": return Promise.resolve(response({ session_id: "session-1", generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
           case "read_change": return Promise.resolve(response({ session_id: "session-1", path: "README.md", unified_diff: "@@ -1 +1 @@", generation: "7" }));
-          case "read_file": return Promise.resolve(response({ session_id: "session-1", path: "README.md", media_type: "text/markdown", bytes: [72, 105], generation: "7" }));
+          case "read_file": return Promise.resolve(response({ session_id: "session-1", path: "README.md", media_type: "text/markdown", bytes: new Uint8Array([72, 105]), generation: "7" }));
           default: return Promise.resolve({ request_id: request.request_id, ok: false, error: { code: "unsupported", message: `fixture does not implement ${request.method}` } });
         }
       },

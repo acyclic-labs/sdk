@@ -152,7 +152,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
         this.#finish(new GraphCoderError("transport", "bridge response line exceeds the configured size"));
         return;
       }
-      this.#consumeLine(line.toString("utf8"));
+      let text: string;
+      try { text = new TextDecoder("utf-8", { fatal: true }).decode(line); }
+      catch {
+        this.#onDiagnostic({ kind: "malformed_line", text: "<invalid utf-8>" });
+        this.#finish(new GraphCoderError("transport", "bridge emitted invalid UTF-8"));
+        return;
+      }
+      this.#consumeLine(text);
       if (this.#closed) return;
     }
   }
@@ -215,6 +222,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     try { checkedRequestId(request.request_id); }
     catch (error) {
       this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    if (request.request_id === requestId || this.#pending.has(request.request_id) || this.#cancelled.has(request.request_id) || this.#cancelControls.has(request.request_id)) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control request id collides with an active or retired request" });
       return;
     }
     this.#cancelControls.set(request.request_id, requestId);

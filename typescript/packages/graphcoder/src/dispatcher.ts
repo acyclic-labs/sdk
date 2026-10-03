@@ -68,7 +68,13 @@ function decodeRequest(value: unknown): GraphCoderWireRequest {
   if (!METHODS.has(method as GraphCoderWireMethod)) throw new GraphCoderError("invalid_input", `unsupported method ${method}`);
   return { request_id: requestId, method: method as GraphCoderWireMethod, params: record(raw.params, "request params") } as GraphCoderWireRequest;
 }
-function requestIdentity(value: unknown): string { return typeof value === "object" && value !== null && !Array.isArray(value) && typeof (value as Record<string, unknown>).request_id === "string" ? (value as Record<string, unknown>).request_id as string : "unknown"; }
+function requestIdentity(value: unknown): string {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return "unknown";
+  const candidate = (value as Record<string, unknown>).request_id;
+  if (typeof candidate !== "string") return "unknown";
+  try { return checkedRequestId(candidate); }
+  catch { return "unknown"; }
+}
 const METHODS = new Set<GraphCoderWireMethod>(["list_sessions", "start_session", "open_session", "resume_session", "read_activity", "read_messages", "send_message", "list_approvals", "resolve_approval", "cancel_session", "list_changes", "read_change", "read_file", "approve_writeback"]);
 function record(value: unknown, label: string): Record<string, unknown> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("invalid_input", `${label} must be an object`); return value as Record<string, unknown>; }
 function requiredText(value: unknown, label: string): string { if (typeof value !== "string" || value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must be nonempty text`); return value; }
