@@ -3,15 +3,13 @@ name = "sdk-openapi-prototype"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Prototype OpenAPI projection derived from the Rust-owned Actors descriptor and routes"
+description = "Prototype OpenAPI projection derived from Rust-owned contract models and routes"
 
 # This keeps the experiment standalone without editing the product workspace.
 [workspace]
 
 [dependencies]
-acyclic-actors = { path = "../actors" }
-prost = "0.14.4"
-prost-types = "0.14.4"
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"

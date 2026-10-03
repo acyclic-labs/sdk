@@ -1,0 +1,307 @@
+{
+  "schema": "openapi-extra-license-manifest/v1",
+  "target": "dart",
+  "package_metadata": {
+    "metadata_basis": "pubspec license field emitted by Rust-owned adapter plus source artifact hash",
+    "source": "Rust-owned OpenAPI Workers contract adaptation",
+    "spdx": "Apache-2.0",
+    "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77"
+  },
+  "dependency_license_evidence_root": "C:/Users/varun/AppData/Local/Pub/Cache/hosted/pub.dev",
+  "dependencies": [
+    {
+      "name": "_fe_analyzer_shared",
+      "version": "88.0.0",
+      "license_file": "LICENSE",
+      "license_sha256": "efa31b5ac790016736fa9761642b0af16d37cd4fb483de2905adb5258cb89722"
+    },
+    {
+      "name": "analyzer",
+      "version": "8.1.1",
+      "license_file": "LICENSE",
+      "license_sha256": "7e124af6a556f045cb3a20cafbdaa31602ac2c82cbcb3c3b15faaaf514b06028"
+    },
+    {
+      "name": "args",
+      "version": "2.7.0",
+      "license_file": "LICENSE",
+      "license_sha256": "dfb09c74e29386cd3e2719f32d4995d59526179753931d31840757c77fbf2791"
+    },
+    {
+      "name": "async",
+      "version": "2.13.1",
+      "license_file": "LICENSE",
+      "license_sha256": "ff15faa32a2e638107b7789592b14426162a75ba620044ee2340a20ec6ce5e73"
+    },
+    {
+      "name": "boolean_selector",
+      "version": "2.1.2",
+      "license_file": "LICENSE",
+      "license_sha256": "b71519245009a3b8f126196a5408ec031e216e8e0d985085958c6543f82a8a2a"
+    },
+    {
+      "name": "cli_config",
+      "version": "0.2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "605bcf409f2347e3bcc9905ab70a2f3218e841bae372b0cbfbf305a222f74222"
+    },
+    {
+      "name": "clock",
+      "version": "1.1.3",
+      "license_file": "LICENSE",
+      "license_sha256": "58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd"
+    },
+    {
+      "name": "collection",
+      "version": "1.19.1",
+      "license_file": "LICENSE",
+      "license_sha256": "ff15faa32a2e638107b7789592b14426162a75ba620044ee2340a20ec6ce5e73"
+    },
+    {
+      "name": "convert",
+      "version": "3.1.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ad6a71997da90924b2cfb1fb47ec46537f70faf469efe016168794ae45ed6888"
+    },
+    {
+      "name": "coverage",
+      "version": "1.15.1",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "crypto",
+      "version": "3.0.7",
+      "license_file": "LICENSE",
+      "license_sha256": "ad6a71997da90924b2cfb1fb47ec46537f70faf469efe016168794ae45ed6888"
+    },
+    {
+      "name": "file",
+      "version": "7.0.1",
+      "license_file": "LICENSE",
+      "license_sha256": "f6df86b1412172537273e8e80ee2fb8a66aa7307ce0b39ea5ddab47ca41b8c49"
+    },
+    {
+      "name": "frontend_server_client",
+      "version": "3.2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "f3fedf65adeec4d6ccb2abf053ebc0f07603d402db3d3c5651322b50502e1071"
+    },
+    {
+      "name": "glob",
+      "version": "2.2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "http",
+      "version": "1.6.0",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "http_multi_server",
+      "version": "3.2.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
+    },
+    {
+      "name": "http_parser",
+      "version": "4.1.2",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "intl",
+      "version": "0.20.2",
+      "license_file": "LICENSE",
+      "license_sha256": "7e124af6a556f045cb3a20cafbdaa31602ac2c82cbcb3c3b15faaaf514b06028"
+    },
+    {
+      "name": "io",
+      "version": "1.1.0",
+      "license_file": "LICENSE",
+      "license_sha256": "ea97a7558a7bd7cee4e2355f7529e3cbebb0dcbb546ddb9a90f10c9eb6b08da5"
+    },
+    {
+      "name": "logging",
+      "version": "1.3.0",
+      "license_file": "LICENSE",
+      "license_sha256": "dfb09c74e29386cd3e2719f32d4995d59526179753931d31840757c77fbf2791"
+    },
+    {
+      "name": "matcher",
+      "version": "0.12.19",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "meta",
+      "version": "1.19.0",
+      "license_file": "LICENSE",
+      "license_sha256": "b71519245009a3b8f126196a5408ec031e216e8e0d985085958c6543f82a8a2a"
+    },
+    {
+      "name": "mime",
+      "version": "2.1.0",
+      "license_file": "LICENSE",
+      "license_sha256": "ff15faa32a2e638107b7789592b14426162a75ba620044ee2340a20ec6ce5e73"
+    },
+    {
+      "name": "node_preamble",
+      "version": "2.0.2",
+      "license_file": "LICENSE",
+      "license_sha256": "41997ee02074e3796e539b81b4501ed7d8bc1a620d11ef32cf56494e778461a9"
+    },
+    {
+      "name": "package_config",
+      "version": "2.2.0",
+      "license_file": "LICENSE",
+      "license_sha256": "0371d1da6a57fb791db29d29b95333429205f51f3cb2eb3a0c12d91838a38744"
+    },
+    {
+      "name": "path",
+      "version": "1.9.1",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "pool",
+      "version": "1.5.3",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "pub_semver",
+      "version": "2.2.1",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "shelf",
+      "version": "1.4.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
+    },
+    {
+      "name": "shelf_packages_handler",
+      "version": "3.0.2",
+      "license_file": "LICENSE",
+      "license_sha256": "b71519245009a3b8f126196a5408ec031e216e8e0d985085958c6543f82a8a2a"
+    },
+    {
+      "name": "shelf_static",
+      "version": "1.1.3",
+      "license_file": "LICENSE",
+      "license_sha256": "ad6a71997da90924b2cfb1fb47ec46537f70faf469efe016168794ae45ed6888"
+    },
+    {
+      "name": "shelf_web_socket",
+      "version": "1.0.4",
+      "license_file": "LICENSE",
+      "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
+    },
+    {
+      "name": "source_map_stack_trace",
+      "version": "2.1.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ad6a71997da90924b2cfb1fb47ec46537f70faf469efe016168794ae45ed6888"
+    },
+    {
+      "name": "source_maps",
+      "version": "0.10.14",
+      "license_file": "LICENSE",
+      "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
+    },
+    {
+      "name": "source_span",
+      "version": "1.10.2",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "stack_trace",
+      "version": "1.12.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ff0b91d4f3c32b25cb6ec84985e8da89b0ba2a2b2f7eef353cda5e5423a20390"
+    },
+    {
+      "name": "stream_channel",
+      "version": "2.1.4",
+      "license_file": "LICENSE",
+      "license_sha256": "ff15faa32a2e638107b7789592b14426162a75ba620044ee2340a20ec6ce5e73"
+    },
+    {
+      "name": "string_scanner",
+      "version": "1.4.1",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "term_glyph",
+      "version": "1.2.2",
+      "license_file": "LICENSE",
+      "license_sha256": "ea97a7558a7bd7cee4e2355f7529e3cbebb0dcbb546ddb9a90f10c9eb6b08da5"
+    },
+    {
+      "name": "test",
+      "version": "1.31.0",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "test_api",
+      "version": "0.7.11",
+      "license_file": "LICENSE",
+      "license_sha256": "ff1b9f0df9036c04be424b1e3ce12789bea880ad5ffc3a48e069ae2d40a087a4"
+    },
+    {
+      "name": "test_core",
+      "version": "0.6.17",
+      "license_file": "LICENSE",
+      "license_sha256": "ff1b9f0df9036c04be424b1e3ce12789bea880ad5ffc3a48e069ae2d40a087a4"
+    },
+    {
+      "name": "typed_data",
+      "version": "1.4.0",
+      "license_file": "LICENSE",
+      "license_sha256": "ff15faa32a2e638107b7789592b14426162a75ba620044ee2340a20ec6ce5e73"
+    },
+    {
+      "name": "vm_service",
+      "version": "15.3.0",
+      "license_file": "LICENSE",
+      "license_sha256": "ad6a71997da90924b2cfb1fb47ec46537f70faf469efe016168794ae45ed6888"
+    },
+    {
+      "name": "watcher",
+      "version": "1.2.1",
+      "license_file": "LICENSE",
+      "license_sha256": "3c32b53167c7dae9190c38dab5dd9fe1789c53623ebc7d1babcb29914c5b3f16"
+    },
+    {
+      "name": "web",
+      "version": "0.5.1",
+      "license_file": "LICENSE",
+      "license_sha256": "aa913ff50d7542eb8cc35b9f48a80928ac6819ba9057f85d424655e3e8dc271c"
+    },
+    {
+      "name": "web_socket_channel",
+      "version": "2.4.5",
+      "license_file": "LICENSE",
+      "license_sha256": "a4b5d7d31626e90b77e8696f1c47643aa31f52e17c1907c1ab60b068110e6e10"
+    },
+    {
+      "name": "webkit_inspection_protocol",
+      "version": "1.2.1",
+      "license_file": "LICENSE",
+      "license_sha256": "eb9a6b9672316612439514f10b5d3b24bcd140313c96a73c370bb7b07897a8cd"
+    },
+    {
+      "name": "yaml",
+      "version": "3.1.4",
+      "license_file": "LICENSE",
+      "license_sha256": "d47b93335401b052d79a2f5a3710e4cf7b5aed782faedf84d40fbdd6eb934ec7"
+    }
+  ]
+}

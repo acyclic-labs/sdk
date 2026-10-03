@@ -1,0 +1,389 @@
+{
+  "schema": "acyclic.openapi_generator_target_receipt.v3",
+  "source": {
+    "checkout": "codex/rust-sdk-docs-source",
+    "authority": "acyclic_sdk_contract_wire::WORKERS",
+    "prototype": "rust/crates/sdk-openapi-prototype",
+    "artifact": "workers.json",
+    "artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+    "apache_metadata_overlay": {
+      "artifact": "workers-apache.json",
+      "sha256": "e7cab3ff80931fc2676aad0e716c0d71c51626d8e82d7c765e5c09ab41ed2e71",
+      "script": "research/additional-languages/openapi-targets/create-apache-metadata-overlay.ps1",
+      "script_sha256": "3f444da9122144085716b547d09be2d4ab00a3daf87d1d84b7e231450e6d0c98",
+      "scope": "info.license metadata only; routes, schemas, and Rust-owned extensions come from workers.json",
+      "license": "Apache-2.0",
+      "license_url": "https://www.apache.org/licenses/LICENSE-2.0"
+    }
+  },
+  "tool": {
+    "name": "OpenAPI Generator",
+    "release": "7.25.0",
+    "commit": "ef964b04480889ef86b56cfae84ade8ad4c91c41",
+    "jar_sha256": "41ce4f6b07f196676439d710759fa1ced7a08066d06ff1bf314681470289efae",
+    "java": "17.0.14",
+    "maven": {
+      "release": "3.9.9",
+      "java": "17.0.14",
+      "commit": "8e8579a9e76f7d015ee5ec7bfcdc97d260186937"
+    }
+  },
+  "targets": {
+    "rust": {
+      "generator": "rust",
+      "package": "acyclic_workers_http",
+      "metadata_source": "workers-apache.json",
+      "generated_files": 67,
+      "manifest_sha256": "4f225c56b3f0928c9301b2f77fcc5de9101b5a0d710979e8bfb3e16679d2de1f",
+      "cargo_lock_sha256": "0e8f837f5c5f64e07cb7fc897258f03d6ff30b9b44024a49feb9b591e279ccb1",
+      "license_metadata": {
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "evidence": "generated Cargo.toml license field"
+      },
+      "crate": {
+        "name": "acyclic_workers_http-1.0.0.crate",
+        "sha256": "17424d5bc3528dfe9ae9988d88c2da2f51c34901aa2fbc3ca1bdfe5ef0a2fa61",
+        "second_sha256": "17424d5bc3528dfe9ae9988d88c2da2f51c34901aa2fbc3ca1bdfe5ef0a2fa61",
+        "files": 63,
+        "command": "cargo package --allow-dirty --no-verify --offline",
+        "portable_outputs": [
+          "Q:/oag-rust-apache-a/target/package/acyclic_workers_http-1.0.0.crate",
+          "Q:/oag-rust-apache-b/target/package/acyclic_workers_http-1.0.0.crate"
+        ],
+        "reproduction_match": true,
+        "reproduction_difference": null
+      },
+      "reproduction": {
+        "second_manifest_sha256": "4f225c56b3f0928c9301b2f77fcc5de9101b5a0d710979e8bfb3e16679d2de1f",
+        "match": true,
+        "isolation": "both generated trees were outside the SDK Git checkout, so Cargo emitted no checkout-path .cargo_vcs_info.json"
+      },
+      "compile": "pass: cargo check --manifest-path Q:/oag-rust-apache-a/Cargo.toml --offline",
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/rust-consumer.rs",
+        "cargo_lock_sha256": "d54008bce698c52db1067c7f0e03a18a25c642989e6aefe2cf3c461eaea822f3",
+        "result": "pass: isolated Apache package consumer invoked POST /v1/workers/deployments/prod/invoke and decoded status 200, body ok, resolvedSha256 AQID",
+        "serialization": "pass: Vec<u8> [1,2,3] serialized as protobuf JSON base64 AQID",
+        "fixture_exit": 0
+      }
+    },
+    "powershell": {
+      "generator": "powershell",
+      "generator_status": "beta",
+      "module": "AcyclicWorkersHttp",
+      "runtime": "PowerShell 7.6.5",
+      "generated_files": 94,
+      "manifest_sha256": "1c076149d94cf41dba4aeabf1a8b5e4d2d4df6edd7aab7e649bec11347465543",
+      "build": "pass: generated Build.ps1 created AcyclicWorkersHttp.psd1",
+      "license_metadata": {
+        "license_uri": "https://www.apache.org/licenses/LICENSE-2.0",
+        "package_guid": "00000000-0000-0000-0000-000000000001",
+        "package_name": "AcyclicWorkersHttp",
+        "package_version": "1.0.0"
+      },
+      "reproduction": {
+        "files_compared": 94,
+        "match": true,
+        "normalization": "none; fixed packageGuid and licenseUri generator options plus deterministic byte adaptation",
+        "second_output": "Q:/sdk/tmp-openapi-integrated2/oag-powershell-adapted-repro"
+      },
+      "adaptation": {
+        "script": "research/additional-languages/openapi-targets/apply-powershell-byte-adaptation.ps1",
+        "script_sha256": "81e9aec41571cf4ae7c204a43d93ab47e4f09a7f52f6728001a062d2f3af504e",
+        "scope": "anchor-checked generated request/response model and ApiClient edits for the Rust-owned bytes fields only",
+        "request": "byte[] input is converted to RFC 4648 base64 before JSON serialization",
+        "response": "body and resolvedSha256 base64 JSON fields are decoded to byte[]"
+      },
+      "source_authority": {
+        "contract": "acyclic_sdk_contract_wire::WORKERS",
+        "artifact": "workers.json",
+        "artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+        "emitter": "rust/crates/sdk-openapi-prototype/src/lib.rs:powershell_workers_adaptation_script"
+      },
+      "local_package_artifact": {
+        "format": "zip",
+        "path": "Q:/sdk/tmp-openapi-integrated2/AcyclicWorkersHttp-1.0.0-local.zip",
+        "bytes": 48391,
+        "sha256": "716c88031a65719d02194c050db069ad2033978bc105c4d55c8bece6fd6bcb9f",
+        "install_manifest": "AcyclicWorkersHttp.psd1",
+        "install_result": "pass: expanded local package imported under PowerShell 7.6.5"
+      },
+      "live_authority": {
+        "fixture_executable": "Q:/sdk/tmp-openapi-integrated2/rust-http-fixture.exe",
+        "fixture_executable_sha256": "ea110601a50fcaddf5a6a57546e37da812012179f2b9985ff179cbf910e44a45",
+        "result": "pass: local package consumer sent POST /v1/workers/deployments/prod/invoke with direct byte[] [1,2,3]",
+        "request_body": "AQID",
+        "response_body": "b2s=",
+        "response_resolvedSha256": "AQID",
+        "uint64_result": "pass: resolvedRevision preserved decimal string 18446744073709551615"
+      },
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/powershell-consumer.ps1",
+        "result": "pass: imported built module and invoked POST /v1/workers/deployments/prod/invoke with byte[] input directly",
+        "fixture_exit": 0,
+        "serialization": "pass: byte[] [1,2,3] serialized as canonical base64 AQID without caller workaround; response body b2s= and resolvedSha256 AQID decoded to byte[]",
+        "request_body": "{\"alias\":\"prod\",\"body\":\"AQID\",\"headers\":null,\"method\":\"POST\",\"url\":\"/hello\"}"
+      },
+      "rust_emitter": {
+        "function": "powershell_workers_adaptation_script",
+        "entrypoint": "rust/crates/sdk-openapi-prototype/src/main.rs",
+        "library": "rust/crates/sdk-openapi-prototype/src/lib.rs",
+        "library_sha256": "c1707cef7f83ae358e08790a4b1c31930774bff1a1735f4d03fbccdd786730db",
+        "entrypoint_sha256": "db831dfce6feef0d9d6e46fe73b6a19f9acbbbb373fdb5dad9224c8fdbdcbf7c",
+        "command": "sdk-openapi --powershell-adaptation Q:/sdk/tmp-openapi-integrated2/oag-powershell-rust-owned.ps1",
+        "emitted_script_sha256": "4b4b90df0f9701cf12f7a0dfa16a42f7ebf75a77b4e5a45a79af3bbb293662bc",
+        "fresh_oag_output": "Q:/sdk/tmp-openapi-powershell-rust-owned-fresh",
+        "fresh_build": "pass: pinned OAG powershell generation, Rust-emitted adaptation, Build.ps1",
+        "consumer": "pass: PowerShell 7.6.5 loopback consumer sent body AQID and decoded b2s=/AQID",
+        "anchor_failure": "pass: modified request anchor exited 1 with refusing an unreviewed adaptation",
+        "uint64_fixture": "pass: live Rust fixture returned resolvedRevision=18446744073709551615; PowerShell preserved exact decimal string and decoded b2s= bytes",
+        "uint64_fixture_source": "Q:/sdk/tmp-openapi-integrated2/rust-http-uint64-fixture.rs"
+      }
+    },
+    "java": {
+      "generator": "java",
+      "library": "okhttp-gson",
+      "runtime": "Java 17.0.14",
+      "build_tool": "Maven 3.9.9",
+      "package": "dev.acyclic:acyclic-workers-http:1.0.0",
+      "metadata_source": "workers.json",
+      "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "generated_files": 117,
+      "pom_sha256": "effcda48521fff723f50bef2ed86a93f2f051dd3bcea7950cd30fa495927eb02",
+      "package_sha256": "dda0852a0c0d1214381ac4de65712133b4dc8fd6d27cfd6dd799c7a8950e2ebb",
+      "source_archive_sha256": "da5a9776fd520b31694930cd4d8c98b63ae679b05e6235788ee46f5bcd3ec909",
+      "dependency_classpath_sha256": "f34f9af8968db5ebae5f7a175417e12e3a600d22d1bfb1208c2d6f19b2e08a5c",
+      "license_metadata": {
+        "name": "Apache-2.0",
+        "url": "https://www.apache.org/licenses/LICENSE-2.0",
+        "evidence": "generated pom.xml from pinned OAG licenseName/licenseUrl options"
+      },
+      "build": "pass: mvn -DskipTests package",
+      "compile_consumer": "pass: javac against generated target/classes and Maven dependency classpath",
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/JavaConsumer.java",
+        "result": "pass: Java consumer invoked POST /v1/workers/deployments/prod/invoke against canonical Rust fixture",
+        "serialization": "pass: byte[] {1,2,3} serialized as canonical base64 AQID; response b2s= and AQID decoded to bytes",
+        "error": "pass: Rust 409 fixture mapped to ApiException code 409 with canonical error body",
+        "fixture_exit": 0,
+        "snippet_sha256": "ad89d92f889a37113d0bf89c4dc86d0aaaf70931a768f27875d22f3d2e1b3f9e"
+      },
+      "uint64_evidence": "generated InvokeResponse resolvedRevision preserved decimal string 18446744073709551615 in consumer JSON"
+    },
+    "perl": {
+      "generator": "perl",
+      "runtime": "Strawberry Perl 5.38.0",
+      "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "metadata_source": "workers.json",
+      "generated_files": 93,
+      "cpanfile_sha256": "ba737d35b89fd166de51a409014af56d92b5de6a413c7232837c0d0505586f27",
+      "adaptation": {
+        "script": "research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1",
+        "script_sha256": "5a0ddeb0d3c8bce69e5dd99bf7b324862de0f17258ddab1dfdabf975acfd2486",
+        "scope": "exact cpanfile JSON dependency upper-bound relaxation from >=2.00,<2.80 to >=2.00; no generated route or model edits",
+        "reason": "current compatible JSON module is 4.10"
+      },
+      "dependencies": {
+        "command": "cpanm --local-lib=Q:/sdk/tmp-openapi-extra/perl-local2 --installdeps .",
+        "prefix": "Q:/sdk/tmp-openapi-extra/perl-local2",
+        "result": "pass: URI::Query and Log::Any installed; system JSON 4.10 satisfied relaxed requirement"
+      },
+      "compile": "pass: generated DefaultApi.pm perl -c",
+      "license_metadata": {
+        "name": null,
+        "url": null,
+        "evidence": "Perl OAG template emits no package license field; Apache source remains recorded by workers-apache.json overlay"
+      },
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/perl-consumer.pl",
+        "result": "pass: Perl consumer invoked POST /v1/workers/deployments/prod/invoke against canonical Rust fixture",
+        "serialization": "pass at JSON string boundary with body AQID; generated Perl model exposes bytes as base64 strings, so no native byte-array claim",
+        "error": "pass: Rust 409 fixture mapped to generated Perl API error path",
+        "fixture_exit": 0,
+        "error_snippet": "research/additional-languages/openapi-targets/PerlErrorConsumer.pl",
+        "error_snippet_sha256": "26aa9f9c0b9acfe331be2c119b79e6264a610c37a7c7fc7b25aa3f34d3f100ef",
+        "snippet_sha256": "638bdac1101c3550f45823f8cc07f4ca20b09dc1bf7aab2588f527f10a557faf"
+      },
+      "uint64_evidence": "generated InvokeResponse resolvedRevision preserved decimal string 18446744073709551615 in consumer JSON"
+    },
+    "c": {
+      "generator": "c",
+      "runtime": "LLVM clang 17.0.2",
+      "build_tools": {
+        "cmake": "3.26.4",
+        "ninja": "1.11.1"
+      },
+      "metadata_source": "workers.json",
+      "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "generated_files": 130,
+      "cmake_lists_sha256": "1b7cf6763b85e145880c9883f67f397bc3fa0d15e18ff7c4634d7d1684edc070",
+      "curl_bootstrap": {
+        "version": "8.22.0_2",
+        "archive_url": "https://curl.se/windows/dl-8.22.0_2/curl-8.22.0_2-win64-mingw.zip",
+        "archive_sha256": "7c8c6b953b4eb2953d2bdc08cca1d5f09a964e9f86c361693559400c9a6d6db0",
+        "include": "Q:/sdk/tmp-openapi-extra/curl-bootstrap/expanded/curl-8.22.0_2-win64-mingw/include",
+        "library": "Q:/sdk/tmp-openapi-extra/curl-bootstrap/expanded/curl-8.22.0_2-win64-mingw/lib/libcurl.dll.a",
+        "license": "Q:/sdk/tmp-openapi-extra/curl-bootstrap/expanded/curl-8.22.0_2-win64-mingw/COPYING.txt"
+      },
+      "adaptation": {
+        "script": "research/additional-languages/openapi-targets/apply-c-compile-adaptation.ps1",
+        "script_sha256": "3946fb5ef206e2a8e32d2ba0c4c42f33deec1ecce864a10e09e6de7d94279437",
+        "scope": "anchor-checked local-name repair for one OpenAPI Generator C model constructor collision; no route, schema, or wire behavior changes",
+        "generated_file": "model/acyclic_workers_v1_job_observation.c",
+        "generated_file_sha256_after_adaptation": "174f1a28ba6e8b853a39de2569d991bba16f17e7bb244d9f0a4a87aa54c5c1e1",
+        "probe_result": "pass: fresh anchor probe transformed once; missing-anchor rerun is refused",
+        "probe_output_sha256": "4e7f2bbec648a384ed15e6a19089caf98407383b3c171cd8d9db910a8ccc263d"
+      },
+      "build": {
+        "result": "pass: CMake Ninja configure and build with clang and official curl development archive",
+        "library_dll_sha256": "008dcd55600f93dbd817023ce16b9989bbc930b2cb6383bce7949dc0df27aba1",
+        "library_import_sha256": "48ffeea7fb37ccdba74e517075a65c3ca41863eae2d4de7ea4e945cda7388dc3"
+      },
+      "license_metadata": {
+        "manifest": "research/additional-languages/openapi-targets/c-install-license-manifest.json",
+        "manifest_sha256": "65e8f3793ef448554f44271531191a21db8d67d31782c2911a0c53e764c3ecd3",
+        "package_metadata": "Apache-2.0 source-contract scope recorded by source artifact hash",
+        "components": [
+          {
+            "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+            "spdx": "Apache-2.0",
+            "scope": "generated contract and Rust adapter"
+          },
+          {
+            "spdx": "MIT",
+            "license_sha256": "163766832b15cc9c90d593216360c67af579b8b36932b297fca2aeb61544de2f",
+            "scope": "cJSON bundled runtime"
+          },
+          {
+            "spdx": "curl",
+            "license_sha256": "6a81a7f1fac418802699bb72ed22ab1cf3531722024dc5b894f30d89d87a136b",
+            "scope": "libcurl"
+          },
+          {
+            "spdx": "curl",
+            "license_sha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681",
+            "scope": "official curl archive"
+          }
+        ]
+      },
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/c-consumer.c",
+        "snippet_sha256": "b8c1a5f060c3c2946ef55b424130f6a8d7b8cfc928648157463b9607918776a2",
+        "result": "pass: clang consumer invoked POST /v1/workers/deployments/prod/invoke against canonical Rust fixtures",
+        "serialization": "pass: char* byte boundary sent canonical base64 AQID; response body b2s= and resolvedSha256 AQID were preserved",
+        "uint64": "pass: resolvedRevision preserved decimal string 18446744073709551615",
+        "error": "pass: canonical Rust 409 fixture returned response_code 409 and no success model",
+        "fixture_exits": [
+          0,
+          0,
+          0
+        ]
+      },
+      "rust_stage": {
+        "entrypoint": "sdk-openapi --c-adaptation",
+        "library": "rust/crates/sdk-openapi-prototype/src/lib.rs",
+        "contract_guard": "acyclic.workers.v1",
+        "source": "Rust-owned C_WORKERS_ADAPTATION_SCRIPT",
+        "script_sha256": "3946fb5ef206e2a8e32d2ba0c4c42f33deec1ecce864a10e09e6de7d94279437"
+      },
+      "portable_artifact": {
+        "manifest": "research/additional-languages/openapi-targets/c-portable-manifest.json",
+        "manifest_sha256": "fb420bbb6da47cfc763b003111242ebef14e73fbd7f4ce891c08fbf741027e03",
+        "archive": "Q:/sdk/tmp-openapi-extra/c-portable.zip",
+        "bytes": 69903,
+        "sha256": "7befc41251761d525f73941e6a5bb4e954cefc0629082916e2c8cd09e18b4f33",
+        "install_result": "pass: cmake --install prefix contains DLL, import library, headers, CMake config, and LICENSES.json"
+      }
+    },
+    "dart": {
+      "generator": "dart",
+      "runtime": "Dart 3.8.3 stable",
+      "runtime_executable": "dart/.toolchain/dart-sdk/bin/dart.exe",
+      "runtime_executable_sha256": "cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c",
+      "metadata_source": "workers.json",
+      "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "generated_files": 64,
+      "pubspec_lock_sha256": "c4424e9c1d72e2f02353fa9ec7824cba85d85b442b2557982457c7826db06041",
+      "build": "pass: dart pub get --offline and dart analyze --no-fatal-warnings after Rust-owned adaptation",
+      "compile": "pass: dart compile exe tool/semantic_consumer.dart",
+      "license_metadata": {
+        "manifest": "research/additional-languages/openapi-targets/dart-license-manifest.json",
+        "manifest_sha256": "fffa07a12bf455a0540c8cf6da612f94d244282025df4f3ec42427b472df998e",
+        "package_metadata": "pubspec license: Apache-2.0 emitted by Rust-owned adaptation",
+        "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+        "dependency_evidence": "resolved pubspec.lock packages with local LICENSE file hashes"
+      },
+      "consumer": {
+        "snippet": "research/additional-languages/openapi-targets/dart-consumer.dart",
+        "snippet_sha256": "9e3c137a9323010dfc64e904a65fd2d5050dc8c58775d01cdaf4f5d89812ccc4",
+        "compiled_executable_sha256": "8bc3d0e5e7c12d8659f6294cd3d7d314fe3ded08feaa0a09b772b498ba28de0d",
+        "result": "pass: compiled Dart consumer invoked POST /v1/workers/deployments/prod/invoke against canonical Rust fixtures",
+        "serialization": "pass: JSON boundary sent canonical base64 AQID; response body b2s= and resolvedSha256 AQID were preserved",
+        "uint64": "pass: resolvedRevision preserved decimal string 18446744073709551615",
+        "error": "pass: canonical Rust 409 fixture mapped to ApiException code 409",
+        "fixture_exits": [
+          0,
+          0,
+          0
+        ]
+      },
+      "generated_test_note": "Rust-owned adaptation pins test >=1.31.0 <2.0.0 and emitted package AOT smoke test passes. dart test remains unavailable on Dart 3.8.3 because frontend_server.dart.snapshot is absent.",
+      "adaptation": {
+        "script": "research/additional-languages/openapi-targets/apply-dart-runtime-adaptation.ps1",
+        "script_sha256": "9ccb3de3282d2ea771ccae4a5773e5986e2d6761193ec9369d411a4bc28b0261",
+        "scope": "Rust-owned anchor-checked empty-enum repair, package license field, test runner pin, and emitted package AOT smoke test",
+        "rust_stage": {
+          "entrypoint": "sdk-openapi --dart-adaptation",
+          "library": "rust/crates/sdk-openapi-prototype/src/lib.rs",
+          "contract_guard": "acyclic.workers.v1",
+          "source": "Rust-owned DART_WORKERS_ADAPTATION_SCRIPT"
+        }
+      },
+      "generated_package_smoke": {
+        "source": "tool/rust_owned_package_smoke.dart emitted by Rust-owned Dart adaptation",
+        "compile": "pass: dart compile exe",
+        "executable_sha256": "0e84f28c38e947ccda8b1a88bfc471e74204d27dd00785b2117b5783e3fccc15",
+        "checks": "generated request/response base64 JSON round trip, uint64 decimal string 18446744073709551615, and empty enum model serialization"
+      },
+      "portable_artifact": {
+        "manifest": "research/additional-languages/openapi-targets/dart-portable-manifest.json",
+        "manifest_sha256": "7185e7c536a2ad0baafea456bcdc04f6bbe4a47e60a9eadade30798292a89565",
+        "archive": "Q:/sdk/tmp-openapi-extra/dart-portable.zip",
+        "bytes": 75817,
+        "sha256": "d7d1b3792ef65f881e520fa3cb1624a3bff252505ad0ab8201e1934a95f78e90",
+        "install_result": "pass: curated archive contains generated lib/test/tool sources, pubspec, lockfile, smoke test, and LICENSES.json"
+      }
+    }
+  },
+  "limits": [
+    "OpenAPI Generator 7.25.0 outputs remain target-generated; Rust owns only contract-bound C/Dart adaptations and checks.",
+    "C package license manifest records generated source scope, cJSON MIT, libcurl/curl scopes; no global dependency license claim.",
+    "Dart package license manifest records Apache-2.0 package metadata and every resolved lock package LICENSE hash; dart test remains unavailable because Dart 3.8.3 has no frontend_server.dart.snapshot even with test 1.31.0, so the Rust-emitted AOT package smoke test is the package test evidence."
+  ],
+  "unqualified": {
+    "c": {
+      "generator": "c",
+      "status": "license_metadata_pending",
+      "evidence": "Technical CMake/Ninja compile and live bytes, uint64, and 409 checks pass; package-level license metadata is not emitted by the generated C package.",
+      "license_metadata": {
+        "status": "pending",
+        "evidence": "CMake package has libcurl.licence but no package-level license field; dependency COPYING is recorded in targets.c.curl_bootstrap."
+      }
+    },
+    "dart": {
+      "generator": "dart",
+      "status": "license_metadata_pending",
+      "evidence": "Stable Dart 3.8.3 compiled consumer passes bytes, uint64, and 409 checks; generated test constraint remains incompatible with the SDK frontend snapshot layout.",
+      "license_metadata": {
+        "status": "pending",
+        "evidence": "Generated Dart package has no package-level license field; source overlay remains separate."
+      }
+    },
+    "bootstrap_report": {
+      "path": "research/additional-languages/openapi-targets/bootstrap-pending-targets.md",
+      "sha256": "2e8b921c240810513f29386a684ab06c4c934f813da32f39b6e84f5e9ed76257",
+      "scope": "C compiler/curl bootstrap and stable Dart runtime evidence; technical C and Dart consumers are now qualified with per-target license/test limitations recorded."
+    }
+  }
+}

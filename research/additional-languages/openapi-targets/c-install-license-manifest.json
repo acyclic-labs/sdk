@@ -1,0 +1,36 @@
+{
+  "schema": "openapi-extra-license-manifest/v1",
+  "target": "c",
+  "package_metadata": {
+    "source": "Rust-owned OpenAPI Workers contract adaptation",
+    "source_artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+    "spdx": "Apache-2.0",
+    "metadata_basis": "source contract artifact and explicit per-component files; no global dependency license claim"
+  },
+  "components": [
+    {
+      "evidence": "workers source artifact hash plus Rust-owned adapter",
+      "artifact_sha256": "090821c087d43a6813e6a0457b448303fd131fd7e9fb1fc76301261db4551a77",
+      "scope": "generated contract and adapter",
+      "spdx": "Apache-2.0"
+    },
+    {
+      "sha256": "163766832b15cc9c90d593216360c67af579b8b36932b297fca2aeb61544de2f",
+      "file": "licenses/cJSON.licence",
+      "scope": "cJSON bundled runtime",
+      "spdx": "MIT"
+    },
+    {
+      "sha256": "6a81a7f1fac418802699bb72ed22ab1cf3531722024dc5b894f30d89d87a136b",
+      "file": "licenses/libcurl.licence",
+      "scope": "libcurl development/runtime",
+      "spdx": "curl"
+    },
+    {
+      "sha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681",
+      "file": "licenses/curl-COPYING.txt",
+      "scope": "official curl archive license",
+      "spdx": "curl"
+    }
+  ]
+}

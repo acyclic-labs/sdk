@@ -1,0 +1,230 @@
+{
+  "schema": "openapi-extra-portable-manifest/v1",
+  "target": "c",
+  "archive": "Q:/sdk/tmp-openapi-extra/c-portable.zip",
+  "archive_bytes": 69903,
+  "archive_sha256": "7befc41251761d525f73941e6a5bb4e954cefc0629082916e2c8cd09e18b4f33",
+  "install_prefix": "Q:/sdk/tmp-openapi-extra/c-install",
+  "files": [
+    {
+      "path": "LICENSES.json",
+      "bytes": 1328,
+      "sha256": "65e8f3793ef448554f44271531191a21db8d67d31782c2911a0c53e764c3ecd3"
+    },
+    {
+      "path": "include/acyclic_workers_api/api/DefaultAPI.h",
+      "bytes": 2779,
+      "sha256": "1490864d5ca6424eda69f571899ecc9b8b8deb51facb9218d0aedaf045d8a859"
+    },
+    {
+      "path": "include/acyclic_workers_api/external/cJSON.h",
+      "bytes": 14565,
+      "sha256": "cba352e21c29fc299b18c07f4eae5df0c179df05f0f42134ac9d2bfa06f8fdef"
+    },
+    {
+      "path": "include/acyclic_workers_api/include/apiClient.h",
+      "bytes": 2655,
+      "sha256": "a4c04f94b52bfdd73a31d705eedd5ef616d7c4d4885e89ef398474ee4218f36c"
+    },
+    {
+      "path": "include/acyclic_workers_api/include/binary.h",
+      "bytes": 409,
+      "sha256": "b5009186cd749fb6e238f269dd7d0323519f8bca4ac28142240a8024e82faf09"
+    },
+    {
+      "path": "include/acyclic_workers_api/include/keyValuePair.h",
+      "bytes": 372,
+      "sha256": "8dc9c684a6d18e1179153072c337e08c21b7e2c12875d75d84a3ba89570194f1"
+    },
+    {
+      "path": "include/acyclic_workers_api/include/list.h",
+      "bytes": 1429,
+      "sha256": "b91c8029171009ce0401af47dbe1357ed918ae389c0ed96f7640d48e1829aac2"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_cancel_job_request.h",
+      "bytes": 1328,
+      "sha256": "b66dcb3c7b71bd04eea428acaca4f4bfa8afbd0dd043ca8100fb83ffef60385f"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_cancel_job_response.h",
+      "bytes": 1404,
+      "sha256": "8c3f99020e7508481beba8f5c7302fe662d5228802868b629da6d265483de7a6"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_code_version.h",
+      "bytes": 1231,
+      "sha256": "22e53e069f80b89be4f988075fd89684561ea9efe54f30ab44b0bfb17467f808"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_deployment.h",
+      "bytes": 1329,
+      "sha256": "2fafbe93f776d0ca22edfe0839d86a1801d47e2b8e37707263c0f6c63674ae19"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_error_code.h",
+      "bytes": 1084,
+      "sha256": "11443f61b58dfffc61da9aa12cbffb3200a48e4e2093295cd57f310d6a55a5b2"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_error.h",
+      "bytes": 1154,
+      "sha256": "85ef269401d673c09f321af7927bf5a0adeeb5b20f7d8c0eb2f3255cb32b80fa"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_header.h",
+      "bytes": 1102,
+      "sha256": "fd6b7e607fafecc6b8b5027d817b253ec7bdb9fea16b87206b948db502f0bb29"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_inspect_job_request.h",
+      "bytes": 1280,
+      "sha256": "db4b94a33670a95515883cdeff569230d82b51fce1afd3d5a6c163258255a9a7"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_inspect_job_response.h",
+      "bytes": 1416,
+      "sha256": "648c43e37efbadb8b41b92e5dc90e74e579ec049de93be4b6ffc176e531e7f17"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_invoke_deployment_request.h",
+      "bytes": 1653,
+      "sha256": "f81d279048dce0432195fd1641a6542844c9fa92754db6fc59d243d631a24c06"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_invoke_response.h",
+      "bytes": 1510,
+      "sha256": "959b4ec52fb6cc3dac52214b4d2a5a666f827848b6e9298759dc5a2d8f1ff23d"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_invoke_version_request.h",
+      "bytes": 1613,
+      "sha256": "caee2a3c48bca450cc32b55ba0449c737c505f68a36e3a5592931786c4773e73"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_job_limits.h",
+      "bytes": 1258,
+      "sha256": "8780beb39172d272768923b0b54537814f87e997bbe96823cb6562ca232a1d34"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_job_observation.h",
+      "bytes": 1773,
+      "sha256": "d250bef4a37a5189b5574355d0463498c74327f76ec6a957eee90405893f9c27"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_job_result.h",
+      "bytes": 1128,
+      "sha256": "35d5c3b7645accb7660ac8d7bedad47fe7ece2cbde7f8c27eb6ab35a89391afe"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_job_state.h",
+      "bytes": 1049,
+      "sha256": "c44f15721fa53bbb1fb7ea604c742271c99985e0e8ae201086b33a57aeb547ee"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_job_target.h",
+      "bytes": 1219,
+      "sha256": "56a6a801c5e593d7e044d0d4fdf5a161cda7d7b48c93b9bf17fc288a2c7d1715"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_object_ref.h",
+      "bytes": 1173,
+      "sha256": "bdfe38a69829e81fa48008587ab17acadfb66427fa4c545eeb3ae121ac5ebf22"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_payload.h",
+      "bytes": 1238,
+      "sha256": "f6ce46aac3f80985f4c8ab8b6363bfbdb1256e9f51626449940c03c0097dfdaa"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_publish_version_request.h",
+      "bytes": 1547,
+      "sha256": "be9d1e3f50a11fad9790b69aaede588db73c37d9114bda16b9cc810a9a760f4a"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_publish_version_response.h",
+      "bytes": 1503,
+      "sha256": "f4dc6ebfe89e2cbf59142a2f81dad2f2692e80dcc245ad442af4c3cef6534dca"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_retry_policy.h",
+      "bytes": 1228,
+      "sha256": "d330d6706f4f93292673b20254c25d0b0826f650ff80b1a30e6ca5329e2e3049"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_select_deployment_request.h",
+      "bytes": 1634,
+      "sha256": "f978305fc4bb4fbfe54b826ae1d1d5caf02d8c8b63c20e0539e6f1b78ce272a7"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_select_deployment_response.h",
+      "bytes": 1558,
+      "sha256": "2ad1efbc5a8d41d7100f33e45262c5e757a920e9501a176f9644e0b10168e6b4"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_submit_job_request.h",
+      "bytes": 1895,
+      "sha256": "a653a262f7f27b066129a0bbd39f17e960077a2631670c8bd32cbab6c3e07d8a"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/acyclic_workers_v1_submit_job_response.h",
+      "bytes": 1384,
+      "sha256": "4f9711298348ab25ab1bf7198f2d1e89facd2500b517593b4ab0ef39ff3c274a"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/any_type.h",
+      "bytes": 81,
+      "sha256": "64498b0e10a50abddd579d55e5fb2f22e56db10a6c2e620ec59a06475106efad"
+    },
+    {
+      "path": "include/acyclic_workers_api/model/object.h",
+      "bytes": 452,
+      "sha256": "cd7751c5c7fcc82639dcdaa3988319d3bb1e6172750e8a5b93d4fc4d51eccab9"
+    },
+    {
+      "path": "lib/acyclic_workers_api.dll",
+      "bytes": 113152,
+      "sha256": "008dcd55600f93dbd817023ce16b9989bbc930b2cb6383bce7949dc0df27aba1"
+    },
+    {
+      "path": "lib/acyclic_workers_api.lib",
+      "bytes": 50224,
+      "sha256": "48ffeea7fb37ccdba74e517075a65c3ca41863eae2d4de7ea4e945cda7388dc3"
+    },
+    {
+      "path": "lib/cmake/acyclic_workers_api/acyclic_workers_apiConfig.cmake",
+      "bytes": 107,
+      "sha256": "411dda9fe5de34f114ea4190fe0cb5ea4bb27d436dcedf0d9a5044135f26eb8a"
+    },
+    {
+      "path": "lib/cmake/acyclic_workers_api/acyclic_workers_apiConfigVersion.cmake",
+      "bytes": 1904,
+      "sha256": "e3e9219e2b7b51f171d4897e9180cd072ce8a9214e5b82bc6353e995cf2924fe"
+    },
+    {
+      "path": "lib/cmake/acyclic_workers_api/acyclic_workers_apiTargets-debug.cmake",
+      "bytes": 1078,
+      "sha256": "30fa77fa1a96da4c4616c27afa74a0025930ef283de858d2bbf856080411206d"
+    },
+    {
+      "path": "lib/cmake/acyclic_workers_api/acyclic_workers_apiTargets.cmake",
+      "bytes": 4382,
+      "sha256": "6877b862cfb052f792a8c9620cc331848158f9f9525181629e52313a355bae80"
+    },
+    {
+      "path": "licenses/cJSON.licence",
+      "bytes": 1083,
+      "sha256": "163766832b15cc9c90d593216360c67af579b8b36932b297fca2aeb61544de2f"
+    },
+    {
+      "path": "licenses/curl-COPYING.txt",
+      "bytes": 1088,
+      "sha256": "82f2f4427d6545ee5aaac4f0b80428da6cc8ba41c2cf5da3a03680ec327b9681"
+    },
+    {
+      "path": "licenses/libcurl.licence",
+      "bytes": 1086,
+      "sha256": "6a81a7f1fac418802699bb72ed22ab1cf3531722024dc5b894f30d89d87a136b"
+    }
+  ]
+}
