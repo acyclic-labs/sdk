@@ -18,8 +18,8 @@ use crate::{
     },
     live::{TaskGroup, TaskHandle},
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
-        ModelRequest,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelOptionPolicy,
+        ModelProvider, ModelRequest,
     },
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
@@ -6262,19 +6262,29 @@ mod tests {
 
     struct CompletedModel {
         requests: std::sync::Mutex<Vec<ModelRequest>>,
+        manifests: std::sync::Mutex<Vec<crate::model_input::ModelInputManifest>>,
+        policy: ModelOptionPolicy,
     }
 
     impl ModelProvider for CompletedModel {
+        fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+            Some(&self.policy)
+        }
+
         fn generate<'a>(
             &'a self,
             prepared: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let manifest = prepared.manifest().clone();
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(
                     "test model lock poisoned".into(),
                 ))]));
             };
             requests.push(prepared.into_request());
+            if let Ok(mut manifests) = self.manifests.lock() {
+                manifests.push(manifest);
+            }
             Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
                 metadata: Value::Null,
             })]))
@@ -6291,11 +6301,35 @@ mod tests {
     #[tokio::test]
     async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected() -> Result<()>
     {
+        let option_schema = serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+        });
+        let root_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.root-model-options".into(),
+                version: "1".into(),
+                digest: [51; 32],
+            },
+            option_schema.clone(),
+        )?;
+        let child_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.child-model-options".into(),
+                version: "2".into(),
+                digest: [52; 32],
+            },
+            option_schema,
+        )?;
         let root_provider = Arc::new(CompletedModel {
             requests: std::sync::Mutex::new(Vec::new()),
+            manifests: std::sync::Mutex::new(Vec::new()),
+            policy: root_policy.clone(),
         });
         let child_provider = Arc::new(CompletedModel {
             requests: std::sync::Mutex::new(Vec::new()),
+            manifests: std::sync::Mutex::new(Vec::new()),
+            policy: child_policy.clone(),
         });
         let scope = RuntimeScope::new(Capabilities::new(["model:generate"]), Limits::default())?;
         let harness = AgentHarness::new(
@@ -6306,7 +6340,7 @@ mod tests {
             None,
         )?
         .bind_model(
-            Model::new("root", "model", "1", Value::Null)?,
+            Model::new("root", "model", "1", serde_json::json!({}))?,
             root_provider.clone(),
         )?;
         let context = TaskContext {
@@ -6326,7 +6360,7 @@ mod tests {
         let child = context.scoped_model(
             Capabilities::new(["model:generate"]),
             Limits::default(),
-            Model::new("child", "model", "2", Value::Null)?,
+            Model::new("child", "model", "2", serde_json::json!({}))?,
             child_provider.clone(),
         )?;
         child.model_events(vec![message.clone()], None).await?;
@@ -6353,6 +6387,32 @@ mod tests {
                 .model
                 .provider,
             "child"
+        );
+        let root_manifests = root_provider
+            .manifests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(root_manifests.len(), 1);
+        assert_eq!(
+            root_manifests[0].model_option_policy,
+            Some(root_policy.identity.clone())
+        );
+        assert_eq!(
+            root_manifests[0].model_option_schema_digest,
+            Some(root_policy.schema_digest()?)
+        );
+        let child_manifests = child_provider
+            .manifests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert_eq!(child_manifests.len(), 1);
+        assert_eq!(
+            child_manifests[0].model_option_policy,
+            Some(child_policy.identity.clone())
+        );
+        assert_eq!(
+            child_manifests[0].model_option_schema_digest,
+            Some(child_policy.schema_digest()?)
         );
         let foreign = FileRef::new(
             VolumeRef::new(

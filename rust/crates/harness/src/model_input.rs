@@ -1252,6 +1252,176 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn prefix_provider_rejects_same_options_with_a_different_policy_before_dispatch(
+    ) -> Result<()> {
+        use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
+        use futures::{future::BoxFuture, stream::BoxStream, StreamExt};
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        struct PolicyProvider {
+            policy: ModelOptionPolicy,
+            calls: AtomicUsize,
+        }
+        impl ModelProvider for PolicyProvider {
+            fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+                Some(&self.policy)
+            }
+            fn generate<'a>(&'a self, _: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(futures::stream::empty())
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+
+        let schema = json!({
+            "type": "object",
+            "additionalProperties": false,
+        });
+        let first_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.model-options".into(),
+                version: "first".into(),
+                digest: [31; 32],
+            },
+            schema.clone(),
+        )?;
+        let second_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.model-options".into(),
+                version: "second".into(),
+                digest: [32; 32],
+            },
+            schema,
+        )?;
+        let request = request()?;
+        let parent = PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            Limits::default(),
+            Some(&first_policy),
+        )?;
+        let prefix = FrozenModelPrefix::capture(&parent, parent.request().messages.len())?;
+        let downstream = Arc::new(PolicyProvider {
+            policy: second_policy.clone(),
+            calls: AtomicUsize::new(0),
+        });
+        let provider =
+            PrefixBoundModelProvider::new(prefix, Limits::default(), downstream.clone())?;
+        let supplied = PreparedModelInput::prepare_with_policy(
+            request,
+            Limits::default(),
+            Some(&second_policy),
+        )?;
+        let result = provider
+            .generate(supplied)
+            .next()
+            .await
+            .expect("prefix rejection event");
+        assert!(result.is_err());
+        assert_eq!(downstream.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_reconciliation_receives_original_prepared_bytes_manifest_and_policy(
+    ) -> Result<()> {
+        use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
+        use futures::{future::BoxFuture, stream::BoxStream};
+        use std::sync::{Arc, Mutex};
+
+        struct ReconciliationCapture {
+            policy: ModelOptionPolicy,
+            seen: Mutex<Vec<(Vec<u8>, ModelInputManifest)>>,
+        }
+        impl ModelProvider for ReconciliationCapture {
+            fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+                Some(&self.policy)
+            }
+            fn generate<'a>(&'a self, _: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+                Box::pin(futures::stream::empty())
+            }
+            fn reconcile_admitted<'a>(
+                &'a self,
+                prepared: PreparedModelInput,
+                attempt: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                let bytes = prepared.bytes().to_vec();
+                let manifest = prepared.manifest().clone();
+                Box::pin(async move {
+                    if manifest.request_digest != attempt.request_digest {
+                        return Err(Error::Conflict(
+                            "reconciliation request digest changed".into(),
+                        ));
+                    }
+                    self.seen
+                        .lock()
+                        .map_err(|_| Error::Storage("capture lock poisoned".into()))?
+                        .push((bytes, manifest));
+                    Ok(None)
+                })
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+
+        let policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.restart-options".into(),
+                version: "7".into(),
+                digest: [41; 32],
+            },
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+            }),
+        )?;
+        let prepared =
+            PreparedModelInput::prepare_with_policy(request()?, Limits::default(), Some(&policy))?;
+        let expected_bytes = prepared.bytes().to_vec();
+        let expected_manifest = prepared.manifest().clone();
+        let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
+        let downstream = Arc::new(ReconciliationCapture {
+            policy: policy.clone(),
+            seen: Mutex::new(Vec::new()),
+        });
+        let provider =
+            PrefixBoundModelProvider::new(prefix, Limits::default(), downstream.clone())?;
+        provider
+            .reconcile_admitted(
+                prepared.clone(),
+                ModelAttempt {
+                    operation_id: crate::OperationId::new(),
+                    step: 0,
+                    request_digest: prepared.manifest().request_digest,
+                    observed: Vec::new(),
+                },
+            )
+            .await?;
+        let seen = downstream
+            .seen
+            .lock()
+            .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
+        assert_eq!(seen.as_slice(), &[(expected_bytes, expected_manifest)]);
+        assert_eq!(seen[0].1.model_option_policy, Some(policy.identity.clone()));
+        assert_eq!(
+            seen[0].1.model_option_schema_digest,
+            Some(policy.schema_digest()?)
+        );
+        Ok(())
+    }
+
     #[cfg(feature = "filesystem")]
     #[tokio::test]
     async fn production_batch_pins_text_and_all_ordered_results() -> Result<()> {

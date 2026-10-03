@@ -119,7 +119,8 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    pub(crate) fn new(
+    /// Binds the host-owned interaction ledger to its operator issuer.
+    pub fn new(
         host: Arc<FilesystemInteractionHost<P, A, O>>,
         issuer: AuthorityIssuer,
     ) -> Self {

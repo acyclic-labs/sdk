@@ -5,6 +5,7 @@
 use acyclic_fs::Fs;
 use acyclic_harness::filesystem::{
     FilesystemExecutionJournal, FilesystemHost, FilesystemInteractionHost,
+    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
 };
 use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
@@ -541,8 +542,8 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
-        host,
-        private,
+        host.clone(),
+        private.clone(),
         issuer.verifier(),
         scope,
         4_096,
@@ -803,7 +804,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     )
     .await?;
     let journal = FilesystemExecutionJournal::new(
-        stream,
+        stream.clone(),
         host,
         private,
         issuer.verifier(),
@@ -822,19 +823,43 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let operation = OperationId::from_bytes([14; 16]);
     let denied_id = InteractionId::from_bytes([15; 16]);
     let approved_id = InteractionId::from_bytes([16; 16]);
-    let responder = issuer.root(
-        "human",
-        Capabilities::new([
-            "interaction:resolve".to_owned(),
-            format!("interaction:respond:{denied_id}"),
-            format!("interaction:respond:{approved_id}"),
-        ]),
+    let operator = InteractionOperatorAuthorizer::new(
+        Arc::new(FilesystemInteractionHost::new(
+            stream.clone(),
+            host.clone(),
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "tool-owner".into(),
+            },
+            issuer.verifier(),
+            SchemaRegistry::new(),
+            scope.clone(),
+            private.clone(),
+            4_096,
+        )?),
+        issuer.clone(),
     );
     let approval = Interaction::approval("Install echo", operation, digest)?;
     journal
         .open_interaction(denied_id, approval.clone())
         .await?;
     journal.open_interaction(approved_id, approval).await?;
+    let denied_scope = operator
+        .issue_scope(&InteractionApprovalAuthorization {
+            interaction_id: denied_id,
+            operation_id: operation,
+            action_digest: digest,
+            approved: false,
+        })
+        .await?;
+    let approved_scope = operator
+        .issue_scope(&InteractionApprovalAuthorization {
+            interaction_id: approved_id,
+            operation_id: operation,
+            action_digest: digest,
+            approved: true,
+        })
+        .await?;
     let tool = Tool {
         definition,
         executor: Arc::new(NoopTool),
@@ -861,7 +886,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 approved: false,
                 reason: None,
             },
-            &responder,
+            &denied_scope,
         )
         .await?;
     assert!(
@@ -884,7 +909,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
                 approved: true,
                 reason: None,
             },
-            &responder,
+            &approved_scope,
         )
         .await?;
     assert!(
