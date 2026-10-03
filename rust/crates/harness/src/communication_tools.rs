@@ -22,6 +22,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use tokio::sync::watch;
 
 /// Stable model-visible name for explicit parent/child messages.
 pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
@@ -29,6 +30,15 @@ pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
 pub const WAIT_TOOL_NAME: &str = "swarm.wait";
 /// Revision of both model-facing communication contracts.
 pub const TOOL_REVISION: &str = "1";
+
+/// Runtime-owned cancellation source for authenticated wait calls.
+///
+/// Implementations return a receiver for the admitted task's cancellation
+/// scope. This is runtime provenance and never enters model-visible content.
+pub trait WaitCancellationSource: Send + Sync {
+    /// Returns a live cancellation receiver for one admitted task.
+    fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>>;
+}
 
 /// Message target selected by the model.  The durable layer verifies the
 /// selected relationship against immutable admissions before publishing.
@@ -176,7 +186,7 @@ pub enum WaitToolOutput {
 
 /// Returns the two model-facing communication tools bound to one durable host.
 pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Result<ToolRegistry> {
-    communication_tools_with_wait_store(host, None)
+    communication_tools_with_wait_store_and_cancellation(host, None, None)
 }
 
 /// Returns the communication tools with owner-retained wait persistence.
@@ -188,12 +198,23 @@ pub fn communication_tools_with_wait_store(
     host: Arc<dyn crate::runtime::DurableTaskHost>,
     waits: Option<Arc<dyn DurableWaitStore>>,
 ) -> Result<ToolRegistry> {
+    communication_tools_with_wait_store_and_cancellation(host, waits, None)
+}
+
+/// Returns communication tools with owner-retained wait persistence and the
+/// task's authenticated cancellation source.
+pub fn communication_tools_with_wait_store_and_cancellation(
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+    cancellation: Option<Arc<dyn WaitCancellationSource>>,
+) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         definition: message_definition(),
         executor: Arc::new(CommunicationExecutor {
             host: host.clone(),
             waits: waits.clone(),
+            cancellation: cancellation.clone(),
             kind: CommunicationToolKind::Message,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -203,6 +224,7 @@ pub fn communication_tools_with_wait_store(
         executor: Arc::new(CommunicationExecutor {
             host,
             waits,
+            cancellation,
             kind: CommunicationToolKind::Wait,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -245,6 +267,7 @@ enum CommunicationToolKind {
 struct CommunicationExecutor {
     host: Arc<dyn crate::runtime::DurableTaskHost>,
     waits: Option<Arc<dyn DurableWaitStore>>,
+    cancellation: Option<Arc<dyn WaitCancellationSource>>,
     kind: CommunicationToolKind,
 }
 
@@ -307,7 +330,11 @@ impl CommunicationExecutor {
                     Some(waits) => communication.with_wait_store(waits.clone()),
                     None => communication,
                 };
-                let completion = communication.wait(request, None).await?;
+                let cancellation = self
+                    .cancellation
+                    .as_ref()
+                    .and_then(|source| source.receiver(waiter));
+                let completion = communication.wait(request, cancellation).await?;
                 Ok(ToolResult {
                     value: serde_json::to_value(wait_output(completion))
                         .map_err(|error| Error::Invalid(error.to_string()))?,
