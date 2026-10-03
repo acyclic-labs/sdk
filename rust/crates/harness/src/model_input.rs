@@ -671,7 +671,7 @@ mod tests {
         Ok(ModelRequest {
             model: Model::new("mock", "swarm", "1", json!({}))?,
             messages: vec![
-                text("  Î» ðŸ¦€\r\n"),
+                text("  ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n"),
                 text("task"),
                 ModelMessage {
                     role: ModelRole::Assistant,
@@ -707,7 +707,7 @@ mod tests {
         let boundary = CompletedModelBoundary::capture(request()?, limits)?;
         let suffix = vec![text("notification; explicit task; fresh scratch")];
         let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
-        let own = vec![text("authoritative child input Î»\n"), text("child result")];
+        let own = vec![text("authoritative child input ÃŽÂ»\n"), text("child result")];
         let mut completed = boundary.request.clone();
         completed.messages.extend(suffix);
         completed.messages.extend(own.iter().cloned());
@@ -772,7 +772,7 @@ mod tests {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
         let prefix = FrozenModelPrefix::capture(&parent, 4)?;
         let mut changed = request()?;
-        changed.messages[0] = text(" Î» ðŸ¦€\r\n");
+        changed.messages[0] = text(" ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n");
         assert!(
             prefix
                 .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
@@ -1102,7 +1102,7 @@ mod tests {
             2
         );
         let boundary: CompletedModelBoundary =
-            serde_json::from_slice(&local.storage().read(file).await?).unwrap();
+            serde_json::from_slice(&local.storage().journal().load(file).await?).unwrap();
         boundary.verify(Limits::default())?;
         let requests = script.0.lock().unwrap();
         assert_eq!(requests.len(), 2);
@@ -1232,7 +1232,7 @@ mod tests {
             .stage(
                 operation,
                 "input.txt",
-                "Whitespace:  Î» ðŸ¦€\r\n".as_bytes(),
+                "Whitespace:  ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n".as_bytes(),
                 "text/plain",
                 "input.txt",
             )
@@ -1250,7 +1250,11 @@ mod tests {
                 _ => None,
             })
             .ok_or_else(|| Error::Storage("input manifest missing".into()))?;
-        let bytes = local.storage().read(manifest_file).await?;
+        assert!(matches!(
+            local.storage().read(manifest_file).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let bytes = local.storage().journal().load(manifest_file).await?;
         let manifest: ModelInputManifest =
             serde_json::from_slice(&bytes).map_err(|e| Error::Invalid(e.to_string()))?;
         let requests = provider
