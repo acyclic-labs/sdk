@@ -1,6 +1,6 @@
 //! Canonical Cargo source identity recipe shared by Rust SDK producers.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 pub fn normalized_build_recipe(
@@ -139,6 +139,12 @@ pub fn normalized_build_recipe(
 }
 
 pub fn normalized_dependencies(package: &Value, source_root: &Path) -> Result<Vec<Value>, String> {
+    let package_dir = package
+        .get("manifest_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+        .and_then(|path| path.parent().map(Path::to_owned))
+        .ok_or("cargo metadata package manifest path is missing")?;
     let mut dependencies = package
         .get("dependencies")
         .and_then(Value::as_array)
@@ -150,6 +156,11 @@ pub fn normalized_dependencies(package: &Value, source_root: &Path) -> Result<Ve
                 .and_then(Value::as_str)
                 .map(PathBuf::from)
                 .map(|path| {
+                    let path = if path.is_absolute() {
+                        path
+                    } else {
+                        package_dir.join(path)
+                    };
                     let path = path
                         .canonicalize()
                         .map_err(|error| format!("canonicalize dependency path: {error}"))?;

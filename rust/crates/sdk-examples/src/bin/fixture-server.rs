@@ -1,0 +1,805 @@
+//! Bounded Rust-owned loopback server for SDK transport qualification.
+//!
+//! The server accepts canonical protobuf request bytes and returns normalized
+//! JSON receipts. It is deliberately process-local: it has a request budget,
+//! binds only to loopback, and makes no hosted service-availability claim.
+
+use acyclic_actors::{FILE_DESCRIPTOR_SET, validate_create, wire as actors_wire};
+use acyclic_sdk_examples::transport_fixtures;
+use acyclic_stream::{
+    AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
+    StreamProvider, wire as stream_wire,
+};
+use futures::StreamExt;
+use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
+use serde_json::{Deserializer, Value, json};
+use sha2::{Digest, Sha256};
+use std::env;
+use std::io;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+use tokio::sync::Notify;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
+use tonic::{Request, Response, Status};
+
+const DEFAULT_MAX_REQUESTS: usize = 32;
+const MAX_REQUEST_BUDGET: usize = 4_096;
+const MAX_HEADER_BYTES: usize = 16 * 1024;
+const MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Options {
+    port: u16,
+    grpc_port: u16,
+    max_requests: usize,
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    content_type: String,
+    body: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct HttpError {
+    status: u16,
+    message: String,
+}
+
+#[derive(Clone)]
+struct App {
+    stream: MemoryStream,
+    requests: Arc<Mutex<usize>>,
+    max_requests: usize,
+    shutdown: Arc<Notify>,
+}
+
+#[derive(Clone)]
+struct GrpcApp {
+    stream: Arc<MemoryStream>,
+    requests: Arc<AtomicUsize>,
+    max_requests: usize,
+    shutdown: Arc<Notify>,
+}
+
+#[derive(Clone)]
+struct BudgetInterceptor {
+    requests: Arc<AtomicUsize>,
+    max_requests: usize,
+    shutdown: Arc<Notify>,
+}
+
+impl tonic::service::Interceptor for BudgetInterceptor {
+    fn call(&mut self, request: Request<()>) -> Result<Request<()>, Status> {
+        let request_number = self.requests.fetch_add(1, Ordering::SeqCst);
+        if request_number >= self.max_requests {
+            self.shutdown.notify_waiters();
+            return Err(Status::resource_exhausted(
+                "fixture gRPC request budget exhausted",
+            ));
+        }
+        if request_number + 1 == self.max_requests {
+            self.shutdown.notify_waiters();
+        }
+        Ok(request)
+    }
+}
+
+#[derive(Clone)]
+struct ActorsFixture {}
+
+impl ActorsFixture {
+    fn new(_app: GrpcApp) -> Self {
+        Self {}
+    }
+
+    fn unimplemented<T>(&self, operation: &'static str) -> Result<Response<T>, Status> {
+        Err(Status::unimplemented(format!(
+            "fixture Actors endpoint does not implement {operation}"
+        )))
+    }
+}
+
+#[tonic::async_trait]
+impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
+    async fn create_actor(
+        &self,
+        request: Request<actors_wire::CreateActorRequest>,
+    ) -> Result<Response<actors_wire::CreateActorResponse>, Status> {
+        let request = request.into_inner();
+        validate_create(&request).map_err(|error| {
+            Status::invalid_argument(format!("CreateActorRequest rejected: {error}"))
+        })?;
+        Ok(Response::new(actors_wire::CreateActorResponse {
+            actor: Some(actors_wire::ActorObservation {
+                actor_id: "fixture-actor".to_owned(),
+                code_sha256: request.code_sha256,
+                home_region: request.home_region,
+                state: actors_wire::ActorState::Active as i32,
+                subscriptions: request
+                    .subscriptions
+                    .into_iter()
+                    .map(|subscription| actors_wire::SubscriptionObservation {
+                        subscription_id: subscription.subscription_id,
+                        stream_path: subscription.stream_path,
+                        state: actors_wire::SubscriptionState::Active as i32,
+                        delivered_cursor: 0,
+                        completed_cursor: 0,
+                        recoverable_cursor: 0,
+                        placement_anchor: subscription.placement_anchor,
+                        retry_count: 0,
+                        failure_code: String::new(),
+                        failed_cursor: None,
+                    })
+                    .collect(),
+                checkpoint_unix_millis: None,
+                checkpoint_epoch: 0,
+                configuration_revision: 1,
+            }),
+        }))
+    }
+
+    async fn update_actor(
+        &self,
+        _request: Request<actors_wire::UpdateActorRequest>,
+    ) -> Result<Response<actors_wire::UpdateActorResponse>, Status> {
+        self.unimplemented("UpdateActor")
+    }
+
+    async fn inspect_actor(
+        &self,
+        _request: Request<actors_wire::InspectActorRequest>,
+    ) -> Result<Response<actors_wire::InspectActorResponse>, Status> {
+        self.unimplemented("InspectActor")
+    }
+
+    async fn add_subscription(
+        &self,
+        _request: Request<actors_wire::AddSubscriptionRequest>,
+    ) -> Result<Response<actors_wire::AddSubscriptionResponse>, Status> {
+        self.unimplemented("AddSubscription")
+    }
+
+    async fn remove_subscription(
+        &self,
+        _request: Request<actors_wire::RemoveSubscriptionRequest>,
+    ) -> Result<Response<actors_wire::RemoveSubscriptionResponse>, Status> {
+        self.unimplemented("RemoveSubscription")
+    }
+
+    async fn resume_subscription(
+        &self,
+        _request: Request<actors_wire::ResumeSubscriptionRequest>,
+    ) -> Result<Response<actors_wire::ResumeSubscriptionResponse>, Status> {
+        self.unimplemented("ResumeSubscription")
+    }
+
+    async fn checkpoint_actor(
+        &self,
+        _request: Request<actors_wire::CheckpointActorRequest>,
+    ) -> Result<Response<actors_wire::CheckpointActorResponse>, Status> {
+        self.unimplemented("CheckpointActor")
+    }
+
+    async fn invoke_actor(
+        &self,
+        _request: Request<actors_wire::InvokeActorRequest>,
+    ) -> Result<Response<actors_wire::InvokeActorResponse>, Status> {
+        self.unimplemented("InvokeActor")
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let options = parse_args(env::args().skip(1))?;
+    let listener = TcpListener::bind(("127.0.0.1", options.port)).await?;
+    let address = listener.local_addr()?;
+    let grpc_listener = TcpListener::bind(("127.0.0.1", options.grpc_port)).await?;
+    let grpc_address = grpc_listener.local_addr()?;
+    let fixtures = transport_fixtures();
+    let source_sha256 = source_sha256();
+    let shutdown = Arc::new(Notify::new());
+    let grpc_requests = Arc::new(AtomicUsize::new(0));
+    let stream = Arc::new(MemoryStream::default());
+    let app = App {
+        stream: (*stream).clone(),
+        requests: Arc::new(Mutex::new(0)),
+        max_requests: options.max_requests,
+        shutdown: Arc::clone(&shutdown),
+    };
+    let grpc_app = GrpcApp {
+        stream,
+        requests: grpc_requests,
+        max_requests: options.max_requests,
+        shutdown: Arc::clone(&shutdown),
+    };
+    let grpc_shutdown = Arc::clone(&shutdown);
+    let grpc_task = tokio::spawn(async move {
+        let interceptor = BudgetInterceptor {
+            requests: Arc::clone(&grpc_app.requests),
+            max_requests: grpc_app.max_requests,
+            shutdown: Arc::clone(&grpc_app.shutdown),
+        };
+        let actors = tonic::service::interceptor::InterceptedService::new(
+            actors_wire::actors_service_server::ActorsServiceServer::new(ActorsFixture::new(
+                grpc_app.clone(),
+            ))
+            .max_decoding_message_size(MAX_BODY_BYTES)
+            .max_encoding_message_size(MAX_BODY_BYTES),
+            interceptor.clone(),
+        );
+        let streams = tonic::service::interceptor::InterceptedService::new(
+            acyclic_stream::wire::stream_service_server::StreamServiceServer::new(
+                acyclic_stream::grpc::Service::new(Arc::clone(&grpc_app.stream)),
+            )
+            .max_decoding_message_size(MAX_BODY_BYTES)
+            .max_encoding_message_size(MAX_BODY_BYTES),
+            interceptor,
+        );
+        Server::builder()
+            .add_service(actors)
+            .add_service(streams)
+            .serve_with_incoming_shutdown(TcpListenerStream::new(grpc_listener), async move {
+                grpc_shutdown.notified().await;
+            })
+            .await
+    });
+    println!(
+        "{}",
+        serde_json::to_string(&json!({
+            "schema": "acyclic.sdk.fixture-server.v1",
+            "address": format!("http://{address}"),
+            "shutdown": format!("http://{address}/shutdown"),
+            "grpc_address": format!("http://{grpc_address}"),
+            "grpc_address_env": "FIXTURE_GRPC_ADDRESS",
+            "max_requests": options.max_requests,
+            "source": {
+                "path": "rust/crates/sdk-examples/src/lib.rs",
+                "sha256": source_sha256,
+            },
+            "fixtures": fixtures.iter().map(|fixture| fixture.id).collect::<Vec<_>>(),
+            "request_content_types": ["application/json", "application/octet-stream"],
+            "response_content_type": "application/json",
+            "service_availability": "not_claimed",
+        }))?
+    );
+    eprintln!("sdk fixture server listening on http://{address}");
+
+    loop {
+        tokio::select! {
+            _ = shutdown.notified() => break,
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let app = app.clone();
+                let keep_running = handle_connection(stream, app).await?;
+                if !keep_running {
+                    shutdown.notify_waiters();
+                    break;
+                }
+            }
+        }
+    }
+    shutdown.notify_waiters();
+    grpc_task.await??;
+    Ok(())
+}
+
+fn parse_args<I>(arguments: I) -> Result<Options, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut arguments = arguments.into_iter();
+    let mut options = Options {
+        port: 0,
+        grpc_port: 0,
+        max_requests: DEFAULT_MAX_REQUESTS,
+    };
+    while let Some(argument) = arguments.next() {
+        match argument.as_str() {
+            "--port" => {
+                options.port = next_value(&mut arguments, "--port")?
+                    .parse()
+                    .map_err(|_| "--port must be a u16".to_owned())?;
+            }
+            "--grpc-port" => {
+                options.grpc_port = next_value(&mut arguments, "--grpc-port")?
+                    .parse()
+                    .map_err(|_| "--grpc-port must be a u16".to_owned())?;
+            }
+            "--max-requests" => {
+                options.max_requests = next_value(&mut arguments, "--max-requests")?
+                    .parse()
+                    .map_err(|_| "--max-requests must be a positive integer".to_owned())?;
+                if options.max_requests == 0 || options.max_requests > MAX_REQUEST_BUDGET {
+                    return Err(format!(
+                        "--max-requests must be between 1 and {MAX_REQUEST_BUDGET}"
+                    ));
+                }
+            }
+            "--help" | "-h" => {
+                println!("fixture-server [--port PORT] [--grpc-port PORT] [--max-requests N]");
+                std::process::exit(0);
+            }
+            other => return Err(format!("unknown argument {other}")),
+        }
+    }
+    Ok(options)
+}
+
+fn next_value<I>(arguments: &mut I, flag: &str) -> Result<String, String>
+where
+    I: Iterator<Item = String>,
+{
+    arguments
+        .next()
+        .ok_or_else(|| format!("{flag} requires a value"))
+}
+
+async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::Error> {
+    if !reserve_request(&app).await {
+        write_json(
+            &mut stream,
+            429,
+            &json!({
+                "schema": "acyclic.sdk.fixture-response.v1",
+                "status": "error",
+                "message": "fixture request budget exhausted",
+            }),
+        )
+        .await?;
+        return Ok(false);
+    }
+    let request = match read_request(&mut stream).await {
+        Ok(request) => request,
+        Err(error) => {
+            write_json(
+                &mut stream,
+                error.status,
+                &json!({
+                    "schema": "acyclic.sdk.fixture-response.v1",
+                    "status": "error",
+                    "message": error.message,
+                }),
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
+    let is_shutdown = request.path == "/shutdown";
+    let result = if request.path == "/health" && request.method == "GET" {
+        Ok(json!({
+            "schema": "acyclic.sdk.fixture-response.v1",
+            "status": "ready",
+            "service_availability": "not_claimed",
+            "source": {
+                "path": "rust/crates/sdk-examples/src/lib.rs",
+                "sha256": source_sha256(),
+            },
+        }))
+    } else if request.method != "POST" && !is_shutdown {
+        Err(HttpError {
+            status: 405,
+            message: "fixture endpoints require POST".to_owned(),
+        })
+    } else if is_shutdown {
+        Ok(json!({
+            "schema": "acyclic.sdk.fixture-response.v1",
+            "status": "shutdown",
+        }))
+    } else {
+        dispatch(&app, &request).await
+    };
+    match result {
+        Ok(body) => write_json(&mut stream, 200, &body).await?,
+        Err(error) => {
+            write_json(
+                &mut stream,
+                error.status,
+                &json!({
+                    "schema": "acyclic.sdk.fixture-response.v1",
+                    "status": "error",
+                    "message": error.message,
+                }),
+            )
+            .await?
+        }
+    }
+    let keep_running = !is_shutdown && request_count(&app).await < app.max_requests;
+    if !keep_running {
+        app.shutdown.notify_waiters();
+    }
+    Ok(keep_running)
+}
+
+async fn reserve_request(app: &App) -> bool {
+    let mut requests = app.requests.lock().await;
+    if *requests >= app.max_requests {
+        return false;
+    }
+    *requests += 1;
+    true
+}
+
+async fn request_count(app: &App) -> usize {
+    *app.requests.lock().await
+}
+
+async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> {
+    match request.path.as_str() {
+        "/v1/actors/create" => actors_create(&request.content_type, &request.body),
+        "/v1/stream/append" => stream_append(app, &request.body).await,
+        "/v1/stream/read" => stream_read(app, &request.body).await,
+        "/health" => Ok(json!({
+            "schema": "acyclic.sdk.fixture-response.v1",
+            "status": "ready",
+            "service_availability": "not_claimed",
+        })),
+        path => Err(HttpError {
+            status: 404,
+            message: format!("unknown fixture route {path}"),
+        }),
+    }
+}
+
+fn actors_create(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_actor_request(content_type, body).map_err(|error| HttpError {
+        status: 400,
+        message: error,
+    })?;
+    validate_create(&request).map_err(|error| HttpError {
+        status: 422,
+        message: format!("CreateActorRequest rejected by Rust validation: {error}"),
+    })?;
+    let response = actors_wire::CreateActorResponse {
+        actor: Some(actors_wire::ActorObservation {
+            actor_id: "fixture-actor".to_owned(),
+            code_sha256: request.code_sha256,
+            home_region: request.home_region,
+            state: actors_wire::ActorState::Active as i32,
+            subscriptions: request
+                .subscriptions
+                .into_iter()
+                .map(|subscription| actors_wire::SubscriptionObservation {
+                    subscription_id: subscription.subscription_id,
+                    stream_path: subscription.stream_path,
+                    state: actors_wire::SubscriptionState::Active as i32,
+                    delivered_cursor: 0,
+                    completed_cursor: 0,
+                    recoverable_cursor: 0,
+                    placement_anchor: subscription.placement_anchor,
+                    retry_count: 0,
+                    failure_code: String::new(),
+                    failed_cursor: None,
+                })
+                .collect(),
+            checkpoint_unix_millis: None,
+            checkpoint_epoch: 0,
+            configuration_revision: 1,
+        }),
+    };
+    encode_actor_response(&response).map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn decode_actor_request(
+    content_type: &str,
+    body: &[u8],
+) -> Result<actors_wire::CreateActorRequest, String> {
+    if content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        || body
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(b'{')
+    {
+        decode_json_message(body, "acyclic.actors.v1.CreateActorRequest")
+            .map_err(|error| format!("invalid CreateActorRequest Protobuf JSON: {error}"))
+    } else {
+        actors_wire::CreateActorRequest::decode(body)
+            .map_err(|error| format!("invalid CreateActorRequest protobuf: {error}"))
+    }
+}
+
+fn encode_actor_response(response: &actors_wire::CreateActorResponse) -> Result<Value, String> {
+    let pool = DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+        .map_err(|error| format!("decode Actors descriptor: {error}"))?;
+    let descriptor = pool
+        .get_message_by_name("acyclic.actors.v1.CreateActorResponse")
+        .ok_or_else(|| "CreateActorResponse descriptor is missing".to_owned())?;
+    let message = DynamicMessage::decode(descriptor, response.encode_to_vec().as_slice())
+        .map_err(|error| format!("encode CreateActorResponse: {error}"))?;
+    serde_json::to_value(message).map_err(|error| format!("serialize CreateActorResponse: {error}"))
+}
+
+fn decode_json_message<M: Message + Default>(body: &[u8], name: &str) -> Result<M, String> {
+    let pool = DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+        .map_err(|error| format!("decode Actors descriptor: {error}"))?;
+    let descriptor = pool
+        .get_message_by_name(name)
+        .ok_or_else(|| format!("descriptor is missing: {name}"))?;
+    let mut json = Deserializer::from_slice(body);
+    let message = DynamicMessage::deserialize(descriptor, &mut json)
+        .map_err(|error| format!("decode JSON message: {error}"))?;
+    json.end()
+        .map_err(|error| format!("trailing JSON: {error}"))?;
+    message
+        .transcode_to()
+        .map_err(|error| format!("transcode JSON message: {error}"))
+}
+
+async fn stream_append(app: &App, body: &[u8]) -> Result<Value, HttpError> {
+    let wire = stream_wire::AppendRequest::decode(body).map_err(|error| HttpError {
+        status: 400,
+        message: format!("invalid AppendRequest protobuf: {error}"),
+    })?;
+    let path = StreamPath::new(wire.path.clone()).map_err(|error| HttpError {
+        status: 422,
+        message: format!("invalid Stream path: {error}"),
+    })?;
+    let idempotency_key = wire
+        .idempotency_key
+        .map(IdempotencyKey::new)
+        .transpose()
+        .map_err(|error| HttpError {
+            status: 422,
+            message: format!("invalid idempotency key: {error}"),
+        })?;
+    let outcome = app
+        .stream
+        .append(AppendRequest {
+            path,
+            records: wire.records,
+            if_tail: wire.if_tail,
+            idempotency_key,
+        })
+        .await
+        .map_err(|error| HttpError {
+            status: 422,
+            message: format!("Rust MemoryStream rejected append: {error}"),
+        })?;
+    match outcome {
+        AppendOutcome::Committed(receipt) => Ok(json!({
+            "schema": "acyclic.sdk.fixture-response.v1",
+            "fixture_id": "stream-append-read-v2",
+            "operation_id": "acyclic.stream.v2.Stream/Append",
+            "status": "committed",
+            "request_sha256": digest(body),
+            "start": receipt.start,
+            "end": receipt.end,
+            "tail": receipt.tail,
+            "commit_id_hex": hex(receipt.commit_id.as_bytes()),
+            "service_availability": "not_claimed",
+        })),
+        AppendOutcome::TailConflict { actual_tail } => Ok(json!({
+            "schema": "acyclic.sdk.fixture-response.v1",
+            "fixture_id": "stream-append-read-v2",
+            "status": "tail_conflict",
+            "request_sha256": digest(body),
+            "actual_tail": actual_tail,
+            "service_availability": "not_claimed",
+        })),
+    }
+}
+
+async fn stream_read(app: &App, body: &[u8]) -> Result<Value, HttpError> {
+    let wire = stream_wire::ReadRequest::decode(body).map_err(|error| HttpError {
+        status: 400,
+        message: format!("invalid ReadRequest protobuf: {error}"),
+    })?;
+    let path = StreamPath::new(wire.path).map_err(|error| HttpError {
+        status: 422,
+        message: format!("invalid Stream path: {error}"),
+    })?;
+    let mut records = app
+        .stream
+        .read(ReadRequest {
+            path,
+            from: wire.from,
+            limit: wire.limit,
+        })
+        .await
+        .map_err(|error| HttpError {
+            status: 422,
+            message: format!("Rust MemoryStream rejected read: {error}"),
+        })?;
+    let mut values = Vec::new();
+    while let Some(record) = records.next().await {
+        let record = record.map_err(|error| HttpError {
+            status: 422,
+            message: format!("Rust MemoryStream read failed: {error}"),
+        })?;
+        values.push(json!({
+            "sequence": record.sequence,
+            "value_hex": hex(&record.value),
+        }));
+    }
+    Ok(json!({
+        "schema": "acyclic.sdk.fixture-response.v1",
+        "fixture_id": "stream-append-read-v2",
+        "operation_id": "acyclic.stream.v2.Stream/Read",
+        "status": "ok",
+        "request_sha256": digest(body),
+        "records": values,
+        "service_availability": "not_claimed",
+    }))
+}
+
+async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> {
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let header_end = loop {
+        if bytes.len() > MAX_HEADER_BYTES {
+            return Err(HttpError {
+                status: 431,
+                message: "request headers exceed the fixture server bound".to_owned(),
+            });
+        }
+        let read = stream.read(&mut chunk).await.map_err(io_error)?;
+        if read == 0 {
+            return Err(HttpError {
+                status: 400,
+                message: "connection closed before request headers".to_owned(),
+            });
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+            break index + 4;
+        }
+    };
+    let headers = std::str::from_utf8(&bytes[..header_end]).map_err(|_| HttpError {
+        status: 400,
+        message: "request headers are not UTF-8".to_owned(),
+    })?;
+    let mut lines = headers.split("\r\n");
+    let request_line = lines.next().ok_or_else(|| HttpError {
+        status: 400,
+        message: "request line is missing".to_owned(),
+    })?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or_default().to_owned();
+    let path = request_parts.next().unwrap_or_default().to_owned();
+    if method.is_empty() || path.is_empty() {
+        return Err(HttpError {
+            status: 400,
+            message: "request line is malformed".to_owned(),
+        });
+    }
+    let header_lines = lines.collect::<Vec<_>>();
+    let content_type = header_lines
+        .iter()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| value.trim().to_owned())
+        })
+        .unwrap_or_else(|| "application/octet-stream".to_owned());
+    let content_length = header_lines
+        .iter()
+        .find_map(|line| {
+            line.split_once(':')
+                .filter(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                .map(|(_, value)| value.trim())
+        })
+        .unwrap_or("0")
+        .parse::<usize>()
+        .map_err(|_| HttpError {
+            status: 400,
+            message: "Content-Length is invalid".to_owned(),
+        })?;
+    if content_length > MAX_BODY_BYTES {
+        return Err(HttpError {
+            status: 413,
+            message: "request body exceeds the fixture server bound".to_owned(),
+        });
+    }
+    while bytes.len() - header_end < content_length {
+        let read = stream.read(&mut chunk).await.map_err(io_error)?;
+        if read == 0 {
+            return Err(HttpError {
+                status: 400,
+                message: "connection closed before request body".to_owned(),
+            });
+        }
+        bytes.extend_from_slice(&chunk[..read]);
+    }
+    Ok(HttpRequest {
+        method,
+        path,
+        content_type,
+        body: bytes[header_end..header_end + content_length].to_vec(),
+    })
+}
+
+async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> io::Result<()> {
+    let body = serde_json::to_vec(body).map_err(io::Error::other)?;
+    let reason = match status {
+        200 => "OK",
+        400 => "Bad Request",
+        405 => "Method Not Allowed",
+        413 => "Payload Too Large",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        422 => "Unprocessable Entity",
+        431 => "Request Header Fields Too Large",
+        _ => "Not Found",
+    };
+    let header = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(header.as_bytes()).await?;
+    stream.write_all(&body).await?;
+    stream.shutdown().await
+}
+
+fn io_error(error: io::Error) -> HttpError {
+    HttpError {
+        status: 400,
+        message: format!("read request: {error}"),
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn source_sha256() -> String {
+    format!("sha256:{:x}", Sha256::digest(include_bytes!("../lib.rs")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn options_have_a_bounded_default() {
+        let options = parse_args(Vec::<String>::new()).expect("default options");
+        assert_eq!(options.port, 0);
+        assert_eq!(options.max_requests, DEFAULT_MAX_REQUESTS);
+    }
+
+    #[test]
+    fn options_reject_an_unbounded_budget() {
+        assert!(parse_args(vec!["--max-requests".into(), "0".into()]).is_err());
+        assert!(
+            parse_args(vec![
+                "--max-requests".into(),
+                (MAX_REQUEST_BUDGET + 1).to_string(),
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn actor_json_roundtrip_uses_canonical_response_fields() {
+        let body = br#"{
+            "codeSha256":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+            "homeRegion":"eu",
+            "limits":{"handlerTimeoutMillis":"1000","memoryBytes":"1048576","checkpointBytes":"4096"},
+            "subscriptions":[{"subscriptionId":"events","streamPath":"agents/example/events","start":{"cursor":"0"}}],
+            "idempotencyKey":"create-example"
+        }"#;
+        let response = actors_create("application/json", body).expect("canonical Actors response");
+        assert_eq!(response["actor"]["actorId"], "fixture-actor");
+        assert_eq!(response["actor"]["homeRegion"], "eu");
+        assert_eq!(response["actor"]["state"], "ACTOR_STATE_ACTIVE");
+    }
+}
