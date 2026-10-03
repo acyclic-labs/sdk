@@ -12,6 +12,7 @@ use crate::{
     },
     swarm_budget::{
         SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmUsage, VerifiedForkPublication,
+        VerifiedSwarmUsageReceipt,
     },
     wire,
 };
@@ -668,6 +669,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             TaskAdmissionRecord::from_canonical_value(self.load_json(&admission_reference).await?)?;
         let admission_digest =
             crate::contract::canonical_json_digest(&stored_admission.canonical_value())?;
+        request
+            .resources
+            .validate_against_admission(&stored_admission)?;
         if request.admission_digest != Some(admission_digest)
             || stored_admission.operation_id != operation_id
             || stored_admission.dependencies != operation.spec.dependencies
@@ -800,7 +804,10 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .await
     }
 
-    /// Records cumulative usage through the same CAS stream as lifecycle.
+    /// Rejects unreceipted caller supplied usage.
+    ///
+    /// Provider measurements must use [`Self::report_swarm_usage_with_receipt`]
+    /// so a retry cannot forge a lower cumulative value and release capacity.
     pub async fn report_swarm_usage(
         &mut self,
         owner: &Authority,
@@ -812,6 +819,34 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         fence: LeaseFence,
         usage: SwarmUsage,
     ) -> Result<CoordinatorApply> {
+        let _ = (
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            idempotency_key,
+            swarm_owner,
+            fence,
+            usage,
+        );
+        Err(Error::Unauthorized(
+            "provider usage receipt required for swarm usage".into(),
+        ))
+    }
+
+    /// Records provider-issued cumulative usage through the same CAS stream as
+    /// the dispatch lifecycle.
+    pub async fn report_swarm_usage_with_receipt(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: LeaseFence,
+        receipt: VerifiedSwarmUsageReceipt,
+    ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.authorize_operation(owner, scope, verifier, operation_id, "operation:report")?;
         if swarm_owner.owner != owner.id {
@@ -819,6 +854,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "swarm owner fence is not bound to the authenticated authority".into(),
             ));
         }
+        let receipt = receipt.into_receipt();
         self.apply_internal(
             operation_id,
             idempotency_key,
@@ -826,14 +862,18 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 operation_id,
                 fence,
                 owner: swarm_owner,
-                usage,
+                usage: receipt.usage,
+                receipt: Some(receipt),
             },
         )
         .await
     }
 
-    /// Records cumulative root usage through the same scheduler and budget
-    /// CAS stream as descendant lifecycle transitions.
+    /// Rejects unreceipted caller supplied root usage.
+    ///
+    /// Provider measurements must use
+    /// [`Self::report_swarm_root_usage_with_receipt`] so root work remains
+    /// fenced to a running scheduler lease.
     pub async fn report_swarm_root_usage(
         &mut self,
         owner: &Authority,
@@ -844,6 +884,33 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         swarm_owner: SwarmOwnerFence,
         usage: SwarmUsage,
     ) -> Result<CoordinatorApply> {
+        let _ = (
+            owner,
+            scope,
+            verifier,
+            session_id,
+            idempotency_key,
+            swarm_owner,
+            usage,
+        );
+        Err(Error::Unauthorized(
+            "provider usage receipt required for swarm root usage".into(),
+        ))
+    }
+
+    /// Records provider-issued root usage while holding the root scheduler
+    /// lease and its dispatch identity.
+    pub async fn report_swarm_root_usage_with_receipt(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        session_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: LeaseFence,
+        receipt: VerifiedSwarmUsageReceipt,
+    ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.authorize_operation(owner, scope, verifier, session_id, "operation:report")?;
         if swarm_owner.owner != owner.id {
@@ -851,20 +918,25 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "swarm owner fence is not bound to the authenticated authority".into(),
             ));
         }
+        let receipt = receipt.into_receipt();
         self.apply_internal(
             session_id,
             idempotency_key,
             SchedulerEvent::SwarmRootUsageReported {
                 session_id,
                 owner: swarm_owner,
-                usage,
+                fence,
+                usage: receipt.usage,
+                receipt: Some(receipt),
             },
         )
         .await
     }
 
-    /// Completes a child, retaining active budget capacity for indeterminate
-    /// outcomes until reconciliation commits a known terminal result.
+    /// Rejects completion with caller supplied usage.
+    ///
+    /// Use [`Self::complete_swarm_with_receipt`] so provider work is bound to
+    /// the dispatch identity before budget capacity is released.
     pub async fn complete_swarm(
         &mut self,
         owner: &Authority,
@@ -877,6 +949,35 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         usage: SwarmUsage,
         outcome: crate::Outcome<FileRef>,
     ) -> Result<CoordinatorApply> {
+        let _ = (
+            owner,
+            scope,
+            verifier,
+            operation_id,
+            idempotency_key,
+            swarm_owner,
+            fence,
+            usage,
+            outcome,
+        );
+        Err(Error::Unauthorized(
+            "provider usage receipt required for swarm completion".into(),
+        ))
+    }
+
+    /// Completes a child with provider-issued cumulative usage evidence.
+    pub async fn complete_swarm_with_receipt(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: Option<LeaseFence>,
+        receipt: VerifiedSwarmUsageReceipt,
+        outcome: crate::Outcome<FileRef>,
+    ) -> Result<CoordinatorApply> {
         self.refresh().await?;
         self.authorize_operation(owner, scope, verifier, operation_id, "operation:complete")?;
         if swarm_owner.owner != owner.id {
@@ -884,6 +985,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "swarm owner fence is not bound to the authenticated authority".into(),
             ));
         }
+        let receipt = receipt.into_receipt();
         self.apply_internal(
             operation_id,
             idempotency_key,
@@ -891,7 +993,8 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 operation_id,
                 fence,
                 owner: swarm_owner,
-                usage,
+                usage: receipt.usage,
+                receipt: Some(receipt),
                 outcome,
             },
         )
