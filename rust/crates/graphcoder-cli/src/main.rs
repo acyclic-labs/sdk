@@ -16,7 +16,7 @@ use acyclic_harness::{
     model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
 };
 use clap::Parser;
-use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
+use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -470,6 +470,7 @@ fn session_state(phase: &LocalSessionPhase) -> &'static str {
         LocalSessionPhase::Ready => "idle",
         LocalSessionPhase::Activating => "running",
         LocalSessionPhase::Completed => "completed",
+        LocalSessionPhase::Cancelled => "cancelled",
         LocalSessionPhase::Failed(_) => "failed",
     }
 }
@@ -479,6 +480,7 @@ fn agent_state(phase: &LocalSessionPhase) -> &'static str {
         LocalSessionPhase::Ready => "queued",
         LocalSessionPhase::Activating => "running",
         LocalSessionPhase::Completed => "completed",
+        LocalSessionPhase::Cancelled => "cancelled",
         LocalSessionPhase::Failed(_) => "failed",
     }
 }
@@ -686,7 +688,7 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(retried["ok"], true);
+        assert_eq!(retried["ok"], true, "{retried}");
         let attachment = &retried["result"]["outcome"]["attachments"][0];
         assert_eq!(attachment["file"]["path"], "graphcoder-fixture.txt");
         assert_eq!(attachment["file"]["display_name"], "graphcoder-fixture.txt");

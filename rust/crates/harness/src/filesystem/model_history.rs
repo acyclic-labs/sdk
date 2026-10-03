@@ -443,10 +443,11 @@ where
                 .ok_or_else(|| {
                     Error::Storage("completed result lacks pinned tool definition".into())
                 })?;
-            let actual_result: Value = load_json(self.journal.as_ref(), result).await?;
+            let actual_result: crate::tool::ToolResult =
+                load_json(self.journal.as_ref(), result).await?;
             crate::tool::validate_value(
                 &definition.output_schema,
-                &actual_result,
+                &actual_result.value,
                 "durable tool result",
             )?;
             let actual: Value = load_json(self.journal.as_ref(), projection).await?;
