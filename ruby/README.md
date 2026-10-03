@@ -35,9 +35,10 @@ Rust's `bearer-no-crlf` rule.
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
 
-The source tree's `Acyclic::Remote::Client` is a handwritten policy prototype,
-not qualified generated output. The Rust generator must emit the policy
-metadata and selection contract before this adapter can be promoted.
+`Acyclic::Remote::Client` delegates transport selection and bearer validation to
+the Rust-emitted `lib/acyclic_sdk/generated_remote_policy.rb` snapshot. Refresh
+that snapshot with the `sdk-contract-wire generate-products` command whenever
+the Rust transport policy changes.
 
 Ruby and the gem toolchain were unavailable on the Windows coordinator during
 the prototype pass. That is an environment limitation, not a language

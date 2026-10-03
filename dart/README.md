@@ -41,6 +41,7 @@ Rust's `bearer-no-crlf` rule.
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
 
-The source tree's `RemoteClient` is a handwritten policy prototype, not
-qualified generated output. The Rust generator must emit the policy metadata
-and selection contract before this adapter can be promoted.
+`RemoteClient` delegates transport selection and bearer validation to the
+Rust-emitted `lib/src/generated_remote_policy.dart` snapshot. Refresh that
+snapshot with the `sdk-contract-wire generate-products` command whenever the
+Rust transport policy changes.

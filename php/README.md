@@ -46,9 +46,10 @@ than hidden by a helper-only assertion.
 The package is not published from this worktree. Generated output is a local
 build artifact and should be validated from a clean checkout in CI.
 
-The source tree's `Acyclic\\Runtime\\RemoteClient` is a handwritten policy
-prototype, not qualified generated output. The Rust generator must emit the
-policy metadata and selection contract before this adapter can be promoted.
+`Acyclic\\Runtime\\RemoteClient` delegates transport selection and bearer
+validation to the Rust-emitted `src/Acyclic/Runtime/GeneratedRemotePolicy.php`
+snapshot. Refresh that snapshot with the `sdk-contract-wire generate-products`
+command whenever the Rust transport policy changes.
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
 

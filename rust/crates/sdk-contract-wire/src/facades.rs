@@ -96,9 +96,9 @@ impl FacadeLanguage {
     /// Generated source path relative to the Rust exporter root.
     pub const fn output_path(self) -> &'static str {
         match self {
-            Self::Ruby => "generated/facades/ruby/remote_policy.generated.rb",
-            Self::Php => "generated/facades/php/RemotePolicy.generated.php",
-            Self::Dart => "generated/facades/dart/remote_policy.generated.dart",
+            Self::Ruby => "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
+            Self::Php => "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+            Self::Dart => "dart/lib/src/generated_remote_policy.dart",
         }
     }
 }
