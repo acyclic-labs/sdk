@@ -94,7 +94,9 @@ test("generated WASM model admission captures canonical request bytes and manife
   };
   const decoder = new TextDecoder();
   expect(prepared.request_json).toBe(decoder.decode(encodeCanonicalJson(request)));
-  expect(Uint8Array.from(prepared.request_digest)).toEqual(digestCanonicalJson(request));
+  // Compare detached byte values so this assertion remains exact across
+  // ArrayBuffer and ArrayBufferLike lib definitions.
+  expect(Array.from(prepared.request_digest)).toEqual(Array.from(digestCanonicalJson(request)));
 
   const manifest = JSON.parse(prepared.manifest_json) as {
     version: number;

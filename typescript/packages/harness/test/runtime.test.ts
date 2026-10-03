@@ -137,7 +137,7 @@ test("Rust and WASM validate the canonical v3 prerequisite admission fixture", a
     operation_id: admission.operation_id,
     name: admission.task.name,
     version: admission.task.version,
-    input: admission.input,
+    input: admission.input as import("../src/index.js").ToolJsonValue,
     input_schema: admission.input_schema,
     output_schema: admission.output_schema,
     requirements: [],
@@ -242,7 +242,7 @@ test("Rust owns durable task and batch projection identities", () => {
     dependencies: [...prerequisites].reverse(),
   }).dependencies).toEqual(deferred.dependencies);
   expect(() => contracts.validate("task_admission", {
-    ...deferred, dependencies: [prerequisites[0], prerequisites[0]],
+    ...deferred, dependencies: [prerequisites[0]!, prerequisites[0]!],
   })).toThrow();
   expect(() => contracts.validate("task_admission", {
     ...deferred, dependencies: [...deferred.dependencies!].reverse(),
@@ -255,7 +255,7 @@ test("Rust owns durable task and batch projection identities", () => {
   })).toThrow();
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4,
-    dependencies: [prerequisites[0], prerequisites[0]],
+    dependencies: [prerequisites[0]!, prerequisites[0]!],
   })).toThrow();
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4, dependencies: [task.operation_id],
