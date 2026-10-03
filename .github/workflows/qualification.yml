@@ -8,6 +8,8 @@ on:
     # Weekly full qualification catches drift outside the repository (runner
     # images, registries, browsers) that lane fingerprints cannot observe.
     - cron: '17 6 * * 1'
+  release:
+    types: [published]
   workflow_dispatch:
     inputs:
       force:
@@ -28,7 +30,7 @@ env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: sccache
   CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-  FORCE: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
+  FORCE: ${{ github.event_name == 'schedule' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.force) }}
 
 jobs:
   plan:
@@ -176,13 +178,15 @@ jobs:
           artifact: ${{ matrix.artifact }}
           artifact_path: ${{ matrix.artifact_path }}
 
-  # Windows is the longest lane and its runners take a minute or more to
-  # provision, so on pull requests it is requested at workflow start rather
-  # than after the plan, then waits for the plan's decision before any work.
-  # Its runner must match the windows entry in .github/qualification-lanes.json.
+  # Windows is a downstream platform lane. It is selected by the main
+  # qualification matrix on main, schedule, release, and dispatch runs; on a
+  # pull request this job remains skipped unless the planner explicitly marks
+  # the lane eligible. Its runner must match the windows entry in
+  # .github/qualification-lanes.json.
   windows:
     name: windows
-    if: github.event_name == 'pull_request'
+    needs: plan
+    if: github.event_name == 'pull_request' && needs.plan.outputs.windows == 'true'
     runs-on: blacksmith-4vcpu-windows-2025
     permissions:
       contents: read

@@ -15,7 +15,10 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Bump to invalidate every recorded marker at once.
-const SCHEMA = "sdk-qualification-v1";
+// The PR lane set is part of qualification semantics. Bump the marker schema
+// so pre-gating artifacts cannot be reused as full main qualification.
+const SCHEMA = "sdk-qualification-v2";
+export const qualificationSchema = SCHEMA;
 
 const documentation = path =>
   /^(README|CONTRIBUTING|SECURITY)\.md$/.test(path) || /^docs\/[^/]+\.md$/.test(path);
@@ -25,6 +28,11 @@ const qualificationDefinition = path =>
   path.startsWith(".github/actions/");
 const unrelatedGithub = path => path.startsWith(".github/") && !qualificationDefinition(path);
 const standaloneProjects = path => path.startsWith("arena/") || path.startsWith("examples/");
+
+// Pull requests retain the security preflight and these two repository-level
+// checks. Platform packaging and browser/native downstream lanes qualify on
+// main, schedule, release, or explicit dispatch runs.
+export const pullRequestCoreLanes = new Set(["gate", "policy"]);
 
 // Each predicate returns true for paths the lane can never observe.
 export const ignored = {
@@ -66,17 +74,22 @@ export function laneKeys(lanes, entries) {
 // Decides each lane's fate. `marker(lane)` returns the run that recorded the
 // lane's fingerprint, if any; `retained(runId, prefix)` names the artifact that
 // run still retains, or "".
-export function chooseLanes(lanes, { force, mainPush, trusted, marker, retained }) {
+export function chooseLanes(lanes, { force, mainPush, pullRequest = false, trusted, marker, retained }) {
   const matrix = [];
   const reused = {};
   for (const lane of lanes) {
+    if (pullRequest && !pullRequestCoreLanes.has(lane.lane)) continue;
     // Source-bound artifacts record the commit they were built from, and
     // releases require that commit to be the main commit being released.
     if (force || (mainPush && lane.source_bound)) {
       matrix.push(lane);
       continue;
     }
-    let source = trusted ?? marker(lane.lane);
+    // A trusted pull-request run now proves only the core PR lane set. Main
+    // pushes must not treat that run as evidence for downstream packaging or
+    // platform lanes; they may reuse a marker recorded by a full run instead.
+    const trustedForLane = mainPush && !pullRequestCoreLanes.has(lane.lane) ? null : trusted;
+    let source = trustedForLane ?? marker(lane.lane);
     let artifact = "";
     if (source && lane.artifact) {
       artifact = retained(source.run_id, lane.artifact);
@@ -171,11 +184,13 @@ function recordedMarker(lane) {
 
 function select() {
   const force = process.env.FORCE === "true";
+  const pullRequest = process.env.GITHUB_EVENT_NAME === "pull_request";
   const mainPush = process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF === "refs/heads/main";
   const trusted = !force && mainPush ? qualifiedPullRequestRun() : null;
   const { matrix, reused } = chooseLanes(readLanes(), {
     force,
     mainPush,
+    pullRequest,
     trusted,
     marker: recordedMarker,
     retained: retainedArtifact,
@@ -183,8 +198,8 @@ function select() {
   for (const [lane, source] of Object.entries(reused)) {
     console.error(`${lane}: reused from run ${source.run_id} attempt ${source.run_attempt}`);
   }
-  // On pull requests, early-start lanes run in their own job that is queued at
-  // workflow start and executes only when the plan requires it.
+  // The separate Windows job is consulted only for an eligible pull-request
+  // lane; downstream lanes are otherwise carried by the regular matrix.
   const early = process.env.GITHUB_EVENT_NAME === "pull_request"
     ? matrix.filter(lane => lane.early_start)
     : [];

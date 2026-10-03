@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { chooseLanes, ignored, laneKeys } from "./plan-qualification.mjs";
+import { chooseLanes, ignored, laneKeys, qualificationSchema } from "./plan-qualification.mjs";
 
 const lanes = JSON.parse(readFileSync(".github/qualification-lanes.json", "utf8"));
 const blob = (path, object = "a".repeat(40)) => `100644 blob ${object}\t${path}`;
@@ -28,14 +28,25 @@ test("every lane names a known input set and a Blacksmith runner", () => {
   }
 });
 
-test("the early-start windows job runs on the windows lane's runner", () => {
+test("the Windows helper waits for the planner and cannot provision on an ordinary PR", () => {
   const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
   const job = workflow.slice(workflow.indexOf("\n  windows:\n"));
   const runsOn = job.match(/\n {4}runs-on: (\S+)\n/)?.[1];
-  const early = lanes.filter(lane => lane.early_start);
-  assert.deepEqual(early.map(lane => lane.lane), ["windows"]);
-  assert.equal(runsOn, early[0].runner);
-  assert.match(job, new RegExp(`\\n {6}CARGO_BUILD_JOBS: ${early[0].workers}\\n`));
+  const windows = lanes.find(lane => lane.lane === "windows");
+  assert.equal(runsOn, windows.runner);
+  assert.match(job, /\n {4}needs: plan\n/);
+  assert.match(job, /if: github\.event_name == 'pull_request' && needs\.plan\.outputs\.windows == 'true'/);
+  assert.match(job, new RegExp(`\\n {6}CARGO_BUILD_JOBS: ${windows.workers}\\n`));
+});
+
+test("release events force the full downstream qualification path", () => {
+  const workflow = readFileSync(".github/workflows/qualification.yml", "utf8");
+  assert.match(workflow, /\n  release:\n    types: \[published\]/);
+  assert.match(workflow, /github\.event_name == 'release'/);
+});
+
+test("the PR lane split invalidates pre-gating qualification markers", () => {
+  assert.equal(qualificationSchema, "sdk-qualification-v2");
 });
 
 test("root documentation changes reuse every lane", () => {
@@ -85,6 +96,24 @@ test("recorded lanes are reused with their retained artifact", () => {
   assert.equal(reused.web.artifact, "");
 });
 
+test("pull requests qualify only the core gate and policy lanes", () => {
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: false, mainPush: false, pullRequest: true, trusted: null,
+    marker: () => null, retained: retainedAll,
+  });
+  assert.deepEqual(matrix.map(lane => lane.lane), ["gate", "policy"]);
+  assert.deepEqual(reused, {});
+});
+
+test("a pull request never reuses a downstream lane as full qualification", () => {
+  const { matrix, reused } = chooseLanes(lanes, {
+    force: false, mainPush: false, pullRequest: true, trusted: source,
+    marker: everywhere, retained: retainedAll,
+  });
+  assert.deepEqual(matrix, []);
+  assert.deepEqual(Object.keys(reused).sort(), ["gate", "policy"]);
+});
+
 test("a lane whose artifact expired executes again", () => {
   const { matrix } = chooseLanes(lanes, {
     force: false, mainPush: false, trusted: null, marker: everywhere,
@@ -93,13 +122,15 @@ test("a lane whose artifact expired executes again", () => {
   assert.deepEqual(matrix.map(lane => lane.lane), ["gate"]);
 });
 
-test("main pushes rebuild source-bound artifacts even from a trusted pull request", () => {
+test("main pushes rebuild source-bound artifacts and do not trust PRs for downstream lanes", () => {
   const { matrix, reused } = chooseLanes(lanes, {
     force: false, mainPush: true, trusted: source, marker: () => null, retained: retainedAll,
   });
-  assert.deepEqual(matrix.map(lane => lane.lane), lanes.filter(lane => lane.source_bound).map(lane => lane.lane));
-  assert.ok(!("linux" in reused));
-  assert.deepEqual(reused.windows, { run_id: 7, run_attempt: 2, artifact: "" });
+  assert.deepEqual(
+    matrix.map(lane => lane.lane),
+    lanes.filter(lane => lane.source_bound || !["gate", "policy"].includes(lane.lane)).map(lane => lane.lane),
+  );
+  assert.deepEqual(Object.keys(reused).sort(), ["gate", "policy"]);
 });
 
 test("forced runs execute every lane", () => {
