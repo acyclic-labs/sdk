@@ -2431,6 +2431,42 @@ export declare type ReferenceGrant = Message<"acyclic.harness.v2.ReferenceGrant"
 export declare const ReferenceGrantSchema: GenMessage<ReferenceGrant>;
 
 /**
+ * @generated from message acyclic.harness.v2.ModelBoundaryReferences
+ */
+export declare type ModelBoundaryReferences = Message<"acyclic.harness.v2.ModelBoundaryReferences"> & {
+  /**
+   * @generated from field: acyclic.harness.v2.OperationIdentity publication = 1;
+   */
+  publication?: OperationIdentity | undefined;
+
+  /**
+   * @generated from field: bytes publication_digest = 2;
+   */
+  publicationDigest: Uint8Array;
+
+  /**
+   * @generated from field: bytes boundary_digest = 3;
+   */
+  boundaryDigest: Uint8Array;
+
+  /**
+   * @generated from field: bytes attestation = 4;
+   */
+  attestation: Uint8Array;
+
+  /**
+   * @generated from field: repeated acyclic.harness.v2.FileRef files = 5;
+   */
+  files: FileRef[];
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ModelBoundaryReferences.
+ * Use `create(ModelBoundaryReferencesSchema)` to create a new message.
+ */
+export declare const ModelBoundaryReferencesSchema: GenMessage<ModelBoundaryReferences>;
+
+/**
  * @generated from message acyclic.harness.v2.ForkSelection
  */
 export declare type ForkSelection = Message<"acyclic.harness.v2.ForkSelection"> & {
@@ -2540,6 +2576,11 @@ export declare type ForkRequest = Message<"acyclic.harness.v2.ForkRequest"> & {
    * @generated from field: acyclic.harness.v2.ForkPreparation preparation = 9;
    */
   preparation?: ForkPreparation | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ModelBoundaryReferences model_boundary = 10;
+   */
+  modelBoundary?: ModelBoundaryReferences | undefined;
 };
 
 /**
@@ -2727,6 +2768,11 @@ export declare type ForkSeed = Message<"acyclic.harness.v2.ForkSeed"> & {
    * @generated from field: acyclic.harness.v2.GenerationRef child_private_generation = 16;
    */
   childPrivateGeneration?: GenerationRef | undefined;
+
+  /**
+   * @generated from field: acyclic.harness.v2.ModelBoundaryReferences model_boundary = 17;
+   */
+  modelBoundary?: ModelBoundaryReferences | undefined;
 };
 
 /**
