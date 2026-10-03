@@ -5,7 +5,7 @@
 //! nested types, presence markers, enum values, reserved identities, and RPC
 //! streaming flags are never reconstructed from generated bindings.
 
-use crate::protocol;
+use crate::{OperationPolicy, protocol};
 pub use acyclic_sdk_contract_options::OptionTarget;
 use acyclic_sdk_contract_options::{OPTION_SPECS, OptionSpec};
 use prost::Message;
@@ -38,6 +38,122 @@ pub const FILESYSTEM: ContractModel = ContractModel {
     archived_handshake_descriptor_digest: ARCHIVED_HANDSHAKE_DESCRIPTOR_DIGEST,
 };
 pub const CONTRACT: ContractModel = FILESYSTEM;
+
+/// Availability metadata for one Rust-owned Filesystem service surface.
+///
+/// These entries describe compiled Rust adapters and feature/target gates;
+/// they do not imply an HTTP route or a deployed endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServiceAvailability {
+    pub name: &'static str,
+    pub feature: &'static str,
+    pub targets: &'static str,
+    pub transport: &'static str,
+}
+
+pub const FILESYSTEM_SERVICE_AVAILABILITY: &[ServiceAvailability] = &[
+    ServiceAvailability {
+        name: "portable-model",
+        feature: "always",
+        targets: "native and target-compatible wasm32",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "embedded-local",
+        feature: "local (default; native only)",
+        targets: "native",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "in-memory-distributed",
+        feature: "memory + distributed",
+        targets: "feature-enabled targets",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "hosted-client",
+        feature: "native target",
+        targets: "native",
+        transport: "transport-neutral hosted client",
+    },
+    ServiceAvailability {
+        name: "grpc-wire-service",
+        feature: "native build",
+        targets: "native",
+        transport: "tonic gRPC",
+    },
+    ServiceAvailability {
+        name: "native-watch",
+        feature: "native-watch",
+        targets: "native",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "native-mount",
+        feature: "native-mount",
+        targets: "native",
+        transport: "native mount adapter",
+    },
+    ServiceAvailability {
+        name: "s3-http",
+        feature: "s3-http",
+        targets: "native",
+        transport: "S3-compatible HTTP adapter",
+    },
+];
+
+const FILESYSTEM_ERRORS: &[&str] = &[
+    "INVALID_ARGUMENT",
+    "NOT_FOUND",
+    "FAILED_PRECONDITION",
+    "CANCELLED",
+    "RESOURCE_EXHAUSTED",
+    "UNAVAILABLE",
+    "UNIMPLEMENTED",
+    "DATA_LOSS",
+];
+const FILESYSTEM_READ_CAPABILITIES: &[&str] = &["filesystem.read"];
+const FILESYSTEM_WRITE_CAPABILITIES: &[&str] =
+    &["filesystem.write", "filesystem.idempotent_mutation"];
+const FILESYSTEM_OPERATION_CAPABILITIES: &[&str] = &["filesystem.operation"];
+const FILESYSTEM_MOUNT_CAPABILITIES: &[&str] = &["filesystem.credentials.mount"];
+const FILESYSTEM_S3_CAPABILITIES: &[&str] = &["filesystem.credentials.s3"];
+const FILESYSTEM_SOURCE_CAPABILITIES: &[&str] = &["filesystem.source"];
+
+/// Rust-owned behavior metadata for every FilesystemService RPC.
+#[rustfmt::skip]
+pub const FILESYSTEM_OPERATION_POLICIES: &[OperationPolicy] = &[
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Handshake", capabilities: &["filesystem"], errors: FILESYSTEM_ERRORS, validations: &["protocol.version.exact", "descriptor_digest.matches", "request.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/CreateWorkspace", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["operation.idempotency_key.16_bytes", "workspace_name.valid", "profile.supported"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/OpenWorkspace", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.selector.required", "workspace.identity.matches"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/GetHead", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "workspace.identity.matches"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/GetGeneration", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "generation_id.32_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Read", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "path.valid", "maximum_bytes.bounded", "range.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Stat", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "path.valid"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ListDirectory", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "page.maximum_items.bounded", "cursor.valid"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ReadLink", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "path.valid", "maximum_bytes.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/PlanExtents", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "path.valid", "range.valid"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ApplyTransaction", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "operation.idempotency_key.16_bytes", "mutation.oneof", "transaction.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/RebaseTransaction", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "operation.idempotency_key.16_bytes", "transaction.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ForkWorkspace", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "generation.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Diff", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.references.required", "diff.bounds.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Rebase", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "generation.reference.required", "rebase.bounds.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/PlanJoin", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.references.required", "join.history.valid", "join.bounds.bounded"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ApplyJoin", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["join.plan_identity.matches", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Checkpoint", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Pin", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Export", capabilities: FILESYSTEM_READ_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["generation.reference.required", "export.bounds.bounded", "cursor.valid"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Import", capabilities: FILESYSTEM_WRITE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["import.stream.nonempty", "object.order.exact", "cursor.valid", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/IssueMountCredential", capabilities: FILESYSTEM_MOUNT_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "generation.reference.required", "credential.expiry.bounded", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/IssueS3Credential", capabilities: FILESYSTEM_S3_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "generation.reference.required", "credential.expiry.bounded", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/GetSourceState", capabilities: FILESYSTEM_SOURCE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/ReconcileSource", capabilities: FILESYSTEM_SOURCE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/RescanSource", capabilities: FILESYSTEM_SOURCE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/SealSource", capabilities: FILESYSTEM_SOURCE_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["workspace.reference.required", "operation.idempotency_key.16_bytes"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Observe", capabilities: FILESYSTEM_OPERATION_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["operation_id.16_bytes", "response.identity.matches"] },
+    OperationPolicy { rpc: "acyclic.filesystem.v2.FilesystemService/Cancel", capabilities: FILESYSTEM_OPERATION_CAPABILITIES, errors: FILESYSTEM_ERRORS, validations: &["operation_id.16_bytes", "operation.idempotency_key.16_bytes", "response.identity.matches"] },
+];
 
 /// Compatibility aliases retained for Filesystem/Harness callers while the
 /// option identity itself is owned by the shared immutable oracle.
@@ -698,6 +814,16 @@ impl ContractModel {
     pub fn canonical_sha256(&self) -> String {
         let digest = Sha256::digest(self.descriptor());
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    /// Return the Rust-owned behavior metadata for every Filesystem RPC.
+    pub const fn operation_policies(&self) -> &'static [OperationPolicy] {
+        FILESYSTEM_OPERATION_POLICIES
+    }
+
+    /// Return compiled service and feature availability metadata.
+    pub const fn service_availability(&self) -> &'static [ServiceAvailability] {
+        FILESYSTEM_SERVICE_AVAILABILITY
     }
 }
 

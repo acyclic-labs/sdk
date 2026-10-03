@@ -194,3 +194,54 @@ fn harness_recovery_snapshot_and_cancel_capabilities_are_wire_pinned() {
             .any(|message| message.name.as_deref() == Some("OperationStatus"))
     );
 }
+
+#[test]
+fn filesystem_and_harness_export_behavior_metadata_for_every_rpc() {
+    let filesystem_file = filesystem::filesystem_file_descriptor();
+    let filesystem_methods = filesystem_file.service[0]
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        filesystem::FILESYSTEM_OPERATION_POLICIES.len(),
+        filesystem_methods.len()
+    );
+    for policy in filesystem::FILESYSTEM_OPERATION_POLICIES {
+        assert!(!policy.capabilities.is_empty());
+        assert!(!policy.errors.is_empty());
+        assert!(!policy.validations.is_empty());
+        let method = policy.rpc.rsplit('/').next().unwrap();
+        assert!(filesystem_methods.contains(&method));
+    }
+    assert!(
+        filesystem::FILESYSTEM_SERVICE_AVAILABILITY
+            .iter()
+            .any(|surface| {
+                surface.name == "grpc-wire-service" && surface.transport == "tonic gRPC"
+            })
+    );
+
+    let harness_file = harness::harness_file_descriptor();
+    let harness_methods = harness_file.service[0]
+        .method
+        .iter()
+        .filter_map(|method| method.name.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        harness::HARNESS_OPERATION_POLICIES.len(),
+        harness_methods.len()
+    );
+    for policy in harness::HARNESS_OPERATION_POLICIES {
+        assert!(!policy.capabilities.is_empty());
+        assert!(!policy.errors.is_empty());
+        assert!(!policy.validations.is_empty());
+        let method = policy.rpc.rsplit('/').next().unwrap();
+        assert!(harness_methods.contains(&method));
+    }
+    assert!(
+        harness::HARNESS_SERVICE_AVAILABILITY
+            .iter()
+            .any(|surface| { surface.name == "tonic-wire-adapter" && surface.feature == "grpc" })
+    );
+}

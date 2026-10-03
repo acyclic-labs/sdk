@@ -4,7 +4,7 @@
 //! exporters. The checked-in descriptor is an immutable migration oracle; the
 //! runtime handshake identity remains separate from the canonical schema hash.
 
-use crate::protocol;
+use crate::{OperationPolicy, protocol};
 pub use acyclic_sdk_contract_options::OptionTarget;
 use acyclic_sdk_contract_options::{OPTION_SPECS, OptionSpec};
 use prost::Message;
@@ -35,6 +35,80 @@ pub const HARNESS: ContractModel = ContractModel {
     archived_handshake_descriptor_digest: ARCHIVED_HANDSHAKE_DESCRIPTOR_DIGEST,
 };
 pub const CONTRACT: ContractModel = HARNESS;
+
+/// Availability metadata for one Rust-owned Harness service surface.
+///
+/// These entries describe compiled Rust adapters and feature/target gates;
+/// they do not imply an HTTP route or a deployed endpoint.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServiceAvailability {
+    pub name: &'static str,
+    pub feature: &'static str,
+    pub targets: &'static str,
+    pub transport: &'static str,
+}
+
+pub const HARNESS_SERVICE_AVAILABILITY: &[ServiceAvailability] = &[
+    ServiceAvailability {
+        name: "runtime",
+        feature: "default",
+        targets: "native and target-compatible wasm32",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "filesystem-provider",
+        feature: "filesystem",
+        targets: "feature-enabled targets",
+        transport: "in-process Rust",
+    },
+    ServiceAvailability {
+        name: "filesystem-local-host",
+        feature: "filesystem-local",
+        targets: "native",
+        transport: "in-process Rust with local durable storage",
+    },
+    ServiceAvailability {
+        name: "tonic-wire-adapter",
+        feature: "grpc",
+        targets: "feature-enabled native targets",
+        transport: "tonic gRPC",
+    },
+    ServiceAvailability {
+        name: "wasm-bindings",
+        feature: "wasm",
+        targets: "wasm32",
+        transport: "WebAssembly bindings",
+    },
+];
+
+const HARNESS_ERRORS: &[&str] = &[
+    "ERROR_CODE_UNSPECIFIED",
+    "ERROR_CODE_NOT_FOUND",
+    "ERROR_CODE_CONFLICT",
+    "ERROR_CODE_UNSUPPORTED",
+    "ERROR_CODE_INVALID",
+    "ERROR_CODE_UNAUTHORIZED",
+    "ERROR_CODE_STORAGE",
+    "ERROR_CODE_INDETERMINATE",
+    "ERROR_CODE_INTERACTION_DECLINED",
+    "ERROR_CODE_INTERACTION_CANCELLED",
+    "ERROR_CODE_INTERACTION_EXPIRED",
+    "ERROR_CODE_INTERACTION_DENIED",
+];
+const HARNESS_DECLARE_CAPABILITIES: &[&str] = &["operation:declare"];
+const HARNESS_REPLAY_CAPABILITIES: &[&str] = &["harness.replay"];
+const HARNESS_OBSERVE_CAPABILITIES: &[&str] = &["operation:observe"];
+const HARNESS_CANCEL_CAPABILITIES: &[&str] = &["operation:cancel"];
+
+/// Rust-owned behavior metadata for every HarnessService RPC.
+#[rustfmt::skip]
+pub const HARNESS_OPERATION_POLICIES: &[OperationPolicy] = &[
+    OperationPolicy { rpc: "acyclic.harness.v2.HarnessService/Handshake", capabilities: &["harness"], errors: HARNESS_ERRORS, validations: &["protocol.identity.exact", "required_capability.nonempty", "required_capability.supported"] },
+    OperationPolicy { rpc: "acyclic.harness.v2.HarnessService/Submit", capabilities: HARNESS_DECLARE_CAPABILITIES, errors: HARNESS_ERRORS, validations: &["protocol.identity.exact", "operation_id.nonempty", "idempotency_key.nonempty", "admission.identity.matches"] },
+    OperationPolicy { rpc: "acyclic.harness.v2.HarnessService/Replay", capabilities: HARNESS_REPLAY_CAPABILITIES, errors: HARNESS_ERRORS, validations: &["protocol.identity.exact", "resume_cursor.contiguous", "delivery.identity.preserving"] },
+    OperationPolicy { rpc: "acyclic.harness.v2.HarnessService/Observe", capabilities: HARNESS_OBSERVE_CAPABILITIES, errors: HARNESS_ERRORS, validations: &["protocol.identity.exact", "owner.required", "operation_id.nonempty", "scope.required", "scope.capability.operation_observe", "status.identity.matches"] },
+    OperationPolicy { rpc: "acyclic.harness.v2.HarnessService/Cancel", capabilities: HARNESS_CANCEL_CAPABILITIES, errors: HARNESS_ERRORS, validations: &["protocol.identity.exact", "owner.required", "operation_id.nonempty", "idempotency_key.nonempty", "scope.required", "scope.capability.operation_cancel", "status.identity.matches"] },
+];
 
 pub type ValidationOptionSpec = OptionSpec;
 pub const VALIDATION_OPTION_SPECS: &[ValidationOptionSpec] = OPTION_SPECS;
@@ -673,6 +747,16 @@ impl ContractModel {
     pub fn canonical_sha256(&self) -> String {
         let digest = Sha256::digest(&self.descriptor());
         digest.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    /// Return the Rust-owned behavior metadata for every Harness RPC.
+    pub const fn operation_policies(&self) -> &'static [OperationPolicy] {
+        HARNESS_OPERATION_POLICIES
+    }
+
+    /// Return compiled service and feature availability metadata.
+    pub const fn service_availability(&self) -> &'static [ServiceAvailability] {
+        HARNESS_SERVICE_AVAILABILITY
     }
 }
 fn target_file() -> FileDescriptorProto {
