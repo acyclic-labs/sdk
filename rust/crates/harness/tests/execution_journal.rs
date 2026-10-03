@@ -805,8 +805,8 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     .await?;
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
-        host,
-        private,
+        host.clone(),
+        private.clone(),
         issuer.verifier(),
         scope.clone(),
         4_096,

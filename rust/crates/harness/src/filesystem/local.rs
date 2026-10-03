@@ -1734,10 +1734,11 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelAttempt, ModelEvent};
+    use crate::model::{ModelAttempt, ModelEvent, ModelOptionPolicy};
+    use crate::registry::ComponentIdentity;
     use crate::{EffectAttemptId, EffectId, core::EffectGuarantee};
     use futures::{future::BoxFuture, stream::BoxStream};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
         fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
@@ -1751,6 +1752,43 @@ mod tests {
                 }),
             ]))
         }
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    struct RecordingMock {
+        calls: AtomicUsize,
+        prepared: Mutex<Vec<(Vec<u8>, crate::model_input::ModelInputManifest)>>,
+        policy: ModelOptionPolicy,
+    }
+
+    impl ModelProvider for RecordingMock {
+        fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+            Some(&self.policy)
+        }
+
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut captured) = self.prepared.lock() {
+                captured.push((prepared.bytes().to_vec(), prepared.manifest().clone()));
+            }
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content {
+                    delta: "persisted".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]))
+        }
+
         fn reconcile<'a>(
             &'a self,
             _: ModelAttempt,
@@ -1795,7 +1833,22 @@ mod tests {
     #[tokio::test]
     async fn reopen_recovers_completed_turn_without_dispatch() -> Result<()> {
         let root = std::env::temp_dir().join(format!("harness-reopen-{}", OperationId::new()));
-        let provider = Arc::new(Mock(AtomicUsize::new(0)));
+        let policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.local-restart-options".into(),
+                version: "1".into(),
+                digest: [61; 32],
+            },
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+            }),
+        )?;
+        let provider = Arc::new(RecordingMock {
+            calls: AtomicUsize::new(0),
+            prepared: Mutex::new(Vec::new()),
+            policy: policy.clone(),
+        });
         let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
         let operation = OperationId::new();
         let file;
@@ -1822,6 +1875,13 @@ mod tests {
                 "persisted"
             );
         }
+        let (expected_bytes, expected_manifest) = provider
+            .prepared
+            .lock()
+            .map_err(|_| Error::Storage("recording model lock poisoned".into()))?
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::Storage("recording model did not receive input".into()))?;
         {
             let session = PersistentLocalHarness::open(
                 &root,
@@ -1835,8 +1895,34 @@ mod tests {
                 session.run(operation, "exact prompt\r\n").await?.text,
                 "persisted"
             );
-            assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
             assert!(session.run(operation, "different").await.is_err());
+
+            let prepared = session
+                .storage()
+                .journal()
+                .replay(operation)
+                .await?
+                .into_iter()
+                .find_map(|record| match record.event {
+                    crate::executor::ExecutionEvent::ModelInputPrepared {
+                        manifest, request, ..
+                    } => Some((manifest, request)),
+                    _ => None,
+                })
+                .ok_or_else(|| Error::Storage("persisted model input is missing".into()))?;
+            let request_bytes = session.storage().read(&prepared.1).await?;
+            let manifest_bytes = session.storage().read(&prepared.0).await?;
+            let manifest: crate::model_input::ModelInputManifest =
+                serde_json::from_slice(&manifest_bytes)
+                    .map_err(|error| Error::Storage(error.to_string()))?;
+            assert_eq!(request_bytes, expected_bytes);
+            assert_eq!(manifest, expected_manifest);
+            assert_eq!(manifest.model_option_policy, Some(policy.identity.clone()));
+            assert_eq!(
+                manifest.model_option_schema_digest,
+                Some(policy.schema_digest()?)
+            );
         }
         let changed = Model::new("mock", "changed", "1", serde_json::json!({}))?;
         assert!(
