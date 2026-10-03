@@ -52,6 +52,7 @@ pub mod registry;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
+pub mod swarm_budget;
 pub mod store;
 pub mod tool;
 pub mod turn;
