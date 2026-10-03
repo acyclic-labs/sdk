@@ -1668,8 +1668,36 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.generation_ref_id(inspected.target_head())?,
     )?;
     let request = RootWritebackRequest::new(approval, parent_scope.clone());
+    let notice_write = ContentGrant::verify(
+        &parent_issuer.verifier(),
+        &parent_scope,
+        &root,
+        VolumeOperation::Write,
+    )?;
+    let notice_file = host
+        .put_content(
+            &root,
+            &notice_write,
+            "notices/wide-merge.txt",
+            b"wide merge",
+            "text/plain",
+            "wide-merge.txt",
+            1_024,
+            &IdempotencyKey::new("wide-merge-notice")?,
+        )
+        .await?;
+    let notice = ConversationMessage {
+        id: Uuid::from_bytes([108; 16]),
+        sequence: 1,
+        kind: MessageKind::Merge,
+        content: notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    };
     let resolved = facade
-        .apply_root_writeback_plan_for_child(
+        .apply_root_writeback_plan_for_child_with_notice(
             &request,
             host.as_ref(),
             &parent_reducer,
@@ -1680,6 +1708,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             &siblings[1],
             &inspected,
             selections,
+            &notice,
         )
         .await?;
     assert!(matches!(&resolved, JoinOutcome::Applied(_)));
@@ -2031,14 +2060,43 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             &grandchild_project,
         )
         .await?;
+    let child_notice_write = ContentGrant::verify(
+        &child_issuer.verifier(),
+        &child_scope,
+        &child_a_project,
+        VolumeOperation::Write,
+    )?;
+    let child_notice_file = host
+        .put_content(
+            &child_a_project,
+            &child_notice_write,
+            "notices/grandchild-merge.txt",
+            b"grandchild merge",
+            "text/plain",
+            "grandchild-merge.txt",
+            1_024,
+            &IdempotencyKey::new("facade-grandchild-notice")?,
+        )
+        .await?;
+    let child_notice = ConversationMessage {
+        id: Uuid::from_bytes([198; 16]),
+        sequence: 1,
+        kind: MessageKind::Merge,
+        content: child_notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    };
     let grandchild_outcome = child_facade
-        .apply_project_merge_for_child(
+        .apply_project_merge_for_child_with_notice(
             host.as_ref(),
             &child_reducer,
             &grandchild_authority,
             &grandchild_project,
             &grandchild_plan,
             OperationId::from_bytes([193; 16]),
+            &child_notice,
         )
         .await?;
     assert!(matches!(grandchild_outcome, JoinOutcome::Applied(_)));
@@ -2067,6 +2125,34 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             .is_err(),
         "root remains unchanged before explicit approved writeback"
     );
+    let root_notice_write = ContentGrant::verify(
+        &root_issuer.verifier(),
+        &root_scope,
+        &root_project,
+        VolumeOperation::Write,
+    )?;
+    let root_notice_file = host
+        .put_content(
+            &root_project,
+            &root_notice_write,
+            "notices/child-merge.txt",
+            b"child merge",
+            "text/plain",
+            "child-merge.txt",
+            1_024,
+            &IdempotencyKey::new("facade-child-notice")?,
+        )
+        .await?;
+    let root_notice = ConversationMessage {
+        id: Uuid::from_bytes([199; 16]),
+        sequence: 1,
+        kind: MessageKind::Merge,
+        content: root_notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    };
     let operation_id = OperationId::from_bytes([194; 16]);
     let approval = RootWritebackApproval::issue(
         &root_issuer.verifier(),
@@ -2079,13 +2165,14 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let request = RootWritebackRequest::new(approval, root_scope.clone());
     assert!(
         root_facade
-            .apply_project_merge_for_child(
+            .apply_project_merge_for_child_with_notice(
                 host.as_ref(),
                 &root_reducer,
                 &child_b_authority,
                 &child_b_project,
                 &root_plan,
                 OperationId::from_bytes([196; 16]),
+                &root_notice,
             )
             .await
             .is_err(),
@@ -2102,7 +2189,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let mismatched_request = RootWritebackRequest::new(mismatched_approval, root_scope.clone());
     assert!(matches!(
         root_facade
-            .apply_root_writeback_plan_for_child(
+            .apply_root_writeback_plan_for_child_with_notice(
                 &mismatched_request,
                 host.as_ref(),
                 &root_reducer,
@@ -2110,6 +2197,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
                 &child_a_project,
                 &root_plan,
                 BTreeMap::new(),
+                &root_notice,
             )
             .await,
         Err(acyclic_harness::Error::Conflict(_))
@@ -2126,7 +2214,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     )
     .await?;
     let stale_outcome = root_facade
-        .apply_root_writeback_plan_for_child(
+        .apply_root_writeback_plan_for_child_with_notice(
             &request,
             host.as_ref(),
             &root_reducer,
@@ -2134,6 +2222,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             &child_a_project,
             &root_plan,
             BTreeMap::new(),
+            &root_notice,
         )
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
@@ -2156,7 +2245,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     )?;
     let retry_request = RootWritebackRequest::new(retry_approval, root_scope.clone());
     let root_outcome = root_facade
-        .apply_root_writeback_plan_for_child(
+        .apply_root_writeback_plan_for_child_with_notice(
             &retry_request,
             host.as_ref(),
             &root_reducer,
@@ -2164,11 +2253,12 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             &child_a_project,
             &root_plan,
             BTreeMap::new(),
+            &root_notice,
         )
         .await?;
     assert!(matches!(root_outcome, JoinOutcome::Applied(_)));
     let replayed = root_facade
-        .apply_root_writeback_plan_for_child(
+        .apply_root_writeback_plan_for_child_with_notice(
             &retry_request,
             host.as_ref(),
             &root_reducer,
@@ -2176,6 +2266,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             &child_a_project,
             &root_plan,
             BTreeMap::new(),
+            &root_notice,
         )
         .await?;
     assert!(matches!(replayed, JoinOutcome::AlreadyApplied(_)));
