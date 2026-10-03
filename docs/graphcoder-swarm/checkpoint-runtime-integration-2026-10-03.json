@@ -1,0 +1,133 @@
+{
+  "complete": false,
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "requirements_count": 68,
+  "tests": [
+    {
+      "suite": "root_writeback_acceptance",
+      "source": "09198efd",
+      "command": ".\\target\\debug\\deps\\root_writeback_acceptance-8586d7e6ad4f9bf5.exe --nocapture",
+      "terminal_handle": 18302,
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0,
+      "suite_sha256": "95b45c07ce00f1f82dbf98acb6ce1921bc91bcc5d1e7139511f78542e2f78637",
+      "artifact": "target/debug/deps/root_writeback_acceptance-8586d7e6ad4f9bf5.exe",
+      "artifact_sha256": "bfc0c48099ccdaf32afcf421ee753e81dfb69a0045e807379f4e9991ca4f8199",
+      "contract_scope": "Exact approval positive and concurrent user edit typed conflict both pass; support boundary tests, not installed operator qualification"
+    },
+    {
+      "suite": "local_swarm_recovery",
+      "source": "09198efd",
+      "command": ".\\target\\debug\\deps\\local_swarm_recovery-ec634dcd9baf397f.exe --nocapture",
+      "terminal_handle": "direct native invocation",
+      "passed": 4,
+      "failed": 2,
+      "skipped": 0,
+      "suite_sha256": "9c11124fa95279b01ac06ce84c9ff5775b1adf1881d1dd7aa2beb68f49c659a8",
+      "artifact": "target/debug/deps/local_swarm_recovery-ec634dcd9baf397f.exe",
+      "artifact_sha256": "5cf615c7858908e742ffc105624ab8d9c6b6bb88e7103618f1f6ef49718c9b0b",
+      "contract_scope": "Concurrent cases receive zero provider calls: fixtures create lazy run futures but wait before polling; two independent handle contract retained for repair"
+    },
+    {
+      "suite": "model_fork_boundary",
+      "source": "09198efd",
+      "command": ".\\target\\debug\\deps\\model_fork_boundary-6a2b9ef46d1107ad.exe --nocapture",
+      "terminal_handle": "direct native invocation",
+      "passed": 1,
+      "failed": 2,
+      "skipped": 0,
+      "suite_sha256": "37c41b18418f21205f5c107f2ce26e506e898ee27141df8233435236eb316fb2",
+      "artifact": "target/debug/deps/model_fork_boundary-6a2b9ef46d1107ad.exe",
+      "artifact_sha256": "7436f2d93324edc21ef50d5f25289eee3586467c908b63a5022a178dfb9e3c60",
+      "contract_scope": "Invalid attestation allocates child workspace before refusal; changed model attestation reopen negative fails; stale boundary refusal passes"
+    },
+    {
+      "suite": "local_model_swarm",
+      "source": "09198efd",
+      "command": ".\\target\\debug\\deps\\local_model_swarm-609d0f1d2744f17c.exe --nocapture",
+      "terminal_handle": 74634,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 0,
+      "suite_sha256": "7884b16f03ce497f99fc642f62db6f0c6f6887bd10e54231ca021b046b54d35e",
+      "artifact": "target/debug/deps/local_model_swarm-609d0f1d2744f17c.exe",
+      "artifact_sha256": "a50a808b275e00cde374f44bd3244b2f039212fb516f6a79ac79e0c8ad40611c",
+      "contract_scope": "Real production composition passes prior authority domain mismatch, then fails fork manifest command/parent revision binding"
+    },
+    {
+      "suite": "typescript runtime",
+      "source": "49899445",
+      "passed": 71,
+      "failed": 3,
+      "command": "bun test typescript/packages/harness/test/runtime.test.ts",
+      "suite_sha256": "fa9ffea07176b010773c9e1bb1b064f138ae3a1e341fc843a8336b7b8dedd7cd",
+      "scope": "Source checks with existing WASM, fresh parity not established",
+      "failures": [
+        "canonical v3 prerequisite admission fixture mismatch",
+        "option pinning fixture lacks registered option policy",
+        "detached event fixture cannot fit aggregate request bound"
+      ]
+    },
+    {
+      "suite": "typescript memory conversation",
+      "source": "49899445",
+      "passed": 23,
+      "failed": 1,
+      "command": "bun test typescript/packages/harness/test/memory-conversation.test.ts",
+      "suite_sha256": "ee59d7bcf45bdbf506660dc467320551f1ba37b3421a5fff9adb5f1b4f557f9e",
+      "scope": "Source with existing WASM",
+      "failures": [
+        "post-model publication recovery test receives indeterminate instead of limit classification"
+      ]
+    }
+  ],
+  "live_native_library": {
+    "source": "09198efd",
+    "handle": 37220,
+    "binary": "target/debug/deps/acyclic_harness-0a8588af6047f55e.exe",
+    "status": "running; no aggregate result",
+    "observed_failures": [
+      "stream wait store terminal replay",
+      "explicit wait cancellation before admission",
+      "duplicate prepared model input error classification",
+      "native wire fixture digest stale",
+      "real native uncertain restart assertion",
+      "descendant retained-pipe outcome assertion"
+    ],
+    "pending_case": "seedless local fork unit model fixture repeats tools"
+  },
+  "compile_failures": [
+    {
+      "source": "c647ead5",
+      "repair": "748d8235",
+      "errors": "three native approval fixtures missing exact responder scope",
+      "handle": 19494
+    },
+    {
+      "source": "748d8235",
+      "repair": "a7e7d4ac",
+      "errors": "test-only owner capability direct private-field constructor",
+      "handle": 44287
+    },
+    {
+      "source": "49899445",
+      "repair": "09198efd",
+      "errors": "negative attestation assertion partially moved error",
+      "handle": 18662
+    }
+  ],
+  "original_checkout_incidents": {
+    "audit_worktree": "Q:\\sdk\\work\\recovery-fixture-audit",
+    "state": "verified clean including ignored files; removed using git worktree remove without force",
+    "preserved_historical_tsbuildinfo": "Q:\\sdk\\.graphcoder-terminal.tsbuildinfo",
+    "baseline_unknown": true
+  },
+  "boundaries": [
+    "mocked models",
+    "no sandbox",
+    "no merge",
+    "no Vite or visible terminal windows"
+  ],
+  "remaining": "Full locked matrix qualification remains incomplete"
+}
