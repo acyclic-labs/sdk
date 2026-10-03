@@ -1,0 +1,867 @@
+//! Durable-local recursive swarm composition.
+//!
+//! This module owns only the local application composition. Turn execution,
+//! model-input admission, completed-batch publication, and provider recovery
+//! remain the shared Harness paths. A swarm record is a small durable index of
+//! task identities and activation outcomes; each task's journal and private
+//! files are still owned by [`PersistentLocalHarness`].
+
+use super::PersistentLocalHarness;
+use crate::{
+    Error, OperationId, Result, TaskId,
+    conversation::Limits,
+    executor::TurnOutput,
+    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
+    runtime::TaskRunLimits,
+};
+use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
+use futures::StreamExt as _;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+use tokio::sync::Mutex;
+
+const REGISTRY_STREAM: &str = "swarm/records";
+const REGISTRY_VERSION: u32 = 1;
+
+/// Configuration for one persistent local swarm.
+#[derive(Clone, Debug)]
+pub struct LocalSwarmConfig {
+    /// Model identity pinned into every task descriptor.
+    pub model: Model,
+    /// Shared conversation and artifact bounds.
+    pub limits: Limits,
+    /// Maximum number of fork edges from one task.
+    pub maximum_children: usize,
+    /// Maximum recursive depth, where the root is depth zero.
+    pub maximum_depth: usize,
+    /// Optional task-local execution bounds retained with each child.
+    pub run_limits: TaskRunLimits,
+}
+
+impl LocalSwarmConfig {
+    /// Constructs a bounded local composition with conservative fork limits.
+    pub fn new(model: Model, limits: Limits) -> Result<Self> {
+        limits.validate()?;
+        let config = Self {
+            model,
+            limits,
+            maximum_children: 8,
+            maximum_depth: 8,
+            run_limits: TaskRunLimits::default(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Validates application bounds before opening any provider.
+    pub fn validate(&self) -> Result<()> {
+        self.limits.validate()?;
+        self.run_limits.validate()?;
+        if self.maximum_children == 0 || self.maximum_depth == 0 {
+            return Err(Error::Invalid("local swarm bounds must be positive".into()));
+        }
+        Ok(())
+    }
+}
+
+/// A requested child activation. Its model is intentionally absent: the
+/// parent operation and completed boundary determine what can be inherited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalForkRequest {
+    /// Parent task in the durable session registry.
+    pub parent: TaskId,
+    /// Parent operation whose completed batch is the fork boundary.
+    pub parent_operation: OperationId,
+    /// Completed model/tool step to inherit.
+    pub parent_step: u32,
+    /// New child operation identity. A caller can retry this exact request.
+    pub child_operation: OperationId,
+    /// Explicit child task declaration appended after the frozen prefix.
+    pub task: String,
+    /// Fresh child user input; it is staged in the child's private volume.
+    pub prompt: String,
+}
+
+impl LocalForkRequest {
+    /// Checks the request fields that do not depend on the parent registry.
+    pub fn validate(&self) -> Result<()> {
+        if self.parent.into_bytes() == [0; 16]
+            || self.parent_operation.into_bytes() == [0; 16]
+            || self.child_operation.into_bytes() == [0; 16]
+        {
+            return Err(Error::Invalid("local fork identities must be nonzero".into()));
+        }
+        if self.task.trim().is_empty() || self.task.len() > 4 * 1024 {
+            return Err(Error::Invalid("local fork task is empty or too large".into()));
+        }
+        if self.prompt.len() > 64 * 1024 {
+            return Err(Error::Invalid("local fork prompt is too large".into()));
+        }
+        Ok(())
+    }
+}
+
+/// Durable state of one local task session.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalSessionPhase {
+    /// The task is the root or was admitted as a child.
+    Ready,
+    /// A fork publication was admitted but the child has not completed.
+    Activating,
+    /// The child completed its requested turn.
+    Completed,
+    /// The last activation or turn failed with a stable message.
+    Failed(String),
+}
+
+/// Lazy session descriptor returned by listing and lookup.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalSwarmSession {
+    /// Stable task identity.
+    pub task: TaskId,
+    /// Direct parent, if this is a child.
+    pub parent: Option<TaskId>,
+    /// Recursive depth from the root.
+    pub depth: usize,
+    /// Child task declaration, retained without starting the task.
+    pub task_description: String,
+    /// Pinned operation used for the latest turn.
+    pub operation: Option<OperationId>,
+    /// Current durable lifecycle phase.
+    pub phase: LocalSessionPhase,
+}
+
+/// Result of one child activation and turn.
+#[derive(Clone, Debug)]
+pub struct LocalForkOutcome {
+    /// Newly activated child identity.
+    pub child: TaskId,
+    /// Operation identity used by the child turn.
+    pub operation: OperationId,
+    /// Durable child model result.
+    pub output: TurnOutput,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSession {
+    version: u32,
+    task: TaskId,
+    parent: Option<TaskId>,
+    depth: usize,
+    task_description: String,
+    operation: Option<OperationId>,
+    phase: StoredPhase,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "message")]
+enum StoredPhase {
+    Ready,
+    Activating,
+    Completed,
+    Failed(String),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredRecord {
+    version: u32,
+    event: StoredEvent,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+enum StoredEvent {
+    Session(StoredSession),
+    ForkAdmitted {
+        parent: TaskId,
+        parent_operation: OperationId,
+        parent_step: u32,
+        child: TaskId,
+        child_operation: OperationId,
+        task: String,
+    },
+    ForkCompleted {
+        child: TaskId,
+        operation: OperationId,
+    },
+    ForkFailed { child: TaskId, reason: String },
+}
+
+impl From<StoredPhase> for LocalSessionPhase {
+    fn from(value: StoredPhase) -> Self {
+        match value {
+            StoredPhase::Ready => Self::Ready,
+            StoredPhase::Activating => Self::Activating,
+            StoredPhase::Completed => Self::Completed,
+            StoredPhase::Failed(message) => Self::Failed(message),
+        }
+    }
+}
+
+impl From<LocalSessionPhase> for StoredPhase {
+    fn from(value: LocalSessionPhase) -> Self {
+        match value {
+            LocalSessionPhase::Ready => Self::Ready,
+            LocalSessionPhase::Activating => Self::Activating,
+            LocalSessionPhase::Completed => Self::Completed,
+            LocalSessionPhase::Failed(message) => Self::Failed(message),
+        }
+    }
+}
+
+impl From<StoredSession> for LocalSwarmSession {
+    fn from(value: StoredSession) -> Self {
+        Self {
+            task: value.task,
+            parent: value.parent,
+            depth: value.depth,
+            task_description: value.task_description,
+            operation: value.operation,
+            phase: value.phase.into(),
+        }
+    }
+}
+
+impl From<LocalSwarmSession> for StoredSession {
+    fn from(value: LocalSwarmSession) -> Self {
+        Self {
+            version: REGISTRY_VERSION,
+            task: value.task,
+            parent: value.parent,
+            depth: value.depth,
+            task_description: value.task_description,
+            operation: value.operation,
+            phase: value.phase.into(),
+        }
+    }
+}
+
+/// Durable local recursive application composition.
+pub struct PersistentLocalSwarm {
+    root: PathBuf,
+    config: LocalSwarmConfig,
+    provider: Arc<dyn ModelProvider>,
+    registry: StreamClient<LocalStream>,
+    records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
+    sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
+}
+
+impl PersistentLocalSwarm {
+    /// Opens or recovers a local swarm. Child sessions remain lazy until a
+    /// caller explicitly activates or resumes one.
+    pub async fn open(
+        root: impl AsRef<Path>,
+        config: LocalSwarmConfig,
+        provider: Arc<dyn ModelProvider>,
+    ) -> Result<Self> {
+        config.validate()?;
+        let root = root.as_ref().to_path_buf();
+        let registry = StreamClient::new(Arc::new(
+            LocalStream::open(root.join("swarm"), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let stream = registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let records = load_records(&stream).await?;
+        let mut sessions = BTreeMap::new();
+        for record in records {
+            apply_record(&mut sessions, record)?;
+        }
+        if sessions.is_empty() {
+            let root_task = TaskId::new();
+            let root_session = LocalSwarmSession {
+                task: root_task,
+                parent: None,
+                depth: 0,
+                task_description: "root".into(),
+                operation: None,
+                phase: LocalSessionPhase::Ready,
+            };
+            append_record(
+                &stream,
+                StoredEvent::Session(root_session.clone().into()),
+            )
+            .await?;
+            sessions.insert(root_task, root_session);
+        }
+        let root_task = sessions
+            .values()
+            .find(|session| session.parent.is_none())
+            .map(|session| session.task)
+            .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        let root_session = open_session_path(&root, root_task);
+        let root_harness = Arc::new(
+            PersistentLocalHarness::open(
+                root_session,
+                config.model.clone(),
+                provider.clone(),
+                config.limits,
+            )
+            .await?,
+        );
+        let mut opened = BTreeMap::new();
+        opened.insert(root_task, root_harness);
+        Ok(Self {
+            root,
+            config,
+            provider,
+            registry,
+            records: Mutex::new(sessions),
+            sessions: Mutex::new(opened),
+        })
+    }
+
+    /// Opens a swarm from the common model/limit arguments.
+    pub async fn open_with_model(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+    ) -> Result<Self> {
+        Self::open(root, LocalSwarmConfig::new(model, limits)?, provider).await
+    }
+
+    /// Returns the stable root task without opening any child session.
+    pub async fn root_task(&self) -> Result<TaskId> {
+        self.records
+            .lock()
+            .await
+            .values()
+            .find(|session| session.parent.is_none())
+            .map(|session| session.task)
+            .ok_or_else(|| Error::Storage("swarm root session is missing".into()))
+    }
+
+    /// Lists canonical session descriptors without starting workers or
+    /// reading child filesystem content.
+    pub async fn sessions(&self) -> Vec<LocalSwarmSession> {
+        self.records.lock().await.values().cloned().collect()
+    }
+
+    /// Reads one descriptor without opening its local journal or filesystem.
+    pub async fn session(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        self.records
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))
+    }
+
+    /// Runs a root prompt under the shared durable local harness.
+    pub async fn run_root(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
+        let task = self.root_task().await?;
+        self.run_existing(task, operation, prompt).await
+    }
+
+    /// Runs a known session with an explicit operation identity.
+    pub async fn run(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<TurnOutput> {
+        self.run_existing(task, operation, prompt).await
+    }
+
+    async fn run_existing(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+        prompt: &str,
+    ) -> Result<TurnOutput> {
+        let harness = self.open_session(task).await?;
+        let output = harness.run(operation, prompt).await?;
+        self.update_session(task, |session| {
+            session.operation = Some(operation);
+            session.phase = LocalSessionPhase::Completed;
+        })
+        .await?;
+        Ok(output)
+    }
+
+    /// Admits and activates one recursive child after verifying the parent's
+    /// durable completed boundary. The child model is not constructed until
+    /// after the activation record and inherited prefix have been persisted.
+    pub async fn fork(&self, request: LocalForkRequest) -> Result<LocalForkOutcome> {
+        request.validate()?;
+        let parent = self.session(request.parent).await?;
+        if parent.depth >= self.config.maximum_depth {
+            return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+        }
+        let child_count = self
+            .records
+            .lock()
+            .await
+            .values()
+            .filter(|session| session.parent == Some(request.parent))
+            .count();
+        if child_count >= self.config.maximum_children {
+            return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+        }
+        let parent_harness = self.open_session(request.parent).await?;
+        let boundary = parent_harness
+            .storage()
+            .completed_model_boundary(
+                request.parent_operation,
+                request.parent_step,
+                self.config.limits,
+            )
+            .await?
+            .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        if self.records.lock().await.contains_key(&child) {
+            return Err(Error::Conflict("child operation is already a session".into()));
+        }
+        let child_session = LocalSwarmSession {
+            task: child,
+            parent: Some(request.parent),
+            depth: parent.depth + 1,
+            task_description: request.task.clone(),
+            operation: Some(request.child_operation),
+            phase: LocalSessionPhase::Activating,
+        };
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &stream,
+            StoredEvent::ForkAdmitted {
+                parent: request.parent,
+                parent_operation: request.parent_operation,
+                parent_step: request.parent_step,
+                child,
+                child_operation: request.child_operation,
+                task: request.task.clone(),
+            },
+        )
+        .await?;
+        self.records.lock().await.insert(child, child_session);
+
+        let harness = match self.open_session(child).await {
+            Ok(harness) => harness,
+            Err(error) => {
+                self.mark_failed(child, error.to_string()).await?;
+                return Err(error);
+            }
+        };
+        let suffix = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text(format!(
+                "child task: {}; parent: {}; identity: {}; fresh scratch: true",
+                request.task, request.parent, child
+            )),
+        }];
+        let bundle = match harness
+            .storage()
+            .inherited_builder(
+                boundary,
+                suffix,
+                self.provider.clone(),
+                self.config.limits,
+            )
+            .and_then(|builder| {
+                builder
+                    .tools(harness.storage().default_tools(self.config.limits)?)
+                    .grant("tool:call:acyclic.read_file")
+                    .grant("tool:call:acyclic.stage_file")
+                    .grant("tool:call:acyclic.list_files")
+                    .limits(self.config.limits)
+                    .build()
+            }) {
+            Ok(bundle) => bundle,
+            Err(error) => {
+                self.mark_failed(child, error.to_string()).await?;
+                return Err(error);
+            }
+        };
+        let output = match self
+            .run_child_turn(&harness, &bundle, &request)
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                self.mark_failed(child, error.to_string()).await?;
+                return Err(error);
+            }
+        };
+        append_record(
+            &stream,
+            StoredEvent::ForkCompleted {
+                child,
+                operation: request.child_operation,
+            },
+        )
+        .await?;
+        self.update_session(child, |session| {
+            session.phase = LocalSessionPhase::Completed;
+        })
+        .await?;
+        Ok(LocalForkOutcome {
+            child,
+            operation: request.child_operation,
+            output,
+        })
+    }
+
+    async fn run_child_turn(
+        &self,
+        harness: &PersistentLocalHarness,
+        bundle: &crate::Harness,
+        request: &LocalForkRequest,
+    ) -> Result<TurnOutput> {
+        let content = harness
+            .storage()
+            .stage(
+                request.child_operation,
+                &format!("turns/{}/user.txt", request.child_operation),
+                request.prompt.as_bytes(),
+                "text/plain",
+                "prompt.txt",
+            )
+            .await?;
+        let max_steps = u32::try_from(
+            self.config
+                .run_limits
+                .max_steps
+                .unwrap_or(self.config.limits.model_steps),
+        )
+        .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        harness
+            .storage()
+            .run_conversation(bundle, request.child_operation, content, vec![], max_steps)
+            .await
+    }
+
+    /// Reopens a child lazily after recovery. No child is dispatched merely
+    /// because it has an activating registry record.
+    pub async fn resume(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        let session = self.session(task).await?;
+        if session.phase == LocalSessionPhase::Activating {
+            return Err(Error::Conflict(
+                "activation requires an explicit retry with its original fork request".into(),
+            ));
+        }
+        let _ = self.open_session(task).await?;
+        Ok(session)
+    }
+
+    async fn open_session(&self, task: TaskId) -> Result<Arc<PersistentLocalHarness>> {
+        if let Some(existing) = self.sessions.lock().await.get(&task).cloned() {
+            return Ok(existing);
+        }
+        let harness = Arc::new(
+            PersistentLocalHarness::open(
+                open_session_path(&self.root, task),
+                self.config.model.clone(),
+                self.provider.clone(),
+                self.config.limits,
+            )
+            .await?,
+        );
+        self.sessions.lock().await.insert(task, harness.clone());
+        Ok(harness)
+    }
+
+    async fn update_session<F>(&self, task: TaskId, update: F) -> Result<()>
+    where
+        F: FnOnce(&mut LocalSwarmSession),
+    {
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut records = self.records.lock().await;
+        let current = records
+            .get_mut(&task)
+            .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))?;
+        let mut next = current.clone();
+        update(&mut next);
+        append_record(&stream, StoredEvent::Session(next.clone().into())).await?;
+        *current = next;
+        Ok(())
+    }
+
+    async fn mark_failed(&self, task: TaskId, reason: String) -> Result<()> {
+        let bounded = reason.chars().take(512).collect::<String>();
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &stream,
+            StoredEvent::ForkFailed {
+                child: task,
+                reason: bounded.clone(),
+            },
+        )
+        .await?;
+        let mut records = self.records.lock().await;
+        if let Some(session) = records.get_mut(&task) {
+            session.phase = LocalSessionPhase::Failed(bounded);
+        }
+        Ok(())
+    }
+}
+
+fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
+    root.join("tasks").join(task.to_string())
+}
+
+async fn load_records(
+    stream: &acyclic_stream::Stream<LocalStream>,
+) -> Result<Vec<StoredRecord>> {
+    let tail = match stream.tail().await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => 0,
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    let mut records = stream
+        .read(0, u32::try_from(tail).map_err(|_| Error::Storage("swarm registry is too large".into()))?)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let mut decoded = Vec::new();
+    while let Some(record) = records.next().await {
+        let record = record.map_err(|error| Error::Storage(error.to_string()))?;
+        let value: StoredRecord = serde_json::from_slice(&record.value)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if value.version != REGISTRY_VERSION {
+            return Err(Error::Conflict("unsupported local swarm registry version".into()));
+        }
+        decoded.push(value);
+    }
+    Ok(decoded)
+}
+
+async fn append_record(
+    stream: &acyclic_stream::Stream<LocalStream>,
+    event: StoredEvent,
+) -> Result<()> {
+    let tail = match stream.tail().await {
+        Ok(tail) => tail,
+        Err(StreamError::NotFound) => 0,
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    let bytes = crate::contract::canonical_json_bytes(&StoredRecord {
+        version: REGISTRY_VERSION,
+        event,
+    })?;
+    match stream
+        .append_at(bytes, tail)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?
+    {
+        AppendOutcome::Committed(_) => Ok(()),
+        AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
+            "local swarm registry changed during append".into(),
+        )),
+    }
+}
+
+fn apply_record(
+    sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
+    record: StoredRecord,
+) -> Result<()> {
+    match record.event {
+        StoredEvent::Session(session) => {
+            if session.version != REGISTRY_VERSION {
+                return Err(Error::Conflict("unsupported local session version".into()));
+            }
+            sessions.insert(session.task, session.into());
+        }
+        StoredEvent::ForkAdmitted {
+            parent,
+            child,
+            child_operation,
+            task,
+            ..
+        } => {
+            let parent_session = sessions
+                .get(&parent)
+                .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
+            sessions.insert(
+                child,
+                LocalSwarmSession {
+                    task: child,
+                    parent: Some(parent),
+                    depth: parent_session.depth + 1,
+                    task_description: task,
+                    operation: Some(child_operation),
+                    phase: LocalSessionPhase::Activating,
+                },
+            );
+        }
+        StoredEvent::ForkCompleted { child, operation } => {
+            let session = sessions
+                .get_mut(&child)
+                .ok_or_else(|| Error::Storage("fork completion child is missing".into()))?;
+            session.operation = Some(operation);
+            session.phase = LocalSessionPhase::Completed;
+        }
+        StoredEvent::ForkFailed { child, reason } => {
+            if let Some(session) = sessions.get_mut(&child) {
+                session.phase = LocalSessionPhase::Failed(reason);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        model::{ModelAttempt, ModelEvent, ModelRequest},
+    };
+    use futures::{future::BoxFuture, stream::BoxStream};
+    use serde_json::{Value, json};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    struct MockModel {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    impl ModelProvider for MockModel {
+        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+            self.requests.lock().expect("request lock").push(request);
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content {
+                    delta: "completed child exchange".into(),
+                }),
+                Ok(ModelEvent::ToolCall {
+                    call_id: format!("stage-{}", self.calls.load(Ordering::SeqCst)),
+                    name: "acyclic.stage_file".into(),
+                    arguments: json!({
+                        "path": "swarm-output.txt",
+                        "text": "durable swarm output",
+                        "media_type": "text/plain",
+                        "display_name": "swarm-output.txt"
+                    }),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn recursive_local_swarm_activates_after_completed_boundary_and_reopens() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let operation = OperationId::new();
+        let child_operation = OperationId::new();
+        let grandchild_operation = OperationId::new();
+        let limits = Limits::default();
+        let (root_task, child_task) = {
+            let swarm = PersistentLocalSwarm::open_with_model(
+                root.path(),
+                model.clone(),
+                provider.clone(),
+                limits,
+            )
+            .await?;
+            let root_task = swarm.root_task().await?;
+            swarm.run_root(operation, "root request").await?;
+            let child = swarm
+                .fork(LocalForkRequest {
+                    parent: root_task,
+                    parent_operation: operation,
+                    parent_step: 0,
+                    child_operation,
+                    task: "inspect root result".into(),
+                    prompt: "child request".into(),
+                })
+                .await?;
+            let child_session = swarm.session(child.child).await?;
+            assert_eq!(child_session.parent, Some(root_task));
+            assert_eq!(child_session.phase, LocalSessionPhase::Completed);
+            swarm
+                .fork(LocalForkRequest {
+                    parent: child.child,
+                    parent_operation: child.operation,
+                    parent_step: 0,
+                    child_operation: grandchild_operation,
+                    task: "inspect child result".into(),
+                    prompt: "grandchild request".into(),
+                })
+                .await?;
+            assert_eq!(swarm.sessions().await.len(), 3);
+            (root_task, child.child)
+        };
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider.clone(),
+            limits,
+        )
+        .await?;
+        let sessions = reopened.sessions().await;
+        assert_eq!(sessions.len(), 3);
+        assert_eq!(reopened.session(root_task).await?.parent, None);
+        assert_eq!(reopened.session(child_task).await?.parent, Some(root_task));
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+        let requests = provider.requests.lock().expect("request lock");
+        assert!(requests[1].messages.len() > requests[0].messages.len());
+        assert!(requests[2].messages.len() > requests[1].messages.len());
+        assert_eq!(requests[0].messages[0], requests[1].messages[0]);
+        assert_eq!(requests[1].messages[0], requests[2].messages[0]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn fork_refuses_without_a_completed_model_boundary() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let error = swarm
+            .fork(LocalForkRequest {
+                parent: swarm.root_task().await?,
+                parent_operation: OperationId::new(),
+                parent_step: 0,
+                child_operation: OperationId::new(),
+                task: "must be refused".into(),
+                prompt: "no boundary".into(),
+            })
+            .await
+            .expect_err("incomplete parent must not activate a child");
+        assert!(error.to_string().contains("completed model boundary"));
+        assert_eq!(swarm.sessions().await.len(), 1);
+        Ok(())
+    }
+}
