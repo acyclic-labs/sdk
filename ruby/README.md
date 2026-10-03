@@ -26,11 +26,12 @@ regenerate from a clean checkout and fail on a dirty generated tree.
 Ruby's gRPC implementation supports unary, server-streaming, client-streaming,
 and bidirectional RPCs. Actors is unary; Stream's `Read`, `Follow`, and
 `Children` are server streams. The package also exposes
-`Acyclic::Remote::Client`, a thin policy-aware invoker facade. It defaults
-native callers to Rust-qualified gRPC and accepts an explicit compatible
-transport override. The caller injects the wire invoker, so this facade does
-not claim a handwritten HTTP encoder or retry policy. Bearer credentials follow
-Rust's `bearer-no-crlf` rule.
+`Acyclic::Remote::Client`, a thin policy-aware invoker facade. Its automatic
+runtime resolver selects the native policy for Ruby and the browser policy for
+`ruby.wasm`; callers may still provide an explicit compatible transport
+override. The caller injects the wire invoker, so this facade does not claim a
+handwritten HTTP encoder or retry policy. Bearer credentials follow Rust's
+`bearer-no-crlf` rule.
 
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.

@@ -21,6 +21,13 @@ if ($client->transport() !== RemotePolicy::GRPC || $client->call('append', ['pat
     || $calls !== [['append', ['path' => 'events'], RemotePolicy::GRPC]]) {
     throw new RuntimeException('native gRPC facade selection or invocation failed');
 }
+if ($client->runtime() !== 'native' || RemotePolicy::resolveRuntime() !== 'native') {
+    throw new RuntimeException('automatic native runtime resolution failed');
+}
+$browser = RemotePolicy::select('stream', true, 'browser');
+if ($browser !== RemotePolicy::HTTP_JSON) {
+    throw new RuntimeException('embedded browser runtime did not select HTTP JSON');
+}
 $http = new RemoteClient('stream', static fn (...$args): null => null, 'native', true, RemotePolicy::HTTP_JSON);
 if ($http->transport() !== RemotePolicy::HTTP_JSON) {
     throw new RuntimeException('streaming HTTP JSON override was not selected');

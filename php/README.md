@@ -48,8 +48,11 @@ build artifact and should be validated from a clean checkout in CI.
 
 `Acyclic\\Runtime\\RemoteClient` delegates transport selection and bearer
 validation to the Rust-emitted `src/Acyclic/Runtime/GeneratedRemotePolicy.php`
-snapshot. Refresh that snapshot with the `sdk-contract-wire generate-products`
-command whenever the Rust transport policy changes.
+snapshot. Its automatic resolver selects the native policy for the installed
+PHP runtime; an embedded PHP/WASM host can set its browser runtime bridge
+before construction. Refresh that snapshot with the
+`sdk-contract-wire generate-products` command whenever the Rust transport
+policy changes.
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
 

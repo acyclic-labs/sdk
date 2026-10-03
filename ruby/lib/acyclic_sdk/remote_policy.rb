@@ -13,8 +13,18 @@ module Acyclic
 
       module_function
 
-      def select(family:, runtime: :native, streaming: false, bearer_auth: true,
+      def resolve_runtime(runtime = :auto)
+        value = runtime.to_sym
+        return value unless value == :auto
+
+        # ruby.wasm is the embedded browser runtime; regular Ruby processes
+        # use the native Rust-qualified transport set.
+        defined?(RUBY_ENGINE) && RUBY_ENGINE == "ruby.wasm" ? :browser : :native
+      end
+
+      def select(family:, runtime: :auto, streaming: false, bearer_auth: true,
                  installed: nil, endpoint: nil, override: nil)
+        runtime = resolve_runtime(runtime)
         GeneratedPolicy.select(
           family: family,
           runtime: runtime,
@@ -39,9 +49,9 @@ module Acyclic
     class Client
       attr_reader :family, :runtime, :transport
 
-      def initialize(family:, invoker:, runtime: :native, streaming: false, transport: nil, bearer: nil)
+      def initialize(family:, invoker:, runtime: :auto, streaming: false, transport: nil, bearer: nil)
         @family = family.to_s
-        @runtime = runtime.to_sym
+        @runtime = Policy.resolve_runtime(runtime)
         @transport = Policy.select(family: @family, runtime: @runtime, streaming: streaming, override: transport)
         Policy.validate_bearer(bearer) if bearer
         @invoker = invoker

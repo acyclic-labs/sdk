@@ -32,11 +32,11 @@ official Dart 3.8.3 stable Windows archive in an ignored local toolchain and
 passed generation, analysis, and all transport tests. CI must repeat those
 checks with a fresh supported SDK rather than relying on that local cache.
 
-The package also exposes a thin `RemoteClient` facade. Native callers default
-to Rust-qualified gRPC, and callers may request a compatible transport override
-before invocation. The wire adapter is injected, so this facade does not add a
-handwritten HTTP encoder or retry/recovery policy. Bearer credentials follow
-Rust's `bearer-no-crlf` rule.
+The package also exposes a thin `RemoteClient` facade. Its automatic resolver
+selects the native policy on Dart VM and the browser policy on Dart web;
+callers may request a compatible transport override before invocation. The wire
+adapter is injected, so this facade does not add a handwritten HTTP encoder or
+retry/recovery policy. Bearer credentials follow Rust's `bearer-no-crlf` rule.
 
 The package license is Apache-2.0; dependency license evidence is tracked in
 `LICENSE-THIRD-PARTY.md`.
