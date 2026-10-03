@@ -938,7 +938,9 @@ impl Scheduler {
                 } else if fence.is_some() {
                     return Err(Error::Conflict("completion fence is not active".into()));
                 }
-                operation.reservation = None;
+                if !matches!(outcome, Outcome::Indeterminate { .. }) {
+                    operation.reservation = None;
+                }
                 operation.phase = match outcome {
                     Outcome::Indeterminate { .. } => OperationPhase::Reconciling,
                     _ => OperationPhase::Terminal,
@@ -1185,6 +1187,17 @@ impl Scheduler {
             ));
         }
         let first = self.swarm_events.is_empty();
+        let session_operation = self
+            .operations
+            .get(&session_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm session operation {session_id}")))?;
+        if session_operation.spec.parent.is_some()
+            || session_operation.spec.owner.authority().id != owner.owner
+        {
+            return Err(Error::Unauthorized(
+                "swarm budget session must bind its declared root owner".into(),
+            ));
+        }
         let budget = if first {
             SwarmBudget::new(session_id, owner.clone(), limits)?
         } else {
@@ -1445,6 +1458,15 @@ impl Scheduler {
         let (observed_session, _, _) = budget.descriptor()?;
         if observed_session != session_id {
             return Err(Error::Conflict("swarm takeover session differs".into()));
+        }
+        let next_generation = expected_owner
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm owner generation exhausted".into()))?;
+        if owner.generation != next_generation {
+            return Err(Error::Conflict(
+                "swarm takeover generation does not advance exactly once".into(),
+            ));
         }
         let observed = budget.takeover(expected_owner, owner.clone())?;
         if observed != owner {
@@ -2081,11 +2103,44 @@ mod tests {
     }
 
     #[test]
+    fn indeterminate_completion_retains_the_worker_reservation() -> Result<()> {
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(id(70), Orchestration::Leaf)?)?)?;
+        let reservation = Reservation {
+            id: "lease-70".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: id(70),
+            reservation: reservation.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: id(70),
+            fence: LeaseFence::from(&reservation),
+        })?;
+        scheduler.apply(SchedulerEvent::Completed {
+            operation_id: id(70),
+            outcome: Outcome::Indeterminate {
+                operation_id: id(70),
+            },
+            fence: Some(LeaseFence::from(&reservation)),
+            execution_duration_ns: None,
+        })?;
+        let state = scheduler
+            .operation(id(70))
+            .ok_or_else(|| Error::NotFound("indeterminate operation".into()))?;
+        assert_eq!(state.phase, OperationPhase::Reconciling);
+        assert_eq!(state.reservation, Some(reservation));
+        Ok(())
+    }
+
+    #[test]
     fn swarm_compound_events_share_scheduler_projection_and_retain_unknown_capacity() -> Result<()>
     {
         let session = id(90);
         let child = id(91);
-        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let owner = SwarmOwnerFence::new(session.to_string(), 0)?;
         let limits = SwarmBudgetLimits {
             max_active_agents: 2,
             max_total_agents: 2,
@@ -2095,6 +2150,7 @@ mod tests {
             max_execution_time_ms: 200,
         };
         let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(session, Orchestration::Leaf)?)?)?;
         let mut child_spec = spec(child, Orchestration::Leaf)?;
         child_spec.resources = canonical_swarm_resources(SwarmResourceRequest {
             model_steps: 4,

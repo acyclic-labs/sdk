@@ -963,6 +963,15 @@ impl SwarmBudget {
                 let state = self.lock()?;
                 let expected = state.owner.clone();
                 drop(state);
+                let next_generation = expected
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Invalid("swarm owner generation exhausted".into()))?;
+                if owner.generation != next_generation {
+                    return Err(Error::Conflict(
+                        "persisted takeover generation does not advance exactly once".into(),
+                    ));
+                }
                 let observed = self.takeover(&expected, owner.owner.clone())?;
                 if observed != owner {
                     return Err(Error::Conflict("persisted takeover differs".into()));
@@ -1565,6 +1574,25 @@ mod tests {
             current.clone(),
             publication(child.operation_id, None),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn replay_rejects_takeover_generation_gaps_before_mutation() -> Result<()> {
+        let events = [SwarmBudgetEvent::Started {
+            session_id: id(9),
+            owner: owner(0),
+            limits: limits(),
+        }];
+        let restored = SwarmBudget::replay(events)?;
+        assert!(
+            restored
+                .apply_event(SwarmBudgetEvent::OwnerTakenOver {
+                    owner: SwarmOwnerFence::new("restarted", 2)?,
+                })
+                .is_err()
+        );
+        assert_eq!(restored.descriptor()?.1, owner(0));
         Ok(())
     }
 
