@@ -77,9 +77,43 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: SwarmOwnerFence,
         limits: SwarmBudgetLimits,
     ) -> Result<Self> {
+        Self::start_inner(client, session_id, owner, limits, None).await
+    }
+
+    /// Creates a session and binds root usage to the host-issued scheduler
+    /// lease.  A durable root receipt cannot select its own dispatch identity.
+    pub async fn start_with_root_dispatch(
+        client: &StreamClient<P>,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+        root_dispatch_id: IdempotencyKey,
+    ) -> Result<Self> {
+        Self::start_inner(
+            client,
+            session_id,
+            owner,
+            limits,
+            Some(root_dispatch_id),
+        )
+        .await
+    }
+
+    async fn start_inner(
+        client: &StreamClient<P>,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+        root_dispatch_id: Option<IdempotencyKey>,
+    ) -> Result<Self> {
         // Validate the descriptor before creating the durable stream. A
         // malformed start must never leave an unreplayable root record.
-        SwarmBudget::new(session_id, owner.clone(), limits)?;
+        SwarmBudget::new_with_root_dispatch(
+            session_id,
+            owner.clone(),
+            limits,
+            root_dispatch_id.clone(),
+        )?;
         let stream = stream_for(client, session_id)?;
         let tail = match stream.tail().await {
             Ok(tail) => tail,
@@ -89,7 +123,10 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         if tail != 0 {
             let reopened = Self::open(client, session_id).await?;
             let (_, observed_owner, observed_limits) = reopened.descriptor()?;
-            if observed_owner == owner && observed_limits == limits {
+            if observed_owner == owner
+                && observed_limits == limits
+                && reopened.budget.root_dispatch_id()? == root_dispatch_id
+            {
                 return Ok(reopened);
             }
             return Err(Error::Conflict("swarm session descriptor differs".into()));
@@ -98,13 +135,18 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             session_id,
             owner,
             limits,
+            root_dispatch_id,
         };
         match append_record(&stream, 0, &event, session_id).await {
             Ok(()) => Self::open(client, session_id).await,
             Err(Error::Conflict(_)) => {
                 let reopened = Self::open(client, session_id).await?;
                 let (_, observed_owner, observed_limits) = reopened.descriptor()?;
-                if observed_owner == event_owner(&event)? && observed_limits == limits {
+                if observed_owner == event_owner(&event)?
+                    && observed_limits == limits
+                    && reopened.budget.root_dispatch_id()?
+                        == event_root_dispatch_id(&event)?
+                {
                     Ok(reopened)
                 } else {
                     Err(Error::Conflict("swarm session descriptor differs".into()))
@@ -316,17 +358,20 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 .ok_or_else(|| Error::Storage("replayed swarm reservation is missing".into()));
         }
         self.validate_receipt(operation_id, receipt.usage, &receipt)?;
-        let reservation = projected.report_usage(operation_id, owner, receipt.usage)?;
-        self.commit(
-            SwarmBudgetEvent::UsageReported {
-                operation_id,
-                owner: owner.clone(),
-                usage: receipt.usage,
-                receipt: receipt.clone(),
-            },
+        let event = SwarmBudgetEvent::UsageReported {
             operation_id,
-        )
-        .await?;
+            owner: owner.clone(),
+            usage: receipt.usage,
+            receipt: receipt.clone(),
+        };
+        // Apply the exact durable event to an isolated projection before
+        // appending it.  Calling the receipt-free mutator here would allow a
+        // mismatched dispatch to pass preflight and poison the stream.
+        projected.apply_event(event.clone())?;
+        let reservation = projected
+            .reservation(operation_id)?
+            .ok_or_else(|| Error::Storage("projected swarm reservation is missing".into()))?;
+        self.commit(event, operation_id).await?;
         Ok(reservation)
     }
 
@@ -350,21 +395,26 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     ) -> Result<SwarmUsage> {
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
+        let root_dispatch_id = projected.root_dispatch_id()?.ok_or_else(|| {
+            Error::Unauthorized("canonical root dispatch lease required".into())
+        })?;
+        if receipt.dispatch_id != root_dispatch_id {
+            return Err(Error::Conflict(
+                "swarm root usage receipt is not bound to the canonical root lease".into(),
+            ));
+        }
         if self.root_receipt_replayed(owner, &receipt) {
             return projected.report_root_usage(owner, receipt.usage);
         }
         self.validate_receipt(self.session_id, receipt.usage, &receipt)?;
-        let reported = projected.report_root_usage(owner, receipt.usage)?;
-        self.commit(
-            SwarmBudgetEvent::RootUsageReported {
-                owner: owner.clone(),
-                usage: receipt.usage,
-                receipt: receipt.clone(),
-            },
-            self.session_id,
-        )
-        .await?;
-        Ok(reported)
+        let event = SwarmBudgetEvent::RootUsageReported {
+            owner: owner.clone(),
+            usage: receipt.usage,
+            receipt: receipt.clone(),
+        };
+        projected.apply_event(event.clone())?;
+        self.commit(event, self.session_id).await?;
+        Ok(receipt.usage)
     }
 
     /// Completes a child and releases only the unconsumed reservation.
@@ -395,17 +445,17 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 .ok_or_else(|| Error::Storage("replayed swarm reservation is missing".into()));
         }
         self.validate_receipt(operation_id, receipt.usage, &receipt)?;
-        let reservation = projected.complete(operation_id, owner, receipt.usage)?;
-        self.commit(
-            SwarmBudgetEvent::ChildCompleted {
-                operation_id,
-                owner: owner.clone(),
-                usage: receipt.usage,
-                receipt: receipt.clone(),
-            },
+        let event = SwarmBudgetEvent::ChildCompleted {
             operation_id,
-        )
-        .await?;
+            owner: owner.clone(),
+            usage: receipt.usage,
+            receipt: receipt.clone(),
+        };
+        projected.apply_event(event.clone())?;
+        let reservation = projected
+            .reservation(operation_id)?
+            .ok_or_else(|| Error::Storage("projected swarm reservation is missing".into()))?;
+        self.commit(event, operation_id).await?;
         Ok(reservation)
     }
 
@@ -682,6 +732,17 @@ fn event_count(value: usize) -> Result<u64> {
 fn event_owner(event: &SwarmBudgetEvent) -> Result<SwarmOwnerFence> {
     match event {
         SwarmBudgetEvent::Started { owner, .. } => Ok(owner.clone()),
+        _ => Err(Error::Invalid(
+            "swarm session start event is invalid".into(),
+        )),
+    }
+}
+
+fn event_root_dispatch_id(event: &SwarmBudgetEvent) -> Result<Option<IdempotencyKey>> {
+    match event {
+        SwarmBudgetEvent::Started {
+            root_dispatch_id, ..
+        } => Ok(root_dispatch_id.clone()),
         _ => Err(Error::Invalid(
             "swarm session start event is invalid".into(),
         )),
