@@ -25,7 +25,7 @@ if (executable === undefined || executable.trim() === "") {
     const uninstallSignalCleanup = installOwnedChildSignalCleanup(child);
     try {
       const outcome = await child.waitForClose();
-      if (outcome.kind === "error") {
+      if (outcome.error !== undefined) {
         process.stderr.write(`failed to start graphcoder-runtime: ${outcome.error.message}\n`);
         process.exitCode = 1;
       } else {

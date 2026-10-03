@@ -2512,6 +2512,7 @@ impl PersistentLocalSwarm {
         let harness = self.open_session(task).await?;
         let state = harness.conversation_state(self.config.limits).await?;
         let mut page = Vec::new();
+        let mut page_bytes = 0_u64;
         for message in state
             .messages
             .into_iter()
@@ -2519,6 +2520,14 @@ impl PersistentLocalSwarm {
             .take(limit)
         {
             self.config.limits.validate_file(&message.content)?;
+            page_bytes = page_bytes
+                .checked_add(message.content.descriptor().byte_length())
+                .ok_or_else(|| Error::Invalid("conversation message page byte budget overflow".into()))?;
+            if page_bytes > self.config.limits.render_bytes {
+                return Err(Error::Invalid(
+                    "conversation message page exceeds the render byte budget".into(),
+                ));
+            }
             let body = harness.storage().read(&message.content).await?;
             page.push((message, body));
         }

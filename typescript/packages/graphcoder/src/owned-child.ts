@@ -1,8 +1,13 @@
 import type { ChildProcess } from "node:child_process";
 
 export type OwnedChildClose =
-  | { readonly kind: "closed"; readonly code: number | null; readonly signal: NodeJS.Signals | null }
-  | { readonly kind: "error"; readonly error: Error };
+  | {
+      readonly kind: "closed";
+      readonly code: number | null;
+      readonly signal: NodeJS.Signals | null;
+      /** A launch error observed before close; close remains the exit proof. */
+      readonly error?: Error;
+    };
 
 /**
  * Keeps one close observation for a host-owned child process. `killed` only
@@ -12,18 +17,20 @@ export type OwnedChildClose =
 export class OwnedChild {
   readonly child: ChildProcess;
   readonly #closed: Promise<OwnedChildClose>;
+  #error: Error | undefined;
 
   constructor(child: ChildProcess) {
     this.child = child;
+    this.#error = undefined;
     this.#closed = new Promise(resolve => {
       child.once("close", (code: number | null, signal: NodeJS.Signals | null) => {
-        resolve({ kind: "closed", code, signal });
+        resolve({ kind: "closed", code, signal, error: this.#error });
       });
       child.once("error", error => {
-        resolve({
-          kind: "error",
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
+        // An error can describe a failed signal or spawn attempt while the
+        // child is still alive. Keep waiting for `close` as the ownership
+        // proof and carry the diagnostic alongside that terminal observation.
+        this.#error = error instanceof Error ? error : new Error(String(error));
       });
     });
   }
@@ -41,6 +48,8 @@ export class OwnedChild {
    * Waits for the close observation. A timeout is an explicit unknown result;
    * it never masquerades as a successful child exit.
    */
+  waitForClose(): Promise<OwnedChildClose>;
+  waitForClose(timeoutMs: number): Promise<OwnedChildClose | { readonly kind: "timeout" }>;
   async waitForClose(timeoutMs?: number): Promise<OwnedChildClose | { readonly kind: "timeout" }> {
     if (timeoutMs === undefined) return this.#closed;
     if (!Number.isFinite(timeoutMs) || timeoutMs < 0) {
