@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -115,6 +117,20 @@ test("synthetic validator fixture covers required package/facade inventory and s
   const manifest = await loadProfileManifest();
   const fixture = syntheticStrictBundle(manifest);
   expect(() => validateStrictDocsBundle(fixture, manifest, "synthetic validator fixture")).not.toThrow();
+
+  const scratch = await mkdtemp(join(tmpdir(), "sdk-docs-graph-validator-"));
+  try {
+    const bundlePath = join(scratch, "docs.json");
+    await writeFile(bundlePath, JSON.stringify(fixture));
+    const cli = spawnSync("node", [
+      join(root, "scripts/validate-rustdoc-graphs.mjs"),
+      "--bundle", bundlePath,
+      "--profiles", join(root, "docs/rustdoc-profiles.json"),
+    ], { cwd: root, encoding: "utf8" });
+    expect(cli.status, `${cli.stdout}\n${cli.stderr}`).toBe(0);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
 
   const missingPackage = structuredClone(fixture);
   missingPackage.crates = missingPackage.crates?.slice(1);
