@@ -7,7 +7,10 @@ use crate::{
         ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
     },
-    core::{Action, ApplyResult, Authority, AuthorityVerifier, Command, SchemaRegistry, Scope},
+    core::{
+        Action, ApplyResult, Authority, AuthorityIssuer, AuthorityVerifier, Capabilities, Command,
+        SchemaRegistry, Scope,
+    },
     interaction::{
         ApprovalBinding, Interaction, InteractionKind, InteractionOutcome, InteractionResolution,
         InteractionResponse, InteractionTicket, ResolutionReceipt,
@@ -61,6 +64,33 @@ where
     }
 }
 
+/// Exact pending approval identity presented to a host operator boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InteractionApprovalAuthorization {
+    /// Address of the pending interaction.
+    pub interaction_id: InteractionId,
+    /// Operation bound by the admitted approval ticket.
+    pub operation_id: OperationId,
+    /// Digest of the exact action and arguments bound by the ticket.
+    pub action_digest: [u8; 32],
+    /// Explicit operator decision selected by the host UI.
+    pub approved: bool,
+}
+
+impl InteractionApprovalAuthorization {
+    fn validate(&self) -> Result<()> {
+        if self.interaction_id.into_bytes() == [0; 16]
+            || self.operation_id.into_bytes() == [0; 16]
+            || self.action_digest == [0; 32]
+        {
+            return Err(Error::Invalid(
+                "interaction approval identity cannot be empty".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
     stream: StreamClient<P>,
@@ -71,6 +101,85 @@ pub struct FilesystemInteractionHost<P, A, O> {
     owner_scope: Scope,
     private_volume: VolumeRef,
     maximum_bytes: u64,
+}
+
+/// Host-only signer for one explicit decision on one durable approval ticket.
+///
+/// The signer retains the durable interaction host and revalidates the ticket
+/// before issuing a scope. Model tools receive neither this signer nor its
+/// issuer key.
+pub struct InteractionOperatorAuthorizer<P, A, O> {
+    host: Arc<FilesystemInteractionHost<P, A, O>>,
+    issuer: AuthorityIssuer,
+}
+
+impl<P, A, O> InteractionOperatorAuthorizer<P, A, O>
+where
+    P: StreamProvider + Send + Sync + 'static,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    pub(crate) fn new(
+        host: Arc<FilesystemInteractionHost<P, A, O>>,
+        issuer: AuthorityIssuer,
+    ) -> Self {
+        Self { host, issuer }
+    }
+
+    /// Revalidates the durable ticket and issues the smallest decision scope.
+    pub async fn issue_scope(
+        &self,
+        authorization: &InteractionApprovalAuthorization,
+    ) -> Result<Scope> {
+        authorization.validate()?;
+        let Some((ticket, resolution)) = self.host.read(authorization.interaction_id).await?
+        else {
+            return Err(Error::NotFound(format!(
+                "interaction {}",
+                authorization.interaction_id
+            )));
+        };
+        let binding = ticket.approval.as_ref().ok_or_else(|| {
+            Error::Invalid("interaction is not an approval ticket".into())
+        })?;
+        if binding.operation_id != authorization.operation_id
+            || binding.action_digest != authorization.action_digest
+        {
+            return Err(Error::Unauthorized(
+                "approval authorization does not match the durable ticket".into(),
+            ));
+        }
+        if resolution.is_some() {
+            return Err(Error::Conflict(
+                "approval is no longer pending operator choice".into(),
+            ));
+        }
+        let digest = authorization
+            .action_digest
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let decision = if authorization.approved {
+            "approved"
+        } else {
+            "declined"
+        };
+        Ok(self.issuer.root(
+            format!("interaction-operator:{}", authorization.interaction_id),
+            Capabilities::new([
+                "interaction:resolve".to_owned(),
+                ticket.responder_grant(),
+                format!(
+                    "interaction:decision:{}:{decision}",
+                    authorization.interaction_id
+                ),
+                format!(
+                    "interaction:approve:{}:{}:{digest}",
+                    authorization.interaction_id, authorization.operation_id
+                ),
+            ]),
+        ))
+    }
 }
 
 impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>

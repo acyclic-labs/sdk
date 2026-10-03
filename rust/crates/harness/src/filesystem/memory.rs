@@ -1,6 +1,9 @@
 //! Infrastructure-free Harness storage with the same Stream/Filesystem contracts.
 
-use crate::filesystem::{FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost};
+use crate::filesystem::{
+    FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
+    FilesystemInteractionHost, InteractionOperatorAuthorizer,
+};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result, SessionId,
@@ -572,6 +575,27 @@ where
     A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
     O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Returns the host-only authorizer for exact pending interaction choices.
+    ///
+    /// The authorizer is rebuilt from this storage's issuer and durable
+    /// interaction host. Model tools only receive the storage's runtime bundle
+    /// and cannot access the signer or its issuer key.
+    pub fn interaction_operator_authorizer(
+        &self,
+    ) -> Result<InteractionOperatorAuthorizer<P, A, O>> {
+        let host = Arc::new(FilesystemInteractionHost::new(
+            self.stream.clone(),
+            self.host.clone(),
+            self.conversation.clone(),
+            self.issuer.verifier(),
+            SchemaRegistry::new(),
+            self.scope.clone(),
+            self.volume.clone(),
+            self.maximum_file_bytes,
+        )?);
+        Ok(InteractionOperatorAuthorizer::new(host, self.issuer.clone()))
+    }
+
     /// Builds the local ref-only file tools against this exact owner volume.
     /// Callers composing a custom builder can use this registry unchanged.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {

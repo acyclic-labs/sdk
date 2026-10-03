@@ -57,7 +57,10 @@ pub use git_facade::{
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
-pub use interaction_host::FilesystemInteractionHost;
+pub use interaction_host::{
+    FilesystemInteractionHost, InteractionApprovalAuthorization,
+    InteractionOperatorAuthorizer,
+};
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod project_merge_recovery;
