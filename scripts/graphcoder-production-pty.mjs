@@ -188,8 +188,16 @@ async function run(commands) {
     if (missing.length > 0) fail(`missing transcript markers: ${missing.join(", ")}`);
     process.stdout.write(transcript);
   } catch (error) {
-    child.kill();
-    await Promise.race([processClosed, new Promise(resolvePromise => setTimeout(resolvePromise, PROMPT_TIMEOUT_MS))]);
+    try {
+      child.kill();
+      await Promise.race([
+        processClosed,
+        processError.then(() => undefined, () => undefined),
+        new Promise(resolvePromise => setTimeout(resolvePromise, PROMPT_TIMEOUT_MS)),
+      ]);
+    } catch {
+      // Preserve the command failure while still bounding process cleanup.
+    }
     throw error;
   }
 }
