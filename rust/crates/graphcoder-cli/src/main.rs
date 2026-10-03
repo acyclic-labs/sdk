@@ -18,7 +18,13 @@ use clap::Parser;
 use futures::{FutureExt, StreamExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
@@ -26,7 +32,11 @@ const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// Runtime configuration. The model is intentionally a deterministic fixture:
 /// production model adapters are selected by a future host package.
 #[derive(Debug, Parser)]
-#[command(name = "graphcoder-runtime", version, about = "Local GraphCoder JSON-lines host")]
+#[command(
+    name = "graphcoder-runtime",
+    version,
+    about = "Local GraphCoder JSON-lines host"
+)]
 struct Args {
     /// Durable swarm root. It is created by the SDK's local storage provider.
     #[arg(long, env = "GRAPHCODER_ROOT")]
@@ -43,7 +53,10 @@ struct EchoModel {
 }
 
 impl ModelProvider for EchoModel {
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        request: ModelRequest,
+    ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
         let text = match self.fixture.as_str() {
             "echo" => request
@@ -61,7 +74,9 @@ impl ModelProvider for EchoModel {
         };
         if self.fixture == "stage" && call == 0 {
             return Box::pin(futures::stream::iter([
-                Ok(ModelEvent::Content { delta: "fixture:stage".to_owned() }),
+                Ok(ModelEvent::Content {
+                    delta: "fixture:stage".to_owned(),
+                }),
                 Ok(ModelEvent::ToolCall {
                     call_id: "graphcoder-stage-1".to_owned(),
                     name: "acyclic.stage_file".to_owned(),
@@ -75,12 +90,16 @@ impl ModelProvider for EchoModel {
                         "display_name": "graphcoder-fixture.txt",
                     }),
                 }),
-                Ok(ModelEvent::Completed { metadata: Value::Null }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
             ]));
         }
         Box::pin(futures::stream::iter([
             Ok(ModelEvent::Content { delta: text }),
-            Ok(ModelEvent::Completed { metadata: Value::Null }),
+            Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
         ]))
     }
 
@@ -152,7 +171,11 @@ impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" => args.model_fixture.clone(),
-            value => return Err(HarnessError::Invalid(format!("unknown model fixture {value}"))),
+            value => {
+                return Err(HarnessError::Invalid(format!(
+                    "unknown model fixture {value}"
+                )));
+            }
         };
         let model = Model::new(
             "graphcoder.mock",
@@ -175,7 +198,10 @@ impl Runtime {
     async fn dispatch(&self, request: WireRequest) -> WireResponse {
         let result = match request.method.as_str() {
             "list_sessions" => self.list_sessions(&request.params).await,
-            "start_session" => self.start_session(&request.request_id, &request.params).await,
+            "start_session" => {
+                self.start_session(&request.request_id, &request.params)
+                    .await
+            }
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.open_session(&request.params, true).await,
             "read_activity" | "read_messages" | "send_message" | "list_approvals"
@@ -203,15 +229,23 @@ impl Runtime {
         Ok(json!({ "items": items }))
     }
 
-    async fn start_session(&self, request_id: &str, params: &Value) -> Result<Value, DispatchError> {
+    async fn start_session(
+        &self,
+        request_id: &str,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let prompt = required_text(params, "prompt")?;
         if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
-            return Err(DispatchError::invalid("prompt must be nonempty and at most 64 KiB"));
+            return Err(DispatchError::invalid(
+                "prompt must be nonempty and at most 64 KiB",
+            ));
         }
         if let Some(fixture) = params.get("model_fixture") {
             if fixture.as_str() != Some(self.model_fixture.as_str()) {
-                return Err(DispatchError::invalid("requested model fixture is not configured"));
+                return Err(DispatchError::invalid(
+                    "requested model fixture is not configured",
+                ));
             }
         }
         let operation = operation_for(request_id);
@@ -219,7 +253,11 @@ impl Runtime {
             .run_root(operation, prompt)
             .await
             .map_err(DispatchError::from_harness)?;
-        let task = self.swarm.root_task().await.map_err(DispatchError::from_harness)?;
+        let task = self
+            .swarm
+            .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
         self.snapshot(task).await
     }
 
@@ -236,7 +274,11 @@ impl Runtime {
     }
 
     async fn snapshot(&self, task: TaskId) -> Result<Value, DispatchError> {
-        let session = self.swarm.session(task).await.map_err(DispatchError::from_harness)?;
+        let session = self
+            .swarm
+            .session(task)
+            .await
+            .map_err(DispatchError::from_harness)?;
         self.snapshot_from_session(session).await
     }
 
@@ -276,11 +318,17 @@ struct DispatchError {
 
 impl DispatchError {
     fn invalid(message: impl Into<String>) -> Self {
-        Self { code: "invalid_input", message: message.into() }
+        Self {
+            code: "invalid_input",
+            message: message.into(),
+        }
     }
 
     fn unsupported(message: impl Into<String>) -> Self {
-        Self { code: "unsupported", message: message.into() }
+        Self {
+            code: "unsupported",
+            message: message.into(),
+        }
     }
 
     fn from_harness(error: HarnessError) -> Self {
@@ -291,34 +339,58 @@ impl DispatchError {
             HarnessError::Invalid(_) => "invalid_input",
             _ => "transport",
         };
-        Self { code, message: error.to_string() }
+        Self {
+            code,
+            message: error.to_string(),
+        }
     }
 }
 
 fn object(value: &Value) -> Result<&serde_json::Map<String, Value>, DispatchError> {
-    value.as_object().ok_or_else(|| DispatchError::invalid("params must be an object"))
+    value
+        .as_object()
+        .ok_or_else(|| DispatchError::invalid("params must be an object"))
 }
 
-fn required_text<'a>(object: &'a serde_json::Map<String, Value>, key: &str) -> Result<&'a str, DispatchError> {
-    object.get(key).and_then(Value::as_str).ok_or_else(|| DispatchError::invalid(format!("{key} must be text")))
+fn required_text<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<&'a str, DispatchError> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| DispatchError::invalid(format!("{key} must be text")))
 }
 
-fn task_from_value(object: &serde_json::Map<String, Value>, key: &str) -> Result<TaskId, DispatchError> {
+fn task_from_value(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<TaskId, DispatchError> {
     TaskId::parse(required_text(object, key)?).map_err(DispatchError::from_harness)
 }
 
 fn validate_page_params(params: &Value) -> Result<(), DispatchError> {
     let object = object(params)?;
-    let Some(query) = object.get("query") else { return Ok(()); };
-    let query = query.as_object().ok_or_else(|| DispatchError::invalid("query must be an object"))?;
+    let Some(query) = object.get("query") else {
+        return Ok(());
+    };
+    let query = query
+        .as_object()
+        .ok_or_else(|| DispatchError::invalid("query must be an object"))?;
     if let Some(after) = query.get("after") {
         if after.as_str().is_none_or(str::is_empty) {
             return Err(DispatchError::invalid("page cursor must be nonempty text"));
         }
     }
     if let Some(limit) = query.get("limit") {
-        let valid = limit.as_u64().is_some_and(|value| (1..=1024).contains(&value));
-        if !valid { return Err(DispatchError::invalid("page limit must be between 1 and 1024")); }
+        let valid = limit
+            .as_u64()
+            .is_some_and(|value| (1..=1024).contains(&value));
+        if !valid {
+            return Err(DispatchError::invalid(
+                "page limit must be between 1 and 1024",
+            ));
+        }
     }
     Ok(())
 }
@@ -327,7 +399,9 @@ fn operation_for(request_id: &str) -> OperationId {
     let digest = blake3::hash(request_id.as_bytes());
     let mut bytes = [0; 16];
     bytes.copy_from_slice(&digest.as_bytes()[..16]);
-    if bytes == [0; 16] { bytes[0] = 1; }
+    if bytes == [0; 16] {
+        bytes[0] = 1;
+    }
     OperationId::from_bytes(bytes)
 }
 
@@ -380,14 +454,19 @@ where
         }
         let response = match serde_json::from_str::<WireRequest>(&line) {
             Ok(request) => runtime.dispatch(request).await,
-            Err(error) => WireResponse::error("", "invalid_input", format!("invalid request: {error}")),
+            Err(error) => {
+                WireResponse::error("", "invalid_input", format!("invalid request: {error}"))
+            }
         };
         write_response(&mut output, &response).await?;
     }
     output.flush().await
 }
 
-async fn write_response<W: AsyncWrite + Unpin>(output: &mut W, response: &WireResponse) -> std::io::Result<()> {
+async fn write_response<W: AsyncWrite + Unpin>(
+    output: &mut W,
+    response: &WireResponse,
+) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(response).map_err(std::io::Error::other)?;
     output.write_all(&bytes).await?;
     output.write_all(b"\n").await
