@@ -414,6 +414,20 @@
         "GenerationId has no id method"
       ],
       "contract_scope": "native compilation failure; real root conflict/abort scenario has not executed"
+    },
+    {
+      "suite": "production local model swarm",
+      "source": "1454185d",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -j 2 -- --nocapture",
+      "artifact_sha256": "be7d9f21a61b691a7a2663a187b00a3a5beccf448e115dc2c8728fb4f7474c0f",
+      "suite_sha256": "7884b16f03ce497f99fc642f62db6f0c6f6887bd10e54231ca021b046b54d35e",
+      "failures": [
+        "Conflict published fork seed or model publication has the wrong operation binding"
+      ],
+      "contract_scope": "fork projection fixed; completed batch and derived child effect identities incorrectly compared; strict derivation fix db5aac6e pending execution"
     }
   ],
   "input_digests": {
