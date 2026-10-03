@@ -7,6 +7,7 @@
 //! than maintaining a second store in the host.
 
 #![deny(unsafe_code)]
+#![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
 use acyclic_harness::{
     Error as HarnessError, OperationId, TaskId,
@@ -25,7 +26,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
@@ -527,4 +528,114 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = Arc::new(Runtime::open(&args).await?);
     serve(runtime, tokio::io::stdin(), tokio::io::stdout()).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn exchange(runtime: Arc<Runtime>, request: Value) -> Value {
+        let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
+        let (response_writer, mut response_reader) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(serve(runtime, request_reader, response_writer));
+        let bytes = serde_json::to_vec(&request).expect("request serializes");
+        request_writer
+            .write_all(&bytes)
+            .await
+            .expect("request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("request newline writes");
+        request_writer.shutdown().await.expect("request closes");
+        let mut response = Vec::new();
+        response_reader
+            .read_to_end(&mut response)
+            .await
+            .expect("response reads");
+        server
+            .await
+            .expect("server joins")
+            .expect("server succeeds");
+        serde_json::from_slice(
+            response
+                .split(|byte| *byte == b'\n')
+                .next()
+                .expect("response line"),
+        )
+        .expect("response JSON")
+    }
+
+    fn runtime_args(root: PathBuf, fixture: &str) -> Args {
+        Args {
+            root,
+            model_fixture: fixture.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn json_lines_lists_lazily_then_runs_echo_fixture() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"list-1","method":"list_sessions","params":{}}),
+        )
+        .await;
+        assert_eq!(listed["ok"], true);
+        assert_eq!(
+            listed["result"]["items"]
+                .as_array()
+                .expect("session page")
+                .len(),
+            1
+        );
+        let started = exchange(
+            runtime,
+            json!({
+                "request_id":"start-1",
+                "method":"start_session",
+                "params":{"prompt":"hello","model_fixture":"echo"}
+            }),
+        )
+        .await;
+        assert_eq!(started["ok"], true);
+        assert_eq!(started["result"]["summary"]["state"], "completed");
+        assert_eq!(started["result"]["workspace_generation"], "0");
+    }
+
+    #[tokio::test]
+    async fn json_lines_runs_stage_fixture_and_keeps_unexposed_methods_typed() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
+                .await
+                .expect("runtime opens"),
+        );
+        let started = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"stage-1",
+                "method":"start_session",
+                "params":{"prompt":"write fixture","model_fixture":"stage"}
+            }),
+        )
+        .await;
+        assert_eq!(started["ok"], true);
+        let activity = exchange(
+            runtime,
+            json!({
+                "request_id":"activity-1",
+                "method":"read_activity",
+                "params":{"session_id": started["result"]["summary"]["id"]}
+            }),
+        )
+        .await;
+        assert_eq!(activity["ok"], false);
+        assert_eq!(activity["error"]["code"], "unsupported");
+    }
 }
