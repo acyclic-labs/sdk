@@ -14,6 +14,7 @@ and install it there, then run:
 ```text
 node scripts/fixtures/graphcoder-qualification/consumer.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/host.mjs --log <request-log>
 node scripts/fixtures/graphcoder-qualification/negative-conformance.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/negative-host.mjs --epoch-host scripts/fixtures/graphcoder-qualification/epoch-host.mjs
+node scripts/fixtures/graphcoder-qualification/harness-model-consumer.mjs --root <installed-consumer-with-harness>
 ```
 
 The fixture IDs are stable qualification references:
@@ -28,6 +29,9 @@ The fixture IDs are stable qualification references:
 | `NEG-APPROVAL-01` | Session identity on approval responses and operation/generation/session identity on writeback receipts. |
 | `NEG-BYTES-01` | Invalid octets and a process response line over an explicitly configured 256-byte limit. |
 | `NEG-IDENTITY-01` | Snapshot, page, and diff response identities are checked against the request. |
+| `PKG-HARNESS-MODEL-01` | Installed `@acyclic-labs/harness` model dispatch retains provider/name/revision/options, including a full-width integer, in one frozen canonical request; request and manifest digests agree with the canonical bytes and differ when model identity changes. |
+| `NEG-MODEL-PAIR-01` | An unpaired context tool call is rejected before a model provider callback runs. |
+| `NEG-MODEL-BOUNDS-01` | An aggregate model context over the configured byte bound is rejected before provider dispatch. |
 
 The negative host intentionally returns wrong identities or malformed values;
 the expected result is a typed `transport` or `invalid_input` failure. The
@@ -35,4 +39,8 @@ line limit exercised by `NEG-BYTES-01` is the test's configured
 `maximumLineBytes: 256`, while the path boundary is 4096 ASCII bytes. These
 fixtures do not prove durable cancellation of a real worker, storage policy,
 model behavior, production swarm orchestration, N-API/Cargo bindings, or all
-possible native field combinations.
+possible native field combinations. `harness-model-consumer.mjs` uses a local
+assertion provider only to observe the installed Harness boundary; it does not
+qualify any production model provider. The installed Harness artifact must
+include the generated native `prepareModelRequest` export; a missing export is
+a qualification failure rather than a skipped model scenario.
