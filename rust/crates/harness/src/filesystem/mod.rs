@@ -51,7 +51,10 @@ pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
-pub use local::{DurableHarnessStorage, LocalHarnessTools, PersistentLocalHarness};
+pub use local::{
+    DurableHarnessStorage, FilesystemExecutionReceiptStore, LocalHarnessTools,
+    PersistentLocalHarness,
+};
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
@@ -351,27 +354,25 @@ where
     }
 
     fn read_grant(&self, reference: &FileRef) -> Result<ContentGrant> {
-        // Execution-journal tool calls/results are intentionally stored under
-        // the owner's internal namespace. They are not public exact-file
-        // references, but the owning scope still needs to resolve them while
-        // replaying a model context. A whole-volume grant is required here so
-        // delegated exact-file scopes cannot use this escape hatch. Published
-        // inherited conversation files are explicitly public pinned references
-        // and use their exact grants, including for attached readers.
-        if reference.path().starts_with(".system/")
-            && !reference
-                .path()
-                .starts_with(".system/inherited-conversation/")
+        // Host journal receipts and interaction/workflow records are never
+        // model content, even when the model's owner scope has whole-volume
+        // read capability. The inherited conversation prefix is deliberately
+        // model-visible and remains governed by its exact reference grant.
+        if [
+            ".system/execution/",
+            ".system/interactions/",
+            ".system/workflows/",
+            ".system/harness-uploads/",
+            ".system/harness-file-metadata/",
+        ]
+        .iter()
+        .any(|prefix| reference.path().starts_with(prefix))
         {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                reference.volume(),
-                VolumeOperation::Read,
-            )
-        } else {
-            ContentGrant::verify_read(&self.verifier, &self.scope, reference)
+            return Err(Error::Unauthorized(
+                "host-owned internal content is not model-readable".into(),
+            ));
         }
+        ContentGrant::verify_read(&self.verifier, &self.scope, reference)
     }
 
     async fn load_manifest(&self, reference: &FileRef, item_count: u32) -> Result<Vec<Attachment>> {

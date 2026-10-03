@@ -392,7 +392,8 @@ impl ExecutionReceipt {
 /// Immutable identity of one host receipt slot. Implementations must resolve
 /// this key through host-owned storage; a model-visible or workspace-relative
 /// path is not an authority for a receipt.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionReceiptKey {
     /// Operation identity allocated before admission.
     pub operation_id: OperationId,
@@ -411,7 +412,8 @@ pub struct ExecutionReceiptKey {
 }
 
 /// Durable receipt plus its host-owned result artifact.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionReceiptRecord {
     /// Identity of the dispatch that produced this receipt.
     pub key: ExecutionReceiptKey,
