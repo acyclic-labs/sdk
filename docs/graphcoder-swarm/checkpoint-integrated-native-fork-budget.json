@@ -428,6 +428,21 @@
         "Conflict published fork seed or model publication has the wrong operation binding"
       ],
       "contract_scope": "fork projection fixed; completed batch and derived child effect identities incorrectly compared; strict derivation fix db5aac6e pending execution"
+    },
+    {
+      "suite": "production local model swarm",
+      "source_at_start": "0e40ad16",
+      "source_bound": false,
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -j 2 -- --nocapture",
+      "artifact_sha256": "e0e59f551c9b28188e949c18f2045272b97d4b4a4d13cab444e5f7ad1f328ab9",
+      "suite_sha256": "7884b16f03ce497f99fc642f62db6f0c6f6887bd10e54231ca021b046b54d35e",
+      "failures": [
+        "Storage authority does not exist"
+      ],
+      "contract_scope": "diagnostic failure only; concurrent host execution source changes during compile prevent final source-bound qualification; tool projection and operation binding no longer the observed refusal"
     }
   ],
   "input_digests": {
