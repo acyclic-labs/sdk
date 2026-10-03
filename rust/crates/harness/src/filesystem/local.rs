@@ -6,10 +6,11 @@ use crate::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{AggregateKind, Authority, AuthorityIssuer},
+    effects::EffectRegistry,
     executor::TurnOutput,
     host_execution::{
         ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey, ExecutionReceiptRecord,
-        ExecutionReceiptStore,
+        ExecutionApprovalVerifier, ExecutionReceiptStore, NativeExecutionProvider,
     },
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     model::{Model, ModelProvider},
@@ -721,6 +722,30 @@ impl PersistentLocalHarness {
             write,
             maximum_bytes,
         )?))
+    }
+
+    /// Builds the approved local process provider over the host-owned receipt
+    /// journal and this session's authenticated content resolver.
+    pub fn native_execution_provider(
+        &self,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
+    ) -> Result<Arc<NativeExecutionProvider>> {
+        Ok(Arc::new(NativeExecutionProvider::native_with_receipt_store(
+            self.storage.content_verifier(),
+            self.execution_receipt_store()?,
+            approval_verifier,
+        )?))
+    }
+
+    /// Creates the explicit effect registry used by the local host.
+    pub fn effect_registry_with_native_execution(
+        &self,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
+    ) -> Result<EffectRegistry> {
+        let mut registry = EffectRegistry::default()
+            .with_result_resolver(self.storage.content_verifier());
+        registry.register(self.native_execution_provider(approval_verifier)?)?;
+        Ok(registry)
     }
 }
 
