@@ -86,7 +86,7 @@
     "source": "09198efd",
     "handle": 37220,
     "binary": "target/debug/deps/acyclic_harness-0a8588af6047f55e.exe",
-    "status": "running; no aggregate result",
+    "status": "terminated incomplete; no aggregate library result; Cargo handle 37220 exited 1",
     "observed_failures": [
       "stream wait store terminal replay",
       "explicit wait cancellation before admission",
@@ -95,7 +95,8 @@
       "real native uncertain restart assertion",
       "descendant retained-pipe outcome assertion"
     ],
-    "pending_case": "seedless local fork unit model fixture repeats tools"
+    "pending_case": "seedless local fork unit model fixture repeats tools",
+    "termination_reason": "Exact verified test process 35752 stopped after more than 12 minutes: seedless fork fixture emitted a new edit tool forever. Fixed scripted terminal second step in 92b74fa4; no passing library claim."
   },
   "compile_failures": [
     {
@@ -129,5 +130,29 @@
     "no merge",
     "no Vite or visible terminal windows"
   ],
-  "remaining": "Full locked matrix qualification remains incomplete"
+  "remaining": "Full locked matrix qualification remains incomplete",
+  "latest_typescript_source": "eb8f41a4",
+  "latest_typescript_result": {
+    "command": "bun test typescript/packages/harness/test/runtime.test.ts typescript/packages/harness/test/memory-conversation.test.ts",
+    "handle": 93848,
+    "exit_code": 0,
+    "passed": 100,
+    "failed": 0,
+    "assertions": 588,
+    "scope": "Source tests against existing WASM; fresh packaged/native-WASM qualification remains required",
+    "runtime_suite_sha256": "09de31e7b6524569bbd8a35c28e51c21f0cb2098b35a4d195ca10ede0d980d1d",
+    "memory_suite_sha256": "ba55f00edab1f83f20d6b47e1d6c170719e00282d85b9463e0933a93039240a7"
+  },
+  "native_compile_followup": {
+    "source": "d0f4a40a",
+    "handle": 43391,
+    "exit_code": 1,
+    "failures": [
+      "Missing PathBuf import",
+      "Capabilities imported through private core re-export"
+    ],
+    "repair": "eb8f41a4",
+    "rerun_handle": 20418,
+    "rerun_status": "live compilation; no result yet"
+  }
 }
