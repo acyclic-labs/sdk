@@ -191,7 +191,8 @@ pub fn validate_manifest(
             "model input manifest is not canonically encoded".into(),
         ));
     }
-    let prepared = PreparedModelInput::prepare_with_policy(request, limits, policy)?;
+    let prepared = PreparedModelInput::prepare_with_policy(request, limits, policy)?
+        .with_rejection_evidence(manifest.rejection_evidence.clone())?;
     if &manifest != prepared.manifest() {
         return Err(Error::Conflict(
             "model input manifest does not match the admitted request".into(),
@@ -1109,6 +1110,16 @@ mod tests {
             prepared.bytes(),
             crate::contract::canonical_json_bytes(prepared.request())?
         );
+        let manifest_json = String::from_utf8(crate::contract::canonical_json_bytes(
+            prepared.manifest(),
+        )?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        validate_manifest(
+            malformed.clone(),
+            Limits::default(),
+            None,
+            &manifest_json,
+        )?;
         let restored: ModelInputManifest = serde_json::from_slice(
             &serde_json::to_vec(prepared.manifest())
                 .map_err(|error| Error::Invalid(error.to_string()))?,
