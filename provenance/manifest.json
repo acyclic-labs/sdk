@@ -120,6 +120,25 @@
         "src/routes/docs/filesystem"
       ],
       "purpose": "Normative customer-facing Filesystem behavior and API contract"
+    },
+    {
+      "repository": "https://github.com/cloudflare/forge",
+      "commit": "86cb1ef3047abc7441d96c894e8cd35e826fa8e5",
+      "paths": [
+        "packages/forge",
+        "packages/astro-fern",
+        "packages/cloudflare-fern-config"
+      ],
+      "purpose": "Pinned optional downstream OpenAPI resolver, documentation, and generator comparison; no Forge-authored contract authority or production adoption"
+    },
+    {
+      "repository": "https://github.com/fern-api/fern",
+      "commit": "68f0bc168c7f167734feddcfffb67eeeb982eccd",
+      "paths": [
+        "generators",
+        "LICENSE"
+      ],
+      "purpose": "Source and license comparison for Forge downstream generators; source revision does not certify pinned container images or package qualification"
     }
   ]
 }
