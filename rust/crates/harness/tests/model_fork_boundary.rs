@@ -359,6 +359,40 @@ impl ForkAtBatch {
             issuer.clone(), parent, &foreign,
         ).await, Err(Error::Unauthorized(message)) if message.contains("another provider")));
         self.assert_child_unbound(&seed, issuer).await?;
+        let mut changed_prefix = seed.clone();
+        changed_prefix.inherited_through_sequence = 0;
+        assert!(matches!(
+            HarnessStorage::from_published_fork(
+                self.limits.file_bytes,
+                self.host.clone(),
+                self.stream.clone(),
+                issuer.clone(),
+                parent,
+                &changed_prefix,
+            )
+            .await,
+            Err(Error::Invalid(message)) if message.contains("inherited context")
+        ));
+        self.assert_child_unbound(&seed, issuer).await?;
+        let mut changed_model = seed.clone();
+        changed_model
+            .model_boundary
+            .as_mut()
+            .ok_or_else(|| Error::Storage("model boundary manifest missing".into()))?
+            .attestation[0] ^= 1;
+        assert!(matches!(
+            HarnessStorage::from_published_fork(
+                self.limits.file_bytes,
+                self.host.clone(),
+                self.stream.clone(),
+                issuer.clone(),
+                parent,
+                &changed_model,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        self.assert_child_unbound(&seed, issuer).await?;
         let mut unallocated = seed.clone();
         unallocated.operation_id = OperationId::from_bytes([252; 16]);
         unallocated.validate()?;
@@ -1772,6 +1806,14 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
             files: vec![model_file],
         }),
     };
+    let preparation_journal = workspace_ref(
+        provider.clone(),
+        &format!("harness-fork-preparation-{}", request.operation_id),
+    )?;
+    assert!(matches!(
+        host.resolve(&preparation_journal).await,
+        Err(Error::NotFound(_))
+    ));
     let error = aggregate
         .prepare_fork(&preparer, request)
         .await
@@ -1794,6 +1836,10 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
     ));
     assert!(matches!(
         host.resolve(&child_private_workspace).await,
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        host.resolve(&preparation_journal).await,
         Err(Error::NotFound(_))
     ));
     Ok(())
