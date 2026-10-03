@@ -1,0 +1,35 @@
+{
+  "name": "@acyclic-labs/graphcoder",
+  "version": "0.2.0",
+  "description": "Thin transport-neutral local GraphCoder session and terminal interface",
+  "license": "Apache-2.0",
+  "type": "module",
+  "files": ["dist", "README.md"],
+  "bin": {
+    "graphcoder": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./terminal": {
+      "types": "./dist/terminal.d.ts",
+      "default": "./dist/terminal.js"
+    },
+    "./mock": {
+      "types": "./dist/mock.d.ts",
+      "default": "./dist/mock.js"
+    }
+  },
+  "scripts": {
+    "build": "bun x tsc -p tsconfig.json",
+    "check": "bun x tsc -p tsconfig.json --noEmit",
+    "test": "bun test test"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "bun-types": "1.4.0",
+    "typescript": "7.0.2"
+  }
+}
