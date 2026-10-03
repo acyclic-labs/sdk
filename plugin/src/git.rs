@@ -104,6 +104,61 @@ impl PluginGitExecutor<'_> {
             }
         }
     }
+
+    /// Enforce the compare-and-swap boundary owned by the live workspace.
+    ///
+    /// The compatibility repository records a `GitTreeRef` before dispatch,
+    /// but that record is only useful when the host adapter checks it against
+    /// its current workspace immediately before an effect.  Keep this check
+    /// in the production adapter as well as in the generic state machine: a
+    /// provider call may race with another writer after the state machine has
+    /// validated its input.
+    pub(crate) async fn validate_workspace_tree(
+        &self,
+        workspace_tree: GitTreeRef,
+    ) -> Result<(), PluginGitError> {
+        match workspace_tree {
+            GitTreeRef::Exact(reference) => {
+                if reference.workspace_id != self.current.id() {
+                    return Err(Self::error(
+                        "Git workspace belongs to another live workspace",
+                    ));
+                }
+                let current = self.current.head().await.map_err(display)?;
+                if current.id() != reference.generation {
+                    return Err(Self::error(
+                        "Git workspace generation changed before the operation",
+                    ));
+                }
+            }
+            GitTreeRef::Lazy(snapshot) => {
+                if snapshot.workspace_id != self.current.id() {
+                    return Err(Self::error(
+                        "Git snapshot belongs to another live workspace",
+                    ));
+                }
+                let current = self.lazy_current.snapshot().await.map_err(display)?;
+                if current != snapshot {
+                    return Err(Self::error(
+                        "Git workspace snapshot changed before the operation",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn expected_workspace_generation(
+        &self,
+        expected_workspace_tree: Option<GitTreeRef>,
+    ) -> Result<acyclic_fs::GenerationId, PluginGitError> {
+        if let Some(expected_workspace_tree) = expected_workspace_tree {
+            self.validate_workspace_tree(expected_workspace_tree)
+                .await?;
+            return Ok(expected_workspace_tree.authored_generation());
+        }
+        Ok(self.current.head().await.map_err(display)?.id())
+    }
 }
 
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
@@ -115,6 +170,10 @@ pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
 
 impl GitFilesystemExecutor for PluginGitExecutor<'_> {
     type Error = PluginGitError;
+
+    async fn validate_workspace_tree(&self, workspace_tree: GitTreeRef) -> Result<(), Self::Error> {
+        PluginGitExecutor::validate_workspace_tree(self, workspace_tree).await
+    }
 
     async fn validate(&self) -> Result<(), Self::Error> {
         let Some(lease) = &self.lease else {
@@ -345,9 +404,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     value,
                 })
             }
-            GitFilesystemAction::RestoreGeneration { tree, paths } => {
+            GitFilesystemAction::RestoreGeneration {
+                tree,
+                paths,
+                expected_workspace_tree,
+            } => {
+                let current_id = self
+                    .expected_workspace_generation(*expected_workspace_tree)
+                    .await?;
                 let source_ref = self.exact(*tree, "restore").await?;
-                let current = self.current.head().await.map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
                     .generation(source_ref.generation)
@@ -359,7 +424,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .restore_paths_from_with_permit(
                             &source,
                             &paths.iter().cloned().collect::<Vec<_>>(),
-                            current.id(),
+                            current_id,
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
                             self.permit,
                         )
@@ -390,7 +455,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         .current
                         .restore_generation_with_permit(
                             &source,
-                            current.id(),
+                            current_id,
                             IdempotencyKey::from_bytes(operation_id.into_bytes()),
                             self.permit,
                         )
@@ -418,9 +483,15 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     tracked_paths: None,
                 })
             }
-            GitFilesystemAction::RestorePaths { tree, paths } => {
+            GitFilesystemAction::RestorePaths {
+                tree,
+                paths,
+                expected_workspace_tree,
+            } => {
+                let current_id = self
+                    .expected_workspace_generation(*expected_workspace_tree)
+                    .await?;
                 let source_ref = self.exact(*tree, "restore").await?;
-                let current = self.current.head().await.map_err(display)?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
                     .generation(source_ref.generation)
@@ -431,7 +502,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     .restore_paths_from_with_permit(
                         &source,
                         paths,
-                        current.id(),
+                        current_id,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
                         self.permit,
                     )
@@ -771,7 +842,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     tracked_paths: None,
                 })
             }
-            GitFilesystemAction::ApplyPatch { patch } => {
+            GitFilesystemAction::ApplyPatch {
+                patch,
+                expected_workspace_tree,
+            } => {
+                self.expected_workspace_generation(*expected_workspace_tree)
+                    .await?;
                 let generation = match apply_git_patch_with_permit(
                     &self.current,
                     patch,
@@ -895,6 +971,14 @@ impl RootMaterializingGitExecutor<'_> {
 
 impl GitFilesystemExecutor for RootMaterializingGitExecutor<'_> {
     type Error = PluginGitError;
+
+    async fn validate_workspace_tree(&self, workspace_tree: GitTreeRef) -> Result<(), Self::Error> {
+        PluginGitExecutor::validate_workspace_tree(&self.inner, workspace_tree).await
+    }
+
+    async fn validate(&self) -> Result<(), Self::Error> {
+        self.inner.validate().await
+    }
 
     async fn execute(
         &self,
