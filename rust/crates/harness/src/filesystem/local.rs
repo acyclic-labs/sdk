@@ -1323,13 +1323,8 @@ impl PersistentLocalHarness {
             ));
         }
         let root = root.as_ref();
-        let metadata = StreamClient::new(Arc::new(
-            LocalStream::open(root.join("history"), LocalStreamLimits::default())
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
-        let descriptor_stream = metadata
-            .stream("harness/session")
+        let descriptor_stream = stream
+            .stream(shared_session_descriptor_path(root))
             .map_err(|error| Error::Storage(error.to_string()))?;
         let missing = match descriptor_stream.tail().await {
             Ok(1) => false,
@@ -1682,6 +1677,15 @@ fn local_fork_verifier_with_stream_provider(
         filesystem as Arc<dyn ForkSeedVerifier>,
         stream as Arc<dyn ForkSeedVerifier>,
     ])?))
+}
+
+/// Returns the descriptor stream path for a composed task. Composed swarms
+/// share one Stream provider, so the task identity must be part of the path;
+/// hashing the supplied root keeps arbitrary caller paths out of the stream
+/// namespace while remaining stable across reopen.
+fn shared_session_descriptor_path(root: &Path) -> String {
+    let digest = blake3::hash(root.to_string_lossy().as_bytes()).to_hex();
+    format!("harness/session/{digest}")
 }
 
 #[cfg(test)]
