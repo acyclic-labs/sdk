@@ -17,6 +17,14 @@
   "type": "module",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "node": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
@@ -25,8 +33,16 @@
       "default": "./generated/proto/stream/v2/stream_pb.js"
     },
     "./grpc": {
-      "default": "./dist/grpc.js",
-      "types": "./dist/grpc.d.ts"
+      "node": {
+        "default": "./dist/grpc.js",
+        "types": "./dist/grpc.d.ts"
+      }
+    },
+    "./native": {
+      "node": {
+        "default": "./dist/native.js",
+        "types": "./dist/native.d.ts"
+      }
     }
   },
   "types": "./dist/index.d.ts",

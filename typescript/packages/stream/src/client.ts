@@ -8,6 +8,7 @@ import type {
   StreamProvider,
 } from "./types.js";
 import { StreamError } from "./types.js";
+import { STREAM_REMOTE_POLICY } from "./generated-client.js";
 import { ensureStreamWasm, normalizeWireCommit, projectChildrenPage, validateChildrenPageRequest, validatePathValue, validateReadRequest, validateSequenceValue, validateRecordBatch, validateWireAppend, validateWireRequest } from "./contract.js";
 
 export interface Codec<Value> {
@@ -43,6 +44,10 @@ export class StreamClient {
   readonly tokens: { create(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken> };
   /** Creates a deterministic process-local client for tests and examples. */
   static memory(): StreamClient { return new StreamClient(new MemoryStreamProvider()); }
+  /** Selects the Rust-qualified default transport for this runtime. */
+  static fromEnv(environment?: Partial<StreamEnvironment>): Promise<StreamClient> {
+    return createStreamClientFromEnv(environment);
+  }
   constructor(readonly provider: StreamProvider) {
     this.tokens = { create: async (request, signal) => {
       if (provider.createToken === undefined) throw new StreamError("unsupported", "provider does not support token creation");
@@ -114,11 +119,8 @@ export class StreamClient {
 
 /** Handle for one permanent Stream path. */
 export class Stream<Value = Uint8Array> {
-  static fromEnv(environment?: Partial<StreamEnvironment>): StreamClient {
-    return new StreamClient(new HttpStreamProvider({
-      endpoint: environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT"),
-      token: environment?.token ?? environmentValue("ACYCLIC_API_KEY"),
-    }));
+  static fromEnv(environment?: Partial<StreamEnvironment>): Promise<StreamClient> {
+    return createStreamClientFromEnv(environment);
   }
   constructor(readonly provider: StreamProvider, readonly path: string, readonly codec: Codec<Value>) {
     pathValue(path);
@@ -148,6 +150,59 @@ export class Stream<Value = Uint8Array> {
     sequence(options.from);
     for await (const item of this.provider.follow(this.path, options)) yield { ...item, value: this.codec.decode(item.value) };
   }
+}
+
+async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment>): Promise<StreamClient> {
+  const endpoint = environment?.endpoint ?? environmentValue("ACYCLIC_STREAM_ENDPOINT");
+  const token = environment?.token ?? environmentValue("ACYCLIC_API_KEY");
+  const runtime = isNativeRuntime() ? "native" : "browser";
+  const options = STREAM_REMOTE_POLICY.transport[runtime];
+  const selected = environment?.transport === undefined
+    ? options[0]
+    : options.find(option => option.kind === environment.transport);
+  if (selected === undefined) {
+    const requested = environment?.transport ?? "the default";
+    throw new StreamError("unsupported", `Stream transport ${requested} is unavailable in the ${runtime} runtime`);
+  }
+  if (selected.kind === "http") {
+    if (typeof globalThis.fetch !== "function") throw new StreamError("unavailable", "Stream HTTP transport requires fetch in this runtime");
+    return new StreamClient(new HttpStreamProvider({ endpoint, token }));
+  }
+  if (selected.kind === "grpc") {
+    if (runtime !== "native") throw new StreamError("unsupported", "Stream gRPC transport requires a native Node or Bun runtime");
+    try {
+      // Keep the native companion out of browser bundles. The Rust policy has
+      // already selected gRPC here; the adapter owns the N-API capability.
+      const nativeModule = "./native.js";
+      const { NativeStreamProvider } = await import(nativeModule);
+      try {
+        return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token }));
+      } catch (error) {
+        // Source checkouts may omit the optional platform companion. The
+        // generated Node gRPC adapter is the same full transport contract and
+        // remains the best available native implementation in that case.
+        if (!isMissingNativeCompanion(error)) throw error;
+        const { GrpcStreamProvider } = await import("./grpc.js");
+        return new StreamClient(new GrpcStreamProvider({ endpoint, token }));
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? `: ${error.message}` : "";
+      throw new StreamError("unavailable", `Stream native transport is unavailable in this runtime${reason}`);
+    }
+  }
+  throw new StreamError("unsupported", `Stream transport ${selected.kind} is unavailable in the ${runtime} runtime`);
+}
+
+function isNativeRuntime(): boolean {
+  const runtime = globalThis as typeof globalThis & { process?: { versions?: { node?: string; bun?: string } } };
+  return typeof runtime.process?.versions?.node === "string" || typeof runtime.process?.versions?.bun === "string";
+}
+
+function isMissingNativeCompanion(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const code = (error as { readonly code?: unknown }).code;
+  const message = (error as { readonly message?: unknown }).message;
+  return code === "ERR_MODULE_NOT_FOUND" || (typeof message === "string" && message.includes("has no native companion"));
 }
 
 function sameProvider(provider: StreamProvider, stream: Stream<unknown>): void {
