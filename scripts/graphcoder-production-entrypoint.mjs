@@ -5,7 +5,7 @@
 // explicit inputs so qualification cannot silently fall back to a fixture or
 // inherit credentials from the invoking shell.
 
-import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { join, resolve } from "node:path";
 
@@ -43,15 +43,23 @@ const bridgeExecutable = requiredEnvironment("GRAPHCODER_BRIDGE_EXECUTABLE");
 const bridgeArgs = jsonArray("GRAPHCODER_BRIDGE_ARGS_JSON");
 const bridgeEnvironment = jsonObject("GRAPHCODER_BRIDGE_ENV_JSON");
 const bridgeCwd = resolve(process.env.GRAPHCODER_BRIDGE_CWD ?? process.cwd());
-const terminalPath = join(packageRoot, "dist", "terminal.js");
-const bridgePath = join(packageRoot, "dist", "bridge.js");
-const processBridgePath = join(packageRoot, "dist", "process.js");
-for (const path of [terminalPath, bridgePath, processBridgePath]) if (!existsSync(path)) fail(`installed GraphCoder module is missing: ${path}`);
+const packageJsonPath = join(packageRoot, "package.json");
+let terminalPath;
+let bridgePath;
+let nodePath;
+try {
+  const resolveExport = createRequire(packageJsonPath);
+  terminalPath = resolveExport.resolve("@acyclic-labs/graphcoder/terminal");
+  bridgePath = resolveExport.resolve("@acyclic-labs/graphcoder/bridge");
+  nodePath = resolveExport.resolve("@acyclic-labs/graphcoder/node");
+} catch (error) {
+  fail(`installed package exports could not be resolved: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 const [{ GraphCoderTerminal }, { HarnessGraphCoderTransport }, { JsonLineGraphCoderBridge }] = await Promise.all([
   import(pathToFileURL(terminalPath).href),
   import(pathToFileURL(bridgePath).href),
-  import(pathToFileURL(processBridgePath).href),
+  import(pathToFileURL(nodePath).href),
 ]);
 
 const bridge = new JsonLineGraphCoderBridge({

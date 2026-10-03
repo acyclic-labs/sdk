@@ -4,7 +4,7 @@
 // This exercises the packaged process boundary and dispatcher while keeping
 // fixture evidence separate from the production Harness/local-runtime lane.
 
-import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -15,9 +15,16 @@ function fail(message) {
 const packageRoot = process.env.GRAPHCODER_PACKAGE_ROOT;
 if (typeof packageRoot !== "string" || packageRoot.trim() === "") fail("GRAPHCODER_PACKAGE_ROOT is required");
 const root = packageRoot.trim();
-const mockPath = join(root, "dist", "mock.js");
-const dispatcherPath = join(root, "dist", "node-dispatcher.js");
-for (const path of [mockPath, dispatcherPath]) if (!existsSync(path)) fail(`installed package module is missing: ${path}`);
+const packageJsonPath = join(root, "package.json");
+const resolveExport = createRequire(packageJsonPath);
+let mockPath;
+let dispatcherPath;
+try {
+  mockPath = resolveExport.resolve("@acyclic-labs/graphcoder/mock");
+  dispatcherPath = resolveExport.resolve("@acyclic-labs/graphcoder/node-dispatcher");
+} catch (error) {
+  fail(`installed package export could not be resolved: ${error instanceof Error ? error.message : String(error)}`);
+}
 
 const [{ createMockTransport }, { runNodeGraphCoderDispatcher }] = await Promise.all([
   import(pathToFileURL(mockPath).href),
