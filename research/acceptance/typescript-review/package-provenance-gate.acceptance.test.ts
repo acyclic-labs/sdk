@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 
@@ -35,26 +37,67 @@ test("installed package lanes have no ambient cache or newest artifact fallback"
   expect(php).toContain('attach_artifact(&mut receipt, "php-package-tree"');
 });
 
-test("Rust installed package receipts bind exact installed bytes to locked consumer resolution", async () => {
-  const main = await source("rust/crates/sdk-examples/src/main.rs");
-  const rust = functionBody(main, "run_rust", ["add_snippet_binding", "portable_output_path"]);
+test("a real SDK archive is extracted and resolved by a locked Cargo consumer", { timeout: 120_000 }, async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "sdk-package-provenance-"));
+  try {
+    const sourceRoot = resolve(root);
+    const packageRoot = join(fixture, "acyclic-sdk-bundle");
+    const packageCrates = join(packageRoot, "crates");
+    await mkdir(packageCrates, { recursive: true });
 
-  // The package receipt must contain bytes copied from the installed output.
-  // A hand-written text record that merely mentions the package tree is not
-  // evidence for the artifact consumed by the qualification.
-  expect(rust).toContain("fs::copy(&installed, &package_path)");
-  expect(rust).not.toContain("let package_archive = format!(");
-  expect(rust).toContain("let package_digest = hash(&fs::read(&package_path");
-  expect(rust).toContain('"package_artifact_sha256": package_digest');
-  expect(rust).toContain('"package_tree_sha256": package_tree_digest');
-  expect(rust).toContain('"source_revision": source_revision');
-  expect(rust).toContain('"compiled_snippet_sha256": snippet_digest');
-  expect(rust).toMatch(/cargo test --manifest-path[\s\S]{0,120}--locked[\s\S]{0,80}--offline/);
-  expect(rust).toContain('"consumer_manifest_sha256"');
-  expect(rust).toContain('"consumer_lock_sha256"');
+    // Build the fixture from the repository's actual workspace and crate
+    // sources.  This exercises the archive and Cargo resolver, rather than
+    // accepting a text file or a generic disposable consumer.
+    const workspace = (await readFile(join(sourceRoot, "Cargo.toml"), "utf8"))
+      .replaceAll('"rust/crates/', '"crates/')
+      .replace('  "plugin",\n', "");
+    await writeFile(join(packageRoot, "Cargo.toml"), workspace);
+    await cp(join(sourceRoot, "rust", "crates"), packageCrates, {
+      recursive: true,
+      filter: sourcePath => !/[\\/]target(?:[\\/]|$)/.test(sourcePath) && !/[\\/]\.git(?:[\\/]|$)/.test(sourcePath),
+    });
+
+    const archive = join(fixture, "acyclic-sdk-bundle.tgz");
+    const packed = spawnSync("tar", ["-czf", archive, "-C", fixture, "acyclic-sdk-bundle"], {
+      encoding: "utf8",
+    });
+    expect(packed.status, packed.stderr || packed.stdout).toBe(0);
+
+    const extracted = join(fixture, "extracted");
+    await mkdir(extracted);
+    const unpacked = spawnSync("tar", ["-xzf", archive, "-C", extracted], {
+      encoding: "utf8",
+    });
+    expect(unpacked.status, unpacked.stderr || unpacked.stdout).toBe(0);
+    await expect(readFile(join(extracted, "acyclic-sdk-bundle", "crates", "actors", "Cargo.toml"), "utf8"))
+      .resolves.toContain('name = "acyclic-actors"');
+    await expect(readFile(join(extracted, "acyclic-sdk-bundle", "crates", "stream", "Cargo.toml"), "utf8"))
+      .resolves.toContain('name = "acyclic-stream"');
+
+    const consumer = join(fixture, "consumer");
+    await mkdir(join(consumer, "src"), { recursive: true });
+    await writeFile(
+      join(consumer, "Cargo.toml"),
+      `[package]\nname = "rendered-sdk-consumer"\nversion = "0.0.0"\nedition = "2024"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = { path = "../extracted/acyclic-sdk-bundle/crates/actors" }\nacyclic-stream = { path = "../extracted/acyclic-sdk-bundle/crates/stream", features = ["grpc"] }\n`,
+    );
+    await writeFile(join(consumer, "src", "main.rs"), "fn main() {}\n");
+    const lock = spawnSync("cargo", ["generate-lockfile", "--offline"], {
+      cwd: consumer,
+      encoding: "utf8",
+      timeout: 120_000,
+      env: { ...process.env, CARGO_NET_OFFLINE: "true" },
+    });
+    expect(lock.status, lock.stderr || lock.stdout).toBe(0);
+    const lockText = await readFile(join(consumer, "Cargo.lock"), "utf8");
+    expect(lockText).toContain('name = "acyclic-actors"');
+    expect(lockText).toContain('name = "acyclic-stream"');
+    expect(lockText).not.toContain("sdk-example-consumer");
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
 });
 
-test("source closure review keeps the resolved local package graph and build recipe in identity", async () => {
+test("source closure review keeps the resolved local package graph and build recipe in identity", { timeout: 30_000 }, async () => {
   const [closure, build] = await Promise.all([
     source("rust/crates/sdk-examples/src/source_closure.rs"),
     source("rust/crates/sdk-examples/build.rs"),
@@ -68,7 +111,7 @@ test("source closure review keeps the resolved local package graph and build rec
   expect(build).toContain("cargo:rustc-env=SDK_EXAMPLES_SOURCE_SHA256");
 });
 
-test("producer and importer use one canonical Cargo recipe helper", async () => {
+test("producer and importer use one canonical Cargo recipe helper", { timeout: 30_000 }, async () => {
   const [examples, examplesCargo, docs] = await Promise.all([
     source("rust/crates/sdk-examples/src/source_closure.rs"),
     source("rust/crates/sdk-examples/Cargo.toml"),

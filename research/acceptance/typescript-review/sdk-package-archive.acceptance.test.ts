@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFile, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { isAbsolute, join, relative, resolve } from "node:path";
 
@@ -26,6 +26,8 @@ type RustReceipt = {
     package_manifest_path?: string;
     consumer_manifest_path?: string;
     consumer_lock_path?: string;
+    package_tree_sha256?: string;
+    consumer_lock_sha256?: string;
   };
 };
 
@@ -48,6 +50,29 @@ const expectedFailure = process.env.SDK_GENERATION_EXPECTED_FAILURE === "package
 
 function sha256(bytes: Uint8Array): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+async function treeSha256(root: string): Promise<string> {
+  const files: string[] = [];
+  async function collect(directory: string): Promise<void> {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`artifact tree contains symlink: ${path}`);
+      if (entry.isDirectory()) await collect(path);
+      else if (entry.isFile()) files.push(path);
+      else throw new Error(`artifact tree contains unsupported entry: ${path}`);
+    }
+  }
+  await collect(root);
+  files.sort();
+  const digest = createHash("sha256");
+  for (const file of files) {
+    digest.update(relative(root, file).replaceAll("\\", "/"));
+    digest.update(new Uint8Array([0]));
+    digest.update(await readFile(file));
+    digest.update(new Uint8Array([0]));
+  }
+  return `sha256:${digest.digest("hex")}`;
 }
 
 function resolveOutputPath(root: string, portablePath: string): string {
@@ -99,7 +124,13 @@ async function validateRustPackageArtifacts(root: string): Promise<string[]> {
     } else if (!listed.stdout.split(/\r?\n/).some(entry => /(^|\/)Cargo\.toml$/.test(entry))) {
       errors.push(`${portablePackagePath}: archive has no Cargo.toml member`);
     } else {
-      const cargoMember = listed.stdout.split(/\r?\n/).find(entry => /(^|\/)Cargo\.toml$/.test(entry));
+      const archiveMembers = listed.stdout.split(/\r?\n/).filter(Boolean);
+      const cargoMember = archiveMembers.find(entry => /(^|\/)Cargo\.toml$/.test(entry));
+      for (const required of ["crates/actors/Cargo.toml", "crates/stream/Cargo.toml"]) {
+        if (!archiveMembers.some(entry => entry.replaceAll("\\", "/").endsWith(`/${required}`))) {
+          errors.push(`${portablePackagePath}: archive omits required SDK crate ${required}`);
+        }
+      }
       if (cargoMember) {
         const archivedManifest = spawnSync("tar", ["-xOf", packagePath, cargoMember], { encoding: "utf8" });
         if (archivedManifest.status !== 0) {
@@ -156,6 +187,56 @@ async function validateRustPackageArtifacts(root: string): Promise<string[]> {
       try {
         const packageManifest = await readFile(resolveOutputPath(root, packageManifestPath), "utf8");
         errors.push(...packageManifestErrors(`${portablePackagePath}: package root`, packageManifest));
+        const declaredName = resolution?.package_name;
+        const packageName = packageManifest.match(/^name\s*=\s*["']([^"']+)["']/m)?.[1];
+        if (!packageName || !declaredName || packageName !== declaredName) {
+          errors.push(`${portablePackagePath}: package manifest identity does not match package_resolution`);
+        }
+        if (declaredName !== "acyclic-sdk-bundle") {
+          errors.push(`${portablePackagePath}: package resolution is not the generated SDK bundle`);
+        }
+      } catch {
+        // The path existence error above is the authoritative diagnostic.
+      }
+    }
+    if (resolution?.package_root_path && resolution.package_tree_sha256) {
+      try {
+        const actualTreeHash = await treeSha256(resolveOutputPath(root, resolution.package_root_path));
+        if (actualTreeHash !== resolution.package_tree_sha256) {
+          errors.push(`${portablePackagePath}: extracted package tree hash does not match package_resolution`);
+        }
+      } catch (error) {
+        errors.push(`${portablePackagePath}: extracted package tree cannot be hashed: ${String(error)}`);
+      }
+    } else {
+      errors.push(`${portablePackagePath}: package resolution omitted package_tree_sha256`);
+    }
+    if (resolution?.consumer_manifest_path) {
+      try {
+        const consumerManifest = await readFile(resolveOutputPath(root, resolution.consumer_manifest_path), "utf8");
+        errors.push(...packageManifestErrors(`${portablePackagePath}: consumer`, consumerManifest));
+        if (!/path\s*=\s*["'][^"']*qualification[\\/]packages[\\/][^"']+[\\/]crates[\\/]actors["']/.test(consumerManifest)) {
+          errors.push(`${portablePackagePath}: consumer manifest does not resolve the archived actors crate`);
+        }
+        if (!/path\s*=\s*["'][^"']*qualification[\\/]packages[\\/][^"']+[\\/]crates[\\/]stream["']/.test(consumerManifest)) {
+          errors.push(`${portablePackagePath}: consumer manifest does not resolve the archived stream crate`);
+        }
+      } catch {
+        // The path existence error above is the authoritative diagnostic.
+      }
+    }
+    if (resolution?.consumer_lock_path) {
+      try {
+        const consumerLock = await readFile(resolveOutputPath(root, resolution.consumer_lock_path), "utf8");
+        if (!consumerLock.includes('name = "acyclic-actors"') || !consumerLock.includes('name = "acyclic-stream"')) {
+          errors.push(`${portablePackagePath}: consumer lock omits resolved SDK package identities`);
+        }
+        if (consumerLock.includes('name = "sdk-example-consumer"')) {
+          errors.push(`${portablePackagePath}: consumer lock resolves the generic test consumer`);
+        }
+        if (resolution.consumer_lock_sha256 && sha256(Buffer.from(consumerLock)) !== resolution.consumer_lock_sha256) {
+          errors.push(`${portablePackagePath}: consumer lock hash does not match receipt`);
+        }
       } catch {
         // The path existence error above is the authoritative diagnostic.
       }
