@@ -10,7 +10,9 @@ use acyclic_harness::{
         DurableCommunication, MessageRequest, MessageTarget, StreamWaitStore, WaitCompletion,
         WaitRequest, WaitTarget,
     },
-    conversation::{FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{
+        ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    },
     core::{AggregateKind, Authority, AuthorityIssuer},
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
@@ -265,12 +267,22 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let communication = DurableCommunication::new(host.clone());
     communication.send(request.clone()).await?;
     communication.send(request.clone()).await?;
+    let alternate = alternate_payload(&fixture).await?;
     let mut conflicting = request.clone();
-    conflicting.payload = alternate_payload(&fixture).await?;
+    conflicting.payload = alternate.clone();
     assert!(matches!(
         communication.send(conflicting).await,
         Err(Error::Conflict(_))
     ));
+    communication
+        .send(MessageRequest {
+            sender: parent,
+            recipient: child,
+            message_id: OperationId::from_bytes([4; 16]),
+            target: MessageTarget::Child,
+            payload: alternate,
+        })
+        .await?;
     // The same caller message ID is valid on another endpoint pair. The
     // durable stream key must include both endpoints rather than collapsing
     // these two independently idempotent deliveries.
@@ -297,13 +309,59 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let items = DurableCommunication::new(reopened.clone())
         .inbox(child, 0, 8)
         .await?;
-    assert_eq!(items.len(), 1);
+    assert_eq!(items.len(), 2);
+    assert_eq!(items[0].sequence, 1);
+    assert_eq!(items[1].sequence, 2);
     assert_eq!(items[0].message_id, request.message_id.to_string());
-    let parent_items = DurableCommunication::new(reopened)
+    assert_eq!(
+        items[1].message_id,
+        OperationId::from_bytes([4; 16]).to_string()
+    );
+    let read = ContentGrant::verify_read(
+        &reopened_fixture.issuer.verifier(),
+        &reopened_fixture.scope,
+        &items[0].payload,
+    )?;
+    assert_eq!(
+        reopened_fixture
+            .fs
+            .read_content(
+                &items[0].payload,
+                &read,
+                reopened_fixture.runtime_scope.limits().file_bytes,
+            )
+            .await?
+            .as_ref(),
+        b"{}"
+    );
+    let alternate_read = ContentGrant::verify_read(
+        &reopened_fixture.issuer.verifier(),
+        &reopened_fixture.scope,
+        &items[1].payload,
+    )?;
+    assert_eq!(
+        reopened_fixture
+            .fs
+            .read_content(
+                &items[1].payload,
+                &alternate_read,
+                reopened_fixture.runtime_scope.limits().file_bytes,
+            )
+            .await?
+            .as_ref(),
+        b"{\"alternate\":true}"
+    );
+    let parent_items = DurableCommunication::new(reopened.clone())
         .inbox(parent, 0, 8)
         .await?;
     assert_eq!(parent_items.len(), 1);
     assert_eq!(parent_items[0].message_id, request.message_id.to_string());
+    assert!(
+        DurableCommunication::new(reopened)
+            .inbox(sibling, 0, 8)
+            .await?
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -314,9 +372,32 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
     let host = fixture.host().await?;
     let wait_store = Arc::new(StreamWaitStore::new(fixture.stream.clone()));
     let parent = TaskId::from_bytes([11; 16]);
+    let child = TaskId::from_bytes([12; 16]);
+    let sibling = TaskId::from_bytes([13; 16]);
     assert!(
         matches!(host.admit(fixture.admission(OperationId::from_bytes(parent.into_bytes()), None)?).await?, Admission::Accepted(id) if id == parent)
     );
+    assert!(
+        matches!(host.admit(fixture.admission(OperationId::from_bytes(child.into_bytes()), Some(parent))?).await?, Admission::Accepted(id) if id == child)
+    );
+    assert!(
+        matches!(host.admit(fixture.admission(OperationId::from_bytes(sibling.into_bytes()), Some(parent))?).await?, Admission::Accepted(id) if id == sibling)
+    );
+    let invalid_target = DurableCommunication::new(host.clone())
+        .wait(
+            WaitRequest {
+                operation_id: OperationId::from_bytes([16; 16]),
+                waiter: child,
+                target: WaitTarget::Tasks {
+                    task_ids: vec![sibling],
+                },
+                timeout_epoch_ms: None,
+                cancellation_id: None,
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(invalid_target, Err(Error::Unauthorized(_))));
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| Error::Invalid(e.to_string()))?

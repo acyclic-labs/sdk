@@ -1,7 +1,7 @@
 //! Durable local Harness composition using public Stream and Filesystem providers.
 use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
 use crate::{
-    AgentId, Capabilities, ConversationId, Error, OperationId, Result, SessionId,
+    AgentId, Capabilities, ConversationId, Error, OperationId, Result, SessionId, TaskId,
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -911,6 +911,7 @@ pub struct PersistentLocalHarness {
 pub struct LocalHarnessTools {
     tools: ToolRegistry,
     batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    authenticated_task: Option<TaskId>,
 }
 
 impl LocalHarnessTools {
@@ -920,6 +921,7 @@ impl LocalHarnessTools {
         Self {
             tools: ToolRegistry::new(),
             batch_publisher: None,
+            authenticated_task: None,
         }
     }
 
@@ -929,6 +931,7 @@ impl LocalHarnessTools {
         Self {
             tools,
             batch_publisher: None,
+            authenticated_task: None,
         }
     }
 
@@ -939,6 +942,13 @@ impl LocalHarnessTools {
         publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
     ) -> Self {
         self.batch_publisher = Some(publisher);
+        self
+    }
+
+    /// Carries the durable task selected by the owning swarm composition.
+    #[must_use]
+    pub(crate) fn with_authenticated_task(mut self, task_id: TaskId) -> Self {
+        self.authenticated_task = Some(task_id);
         self
     }
 
@@ -959,6 +969,9 @@ impl LocalHarnessTools {
         }
         if let Some(publisher) = &self.batch_publisher {
             builder = builder.batch_publisher(publisher.clone());
+        }
+        if let Some(task_id) = self.authenticated_task {
+            builder = builder.authenticated_task(task_id);
         }
         Ok(builder)
     }
