@@ -100,7 +100,7 @@ export interface WasmExtensionAdmissionWire {
     readonly configurations: readonly WasmExtensionConfigurationWire[];
 }
 export interface WasmTaskAdmissionWire {
-    readonly contract: "harness.task-admission.v2";
+    readonly contract: "harness.task-admission.v2" | "harness.task-admission.v3";
     readonly operation_id: string;
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
@@ -108,6 +108,7 @@ export interface WasmTaskAdmissionWire {
     readonly input_schema: WasmToolJsonSchema;
     readonly output_schema: WasmToolJsonSchema;
     readonly parent: string | null;
+    readonly dependencies?: readonly string[];
     readonly grants: readonly string[];
     readonly limits: WasmNativeLimitsWire;
     readonly run_limits: WasmTaskRunLimitsWire;
@@ -343,6 +344,7 @@ export interface WasmTaskAdmissionInput {
     requirements: readonly string[];
     machine_digest: readonly number[];
     parent: string | null;
+    dependencies?: readonly string[];
     grants: readonly string[];
     limits: WasmLimitsInput;
     run_limits: WasmTaskRunLimitsInput;

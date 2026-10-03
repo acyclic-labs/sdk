@@ -178,6 +178,31 @@ test("Rust owns durable task and batch projection identities", () => {
   expect(task.machine).toEqual(identities.machine);
   expect(contracts.validate("task_admission", task)).toEqual(task);
 
+  expect(task.contract).toBe("harness.task-admission.v2");
+  expect(task.dependencies).toBeUndefined();
+  const prerequisites = [
+    "42345678-1234-4234-8234-123456789abc",
+    "32345678-1234-4234-8234-123456789abc",
+  ];
+  const deferred = contracts.admitTask({
+    ...common, operation_id: task.operation_id, input: 4, dependencies: prerequisites,
+  });
+  expect(deferred.contract).toBe("harness.task-admission.v3");
+  expect(deferred.dependencies).toEqual([...prerequisites].sort());
+  expect(contracts.validate("task_admission", deferred)).toEqual(deferred);
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, dependencies: [prerequisites[0], prerequisites[0]],
+  })).toThrow();
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, dependencies: [],
+  })).toThrow();
+  expect(() => contracts.validate("task_admission", {
+    ...deferred, contract: "harness.task-admission.v2",
+  })).toThrow();
+  expect(() => contracts.admitTask({
+    ...common, operation_id: task.operation_id, input: 4, dependencies: [task.operation_id],
+  })).toThrow();
+
   const batchInput = {
     ...common,
     group_id: "22345678-1234-4234-8234-123456789abc",

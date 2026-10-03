@@ -57,7 +57,8 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
-Implement production fork intent tools, bounded task admission and durable child activation.
+Implement production fork intent tools, session budget admission and durable child activation.
+Pinned task prerequisites and restart-safe dependency scheduling are now implemented.
 The native fixture now connects the stock publisher to existing typed workspace
 forks and child models; application-facing swarm activation remains pending.
 Extend durable composition with scoped swarm communication and git integration,
@@ -66,3 +67,23 @@ effect recovery, terminal app, and installed-artifact acceptance evidence.
 The locked requirements matrix remains authoritative. No Cloud, web UI,
 production models, migration or sandbox. Arbitrary host commands and root
 writeback require approval; workspace routing is not process confinement.
+
+## Durable prerequisite checkpoint
+
+Task admissions pin sorted operation prerequisites; empty admissions retain canonical v2 bytes,
+while dependent admissions use v3. Native owner admission rejects missing or foreign dependencies
+before staging payloads. The existing scheduler controls readiness and cancellation failure.
+Two real-provider scenarios verify blocked child dispatch across reopening, exact reattachment,
+changed dependency refusal, and cancelled prerequisites. This is not full fork activation.
+
+Focused native regression: 205 library + 2 dependency + 6 journal + 1 fork preparer + 2 boundary
+cases passed. Native library and dependency-test lint passed after repairs. A freshly built WASM
+runtime passed 69 TypeScript tests (382 assertions), before final native lint-only repairs.
+Installed package equivalence remains pending: directly invoking that fixture from source failed
+because its package had not been installed. No distributable qualification is claimed.
+
+Five persistent slice owners now work in separate managed worktrees: communication/waits,
+workspace facade/integration/writeback, approved execution, terminal/generic UI, and qualification.
+The root owns exact model inputs, fork activation, shared composition and combined integration.
+Workers continue validation and maintainability iterations after initial delivery; verified commits
+are cherry-picked to this branch without merging branches.

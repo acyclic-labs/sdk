@@ -217,6 +217,9 @@ struct WasmTaskAdmissionInput {
     machine_digest: Vec<u8>,
     #[tsify(type = "string | null")]
     parent: Option<TaskId>,
+    #[serde(default)]
+    #[tsify(type = "readonly string[]")]
+    dependencies: BTreeSet<OperationId>,
     #[tsify(type = "readonly string[]")]
     grants: Vec<String>,
     limits: WasmLimitsInput,
@@ -601,7 +604,7 @@ export interface WasmExtensionAdmissionWire {
     readonly configurations: readonly WasmExtensionConfigurationWire[];
 }
 export interface WasmTaskAdmissionWire {
-    readonly contract: "harness.task-admission.v2";
+    readonly contract: "harness.task-admission.v2" | "harness.task-admission.v3";
     readonly operation_id: string;
     readonly task: WasmMachineIdentityWire;
     readonly machine: WasmMachineIdentityWire;
@@ -609,6 +612,7 @@ export interface WasmTaskAdmissionWire {
     readonly input_schema: WasmToolJsonSchema;
     readonly output_schema: WasmToolJsonSchema;
     readonly parent: string | null;
+    readonly dependencies?: readonly string[];
     readonly grants: readonly string[];
     readonly limits: WasmNativeLimitsWire;
     readonly run_limits: WasmTaskRunLimitsWire;
@@ -942,6 +946,8 @@ pub fn admit_task_wasm(
         input.extensions,
         input.execution,
     )
+    .map_err(js_error)?
+    .with_dependencies(input.dependencies)
     .map_err(js_error)?;
     to_js_admitted(&record.canonical_value())
 }

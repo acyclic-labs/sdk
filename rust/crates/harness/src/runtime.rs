@@ -437,6 +437,9 @@ impl ExecutionPlacement {
     }
 }
 
+/// Protocol ceiling for one task's prerequisite operations.
+pub const MAX_TASK_ADMISSION_DEPENDENCIES: usize = 4_096;
+
 /// Exact owner-retained task admission. It is stored as an immutable payload;
 /// durable events contain only its content reference.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -456,6 +459,10 @@ pub struct TaskAdmissionRecord {
     pub output_schema: Value,
     /// Owning parent, if any.
     pub parent: Option<TaskId>,
+    /// Same-owner prerequisite operations that must succeed before dispatch.
+    /// Empty sets retain the existing v2 envelope; nonempty sets use v3.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub dependencies: BTreeSet<OperationId>,
     /// Effective grants at admission.
     pub grants: Capabilities,
     /// Effective numeric limits at admission.
@@ -528,6 +535,7 @@ impl TaskAdmissionRecord {
             input_schema,
             output_schema,
             parent,
+            dependencies: BTreeSet::new(),
             grants,
             limits,
             run_limits,
@@ -537,6 +545,13 @@ impl TaskAdmissionRecord {
         };
         record.validate()?;
         Ok(record)
+    }
+
+    /// Pins prerequisite operations into the immutable admission.
+    pub fn with_dependencies(mut self, dependencies: BTreeSet<OperationId>) -> Result<Self> {
+        self.dependencies = dependencies;
+        self.validate()?;
+        Ok(self)
     }
 
     /// Validates the provider-neutral request independently of registration.
@@ -552,6 +567,17 @@ impl TaskAdmissionRecord {
         {
             return Err(Error::Invalid(
                 "task and machine identities disagree".into(),
+            ));
+        }
+        if self.dependencies.len() > MAX_TASK_ADMISSION_DEPENDENCIES
+            || self.dependencies.contains(&self.operation_id)
+            || self
+                .dependencies
+                .iter()
+                .any(|id| id.into_bytes() == [0; 16])
+        {
+            return Err(Error::Invalid(
+                "task admission dependencies are invalid".into(),
             ));
         }
         validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
@@ -574,10 +600,10 @@ impl TaskAdmissionRecord {
         Ok(())
     }
 
-    /// Ref-only v2 envelope retained by the owner outside event history.
+    /// Ref-only versioned envelope retained by the owner outside event history.
     #[must_use]
     pub fn canonical_value(&self) -> Value {
-        serde_json::json!({
+        let mut value = serde_json::json!({
             "contract": "harness.task-admission.v2",
             "operation_id": self.operation_id,
             "task": self.task,
@@ -592,24 +618,37 @@ impl TaskAdmissionRecord {
             "policy": self.policy,
             "extensions": self.extensions,
             "execution": self.execution,
-        })
+        });
+        if !self.dependencies.is_empty()
+            && let Some(fields) = value.as_object_mut()
+        {
+            fields.insert(
+                "contract".into(),
+                Value::String("harness.task-admission.v3".into()),
+            );
+            fields.insert("dependencies".into(), serde_json::json!(self.dependencies));
+        }
+        value
     }
 
-    /// Rejects missing, extra, or noncanonical v2 admission fields.
+    /// Rejects missing, extra, duplicate, or noncanonical admission fields.
     pub fn from_canonical_value(value: Value) -> Result<Self> {
         let canonical = value.clone();
         let mut body = value;
         let fields = body
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("task admission must be an object".into()))?;
-        if fields.remove("contract") != Some(Value::String("harness.task-admission.v2".into())) {
+        if !matches!(
+            fields.remove("contract").as_ref().and_then(Value::as_str),
+            Some("harness.task-admission.v2" | "harness.task-admission.v3")
+        ) {
             return Err(Error::Invalid("unsupported task admission contract".into()));
         }
         let admission: Self =
             serde_json::from_value(body).map_err(|error| Error::Invalid(error.to_string()))?;
         admission.validate()?;
         if admission.canonical_value() != canonical {
-            return Err(Error::Invalid("task admission is not canonical v2".into()));
+            return Err(Error::Invalid("task admission is not canonical".into()));
         }
         Ok(admission)
     }
@@ -619,6 +658,11 @@ impl TaskAdmissionRecord {
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: Send + Sync {
+    /// Whether admission retains prerequisites and fences dispatch until success.
+    fn supports_admission_dependencies(&self) -> bool {
+        false
+    }
+
     /// Policy identity enforced by this host at durable tool dispatch.
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         None
@@ -1065,6 +1109,11 @@ impl TaskStateProvider for HostTaskState {
 /// identities and requests; the bound state host remains the authority for
 /// typed observation, resumed scope, and cancellation.
 pub trait TaskSpawner: Send + Sync {
+    /// Whether admission retains prerequisites and fences dispatch until success.
+    fn supports_admission_dependencies(&self) -> bool {
+        false
+    }
+
     /// Exact policy revision enforced during child admission.
     fn policy_identity(&self) -> Option<ComponentIdentity>;
     /// Execution route this spawner can actually dispatch to.
@@ -1142,6 +1191,10 @@ pub trait TaskSpawner: Send + Sync {
 struct HostTaskSpawner(Arc<dyn DurableTaskHost>);
 
 impl TaskSpawner for HostTaskSpawner {
+    fn supports_admission_dependencies(&self) -> bool {
+        self.0.supports_admission_dependencies()
+    }
+
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.0.policy_identity()
     }
@@ -3022,8 +3075,39 @@ impl AgentHarness {
         I: Serialize + Send + 'static,
         O: DeserializeOwned + Send + 'static,
     {
-        self.admit_scoped(operation_id, definition, input, parent, self.scope.clone())
-            .await
+        self.admit_scoped(
+            operation_id,
+            definition,
+            input,
+            parent,
+            self.scope.clone(),
+            BTreeSet::new(),
+        )
+        .await
+    }
+
+    /// Admits a durable task behind same-owner prerequisite operations.
+    pub async fn admit_after<I, O>(
+        self: &Arc<Self>,
+        operation_id: OperationId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        input: I,
+        parent: Option<TaskId>,
+        dependencies: BTreeSet<OperationId>,
+    ) -> Result<Admission<RuntimeTask<O>>>
+    where
+        I: Serialize + Send + 'static,
+        O: DeserializeOwned + Send + 'static,
+    {
+        self.admit_scoped(
+            operation_id,
+            definition,
+            input,
+            parent,
+            self.scope.clone(),
+            dependencies,
+        )
+        .await
     }
 
     /// Looks up a lost durable admission acknowledgement without redispatching
@@ -3135,6 +3219,7 @@ impl AgentHarness {
         Ok(page)
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn admit_scoped<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,
@@ -3142,6 +3227,7 @@ impl AgentHarness {
         input: I,
         parent: Option<TaskId>,
         scope: RuntimeScope,
+        dependencies: BTreeSet<OperationId>,
     ) -> Result<Admission<RuntimeTask<O>>>
     where
         I: Serialize + Send + 'static,
@@ -3173,6 +3259,11 @@ impl AgentHarness {
             .spawner
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task spawner is not bound".into()))?;
+        if !dependencies.is_empty() && !spawner.supports_admission_dependencies() {
+            return Err(Error::Unsupported(
+                "task spawner cannot fence admission dependencies".into(),
+            ));
+        }
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
         validate_value(&definition.input_schema, &value, "task input")?;
@@ -3192,7 +3283,8 @@ impl AgentHarness {
             self.policy_identity.clone(),
             scope.extensions().cloned(),
             None,
-        )?;
+        )?
+        .with_dependencies(dependencies)?;
         // Reconcile an already committed operation before checking extension
         // admission state. This path must remain available after a local or
         // registry-wide disable; only the subsequent new-admission path is
@@ -4185,6 +4277,34 @@ impl TaskContext {
                 input,
                 Some(parent),
                 self.scope.clone(),
+                BTreeSet::new(),
+            )
+            .await
+    }
+
+    /// Admits a child only after same-owner prerequisites have succeeded.
+    pub async fn admit_after<I, O>(
+        &self,
+        operation_id: OperationId,
+        definition: &Arc<TaskDefinition<I, O>>,
+        input: I,
+        dependencies: BTreeSet<OperationId>,
+    ) -> Result<Admission<RuntimeTask<O>>>
+    where
+        I: Serialize + Send + 'static,
+        O: DeserializeOwned + Send + 'static,
+    {
+        let parent = self.durable_task.ok_or_else(|| {
+            Error::Unsupported("a live task cannot claim durable descendant ownership".into())
+        })?;
+        self.harness
+            .admit_scoped(
+                operation_id,
+                definition,
+                input,
+                Some(parent),
+                self.scope.clone(),
+                dependencies,
             )
             .await
     }
@@ -4668,6 +4788,7 @@ impl DurableBatchRequest {
             input_schema: self.input_schema.clone(),
             output_schema: self.output_schema.clone(),
             parent: self.parent,
+            dependencies: BTreeSet::new(),
             grants: self.scope.grants().clone(),
             limits: self.scope.limits(),
             run_limits: self.scope.run_limits(),
@@ -5608,7 +5729,14 @@ mod tests {
         body.lines()
             .filter_map(|line| {
                 let field = line.trim().strip_prefix("readonly ")?;
-                Some(field.split_once(':')?.0.trim().to_owned())
+                Some(
+                    field
+                        .split_once(':')?
+                        .0
+                        .trim()
+                        .trim_end_matches('?')
+                        .to_owned(),
+                )
             })
             .collect()
     }
@@ -5853,6 +5981,7 @@ mod tests {
                     "input_schema",
                     "output_schema",
                     "parent",
+                    "dependencies",
                     "grants",
                     "limits",
                     "run_limits",
@@ -5969,7 +6098,8 @@ mod tests {
             Some(policy.clone()),
             Some(extensions.clone()),
             Some(execution.clone()),
-        )?;
+        )?
+        .with_dependencies(BTreeSet::from([OperationId::from_bytes([40; 16])]))?;
         let batch = DurableBatchRequest::from_parts(
             GroupId::from_bytes([43; 16]),
             BatchId::from_bytes([44; 16]),
@@ -6674,6 +6804,59 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deferred_task_admission_pins_canonical_prerequisites() -> Result<()> {
+        let v2: Value = serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let admission = TaskAdmissionRecord::from_canonical_value(v2.clone())?;
+        assert_eq!(admission.canonical_value(), v2);
+        assert!(admission.dependencies.is_empty());
+        let first = OperationId::from_bytes([71; 16]);
+        let second = OperationId::from_bytes([72; 16]);
+        let admitted = admission
+            .clone()
+            .with_dependencies(BTreeSet::from([second, first]))?;
+        let v3 = admitted.canonical_value();
+        assert_eq!(v3["contract"], "harness.task-admission.v3");
+        assert!(TaskAdmissionRecord::from_canonical_value(v3.clone())? == admitted);
+        let mut duplicate = v3.clone();
+        duplicate["dependencies"] = serde_json::json!([first, first, second]);
+        assert!(TaskAdmissionRecord::from_canonical_value(duplicate).is_err());
+        let mut reordered = v3.clone();
+        reordered["dependencies"] = serde_json::json!([second, first]);
+        assert!(TaskAdmissionRecord::from_canonical_value(reordered).is_err());
+        let mut downgrade = v3.clone();
+        downgrade["contract"] = Value::String("harness.task-admission.v2".into());
+        assert!(TaskAdmissionRecord::from_canonical_value(downgrade).is_err());
+        let mut empty_v3 = v3;
+        empty_v3["dependencies"] = serde_json::json!([]);
+        assert!(TaskAdmissionRecord::from_canonical_value(empty_v3).is_err());
+        let mut extra = v2;
+        extra["dependencies"] = serde_json::json!([]);
+        assert!(TaskAdmissionRecord::from_canonical_value(extra).is_err());
+        assert!(
+            admission
+                .clone()
+                .with_dependencies(BTreeSet::from([admission.operation_id]))
+                .is_err()
+        );
+        assert!(
+            admission
+                .clone()
+                .with_dependencies(BTreeSet::from([OperationId::from_bytes([0; 16])]))
+                .is_err()
+        );
+        let oversized = (1_u64..=(MAX_TASK_ADMISSION_DEPENDENCIES + 1) as u64)
+            .map(|index| {
+                let mut bytes = [91; 16];
+                bytes[..8].copy_from_slice(&index.to_be_bytes());
+                OperationId::from_bytes(bytes)
+            })
+            .collect();
+        assert!(admission.with_dependencies(oversized).is_err());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn independent_state_and_spawner_attest_the_full_request() -> Result<()> {
         let machine = Arc::new(TestMachine {
@@ -6703,6 +6886,7 @@ mod tests {
             input_schema: definition.input_schema.clone(),
             output_schema: definition.output_schema.clone(),
             parent: None,
+            dependencies: BTreeSet::new(),
             grants: scope.grants().clone(),
             limits: scope.limits(),
             run_limits: scope.run_limits(),
@@ -6821,6 +7005,7 @@ mod tests {
             input_schema: first.input_schema.clone(),
             output_schema: first.output_schema.clone(),
             parent: None,
+            dependencies: BTreeSet::new(),
             grants: scope.grants().clone(),
             limits: scope.limits(),
             run_limits: scope.run_limits(),

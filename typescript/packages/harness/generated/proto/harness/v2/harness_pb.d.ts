@@ -1994,6 +1994,13 @@ export declare type TaskAdmissionRecord = Message<"acyclic.harness.v2.TaskAdmiss
    * @generated from field: acyclic.harness.v2.TaskRunLimits run_limits = 13;
    */
   runLimits?: TaskRunLimits | undefined;
+
+  /**
+   * Same-owner prerequisite operations, retained in the immutable admission.
+   *
+   * @generated from field: repeated string dependency_operation_ids = 14;
+   */
+  dependencyOperationIds: string[];
 };
 
 /**

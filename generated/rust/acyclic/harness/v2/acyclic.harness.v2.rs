@@ -746,6 +746,9 @@ pub struct TaskAdmissionRecord {
     pub execution: ::core::option::Option<ExecutionPlacement>,
     #[prost(message, optional, tag = "13")]
     pub run_limits: ::core::option::Option<TaskRunLimits>,
+    /// Same-owner prerequisite operations, retained in the immutable admission.
+    #[prost(string, repeated, tag = "14")]
+    pub dependency_operation_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
 }
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct DurableBatchRequest {

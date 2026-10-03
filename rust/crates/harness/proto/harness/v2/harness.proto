@@ -555,6 +555,8 @@ message TaskAdmissionRecord {
   ExtensionAdmission extensions = 11;
   ExecutionPlacement execution = 12;
   TaskRunLimits run_limits = 13;
+  // Same-owner prerequisite operations, retained in the immutable admission.
+  repeated string dependency_operation_ids = 14;
 }
 
 enum BatchGroupPolicy {

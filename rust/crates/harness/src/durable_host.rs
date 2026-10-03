@@ -33,10 +33,7 @@ use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
 #[derive(Serialize, Deserialize)]
@@ -235,6 +232,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             || admission.task.version != state.spec.entrypoint.version
             || admission.task.digest != state.spec.entrypoint.digest
             || admission.output_schema != state.spec.entrypoint.result_schema
+            || admission.dependencies != state.spec.dependencies
             || state.spec.parent
                 != admission.parent.map(|parent| ParentLink {
                     operation_id: OperationId::from_bytes(parent.into_bytes()),
@@ -256,6 +254,23 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&admission.input),
         )?;
         Ok(admission)
+    }
+
+    async fn validate_admission_dependencies(&self, admission: &TaskAdmissionRecord) -> Result<()> {
+        if admission.dependencies.is_empty() {
+            return Ok(());
+        }
+        let mut coordinator = self.coordinator.lock().await;
+        coordinator.refresh().await?;
+        for dependency in &admission.dependencies {
+            coordinator.observe_operation(
+                &self.owner,
+                &self.owner_scope,
+                &self.verifier,
+                *dependency,
+            )?;
+        }
+        Ok(())
     }
 
     fn validate_local_admission_policy(&self, admission: &TaskAdmissionRecord) -> Result<()> {
@@ -530,6 +545,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    fn supports_admission_dependencies(&self) -> bool {
+        true
+    }
+
     fn policy_identity(&self) -> Option<ComponentIdentity> {
         self.policy.as_ref().map(|policy| policy.identity())
     }
@@ -830,6 +849,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             jsonschema::validator_for(&output_schema)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             admission.validate()?;
+            self.validate_admission_dependencies(&admission).await?;
             let canonical = admission.canonical_value();
             let bytes = crate::contract::canonical_json_bytes(&canonical)?;
             if bytes.len() as u64 > scope.limits().file_bytes {
@@ -860,7 +880,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     digest: identity.digest,
                     result_schema: output_schema,
                 },
-                dependencies: BTreeSet::new(),
+                dependencies: admission.dependencies.clone(),
                 resources: ResourceRequest::default(),
                 placement: BTreeMap::new(),
                 orchestration: Orchestration::Leaf,
@@ -1219,6 +1239,7 @@ mod tests {
         workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine},
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
+    use std::collections::BTreeSet;
 
     struct MemoryPayloads {
         volume: VolumeRef,
@@ -1383,6 +1404,7 @@ mod tests {
             input_schema: serde_json::json!({"type": "integer"}),
             output_schema: serde_json::json!({"type": "integer"}),
             parent: None,
+            dependencies: BTreeSet::new(),
             grants: runtime_scope.grants().clone(),
             limits: runtime_scope.limits(),
             run_limits: runtime_scope.run_limits(),

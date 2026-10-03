@@ -121,3 +121,18 @@ Final checkpoint run: 204 library + 6 execution-journal + 1 fork-preparer +
 library lint passed after doc formatting repair; WASM compilation passed, with
 no claim of WASM execution. See checkpoint-provenance.json for source, suite,
 descriptor and tested executable digests. No distributables are qualified.
+
+## Durable prerequisites checkpoint
+
+The native dependency scenarios use actual LocalStream and LocalFs providers, close and reopen
+both, and prove no child lease is available until the pinned prerequisite completes. Missing and
+foreign prerequisites do not publish admissions; changed prerequisites conflict; cancellation
+propagates as a scheduler failure. Canonical negative tests cover malformed, duplicate, unsorted,
+empty-v3, downgraded and self-dependent records. Existing v2 fixture bytes remain unchanged.
+
+The focused native suite passed 216 cases; native library and dependency-test lint passed after
+fixing unchecked indexing and a test lookup. Adding a proto field changed the descriptor fingerprint;
+the wire fixture refresh changes only that fingerprint, and native equality passes. The rebuilt WASM
+runtime passed 69 tests and 382 assertions before final lint-only native source repairs. Running the
+installed equivalence fixture without installation failed module resolution; packaged execution
+remains required. See checkpoint-dependencies.json. These checks do not qualify a complete swarm.
