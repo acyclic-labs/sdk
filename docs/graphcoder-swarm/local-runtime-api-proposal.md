@@ -70,3 +70,13 @@ qualification, wire its activation step to `verified_model_fork_boundary` and
 inherited references before `run_conversation` selects context. Building a
 child bundle directly from an empty child conversation would exercise the
 provider prefix guard but would not qualify authoritative recursive history.
+
+Implementation checkpoint: `03002645` (`harness: compose durable local recursive swarm sessions`).
+
+The production activation adapter must receive the typed `ForkSeed` produced by
+`spawn_from_report` and construct the child through
+`HarnessStorage::from_published_fork`. That call binds the published child
+conversation and installs only the seed's exact `reference_capabilities`; the
+swarm registry must not treat an empty child bundle plus
+`InheritedModelContext` as a substitute. A recursive child therefore carries
+its authoritative aggregate and seed provenance into the next activation.
