@@ -122,6 +122,7 @@ describe("GraphCoder terminal adapter", () => {
     await terminal.headless(["unknown", "open", "message a b"]);
     expect(output.lines().every(line => line.ok === false)).toBe(true);
   });
+
 });
 
 void (GraphCoderError satisfies new (...args: never[]) => Error);
