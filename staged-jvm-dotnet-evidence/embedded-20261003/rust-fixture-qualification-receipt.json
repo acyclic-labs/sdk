@@ -1,0 +1,79 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.rust-fixture-qualification.v1",
+  "qualification": "installed JVM and .NET transport packages exercised against the current Rust-owned Actors/Stream fixture; bounded fixture evidence, not a service availability claim",
+  "fixture": {
+    "binary": "Q:/sdk/.tmp-fixture-build-current/debug/fixture-server.exe",
+    "binary_sha256": "EF63454A20AF986DA232EDF2DC8A622095DBED895AE56534508C2C82D11EC1E0",
+    "build": "CARGO_TARGET_DIR=Q:/sdk/.tmp-fixture-build-current cargo build --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server",
+    "source_closure": {
+      "manifest": "rust/crates/sdk-examples/Cargo.toml",
+      "manifest_sha256": "F0B08D88376EECC315A2325AB114F699ED9C868520FFE0F056A93A77D4F1E723",
+      "lock": "rust/crates/sdk-examples/Cargo.lock",
+      "lock_sha256": "38175DA72E6A4559C29C8E15D845E4CC1E553F55CBE884BAD1635120A52EB7A0",
+      "library_source": "rust/crates/sdk-examples/src/lib.rs",
+      "library_source_sha256": "D604D19511687349C30485F3029D961E89A4539DACF9130A473FC80F985C55BF",
+      "fixture_server_source": "rust/crates/sdk-examples/src/bin/fixture-server.rs",
+      "fixture_server_source_sha256": "85D664E6D62DA8FF57911EC149D01EF63E38FCAAB6CEBA9457CCFA098A5712DB"
+    },
+    "bind": "127.0.0.1:0",
+    "observed_http_endpoint": "http://127.0.0.1:55162",
+    "observed_grpc_endpoint": "http://127.0.0.1:55163",
+    "max_requests": 96,
+    "reported_source": {
+      "path": "rust/crates/sdk-examples/src/lib.rs",
+      "sha256": "sha256:d604d19511687349c30485f3029d961e89a4539dacf9130a473fc80f985c55bf"
+    },
+    "fixtures": ["actors-create-unary-v1", "stream-append-read-v2"],
+    "service_availability": "not_claimed",
+    "transport": "plaintext gRPC over loopback"
+  },
+  "operations": [
+    "Actors CreateActor unary",
+    "Stream Append first record",
+    "Stream idempotency replay",
+    "Stream idempotency mismatch rejection",
+    "Stream InspectIdempotency",
+    "Stream Read cancellation",
+    "Stream Follow cancellation",
+    "Stream Append after cancellation",
+    "Stream resume Read from sequence 1"
+  ],
+  "jvm_installed_consumer": {
+    "package": "staged-jvm-dotnet-evidence/portable-20261003/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+    "package_sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F",
+    "consumer_source": "staged-jvm-dotnet-evidence/embedded-20261003/InstalledTransportFixtureConsumer.java",
+    "consumer_source_sha256": "535AE460F05ECF02F28ECEFB4DC0E15D155FB1597DAA0FC9559AD923967086C2",
+    "locked_dependencies": "gRPC Java 1.75.0, protobuf Java 4.31.1, Guava 33.3.1-android, grpc-netty-shaded 1.75.0",
+    "endpoint": "127.0.0.1:55163",
+    "result": "pass",
+    "output": "installed JVM transport fixture checks passed: Actors/Stream replay/mismatch/cancel/recovery"
+  },
+  "dotnet_installed_consumer": {
+    "package": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+    "package_sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891",
+    "consumer_source": "dotnet/consumer/Program.cs",
+    "consumer_source_sha256": "52F357123D31CEE3E3A4A51EDB6FCDA59FE7A3E28BEB17306C12A0BDB2D07CA1",
+    "consumer_project": "dotnet/consumer/Acyclic.Sdk.Transport.Consumer.csproj",
+    "consumer_project_sha256": "7BB8DCFDB20F176308CC833E84C8249CBC579AAE48E6032D1C54C0D2221A93FC",
+    "locked_assets_sha256": "45198E686029FD745D1C2D2B33B1632BB1A9AF56ECAFB8F472B67F2BE049AC33",
+    "sdk": "official .NET SDK 8.0.425, runtime 8.0.31",
+    "endpoint": "http://127.0.0.1:55163",
+    "result": "pass",
+    "output": [
+      "Rust golden all-family serialization checks passed.",
+      "Rust fixture idempotency replay, mismatch, follow cancellation, and resume checks passed.",
+      "Rust fixture unary, server-stream, and cancellation checks passed.",
+      "Generated Actors and Stream consumer checks passed."
+    ]
+  },
+  "source_identity": {
+    "package_embedded_authority_manifest": "META-INF/rust-authority.json",
+    "package_manifest_source_revision": "d91f4e0dde99c6a86fe3220ff494edc8eb7e7171d2e90114eec1d2aa7978e2d7",
+    "current_examples_renderer_closure": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+    "qualification_effect": "This receipt binds the run to the freshly compiled fixture source closure above and does not relabel the stale package authority manifest or examples renderer closure."
+  },
+  "transport_policy": {
+    "default_selection": "Rust-owned wire policy remains authoritative",
+    "consumer_override": "The fixture run supplied an explicit loopback endpoint because the retained generated JVM/.NET facades expose endpoint constructors; no handwritten fallback, retry, or replay policy was added."
+  }
+}

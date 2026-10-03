@@ -1,0 +1,47 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.local-fixture-qualification.v1",
+  "qualification": "installed JVM/.NET transport consumers against a contained loopback Actors/Stream fixture; this is fixture evidence and not a Rust service qualification",
+  "fixture": {
+    "source": "LocalActorsStreamFixture.java",
+    "source_sha256": "5CBDC69417BD298960945CC1F2CD41E4F0601539300F7077285F67F425445466",
+    "binding": "generated Java ActorsServiceGrpc and StreamServiceGrpc classes",
+    "bind": "127.0.0.1:0",
+    "observed_endpoint": "127.0.0.1:54506 for the JVM run; 127.0.0.1:54776 for the pinned .NET run",
+    "transport": "plaintext gRPC over loopback",
+    "scope": "Actors createActor; Stream append, idempotency replay, idempotency mismatch, inspectIdempotency, read cancellation, follow cancellation, second append, resume read",
+    "implementation_limit": "The fixture is a local test double authored against generated stubs; it does not claim Rust runtime behavior or current examples-source identity."
+  },
+  "jvm_installed_consumer": {
+    "package": "staged-jvm-dotnet-evidence/portable-20261003/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+    "package_sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F",
+    "consumer_source": "InstalledTransportFixtureConsumer.java",
+    "consumer_source_sha256": "9B3D9BB776F63FE79F7B6703D46A35A222DA1DFEBDEA19902593329EF7F3D518",
+    "locked_dependency": "JNA not used; gRPC Java 1.75.0 and protobuf Java 4.31.1 runtime jars",
+    "result": "pass",
+    "output": "installed JVM transport fixture checks passed: Actors/Stream replay/mismatch/cancel/recovery"
+  },
+  "dotnet_installed_consumer": {
+    "package": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+    "package_sha256": "45ED75F7A4967F81FF9D927FB720ABB5E904B43B4D27C668509F345D9B099891",
+    "consumer_source": "dotnet/consumer/Program.cs",
+    "sdk": "official .NET SDK 8.0.425 with runtime 8.0.31",
+    "result": "pass",
+    "output": [
+      "Rust golden all-family serialization checks passed.",
+      "Rust fixture idempotency replay, mismatch, follow cancellation, and resume checks passed.",
+      "Rust fixture unary, server-stream, and cancellation checks passed.",
+      "Generated Actors and Stream consumer checks passed."
+    ],
+    "endpoint": "http://127.0.0.1:54776"
+  },
+  "source_identity": {
+    "package_embedded_authority_manifest": "META-INF/rust-authority.json",
+    "package_manifest_source_revision": "d91f4e0dde99c6a86fe3220ff494edc8eb7e7171d2e90114eec1d2aa7978e2d7",
+    "current_examples_renderer_closure": "BCF658B8C802B365A2BE4B15B1B84761DC982424F1811DB870076D4A100605D9",
+    "qualification_effect": "The local fixture run does not relabel the stale package authority manifest or current examples closure."
+  },
+  "transport_policy": {
+    "default_selection": "Rust-owned wire policy remains authoritative",
+    "consumer_override": "The fixture run used an explicit loopback endpoint because the generated JVM/.NET facades expose endpoint constructors; no handwritten fallback or retry policy was added."
+  }
+}

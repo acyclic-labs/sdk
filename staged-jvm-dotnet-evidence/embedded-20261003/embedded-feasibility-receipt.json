@@ -61,7 +61,7 @@
     "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
     "project_sha256": "0E84BF4B1BCABBE2DB38093355D306E4D24765F04B23D412C967148F55642853",
     "result": "net8 build and run passed with pinned official SDK 8.0.425",
-    "blocker": "available .NET hosts report no installed SDK; the retained portable target bundle contains Roslyn assemblies but no SDK toolchain",
+    "blocker": "the initially retained portable host had no SDK toolchain; this was resolved for qualification with the separately pinned official .NET SDK 8.0.425 archive",
     "checks_planned": [
       "ABI version",
       "engine open and close",
@@ -79,7 +79,7 @@
       "output_sha256": "D262266535C7EAE25510AFBC65AD9C6E2845F6BF14C601278560B9CFF3D425E8",
       "result": "pass",
       "output_text": ".NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel",
-      "scope": "same standard DllImport mapping; net8 project remains unbuilt because portable host has no full SDK"
+      "scope": "same standard DllImport mapping; retained as compatibility evidence alongside the separately qualified net8 run"
     },
     "full_sdk_run": {
       "sdk_version": "8.0.425",
@@ -113,7 +113,7 @@
   },
   "run_receipt": {
     "path": "run-receipt.txt",
-    "sha256": "419A266EBC24D13A9B493CAC763465DED8B32DDDC788838A1550633DC018DC98"
+    "sha256": "B9EF59D298815AAC50AB64C3A3DDA060F2943B6F9F6831E4727FBEAAF431DDC8"
   },
   "license_evidence": {
     "path": "tooling-license-evidence.txt",

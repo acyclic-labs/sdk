@@ -67,7 +67,7 @@
   "gaps": [
     "Only Windows x64 native placement is packaged; Linux and macOS RID variants remain unqualified.",
     "The package is installed and consumed locally; nothing is published or deployed.",
-    "The net8 project remains source-staged and was not built because the portable host has no full SDK; the compatibility DllImport run is separately identified above.",
+    "The net8 project was built and run with the pinned official SDK recorded below; the compatibility DllImport run remains separately identified above.",
     "JNA license policy evidence remains in tooling-license-evidence.txt."
   ],
   "dotnet_full_sdk": {

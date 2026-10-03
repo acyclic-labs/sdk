@@ -27,14 +27,14 @@ JVM installable package:
 .NET:
   modern_source=dotnet/Program.cs
   modern_project=dotnet/EmbeddedPInvokeConsumer.csproj
-  modern_project_result=not built
-  modern_project_reason=retained portable dotnet host reports no full SDK; sdk/8.0.425 contains only Roslyn assemblies and no dotnet.dll/MSBuild/csc driver
+  modern_project_result=qualified below with pinned official SDK
+  modern_project_reason=the initially retained portable host had no full SDK; the separately pinned official SDK 8.0.425 was used for the modern build
   compatibility_source=dotnet/Program.Framework.cs
   compatibility_compiler=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /platform:x64
   compatibility_output=dotnet/EmbeddedPInvokeConsumer.Framework.exe
   compatibility_result=pass
   compatibility_output=.NET Framework DllImport Rust embedded ABI checks passed: append/read/release/recovery/cancel
-  compatibility_scope=same standard DllImport mappings against the retained Rust ABI; this does not relabel the unavailable net8 SDK build
+  compatibility_scope=same standard DllImport mappings against the retained Rust ABI; retained alongside the separately qualified net8 SDK build
 
 Scope:
   Both bindings exercised the retained Rust MemoryStream through append, finite read/end,
