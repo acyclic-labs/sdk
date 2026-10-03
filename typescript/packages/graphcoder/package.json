@@ -20,6 +20,10 @@
     "./mock": {
       "types": "./dist/mock.d.ts",
       "default": "./dist/mock.js"
+    },
+    "./bridge": {
+      "types": "./dist/bridge.d.ts",
+      "default": "./dist/bridge.js"
     }
   },
   "scripts": {

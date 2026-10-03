@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GraphCoderError, GraphCoderUi, agentId, approvalId, sessionId, type SessionId } from "../src/api.js";
+import { BridgeGraphCoderTransport, type GraphCoderWireRequest, type GraphCoderWireResponse } from "../src/bridge.js";
 import { createMockTransport } from "../src/mock.js";
 import { GraphCoderTerminal, runCli } from "../src/terminal.js";
 
@@ -12,6 +13,40 @@ function writable(): { readonly stream: NodeJS.WritableStream; readonly lines: (
 }
 
 describe("GraphCoder UI transport boundary", () => {
+  test("durable bridge preserves explicit operations and decodes pinned generations", async () => {
+    const requests: GraphCoderWireRequest[] = [];
+    const bridge = {
+      request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
+        requests.push(request);
+        const response = (result: unknown): GraphCoderWireResponse => ({ request_id: request.request_id, ok: true, result });
+        switch (request.method) {
+          case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] }));
+          case "list_changes": return Promise.resolve(response({ generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
+          case "read_change": return Promise.resolve(response({ path: "README.md", unifiedDiff: "@@ -1 +1 @@", generation: "7" }));
+          case "read_file": return Promise.resolve(response({ path: "README.md", mediaType: "text/markdown", bytes: [72, 105], generation: "7" }));
+          default: return Promise.resolve({ request_id: request.request_id, ok: false, error: { code: "unsupported", message: `fixture does not implement ${request.method}` } });
+        }
+      },
+    };
+    const transport = new BridgeGraphCoderTransport(bridge);
+    const page = await transport.listSessions({ limit: 5 });
+    expect(page.items[0]?.id).toBe(sessionId("session-1"));
+    const changes = await transport.listChanges(sessionId("session-1"));
+    expect(changes.generation).toBe(7n);
+    expect((await transport.readChange(sessionId("session-1"), "README.md", 7n)).generation).toBe(7n);
+    expect((await transport.readFile(sessionId("session-1"), "README.md", 7n)).bytes).toEqual(new Uint8Array([72, 105]));
+    expect(requests.map(request => request.method)).toEqual(["list_sessions", "list_changes", "read_change", "read_file"]);
+    expect(requests[0]?.params).toEqual({ query: { limit: 5 } });
+    expect(requests[2]?.params).toEqual({ session_id: "session-1", path: "README.md", generation: "7" });
+  });
+
+  test("bridge rejects mismatched response identity and preserves typed backend errors", async () => {
+    const mismatched = new BridgeGraphCoderTransport({ request: async () => ({ request_id: "wrong", ok: true, result: { items: [] } }) });
+    await expect(mismatched.listSessions()).rejects.toMatchObject({ code: "transport" });
+    const denied = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: false, error: { code: "denied", message: "root approval required" } }) });
+    await expect(denied.listSessions()).rejects.toMatchObject({ code: "denied", message: "root approval required" });
+  });
+
   test("session listing is summary-only and does not start workers or hydrate workspace", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);

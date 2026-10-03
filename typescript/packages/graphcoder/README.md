@@ -24,6 +24,15 @@ returns summaries only; activity, messages, approvals, change metadata, and
 diff bodies are requested separately and lazily. Root writeback requires an
 operation-bound approval and the expected workspace generation.
 
+For a native or terminal host, `@acyclic-labs/graphcoder/bridge` provides
+`HarnessGraphCoderTransport`. Inject a `GraphCoderBridge` implemented by the
+durable local runtime. Each request contains a unique `request_id`, a
+snake-case `method`, and only the operation's explicit `params`; responses use
+the same ID and encode generations and activity sequences as decimal strings.
+The bridge owns session journals, recursive workers, approvals, workspace
+generations, and recovery. The TypeScript adapter does not open workers while
+listing sessions or hydrate files while reading summaries.
+
 After building, the Windows PTY qualification can be run when Python's
 `winpty` binding is installed:
 
