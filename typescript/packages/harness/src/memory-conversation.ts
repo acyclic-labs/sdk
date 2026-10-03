@@ -529,7 +529,10 @@ export class MemoryConversation {
         this.#core.canonicalJsonBytes({ call_id: receipt.callId, name: receipt.name, arguments: receipt.arguments }),
         "application/json", "call.json");
       const result = await this.stage(`turns/${operation}/tools/${index}-result.json`,
-        this.#core.canonicalJsonBytes({ value: receipt.value }), "application/json", "result.json");
+        // Raw owner output remains in the runtime result only. Conversation
+        // history carries the exact model-visible projection so context
+        // selection cannot leak private fields on a later turn.
+        this.#core.canonicalJsonBytes({ value: receipt.projection }), "application/json", "result.json");
       const projection = await this.stage(`turns/${operation}/tools/${index}-projection.json`,
         this.#core.canonicalJsonBytes(receipt.projection), "application/json", "projection.json");
       for (const file of [call, result, projection]) this.#core.validateFileUnderLimits(file, limits);
@@ -537,13 +540,14 @@ export class MemoryConversation {
       this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-call-event:${index}`), "tool-call", {
         id: callId, sequence: BigInt(state.messages.length + 1), kind: "tool_call", content: call,
         attachments: { kind: "inline", items: [] }, reply_to: userId,
-        tool_call_id: receipt.callId, extensions: {},
+        tool_call_id: receipt.callId, extensions: { "acyclic.tool.revision": receipt.revision },
       }, limits);
       state = this.conversation();
       this.#appendIfAbsent(this.#core.deriveOperationId(operation, `tool-result-event:${index}`), "tool-result", {
         id: resultId, sequence: BigInt(state.messages.length + 1), kind: "tool_result", content: result,
         attachments: { kind: "inline", items: [{ file: projection, label: "model_projection" }] },
-        reply_to: callId, tool_call_id: receipt.callId, extensions: {},
+        reply_to: callId, tool_call_id: receipt.callId,
+        extensions: { "acyclic.tool.revision": receipt.revision },
       }, limits);
     }
   }

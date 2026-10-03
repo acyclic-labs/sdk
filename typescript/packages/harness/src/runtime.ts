@@ -266,7 +266,7 @@ function registeredTaskDefinition<Input, Output>(value: TaskDefinition<Input, Ou
 }
 
 export type RunReceipt =
-  | { readonly kind: "tool"; readonly step: number; readonly callId: string; readonly name: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
+  | { readonly kind: "tool"; readonly step: number; readonly callId: string; readonly name: string; readonly revision: string; readonly arguments: unknown; readonly value: unknown; readonly projection: unknown }
   | { readonly kind: "model-completed"; readonly metadata: unknown };
 export interface RunOutput<Content = unknown, Artifact = unknown, Receipt = RunReceipt> extends AgentOutput<Content, Artifact> { readonly taskId: RuntimeTaskId; readonly receipts: readonly Receipt[] }
 export type SelectedAgentInput =
@@ -1805,7 +1805,7 @@ export class AgentHarness {
    * every replay.  The returned value is detached from the host object and
    * contains only schema-admitted values.
    */
-  validateRunOutput(output: RunOutput): RunOutput {
+  validateRunOutput(output: RunOutput, recomputeProjections = true): RunOutput {
     if (output === null || typeof output !== "object"
       || typeof output.text !== "string" || !Array.isArray(output.receipts)
       || typeof output.taskId !== "string" || !output.taskId) {
@@ -1844,12 +1844,13 @@ export class AgentHarness {
         continue;
       }
       if (candidate.kind !== "tool") throw new TypeError("host returned an unknown receipt kind");
-      if (Object.keys(candidate).sort().join("\0") !== "arguments\0callId\0kind\0name\0projection\0step\0value") {
+      if (Object.keys(candidate).sort().join("\0") !== "arguments\0callId\0kind\0name\0projection\0revision\0step\0value") {
         throw new TypeError("host tool receipt has an invalid shape");
       }
       if (!Number.isSafeInteger(candidate.step) || candidate.step < 0
         || typeof candidate.callId !== "string" || !candidate.callId
         || typeof candidate.name !== "string" || !candidate.name
+        || typeof candidate.revision !== "string" || !candidate.revision
         || !("arguments" in candidate) || !("value" in candidate) || !("projection" in candidate)) {
         throw new TypeError("host returned an invalid tool receipt");
       }
@@ -1860,6 +1861,9 @@ export class AgentHarness {
       const erased = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
       if (erased === undefined) throw new Error("tool definition is not registered or no longer active");
       const registered = restoreRegisteredTool<unknown, unknown>(erased);
+      if (candidate.revision !== registered.definition.revision) {
+        throw new TypeError("host tool receipt uses another registered revision");
+      }
       const argumentsValue = structuredClone(candidate.arguments);
       this.contracts.validateToolInvocation(registered.definition, {
         callId: candidate.callId, name: candidate.name, arguments: argumentsValue,
@@ -1874,17 +1878,20 @@ export class AgentHarness {
       // narrow its return type but cannot introduce a value outside the pin.
       const publishedValue = this.contracts.validateToolValue(registered.definition.outputSchema, parsedValue);
       this.contracts.validateToolResult(registered.definition, { value: publishedValue });
-      const projected = structuredClone(registered.definition.projectOutput?.(publishedValue) ?? publishedValue);
+      const projected = recomputeProjections
+        ? structuredClone(registered.definition.projectOutput?.(publishedValue) ?? publishedValue)
+        : structuredClone(candidate.projection);
       const admittedProjection = this.contracts.validateToolValue(
         registered.definition.modelOutputSchema ?? registered.definition.outputSchema, projected);
       this.contracts.validateToolProjection(registered.definition, { value: admittedProjection });
-      if (!this.contracts.canonicalEqual(candidate.projection, admittedProjection)) {
+      if (recomputeProjections && !this.contracts.canonicalEqual(candidate.projection, admittedProjection)) {
         throw new TypeError("host tool projection does not match the pinned projection");
       }
       const projectionBytes = this.contracts.encodeCanonicalJson(admittedProjection).byteLength;
       if (projectionBytes > this.limits.render_bytes) throw new TypeError("tool projection exceeds render limit");
       receipts.push({ kind: "tool", step: candidate.step, callId: candidate.callId,
-        name: registered.definition.name, arguments: deepFreeze(structuredClone(admittedArguments)),
+        name: registered.definition.name, revision: registered.definition.revision,
+        arguments: deepFreeze(structuredClone(admittedArguments)),
         value: deepFreeze(structuredClone(publishedValue)), projection: deepFreeze(admittedProjection) });
     }
     return deepFreeze(structuredClone({ ...output, text: output.text, taskId: output.taskId, receipts }));
@@ -2485,7 +2492,7 @@ export class AgentHarness {
           const projected = this.#projectToolOutput(tool, value);
           const projection = await boundedToolValue(projected, this.limits.render_bytes, this.contracts);
           this.contracts.validateToolProjection(tool.definition, { value: projection });
-          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name,
+          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, revision: tool.definition.revision,
             arguments: deepFreeze(structuredClone(call.arguments)),
             value: deepFreeze(structuredClone(value)), projection });
           messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
@@ -2498,7 +2505,7 @@ export class AgentHarness {
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
-    return this.validateRunOutput({ ...outcome.value, taskId: task.id(), receipts });
+    return this.validateRunOutput({ ...outcome.value, taskId: task.id(), receipts }, false);
   }
   attach(id: RuntimeTaskId): Promise<Task<unknown>>;
   attach<Input, Output>(definition: TaskDefinition<Input, Output>, id: RuntimeTaskId): Promise<Task<Output>>;

@@ -71,6 +71,7 @@ impl TurnInput {
 
 /// Gapless replay record returned by a durable execution journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionRecord {
     /// Owning turn execution.
     pub operation_id: OperationId,
@@ -90,6 +91,7 @@ pub const TOOL_COMPLETED_EVENT_VERSION: u32 = 2;
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(deny_unknown_fields)]
 #[allow(
     clippy::large_enum_variant,
     reason = "journal observations preserve direct typed ref fields"

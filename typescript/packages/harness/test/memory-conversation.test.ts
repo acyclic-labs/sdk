@@ -464,7 +464,7 @@ test("durable host replay revalidates the pinned projection without publishing p
       if (dispatches === 1) return { kind: "indeterminate", operationId };
       return { kind: "succeeded", value: { taskId: "14141414-1414-1414-1414-141414141414" as RuntimeTaskId,
         text: "recovered", receipts: [
-          { kind: "tool" as const, step: 0, callId: "private-call", name: "private-host-result", arguments: null,
+          { kind: "tool" as const, step: 0, callId: "private-call", name: "private-host-result", revision: "1", arguments: null,
             value: { private: "secret", public: "shown" }, projection: { public: "shown" } },
           { kind: "model-completed" as const, metadata: {} },
         ] } };
@@ -486,6 +486,9 @@ test("durable host replay revalidates the pinned projection without publishing p
   expect(projectionCalls).toBe(1);
   const resultMessage = conversation.conversation().messages.find(message => message.kind === "tool_result");
   if (!resultMessage || resultMessage.attachments.kind !== "inline") throw new Error("tool result projection was not published");
+  const resultText = new TextDecoder().decode(await conversation.read(resultMessage.content));
+  expect(resultText).toContain("shown");
+  expect(resultText).not.toContain("secret");
   const projection = resultMessage.attachments.items.find(item => item.label === "model_projection");
   if (!projection) throw new Error("tool projection attachment is missing");
   const projectionText = new TextDecoder().decode(await conversation.read(projection.file));
