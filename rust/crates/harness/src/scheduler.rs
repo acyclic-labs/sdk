@@ -8,6 +8,7 @@ use crate::{
     swarm_budget::{
         ForkPublication, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits, SwarmBudgetUsage,
         SwarmForkRequest, SwarmOwnerFence, SwarmReservationState, SwarmResourceRequest, SwarmUsage,
+        SwarmUsageReceipt,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -225,6 +226,12 @@ pub struct OperationState {
     pub cancellation_requested: bool,
     /// Per-operation fencing revision advanced by every committed mutation.
     pub revision: u64,
+    /// Dispatch identity bound to provider usage receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub swarm_dispatch_id: Option<IdempotencyKey>,
+    /// Last provider usage receipt sequence accepted for this operation.
+    #[serde(default)]
+    pub swarm_usage_sequence: u64,
 }
 
 /// One deterministic scheduler transition.
@@ -371,6 +378,9 @@ pub enum SchedulerEvent {
         owner: SwarmOwnerFence,
         /// Cumulative measured usage.
         usage: SwarmUsage,
+        /// Provider-issued usage evidence; legacy reducer fixtures may omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<SwarmUsageReceipt>,
     },
     /// Records cumulative measured usage from the session root.
     SwarmRootUsageReported {
@@ -378,8 +388,13 @@ pub enum SchedulerEvent {
         session_id: OperationId,
         /// Swarm owner fence.
         owner: SwarmOwnerFence,
+        /// Active scheduler lease for the session root.
+        fence: LeaseFence,
         /// Cumulative measured root usage.
         usage: SwarmUsage,
+        /// Provider-issued usage evidence; legacy reducer fixtures may omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<SwarmUsageReceipt>,
     },
     /// Completes a child and releases only its unconsumed budget reservation.
     SwarmCompleted {
@@ -391,6 +406,9 @@ pub enum SchedulerEvent {
         owner: SwarmOwnerFence,
         /// Cumulative measured usage.
         usage: SwarmUsage,
+        /// Provider-issued usage evidence; legacy reducer fixtures may omit it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        receipt: Option<SwarmUsageReceipt>,
         /// Terminal or indeterminate child outcome.
         outcome: Outcome<FileRef>,
     },
@@ -586,7 +604,34 @@ impl Scheduler {
                   clarifying any of them"
     )]
     pub fn apply(&mut self, event: SchedulerEvent) -> Result<()> {
+        self.apply_with_swarm_guard(event, false)
+    }
+
+    fn apply_with_swarm_guard(
+        &mut self,
+        event: SchedulerEvent,
+        allow_swarm_generic: bool,
+    ) -> Result<()> {
         let primary = event_operation(&event);
+        if !allow_swarm_generic
+            && self.has_swarm_lifecycle(primary)?
+            && matches!(
+                &event,
+                SchedulerEvent::Admitted { .. }
+                    | SchedulerEvent::PartiallyAdmitted { .. }
+                    | SchedulerEvent::Started { .. }
+                    | SchedulerEvent::Checkpointed { .. }
+                    | SchedulerEvent::WaitingForChildren { .. }
+                    | SchedulerEvent::LeaseReleased { .. }
+                    | SchedulerEvent::CancellationRequested { .. }
+                    | SchedulerEvent::Completed { .. }
+                    | SchedulerEvent::Orchestrated { .. }
+            )
+        {
+            return Err(Error::Conflict(
+                "swarm operations require compound lifecycle transitions".into(),
+            ));
+        }
         let compound_swarm = matches!(
             &event,
             SchedulerEvent::SwarmAdmitted { .. }
@@ -624,6 +669,8 @@ impl Scheduler {
                         outcome: None,
                         cancellation_requested: false,
                         revision: 0,
+                        swarm_dispatch_id: None,
+                        swarm_usage_sequence: 0,
                     },
                 );
             }
@@ -962,10 +1009,13 @@ impl Scheduler {
                 reservation,
             } => {
                 let mut next = self.clone();
-                next.apply(SchedulerEvent::Admitted {
-                    operation_id,
-                    reservation: reservation.clone(),
-                })?;
+                next.apply_with_swarm_guard(
+                    SchedulerEvent::Admitted {
+                        operation_id,
+                        reservation: reservation.clone(),
+                    },
+                    true,
+                )?;
                 next.apply_swarm_admitted(
                     session_id,
                     limits,
@@ -985,10 +1035,14 @@ impl Scheduler {
             } => {
                 IdempotencyKey::new(dispatch_id.0.clone())?;
                 let mut next = self.clone();
-                next.apply(SchedulerEvent::Started {
-                    operation_id,
-                    fence,
-                })?;
+                next.apply_with_swarm_guard(
+                    SchedulerEvent::Started {
+                        operation_id,
+                        fence,
+                    },
+                    true,
+                )?;
+                next.mutable(operation_id)?.swarm_dispatch_id = Some(dispatch_id);
                 next.apply_swarm_dispatch_started(operation_id, owner, publication)?;
                 *self = next;
             }
@@ -997,12 +1051,17 @@ impl Scheduler {
                 fence,
                 owner,
                 usage,
+                receipt,
             } => {
                 let mut next = self.clone();
                 let operation = next.mutable(operation_id)?;
                 require_phase(operation, OperationPhase::Running)?;
                 require_fence(operation, &fence)?;
+                next.validate_swarm_usage_receipt(operation_id, usage, receipt.as_ref())?;
                 next.apply_swarm_usage(operation_id, owner, usage)?;
+                if let Some(receipt) = receipt {
+                    next.mutable(operation_id)?.swarm_usage_sequence = receipt.sequence;
+                }
                 let operation = next.mutable(operation_id)?;
                 operation.revision = operation
                     .revision
@@ -1013,10 +1072,19 @@ impl Scheduler {
             SchedulerEvent::SwarmRootUsageReported {
                 session_id,
                 owner,
+                fence,
                 usage,
+                receipt,
             } => {
                 let mut next = self.clone();
+                let root = next.mutable(session_id)?;
+                require_phase(root, OperationPhase::Running)?;
+                require_fence(root, &fence)?;
+                next.validate_swarm_usage_receipt(session_id, usage, receipt.as_ref())?;
                 next.apply_swarm_root_usage(session_id, owner, usage)?;
+                if let Some(receipt) = receipt {
+                    next.mutable(session_id)?.swarm_usage_sequence = receipt.sequence;
+                }
                 *self = next;
             }
             SchedulerEvent::SwarmCompleted {
@@ -1024,16 +1092,24 @@ impl Scheduler {
                 fence,
                 owner,
                 usage,
+                receipt,
                 outcome,
             } => {
                 let mut next = self.clone();
-                next.apply(SchedulerEvent::Completed {
-                    operation_id,
-                    outcome: outcome.clone(),
-                    fence,
-                    execution_duration_ns: None,
-                })?;
+                next.validate_swarm_usage_receipt(operation_id, usage, receipt.as_ref())?;
+                next.apply_with_swarm_guard(
+                    SchedulerEvent::Completed {
+                        operation_id,
+                        outcome: outcome.clone(),
+                        fence,
+                        execution_duration_ns: None,
+                    },
+                    true,
+                )?;
                 next.apply_swarm_completed(operation_id, owner, usage, &outcome)?;
+                if let Some(receipt) = receipt {
+                    next.mutable(operation_id)?.swarm_usage_sequence = receipt.sequence;
+                }
                 *self = next;
             }
             SchedulerEvent::SwarmCancelled {
@@ -1043,10 +1119,13 @@ impl Scheduler {
             } => {
                 let mut next = self.clone();
                 let frontier = next.cancellation_frontier(operation_id, recursive);
-                next.apply(SchedulerEvent::CancellationRequested {
-                    operation_id,
-                    recursive,
-                })?;
+                next.apply_with_swarm_guard(
+                    SchedulerEvent::CancellationRequested {
+                        operation_id,
+                        recursive,
+                    },
+                    true,
+                )?;
                 next.apply_swarm_cancelled(frontier, owner)?;
                 *self = next;
             }
@@ -1739,27 +1818,66 @@ impl Scheduler {
     }
 
     pub(crate) fn has_swarm_lifecycle(&self, operation_id: OperationId) -> Result<bool> {
-        if self.swarm_events.is_empty() {
-            return Ok(false);
-        }
-        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
-        if budget.descriptor()?.0 == operation_id
-            || budget.reservation(operation_id)?.is_some()
-            || self
-                .operations
-                .get(&operation_id)
-                .is_some_and(|operation| contains_swarm_resource(&operation.spec.resources))
+        if self
+            .operations
+            .get(&operation_id)
+            .is_some_and(|operation| contains_swarm_resource(&operation.spec.resources))
         {
             return Ok(true);
         }
-        Ok(self.children(operation_id).any(|(_, child)| {
-            budget
-                .reservation(child.spec.operation_id)
-                .ok()
-                .flatten()
-                .is_some()
-                || contains_swarm_resource(&child.spec.resources)
-        }))
+        let budget = if self.swarm_events.is_empty() {
+            None
+        } else {
+            Some(SwarmBudget::replay(self.swarm_events.clone())?)
+        };
+        if let Some(budget) = budget.as_ref() {
+            if budget.descriptor()?.0 == operation_id || budget.reservation(operation_id)?.is_some()
+            {
+                return Ok(true);
+            }
+        }
+        let mut pending = vec![operation_id];
+        while let Some(parent) = pending.pop() {
+            for (_, child) in self.children(parent) {
+                let reserved = budget
+                    .as_ref()
+                    .map(|budget| budget.reservation(child.spec.operation_id))
+                    .transpose()?
+                    .flatten()
+                    .is_some();
+                if contains_swarm_resource(&child.spec.resources) || reserved {
+                    return Ok(true);
+                }
+                pending.push(child.spec.operation_id);
+            }
+        }
+        Ok(false)
+    }
+
+    fn validate_swarm_usage_receipt(
+        &self,
+        operation_id: OperationId,
+        usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
+    ) -> Result<()> {
+        let Some(receipt) = receipt else {
+            return Ok(());
+        };
+        receipt.validate()?;
+        let operation = self
+            .operations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        if receipt.operation_id != operation_id
+            || receipt.usage != usage
+            || receipt.sequence != operation.swarm_usage_sequence.saturating_add(1)
+            || operation.swarm_dispatch_id.as_ref() != Some(&receipt.dispatch_id)
+        {
+            return Err(Error::Conflict(
+                "swarm usage receipt is stale or not bound to the dispatch".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn dependencies_succeeded(&self, operation: &OperationState) -> bool {
@@ -2168,6 +2286,89 @@ mod tests {
     }
 
     #[test]
+    fn canonical_swarm_operation_cannot_bypass_budget_before_first_admission() -> Result<()> {
+        let operation_id = id(71);
+        let mut scheduler = Scheduler::new();
+        let mut declaration = spec(operation_id, Orchestration::Leaf)?;
+        declaration.resources = canonical_swarm_resources(SwarmResourceRequest {
+            model_steps: 1,
+            output_bytes: 1,
+            execution_time_ms: 1,
+        });
+        scheduler.apply(SchedulerEvent::Declared {
+            spec: Box::new(declaration),
+        })?;
+        assert!(matches!(
+            scheduler.apply(SchedulerEvent::Admitted {
+                operation_id,
+                reservation: Reservation {
+                    id: "forged-lease".into(),
+                    placement: "worker".into(),
+                    admitted: ResourceRequest::default(),
+                },
+            }),
+            Err(Error::Conflict(_))
+        ));
+
+        let parent = id(72);
+        let child = id(73);
+        let mut descendant_scheduler = Scheduler::new();
+        descendant_scheduler
+            .apply(descendant_scheduler.declare(spec(parent, Orchestration::Join)?)?)?;
+        let mut child_declaration = spec(child, Orchestration::Leaf)?;
+        child_declaration.parent = Some(ParentLink {
+            operation_id: parent,
+            slot: "child".into(),
+        });
+        child_declaration.resources = canonical_swarm_resources(SwarmResourceRequest {
+            model_steps: 1,
+            output_bytes: 1,
+            execution_time_ms: 1,
+        });
+        descendant_scheduler.apply(SchedulerEvent::Declared {
+            spec: Box::new(child_declaration),
+        })?;
+        assert!(matches!(
+            descendant_scheduler.apply(SchedulerEvent::Admitted {
+                operation_id: parent,
+                reservation: Reservation {
+                    id: "forged-parent-lease".into(),
+                    placement: "worker".into(),
+                    admitted: ResourceRequest::default(),
+                },
+            }),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn root_usage_requires_a_running_scheduler_lease() -> Result<()> {
+        let session = id(74);
+        let owner = SwarmOwnerFence::new(session.to_string(), 0)?;
+        let mut scheduler = Scheduler::new();
+        scheduler.apply(scheduler.declare(spec(session, Orchestration::Leaf)?)?)?;
+        assert!(matches!(
+            scheduler.apply(SchedulerEvent::SwarmRootUsageReported {
+                session_id: session,
+                owner,
+                fence: LeaseFence {
+                    reservation_id: "root-lease".into(),
+                    placement: "worker".into(),
+                },
+                usage: SwarmUsage {
+                    model_steps: 1,
+                    output_bytes: 1,
+                    execution_time_ms: 1,
+                },
+                receipt: None,
+            }),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn indeterminate_completion_retains_the_worker_reservation() -> Result<()> {
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(id(70), Orchestration::Leaf)?)?)?;
@@ -2273,6 +2474,11 @@ mod tests {
                 workspace_generation_digest: [2; 32],
             },
         })?;
+        let usage = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 8,
+            execution_time_ms: 10,
+        };
         scheduler.apply(SchedulerEvent::SwarmCompleted {
             operation_id: child,
             fence: Some(LeaseFence {
@@ -2280,11 +2486,14 @@ mod tests {
                 placement: "worker".into(),
             }),
             owner,
-            usage: SwarmUsage {
-                model_steps: 1,
-                output_bytes: 8,
-                execution_time_ms: 10,
-            },
+            usage,
+            receipt: Some(SwarmUsageReceipt::new(
+                child,
+                crate::IdempotencyKey::new("dispatch-child")?,
+                1,
+                usage,
+                "provider",
+            )?),
             outcome: Outcome::Indeterminate {
                 operation_id: child,
             },

@@ -167,6 +167,83 @@ impl SwarmUsage {
     }
 }
 
+/// Provider-issued cumulative usage evidence bound to one dispatch attempt.
+///
+/// A coordinator persists this receipt alongside the usage projection. Hosts
+/// may retry the exact receipt, but cannot release a reservation with an
+/// unbound caller-supplied usage value.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmUsageReceipt {
+    /// Operation whose provider measured the usage.
+    pub operation_id: OperationId,
+    /// Stable dispatch identity returned by the activation commit.
+    pub dispatch_id: IdempotencyKey,
+    /// Strictly increasing cumulative report sequence.
+    pub sequence: u64,
+    /// Cumulative measured usage at this sequence.
+    pub usage: SwarmUsage,
+    /// Provider or host identity that issued the receipt.
+    pub provider: String,
+}
+
+impl SwarmUsageReceipt {
+    /// Constructs provider evidence after a host/provider measurement.
+    pub fn new(
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        sequence: u64,
+        usage: SwarmUsage,
+        provider: impl Into<String>,
+    ) -> Result<Self> {
+        let receipt = Self {
+            operation_id,
+            dispatch_id,
+            sequence,
+            usage,
+            provider: provider.into(),
+        };
+        receipt.validate()?;
+        Ok(receipt)
+    }
+
+    /// Validates the provider evidence shape before binding it to a lease.
+    pub fn validate(&self) -> Result<()> {
+        if self.operation_id.into_bytes() == [0; 16]
+            || self.sequence == 0
+            || self.provider.is_empty()
+            || self.provider.len() > 255
+            || self.provider.chars().any(char::is_control)
+        {
+            return Err(Error::Invalid("swarm usage receipt is invalid".into()));
+        }
+        IdempotencyKey::new(self.dispatch_id.0.clone())?;
+        Ok(())
+    }
+}
+
+/// Provider usage evidence that crossed the host's measurement boundary.
+///
+/// The raw receipt remains serializable for durable replay, while coordinator
+/// mutation APIs accept this crate-visible proof wrapper so callers cannot
+/// manufacture a budget release by passing an arbitrary usage value.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerifiedSwarmUsageReceipt(SwarmUsageReceipt);
+
+impl VerifiedSwarmUsageReceipt {
+    /// Binds a provider receipt after the host verifies its measurement.
+    pub(crate) fn from_verified(receipt: SwarmUsageReceipt) -> Result<Self> {
+        receipt.validate()?;
+        Ok(Self(receipt))
+    }
+
+    /// Returns the durable receipt for the compound scheduler event.
+    #[must_use]
+    pub(crate) fn into_receipt(self) -> SwarmUsageReceipt {
+        self.0
+    }
+}
+
 /// Parent and child identity submitted before a model fork is dispatched.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -233,7 +310,33 @@ impl SwarmForkRequest {
             )?),
         };
         request.validate()?;
+        request.resources.validate_against_admission(admission)?;
         Ok(request)
+    }
+}
+
+impl SwarmResourceRequest {
+    /// Binds child resource ceilings to the canonical task admission bounds.
+    pub fn validate_against_admission(&self, admission: &TaskAdmissionRecord) -> Result<()> {
+        admission.validate()?;
+        let max_steps = admission
+            .run_limits
+            .max_steps
+            .map_or(admission.limits.model_steps, |value| {
+                value.min(admission.limits.model_steps)
+            });
+        let max_steps = u64::try_from(max_steps)
+            .map_err(|_| Error::Invalid("task model step limit is not representable".into()))?;
+        let max_output = admission
+            .limits
+            .file_bytes
+            .min(admission.limits.render_bytes);
+        if self.model_steps > max_steps || self.output_bytes > max_output {
+            return Err(Error::Conflict(
+                "swarm child resources exceed canonical task admission limits".into(),
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -1290,7 +1393,12 @@ fn has_live_descendant(state: &SwarmBudgetState, operation_id: OperationId) -> b
 #[cfg(test)]
 mod tests {
     use super::*;
-
+    use crate::{
+        Capabilities,
+        conversation::Limits,
+        runtime::{TaskAdmissionRecord, TaskRunLimits},
+    };
+    use serde_json::json;
     fn id(byte: u8) -> OperationId {
         OperationId::from_bytes([byte; 16])
     }
@@ -1332,6 +1440,46 @@ mod tests {
             completed_boundary_digest: [1; 32],
             workspace_generation_digest: [2; 32],
         }
+    }
+
+    #[test]
+    fn child_resources_cannot_widen_canonical_task_limits() -> Result<()> {
+        let admission = TaskAdmissionRecord::from_parts(
+            id(8),
+            "example.task",
+            "1",
+            json!(7),
+            json!({"type":"integer"}),
+            json!({"type":"string"}),
+            &std::collections::BTreeSet::new(),
+            &[9; 32],
+            None,
+            Capabilities::new([] as [&str; 0]),
+            Limits::default(),
+            TaskRunLimits::default(),
+            None,
+            None,
+            None,
+        )?;
+        assert!(
+            SwarmResourceRequest {
+                model_steps: 65,
+                output_bytes: 1,
+                execution_time_ms: 1,
+            }
+            .validate_against_admission(&admission)
+            .is_err()
+        );
+        assert!(
+            SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: Limits::default().render_bytes + 1,
+                execution_time_ms: 1,
+            }
+            .validate_against_admission(&admission)
+            .is_err()
+        );
+        Ok(())
     }
 
     #[test]
