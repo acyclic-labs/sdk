@@ -30,6 +30,15 @@ returning typed cancellation or timeout outcomes. Deadline waits are persisted
 through the host's idempotent timer operation, so process restart resumes the
 same wait identity.
 
+For task and inbox waits, an owner binds its existing journal through
+`DurableWaitStore`. `open` records the immutable request before observation;
+`complete` records the first terminal result before it is returned. A replay
+of the same operation and request returns that retained result, while a reused
+operation identity with different request bytes is rejected. This seam keeps
+wait recovery in the owner journal without introducing a second orchestration
+engine. The live cancellation receiver remains an authenticated runtime
+concern and is never selected by model input.
+
 ## Model-facing tools
 
 `communication_tools::communication_tools` registers the version-pinned
@@ -46,4 +55,6 @@ only the typed delivery or wait result to the model. Sender identity, parent
 operation, provider call ID, admissions, and capability checks remain runtime
 provenance and are never appended to a prompt or tool result. Reconciliation
 re-enters the same host operation, so duplicate message publication remains
-idempotent and a wait can be resumed after restart.
+idempotent and a wait can be resumed after restart. A terminal timeout is also
+replayed as `timed_out` when the process returns after its deadline; malformed
+zero or overlong timeout values continue to fail validation.
