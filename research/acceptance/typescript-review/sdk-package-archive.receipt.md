@@ -13,10 +13,12 @@ The first row's compile hash is copied exactly from the manifest receipt as `sha
 
 The manifest maps each package path to a package directory and `Cargo.toml`, and both package-resolution records repeat the same `.tgz` path and `qualified` status. The mapped package manifests and consumer manifests/locks exist, but they do not turn the PE bytes at the `.tgz` path into an archive. The package receipt therefore fails the archive-header, archive-listing, and package-versus-compile-byte checks before any consumer result can establish package qualification.
 
+The mapped package `Cargo.toml` files name `sdk-example-consumer`, contain absolute `Q:/sdk/...` source dependencies, and are generic rendered test consumers rather than portable SDK package identities. The resolution command only names the disposable consumer manifest and does not prove that the declared `.tgz` was consumed. The resolution records also omit a source-closure digest binding. These checks reject a future arbitrary valid tar containing the same generic consumer shape; a valid archive header alone is insufficient.
+
 The bounded regression command was:
 
 ```text
 SDK_GENERATION_OUTPUT=Q:/sdk/work/rust-generation-output-64484b SDK_GENERATION_EXPECTED_FAILURE=package-archive bun test research/acceptance/typescript-review/sdk-package-archive.acceptance.test.ts
 ```
 
-Result: `1 pass, 1 skip, 0 fail`; the passing test rejected the two executable masquerades. The producer source and failed output were not modified.
+Result: `1 pass, 1 skip, 0 fail`; the passing test rejected the two executable masquerades, generic consumer package roots, missing archive-consumption evidence, and missing source-closure binding. The producer source and failed output were not modified.
