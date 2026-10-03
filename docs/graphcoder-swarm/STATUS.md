@@ -8,7 +8,9 @@ GraphCoder is a terminal composition wrapper. Harness owns model requests, recur
 
 ## Latest native evidence
 
-Source `c3a98adc`, handle 35128, exited 1. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for suite and artifact hashes.
+The latest run used source `a9ca8ff4`, handle 66153, and exited 1 during compilation: integration-test providers referenced the library through an invalid crate-relative path. No tests executed in that run. The mandatory prepared-request provider contract compiled in the library; this does not prove runtime behavior. See [checkpoint-native-repair-2026-10-03.json](checkpoint-native-repair-2026-10-03.json) for source and suite hashes.
+
+The earlier source `c3a98adc`, handle 35128, produced these scoped results:
 
 | Suite | Observed result |
 |---|---|
@@ -18,7 +20,9 @@ Source `c3a98adc`, handle 35128, exited 1. See [checkpoint-native-repair-2026-10
 | Budget scheduler | 0 passed, 2 failed |
 | Harness library | Incomplete: two observed failures and two stalled tests; exact test process stopped, no aggregate pass claim |
 
-The recursive workspace descriptor assertion was corrected in `813d2523` after tracing its rejection through `FileDescriptor::verify`. A focused rerun exposed a later missing volume-operation grant; it remains open. Execution fixtures need reliable runner cleanup and exact production approval grants. Budget tests expose missing authenticated admission and concurrent capacity accounting. Provider metering is under review and not yet fully wired into the persistent runtime.
+The recursive workspace descriptor assertion was corrected in `813d2523` after tracing its rejection through `FileDescriptor::verify`. A focused rerun exposed a private-volume grant mismatch; `c1e167a1` aligns that fixture with its child scope. Execution approval resolution and bounded fixture cleanup were repaired in `bcf94efc`, with unreachable approval handling removed in `6c3fdae0`. These repairs still require fresh native verification. Budget tests expose missing authenticated admission and concurrent capacity accounting. Provider metering is under review and not yet fully wired into the persistent runtime.
+
+Native CLI source `0e15465d`, handle 86472, compiled and ran eight tests: six passed and two failed because fixture model options lacked a registered provider policy. Installed-artifact and interactive PTY qualification remain outstanding.
 
 ## Other scoped evidence
 
