@@ -1863,6 +1863,8 @@ describe("typed agent runtime", () => {
     const observed: ModelMessage[] = [];
     const serializedRequests: string[] = [];
     const requestDigests: Uint8Array[] = [];
+    const transportBodies: Uint8Array[] = [];
+    const transportDigests: Uint8Array[] = [];
     const tool = defineTool<null, Raw>({
       name: "private-result", revision: "1", description: "private result",
       inputSchema: { type: "null" },
@@ -1882,9 +1884,16 @@ describe("typed agent runtime", () => {
       .model(testModel, {
         async *generate(request) {
           serializedRequests.push(JSON.stringify(request));
-          const modelPayload = { model: request.model, messages: request.messages, tools: request.tools };
-          const canonical = contracts.encodeCanonicalJson(modelPayload);
-          requestDigests.push(contracts.digestCanonicalJson(JSON.parse(new TextDecoder().decode(canonical))));
+          // The mock transport captures the exact admitted body and digest;
+          // it must not reconstruct either from the mutable model projection.
+          const transportBody = new TextEncoder().encode(request.canonical.requestJson);
+          const transportDigest = contracts.digestCanonicalJson(
+            JSON.parse(new TextDecoder().decode(transportBody)),
+          );
+          expect([...transportDigest]).toEqual([...request.canonical.requestDigest]);
+          transportBodies.push(transportBody);
+          transportDigests.push(transportDigest);
+          requestDigests.push(transportDigest);
           observed.push(...request.messages);
           if (modelStep === 0) {
             expect(Object.isFrozen(request.messages)).toBe(true);
@@ -1911,10 +1920,14 @@ describe("typed agent runtime", () => {
     expect(serializedRequests.every(request => !request.includes("secret"))).toBe(true);
     expect(serializedRequests[1]).toContain('"modelOutputSchema"');
     expect(requestDigests).toHaveLength(2);
+    expect(transportBodies.map(value => [...value])).toEqual(
+      serializedRequests.map(serialized => [...new TextEncoder().encode(JSON.parse(serialized).canonical.requestJson)]),
+    );
+    expect(transportDigests.map(value => [...value])).toEqual(requestDigests.map(value => [...value]));
     const decodedFirst = JSON.parse(serializedRequests[0]!);
     const decodedSecond = JSON.parse(serializedRequests[1]!);
-    expect([...requestDigests[0]!]).toEqual([...contracts.digestCanonicalJson({ model: decodedFirst.model, messages: decodedFirst.messages, tools: decodedFirst.tools })]);
-    expect([...requestDigests[1]!]).toEqual([...contracts.digestCanonicalJson({ model: decodedSecond.model, messages: decodedSecond.messages, tools: decodedSecond.tools })]);
+    expect(decodedFirst.canonical.requestJson).toBeTruthy();
+    expect(decodedSecond.canonical.requestJson).toBeTruthy();
     expect(projectionCalls).toBe(1);
   });
 

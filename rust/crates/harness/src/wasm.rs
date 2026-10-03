@@ -2267,6 +2267,29 @@ fn from_js<T: serde::de::DeserializeOwned>(value: JsValue) -> Result<T, JsValue>
     serde_json::from_value(value).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+fn decode_model_option_policy(
+    value: JsValue,
+) -> Result<Option<crate::model::ModelOptionPolicy>, JsValue> {
+    let policy: Option<WasmModelOptionPolicyWire> = from_js(value)?;
+    policy
+        .map(|wire| {
+            let digest: [u8; 32] = wire
+                .digest
+                .try_into()
+                .map_err(|_| JsValue::from_str("model option policy digest must contain 32 bytes"))?;
+            crate::model::ModelOptionPolicy::new(
+                crate::registry::ComponentIdentity {
+                    name: wire.name,
+                    version: wire.version,
+                    digest,
+                },
+                wire.schema,
+            )
+            .map_err(js_error)
+        })
+        .transpose()
+}
+
 fn to_js<T: serde::Serialize>(value: &T) -> Result<JsValue, JsValue> {
     let serializer = serde_wasm_bindgen::Serializer::new()
         .serialize_large_number_types_as_bigints(true)
@@ -2547,24 +2570,7 @@ pub fn prepare_model_request(
 ) -> Result<JsValue, JsValue> {
     let request: crate::model::ModelRequest = from_js(request)?;
     let limits: Limits = from_js(limits)?;
-    let policy: Option<WasmModelOptionPolicyWire> = from_js(policy)?;
-    let policy = policy
-        .map(|wire| {
-            let digest: [u8; 32] = wire
-                .digest
-                .try_into()
-                .map_err(|_| JsValue::from_str("model option policy digest must contain 32 bytes"))?;
-            crate::model::ModelOptionPolicy::new(
-                crate::registry::ComponentIdentity {
-                    name: wire.name,
-                    version: wire.version,
-                    digest,
-                },
-                wire.schema,
-            )
-            .map_err(js_error)
-        })
-        .transpose()?;
+    let policy = decode_model_option_policy(policy)?;
     let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
         request,
         limits,
@@ -2589,6 +2595,23 @@ pub fn prepare_model_request(
         manifest_json,
         request_digest: prepared.manifest().request_digest,
     })
+}
+
+/// Validates durable model-input manifest evidence through the production
+/// Rust admission path. The manifest JSON is supplied as exact bytes so a
+/// caller cannot replace it with an equivalent but differently encoded value.
+#[wasm_bindgen(js_name = validateModelInputManifest)]
+pub fn validate_model_input_manifest(
+    request: JsValue,
+    limits: JsValue,
+    policy: JsValue,
+    manifest_json: String,
+) -> Result<(), JsValue> {
+    let request: crate::model::ModelRequest = from_js(request)?;
+    let limits: Limits = from_js(limits)?;
+    let policy = decode_model_option_policy(policy)?;
+    crate::model_input::validate_manifest(request, limits, policy.as_ref(), &manifest_json)
+        .map_err(js_error)
 }
 
 /// Validates one human-authored model input using the native content rules.

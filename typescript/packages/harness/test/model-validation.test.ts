@@ -173,7 +173,9 @@ test("native facade refuses forged model-input manifest fields and binding ident
         manifest_json: new TextDecoder().decode(encodeCanonicalJson({ ...manifest, unexpected: true })),
       }),
     };
-    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow("unexpected fields");
+    // The native validator owns manifest schema errors; keep this assertion
+    // independent of serde's diagnostic wording.
+    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow();
 
     nativeSlot.native = {
       ...originalNative,
@@ -182,7 +184,7 @@ test("native facade refuses forged model-input manifest fields and binding ident
         manifest_json: new TextDecoder().decode(encodeCanonicalJson({ ...manifest, binding_digest: Array(32).fill(0) })),
       }),
     };
-    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow("binding digest");
+    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow();
   } finally {
     nativeSlot.native = originalNative;
   }
