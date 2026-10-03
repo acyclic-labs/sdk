@@ -526,7 +526,12 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 extensions: Default::default(),
             };
             let plan = parent_facade
-                .prepare_project_merge(host.as_ref(), aggregate.reducer(), &child_project)
+                .prepare_project_merge_for_child(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                )
                 .await?;
             assert!(
                 host.read(
