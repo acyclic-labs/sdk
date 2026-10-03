@@ -1163,6 +1163,15 @@ mod tests {
         assert_eq!(machines.grpc_methods.len(), 19);
         assert_eq!(machines.modeled_operations, 19);
         assert!(!machines.http_projection);
+        let machines_policy = machines
+            .remote_policy
+            .as_ref()
+            .expect("Machines native policy is emitted from the Rust model");
+        assert_eq!(machines_policy.auth, "mtls");
+        assert_eq!(machines_policy.credential_policy, "mtls-files");
+        assert_eq!(machines_policy.behavior_binding, "rust-native-grpc");
+        assert_eq!(machines_policy.transport.native.len(), 1);
+        assert_eq!(machines_policy.transport.native[0].kind, "grpc");
         for family in ["filesystem", "harness"] {
             let service = manifest
                 .services
