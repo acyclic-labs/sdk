@@ -32,22 +32,26 @@ import {
  * The host owns the durable Harness. This package only turns the public UI
  * transport calls into explicit messages. BigInts use decimal strings on the
  * wire so the same protocol works over JSON lines, N-API, and WASM bridges.
+ * GRAPH_CODER_WIRE_METHODS is the complete method list at runtime and in the type system.
  */
-export type GraphCoderWireMethod =
-  | "list_sessions"
-  | "start_session"
-  | "open_session"
-  | "resume_session"
-  | "read_activity"
-  | "read_messages"
-  | "send_message"
-  | "list_approvals"
-  | "resolve_approval"
-  | "cancel_session"
-  | "list_changes"
-  | "read_change"
-  | "read_file"
-  | "approve_writeback";
+export const GRAPH_CODER_WIRE_METHODS = Object.freeze([
+  "list_sessions",
+  "start_session",
+  "open_session",
+  "resume_session",
+  "read_activity",
+  "read_messages",
+  "send_message",
+  "list_approvals",
+  "resolve_approval",
+  "cancel_session",
+  "list_changes",
+  "read_change",
+  "read_file",
+  "approve_writeback",
+] as const);
+
+export type GraphCoderWireMethod = (typeof GRAPH_CODER_WIRE_METHODS)[number];
 
 export interface GraphCoderWirePageQuery {
   readonly after?: string;

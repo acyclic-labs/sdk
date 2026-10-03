@@ -20,7 +20,7 @@ import {
   type SessionSnapshot,
   type SessionSummary,
 } from "./api.js";
-import { checkedRequestId, type GraphCoderWireMethod, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
+import { checkedRequestId, GRAPH_CODER_WIRE_METHODS, type GraphCoderWireMethod, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
 
 /** Native-side JSON-lines dispatcher over an injected durable transport. */
 export class GraphCoderWireDispatcher {
@@ -70,7 +70,7 @@ function decodeRequest(value: unknown): GraphCoderWireRequest {
   const raw = record(value, "request");
   const requestId = checkedRequestId(raw.request_id);
   const method = requiredText(raw.method, "method");
-  if (!METHODS.has(method as GraphCoderWireMethod)) throw new GraphCoderError("invalid_input", `unsupported method ${method}`);
+  if (!GRAPH_CODER_WIRE_METHODS.includes(method as GraphCoderWireMethod)) throw new GraphCoderError("invalid_input", `unsupported method ${method}`);
   return { request_id: requestId, method: method as GraphCoderWireMethod, params: record(raw.params, "request params") } as GraphCoderWireRequest;
 }
 function requestIdentity(value: unknown): string {
@@ -80,7 +80,6 @@ function requestIdentity(value: unknown): string {
   try { return checkedRequestId(candidate); }
   catch { return "unknown"; }
 }
-const METHODS = new Set<GraphCoderWireMethod>(["list_sessions", "start_session", "open_session", "resume_session", "read_activity", "read_messages", "send_message", "list_approvals", "resolve_approval", "cancel_session", "list_changes", "read_change", "read_file", "approve_writeback"]);
 function record(value: unknown, label: string): Record<string, unknown> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("invalid_input", `${label} must be an object`); return value as Record<string, unknown>; }
 function requiredText(value: unknown, label: string): string { if (typeof value !== "string" || value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must be nonempty text`); return value; }
 function requiredBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new GraphCoderError("invalid_input", `${label} must be boolean`); return value; }
