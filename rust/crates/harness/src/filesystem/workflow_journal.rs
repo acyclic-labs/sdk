@@ -160,7 +160,13 @@ where
         )?;
         let bytes = self
             .host
-            .read_content(reference, &grant, self.maximum_payload_bytes)
+            .read_internal_content(
+                reference,
+                &self.volume,
+                &grant,
+                InternalContentClass::Workflow,
+                self.maximum_payload_bytes,
+            )
             .await?;
         let record: WorkflowRecord = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?;
@@ -342,7 +348,13 @@ where
         )?;
         let bytes = self
             .host
-            .read_content(&reference, &read, self.maximum_payload_bytes)
+            .read_internal_content(
+                &reference,
+                &self.volume,
+                &read,
+                InternalContentClass::Workflow,
+                self.maximum_payload_bytes,
+            )
             .await?;
         let admission: WorkflowAdmission = serde_json::from_slice(&bytes)
             .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?;
@@ -393,7 +405,13 @@ where
                 ));
             }
             self.host
-                .read_content(&command.payload, &read, self.maximum_payload_bytes)
+                .read_internal_content(
+                    &command.payload,
+                    &self.volume,
+                    &read,
+                    InternalContentClass::Workflow,
+                    self.maximum_payload_bytes,
+                )
                 .await?;
         }
         Ok(())
