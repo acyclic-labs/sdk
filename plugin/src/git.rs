@@ -409,14 +409,30 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 paths,
                 expected_workspace_tree,
             } => {
-                if paths.is_none() && matches!(tree, GitTreeRef::Lazy(_)) {
-                    return Err(Self::error(
-                        "Git exact workspace restore requires an exact same-workspace tree",
-                    ));
-                }
                 let current_id = self
                     .expected_workspace_generation(*expected_workspace_tree)
                     .await?;
+                // A whole-workspace restore must preserve the live workspace
+                // identity.  `exact` intentionally materializes a lazy
+                // snapshot in a fresh child, which is correct for read-only
+                // inspection and path restores but cannot be used as the
+                // target of `restore_generation`.  When an abort/stash target
+                // is a lazy snapshot of this workspace, exactify it as an
+                // immutable source and apply its complete semantic delta back
+                // to the current workspace.  A lazy snapshot owned by another
+                // workspace remains a foreign whole-workspace restore and is
+                // rejected before materialization.
+                let lazy_whole_restore = match tree {
+                    GitTreeRef::Lazy(snapshot) => {
+                        if snapshot.workspace_id != self.current.id() && paths.is_none() {
+                            return Err(Self::error(
+                                "an exact workspace restore cannot use a foreign lazy snapshot",
+                            ));
+                        }
+                        paths.is_none()
+                    }
+                    GitTreeRef::Exact(_) => false,
+                };
                 let source_ref = self.exact(*tree, "restore").await?;
                 let source_workspace = self.workspace(source_ref.workspace_id).await?;
                 let source = source_workspace
@@ -451,35 +467,76 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                         }
                     }
                 } else {
-                    if source_ref.workspace_id != self.current.id() {
+                    if !lazy_whole_restore && source_ref.workspace_id != self.current.id() {
                         return Err(Self::error(
                             "an exact workspace restore cannot use a foreign generation",
                         ));
                     }
-                    match self
-                        .current
-                        .restore_generation_with_permit(
-                            &source,
-                            current_id,
-                            IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                            self.permit,
-                        )
-                        .await
-                        .map_err(display)?
-                    {
-                        WorkspaceRestore::Restored(generation)
-                        | WorkspaceRestore::AlreadyRestored(generation)
-                        | WorkspaceRestore::Current(generation) => generation,
-                        WorkspaceRestore::Stale(_) => {
-                            return Err(Self::error(
-                                "Git restore raced with another workspace writer",
-                            ));
+                    if lazy_whole_restore {
+                        let current = self.current.head().await.map_err(display)?;
+                        let changed = current
+                            .diff_to(&source, u32::MAX)
+                            .await
+                            .map_err(display)?
+                            .changed_paths(u32::MAX)
+                            .await
+                            .map_err(display)?;
+                        let paths = changed
+                            .iter()
+                            .map(|change| change.path.to_string())
+                            .collect::<Vec<_>>();
+                        match self
+                            .current
+                            .restore_paths_from_with_permit(
+                                &source,
+                                &paths,
+                                current_id,
+                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                                self.permit,
+                            )
+                            .await
+                            .map_err(display)?
+                        {
+                            TransactionCommit::Committed(generation)
+                            | TransactionCommit::AlreadyCommitted(generation) => generation,
+                            TransactionCommit::Conflict { .. } => {
+                                return Err(Self::error(
+                                    "Git restore raced with another workspace writer",
+                                ));
+                            }
+                            TransactionCommit::Fenced => {
+                                return Err(Self::error("Git restore was fenced"));
+                            }
+                            TransactionCommit::IdempotencyConflict => {
+                                return Err(Self::error("Git restore retry identity was reused"));
+                            }
                         }
-                        WorkspaceRestore::Fenced => {
-                            return Err(Self::error("Git restore was fenced"));
-                        }
-                        WorkspaceRestore::IdempotencyConflict => {
-                            return Err(Self::error("Git restore retry identity was reused"));
+                    } else {
+                        match self
+                            .current
+                            .restore_generation_with_permit(
+                                &source,
+                                current_id,
+                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                                self.permit,
+                            )
+                            .await
+                            .map_err(display)?
+                        {
+                            WorkspaceRestore::Restored(generation)
+                            | WorkspaceRestore::AlreadyRestored(generation)
+                            | WorkspaceRestore::Current(generation) => generation,
+                            WorkspaceRestore::Stale(_) => {
+                                return Err(Self::error(
+                                    "Git restore raced with another workspace writer",
+                                ));
+                            }
+                            WorkspaceRestore::Fenced => {
+                                return Err(Self::error("Git restore was fenced"));
+                            }
+                            WorkspaceRestore::IdempotencyConflict => {
+                                return Err(Self::error("Git restore retry identity was reused"));
+                            }
                         }
                     }
                 };

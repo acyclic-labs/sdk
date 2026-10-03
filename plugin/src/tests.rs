@@ -3231,6 +3231,125 @@ async fn root_git_case() {
     control.shutdown().await.expect("control shutdown");
 }
 
+#[test]
+fn root_git_conflicted_merge_can_abort_through_the_public_tool() {
+    std::thread::Builder::new()
+        .name("plugin-root-git-conflict-abort".to_owned())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime")
+                .block_on(root_git_conflicted_merge_abort_case());
+        })
+        .expect("test thread")
+        .join()
+        .expect("plugin root Git conflict thread");
+}
+
+async fn root_git_conflicted_merge_abort_case() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = temporary.path().join("root");
+    fs::create_dir_all(&root).expect("root directory");
+    fs::write(root.join("shared.txt"), b"base\n").expect("baseline file");
+    fs::write(
+        root.join("feature.patch"),
+        b"diff --git a/shared.txt b/shared.txt\n--- a/shared.txt\n+++ b/shared.txt\n@@ -1 +1 @@\n-base\n+feature\n",
+    )
+    .expect("feature patch");
+    fs::write(
+        root.join("main.patch"),
+        b"diff --git a/shared.txt b/shared.txt\n--- a/shared.txt\n+++ b/shared.txt\n@@ -1 +1 @@\n-base\n+main\n",
+    )
+    .expect("main patch");
+
+    let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+        .await
+        .expect("control plane");
+    control
+        .session_start(json!({
+            "session_id":"session",
+            "cwd":root.display().to_string()
+        }))
+        .await
+        .expect("root session");
+    let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
+    control
+        .root_git_tool(root_id, vec!["status".to_owned()])
+        .await
+        .expect("initial status");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "baseline".to_owned()],
+        )
+        .await
+        .expect("baseline commit");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["switch".to_owned(), "-c".to_owned(), "feature".to_owned()],
+        )
+        .await
+        .expect("feature switch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["apply".to_owned(), "feature.patch".to_owned()],
+        )
+        .await
+        .expect("feature patch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "feature".to_owned()],
+        )
+        .await
+        .expect("feature commit");
+    control
+        .root_git_tool(root_id, vec!["switch".to_owned(), "main".to_owned()])
+        .await
+        .expect("main switch");
+    control
+        .root_git_tool(root_id, vec!["apply".to_owned(), "main.patch".to_owned()])
+        .await
+        .expect("main patch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "main".to_owned()],
+        )
+        .await
+        .expect("main commit");
+    control
+        .root_git_tool(root_id, vec!["switch".to_owned(), "feature".to_owned()])
+        .await
+        .expect("feature re-switch");
+
+    let merge = control.root_git_tool(root_id, vec!["merge".to_owned(), "main".to_owned()]);
+    let merge_error = merge
+        .await
+        .expect_err("conflicting merge must remain pending");
+    assert!(
+        merge_error.contains("conflict") || merge_error.contains("pending"),
+        "merge error must expose the retained conflict: {merge_error}"
+    );
+    let abort = control
+        .root_git_tool(root_id, vec!["merge".to_owned(), "--abort".to_owned()])
+        .await
+        .expect("public merge abort");
+    assert!(
+        !abort.is_null(),
+        "abort must return a typed filesystem result"
+    );
+    assert_eq!(
+        fs::read(root.join("shared.txt")).expect("restored feature file"),
+        b"feature\n"
+    );
+    control.shutdown().await.expect("control shutdown");
+}
+
 #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
 async fn endpoint_shutdown_case() {
     use tokio::io::AsyncWriteExt as _;

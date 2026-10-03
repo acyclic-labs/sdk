@@ -1997,6 +1997,17 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         &IdempotencyKey::new("facade-grandchild-edit")?,
     )
     .await?;
+    assert_eq!(
+        host.read(&grandchild_head.workspace, None, "/grandchild.txt", 128)
+            .await?,
+        bytes::Bytes::from_static(b"grandchild change")
+    );
+    assert!(
+        host.read(&child_a_head.workspace, None, "/grandchild.txt", 128)
+            .await
+            .is_err(),
+        "grandchild edits must remain isolated until its direct parent applies the join"
+    );
     #[allow(clippy::too_many_arguments)]
     let seed = |operation: u16,
                 parent: &Authority,
