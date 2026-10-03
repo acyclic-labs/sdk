@@ -7,6 +7,7 @@ import type {
 import { ensureMachinesWasm } from "./wasm-runtime.js";
 import { operationId } from "./index.js";
 import { asPublic, usageOut } from "./simulator.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface HttpMachinesOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -14,7 +15,7 @@ export interface HttpMachinesOptions { readonly endpoint: string; readonly token
 export class HttpMachinesProvider implements MachinesProvider {
   readonly assurance = "managed-service" as const;
   readonly #endpoint: string; readonly #token: string; readonly #fetcher: typeof fetch; readonly #maximum: number;
-  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); if (!options.token.trim()) throw new TypeError("token is required"); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("maximumResponseBytes must be a positive safe integer"); this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
+  constructor(options: HttpMachinesOptions) { const endpoint = new URL(options.endpoint); if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("endpoint must be an absolute HTTPS URL without credentials, query, or fragment"); validateRustOwnedCredentialPolicy(options.token); const maximum = options.maximumResponseBytes ?? 8 * 1024 * 1024; if (!Number.isSafeInteger(maximum) || maximum <= 0) throw new RangeError("maximumResponseBytes must be a positive safe integer"); this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`; this.#token = options.token; this.#fetcher = options.fetcher ?? fetch; this.#maximum = maximum; }
   qualifyImage(image: Image): Promise<ImageQualification> { return this.#call("IMAGES_QUALIFY", { image }).then(asPublic<QualificationOut, ImageQualification>); }
   create(request: CreateMachine): Promise<MutationOutcome> { return this.#call("MACHINES_CREATE", request).then(asPublic<MutationOut, MutationOutcome>); }
   inspectMachine(machineId: MachineId): Promise<MachineObservation> { return this.#call("MACHINES_INSPECT", { machineId }).then(asPublic<ObservationOut, MachineObservation>); }
