@@ -50,6 +50,10 @@ function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
+function framedPromptCount(value) {
+  return [...stripAnsi(value).matchAll(/(?:^|\r?\n)graphcoder>[ ]?/gu)].length;
+}
+
 function commandContext(transcript) {
   const context = {};
   for (const line of stripAnsi(transcript).split(/\r?\n/u)) {
@@ -87,25 +91,54 @@ function expandCommand(command, transcript) {
   });
 }
 
-function waitForPrompt(child, state, previousCount) {
+function waitForPrompt(state, previousCount, processClosed, processError) {
   return new Promise((resolvePromise, reject) => {
     const deadline = Date.now() + PROMPT_TIMEOUT_MS;
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      state.listeners.delete(check);
+    };
     const check = () => {
       if (state.promptCount > previousCount) {
-        clearInterval(timer);
+        cleanup();
         resolvePromise();
       } else if (Date.now() >= deadline) {
-        clearInterval(timer);
-        reject(new Error("CLI did not present the next prompt"));
+        cleanup();
+        reject(new Error("CLI did not present the next framed prompt"));
+      } else {
+        timer = setTimeout(check, 50);
       }
     };
-    const timer = setInterval(check, 50);
-    child.once("error", error => {
-      clearInterval(timer);
+    const onClose = value => {
+      cleanup();
+      reject(new Error(`CLI closed before the next prompt (code ${value.code}, signal ${value.signal ?? "none"})`));
+    };
+    const onError = error => {
+      cleanup();
       reject(error);
-    });
+    };
+    state.listeners.add(check);
+    processClosed.then(onClose, () => undefined);
+    processError.then(onError, () => undefined);
     check();
   });
+}
+
+async function waitForClose(processClosed, processError, child) {
+  const result = await Promise.race([
+    processClosed,
+    processError.then(error => { throw error; }),
+    new Promise(resolvePromise => setTimeout(() => resolvePromise({ timeout: true }), PROMPT_TIMEOUT_MS)),
+  ]);
+  if (!result.timeout) return result;
+  child.kill();
+  const killed = await Promise.race([
+    processClosed,
+    new Promise(resolvePromise => setTimeout(() => resolvePromise({ timeout: true }), PROMPT_TIMEOUT_MS)),
+  ]);
+  if (killed.timeout) fail("PTY process did not close after termination");
+  return killed;
 }
 
 async function run(commands) {
@@ -124,34 +157,39 @@ async function run(commands) {
     windowsHide: true,
     shell: false,
   });
-  const state = { output: "", promptCount: 0 };
+  const state = { output: "", promptCount: 0, listeners: new Set() };
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
+  let closeResolve;
+  const processClosed = new Promise(resolvePromise => { closeResolve = resolvePromise; });
+  child.once("close", (code, signal) => closeResolve({ code, signal }));
+  let errorReject;
+  const processError = new Promise((_resolve, reject) => { errorReject = reject; });
+  child.once("error", error => errorReject(error));
   child.stdout.on("data", chunk => {
     state.output += chunk;
-    state.promptCount = state.output.split(PROMPT).length - 1;
+    state.promptCount = framedPromptCount(state.output);
+    for (const listener of state.listeners) listener();
   });
   child.stderr.on("data", chunk => { state.output += `\n[stderr]\n${chunk}`; });
   try {
-    await waitForPrompt(child, state, 0);
+    await waitForPrompt(state, 0, processClosed, processError);
     for (const rawCommand of commands) {
       const command = expandCommand(rawCommand, state.output);
       const previousCount = state.promptCount;
       child.stdin.write(`${command}\r`);
-      await waitForPrompt(child, state, previousCount);
+      await waitForPrompt(state, previousCount, processClosed, processError);
     }
     child.stdin.write("quit\r");
-    const exitCode = await new Promise((resolvePromise, reject) => {
-      child.once("error", reject);
-      child.once("close", resolvePromise);
-    });
-    if (exitCode !== 0) fail(`PTY process exited with code ${exitCode}`);
+    const exit = await waitForClose(processClosed, processError, child);
+    if (exit.code !== 0) fail(`PTY process exited with code ${exit.code}`);
     const transcript = state.output;
     const missing = [PROMPT, ...REQUIRED_MARKERS].filter(marker => !transcript.includes(marker));
     if (missing.length > 0) fail(`missing transcript markers: ${missing.join(", ")}`);
     process.stdout.write(transcript);
   } catch (error) {
     child.kill();
+    await Promise.race([processClosed, new Promise(resolvePromise => setTimeout(resolvePromise, PROMPT_TIMEOUT_MS))]);
     throw error;
   }
 }

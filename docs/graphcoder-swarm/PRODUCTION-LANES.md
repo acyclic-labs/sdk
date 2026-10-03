@@ -75,7 +75,10 @@ Capture each lane with
 configuration must list the installed GraphCoder package archive and every
 bridge executable consumed by the command, each with its exact SHA-256 digest,
 qualified source commit, source tree, build ID, build timestamp, and `fresh:
-true`. The capture runner checks the declared digest against the bytes before
+true`. Every artifact must be freshly built for the qualified source and the
+runner requires `fresh: true`; each configuration also has a positive
+`timeout_ms` (120000 ms by default) that bounds the child process. The capture
+runner checks the declared digest against the bytes before
 dispatch, then checks the digest again after the suite. Use separate
 suite IDs and output directories for headless and PTY runs. Reusing an output
 directory after a crash is rejected by the runner's exclusive descriptor and

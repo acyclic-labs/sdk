@@ -4,8 +4,9 @@
 // boundary. The runtime and durable root are explicit inputs; this helper
 // never builds the binary, invokes a shell, or inherits provider credentials.
 
-import { existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { createInterface } from "node:readline";
+import { createRequire } from "node:module";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -39,11 +40,12 @@ function request(requestId, method, params) {
   return `${JSON.stringify({ request_id: requestId, method, params })}\n`;
 }
 
-function parseLine(line, label) {
+function parseLine(line, label, expectedRequestId) {
   let value;
   try { value = JSON.parse(line); }
   catch (error) { fail(`${label} returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
-  if (!value || value.request_id === undefined || typeof value.ok !== "boolean") fail(`${label} returned an invalid wire response`);
+  if (!value || typeof value.request_id !== "string" || typeof value.ok !== "boolean") fail(`${label} returned an invalid wire response`);
+  if (value.request_id !== expectedRequestId) fail(`${label} correlated response ${JSON.stringify(value.request_id)} to ${JSON.stringify(expectedRequestId)}`);
   return value;
 }
 
@@ -62,23 +64,63 @@ async function withDeadline(promise, label) {
   return result;
 }
 
-function runDroppedStart(runtime, root) {
+function runPreflight(runtime, root) {
   const result = spawnSync(runtime, ["--root", root, "--model-fixture", "stage"], {
     cwd: resolve("."),
     env: childEnvironment(),
-    input: request("stage-1", "start_session", { prompt: "write fixture", operation_id: "op-stage-1", model_fixture: "stage" }),
+    input: `${request("list-1", "list_sessions", {})}${request("invalid-fixture", "start_session", { prompt: "write fixture", operation_id: "op-invalid-fixture", model_fixture: "missing-fixture" })}`,
     encoding: "utf8",
     shell: false,
     windowsHide: true,
     maxBuffer: 16 * 1024 * 1024,
     timeout: RESPONSE_TIMEOUT_MS,
   });
-  if (result.error) fail(`initial native process failed: ${result.error.message}`);
-  if (result.status !== 0) fail(`initial native process exited ${result.status}: ${result.stderr}`);
-  const line = result.stdout.trim().split(/\r?\n/u).filter(Boolean).at(-1);
-  if (line === undefined) fail("initial native process returned no response");
-  const response = parseLine(line, "initial native process");
-  if (response.ok !== true) fail(`initial stage request failed: ${JSON.stringify(response)}`);
+  if (result.error) fail(`native preflight failed: ${result.error.message}`);
+  if (result.status !== 0) fail(`native preflight exited ${result.status}: ${result.stderr}`);
+  const lines = result.stdout.trim().split(/\r?\n/u).filter(Boolean);
+  if (lines.length !== 2) fail(`native preflight returned ${lines.length} responses`);
+  const listed = parseLine(lines[0], "list_sessions", "list-1");
+  if (listed.ok !== true || !Array.isArray(listed.result?.items)) fail(`list_sessions response was invalid: ${JSON.stringify(listed)}`);
+  const invalid = parseLine(lines[1], "invalid fixture", "invalid-fixture");
+  if (invalid.ok !== false || invalid.error?.code !== "invalid_input") fail(`invalid fixture was not rejected as invalid_input: ${JSON.stringify(invalid)}`);
+  return { listed: listed.result.items.length, rejected: invalid.error.code };
+}
+
+async function runSuppressedStart(runtime, root) {
+  const child = spawn(runtime, ["--root", root, "--model-fixture", "stage"], {
+    cwd: resolve("."),
+    env: childEnvironment(),
+    stdio: ["pipe", "pipe", "pipe"],
+    shell: false,
+    windowsHide: true,
+  });
+  if (child.stdin === null || child.stdout === null || child.stderr === null) fail("suppressed native process did not expose piped stdio");
+  // Attach consumers before dispatch. The response is intentionally drained and
+  // discarded; the qualification proves retry after an interrupted request.
+  child.stdout.resume();
+  child.stderr.resume();
+  let closeResolve;
+  const closed = new Promise(resolvePromise => { closeResolve = resolvePromise; });
+  child.once("close", (code, signal) => closeResolve({ code, signal }));
+  let errorResolve;
+  const errored = new Promise(resolvePromise => { errorResolve = resolvePromise; });
+  child.once("error", error => errorResolve(error));
+  child.stdin.write(request("stage-dropped", "start_session", { prompt: "write fixture", operation_id: "op-stage-1", model_fixture: "stage" }));
+  const outcome = await Promise.race([
+    closed,
+    errored.then(error => ({ error })),
+    new Promise(resolvePromise => setTimeout(() => resolvePromise({ interrupted: true }), 300)),
+  ]);
+  if (outcome?.error) fail(`suppressed native process failed: ${outcome.error.message}`);
+  if (outcome?.code !== undefined) fail(`suppressed native process closed before interruption (code ${outcome.code})`);
+  child.stdin.destroy();
+  child.kill();
+  const exit = await Promise.race([
+    closed,
+    new Promise(resolvePromise => setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS)),
+  ]);
+  if (exit.timeout) fail(`suppressed native process did not close within ${CLOSE_TIMEOUT_MS}ms`);
+  return { request_id: "stage-dropped", operation_id: "op-stage-1", response_suppressed: true };
 }
 
 async function runReopen(runtime, root) {
@@ -102,7 +144,7 @@ async function runReopen(runtime, root) {
   let errorReject;
   const processError = new Promise((_resolve, reject) => { errorReject = reject; });
   child.once("error", error => errorReject(error));
-  const next = async label => {
+  const next = async (label, requestId) => {
     let timer;
     try {
       const result = await Promise.race([
@@ -115,7 +157,7 @@ async function runReopen(runtime, root) {
       if (result?.error) fail(`${label} native process failed: ${result.error.message}`);
       if (result?.closed) fail(`${label} native process closed before its response (code ${result.closed.code}, signal ${result.closed.signal ?? "none"})`);
       if (result.done) fail(`${label} native process ended before its response`);
-      return parseLine(result.value, label);
+      return parseLine(result.value, label, requestId);
     } finally {
       clearTimeout(timer);
     }
@@ -142,7 +184,7 @@ async function runReopen(runtime, root) {
   };
   try {
     child.stdin.write(request("stage-retry", "start_session", { prompt: "write fixture", operation_id: "op-stage-1", model_fixture: "stage" }));
-    const retried = await next("retry");
+    const retried = await next("retry", "stage-retry");
     if (retried.ok !== true) fail(`retry failed: ${JSON.stringify(retried)}`);
     const sessionId = retried.result?.summary?.id;
     const generation = retried.result?.workspace_generation;
@@ -151,7 +193,7 @@ async function runReopen(runtime, root) {
     assertNoAttachments(retried.result, "retry snapshot");
 
     child.stdin.write(request("stage-file", "read_file", { session_id: sessionId, path: "graphcoder-fixture.txt", generation }));
-    const file = await next("read_file");
+    const file = await next("read_file", "stage-file");
     if (file.ok !== true) fail(`native read_file route failed instead of returning a file: ${JSON.stringify(file)}`);
     if (file.result?.path !== "graphcoder-fixture.txt" || file.result?.media_type !== "text/plain" || file.result?.generation !== generation) fail(`staged file response was invalid: ${JSON.stringify(file)}`);
     const bytes = file.result?.bytes;
@@ -159,12 +201,12 @@ async function runReopen(runtime, root) {
     assertNoAttachments(file.result, "file response");
 
     child.stdin.write(request("stage-reopen", "open_session", { session_id: sessionId }));
-    const reopened = await next("reopen");
+    const reopened = await next("reopen", "stage-reopen");
     if (reopened.ok !== true || reopened.result?.summary?.state !== "completed" || reopened.result?.workspace_generation !== generation) fail(`reopened session was invalid: ${JSON.stringify(reopened)}`);
     assertNoAttachments(reopened.result, "reopened snapshot");
 
     child.stdin.write(request("stage-activity", "read_activity", { session_id: sessionId }));
-    const activity = await next("activity");
+    const activity = await next("activity", "stage-activity");
     if (activity.ok !== true || !Array.isArray(activity.result?.items) || activity.result.items.length === 0) fail(`activity response was invalid: ${JSON.stringify(activity)}`);
 
     return { sessionId, generation, retried, file, reopened, activity };
@@ -177,8 +219,22 @@ async function runReopen(runtime, root) {
 }
 
 async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId, generation }) {
-  const modulePath = join(packageRoot, "dist", "node.js");
-  if (!existsSync(modulePath)) fail(`installed GraphCoder package is missing its Node connection: ${modulePath}`);
+  const packageJsonPath = join(packageRoot, "package.json");
+  if (!existsSync(packageJsonPath)) fail(`installed GraphCoder package is missing package.json: ${packageJsonPath}`);
+  let packageJson;
+  try { packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")); }
+  catch (error) { fail(`installed GraphCoder package has invalid package.json: ${error instanceof Error ? error.message : String(error)}`); }
+  if (packageJson?.name !== "@acyclic-labs/graphcoder" || !packageJson.exports?.["./node"]) fail("installed GraphCoder package does not expose the ./node export");
+  const consumerRoot = mkdtempSync(join(tmpdir(), "graphcoder-installed-consumer-"));
+  const scopeRoot = join(consumerRoot, "node_modules", "@acyclic-labs");
+  const packageLink = join(scopeRoot, "graphcoder");
+  mkdirSync(scopeRoot, { recursive: true });
+  try { symlinkSync(packageRoot, packageLink, "junction"); }
+  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`could not install package export consumer junction: ${error instanceof Error ? error.message : String(error)}`); }
+  const resolver = createRequire(join(consumerRoot, "consumer.cjs"));
+  let modulePath;
+  try { modulePath = resolver.resolve("@acyclic-labs/graphcoder/node"); }
+  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`installed package ./node export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
   const { createNodeGraphCoderConnection } = await import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`);
   let exitResolve;
   const exited = new Promise(resolvePromise => { exitResolve = resolvePromise; });
@@ -206,6 +262,7 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
       new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
     ]);
     clearTimeout(timer);
+    rmSync(consumerRoot, { recursive: true, force: true });
     if (result.timeout) fail(`installed consumer bridge did not close within ${CLOSE_TIMEOUT_MS}ms`);
   }
 }
@@ -215,10 +272,11 @@ export async function runNativeStageScenario({ runtime = required("GRAPHCODER_NA
   const packageRoot = required("GRAPHCODER_PACKAGE_ROOT");
   const ownedRoot = root === undefined ? mkdtempSync(join(tmpdir(), "graphcoder-native-stage-")) : resolve(root);
   try {
-    runDroppedStart(runtime, ownedRoot);
+    const preflight = runPreflight(runtime, ownedRoot);
+    const dropped = await runSuppressedStart(runtime, ownedRoot);
     const result = await runReopen(runtime, ownedRoot);
     const installed = await runInstalledConsumerRead({ packageRoot, runtime, root: ownedRoot, sessionId: result.sessionId, generation: result.generation });
-    return { ...result, installed };
+    return { ...result, preflight, dropped, installed };
   } finally {
     if (root === undefined) rmSync(ownedRoot, { recursive: true, force: true });
   }
@@ -226,7 +284,7 @@ export async function runNativeStageScenario({ runtime = required("GRAPHCODER_NA
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runNativeStageScenario().then(result => {
-    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["dropped-response", "retry", "read_file", "reopen", "activity", "installed-consumer-read"], result }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["list-sessions", "invalid-fixture", "dropped-response", "retry", "read_file", "reopen", "activity", "installed-package-export", "installed-consumer-read"], result }, null, 2)}\n`);
   }).catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

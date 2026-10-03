@@ -10,6 +10,7 @@
     "fixture_policy": "The stage model is an explicit deterministic fixture. Its transcript proves runtime routing, durable operation identity, reopen, and staged file reads; it does not prove model quality or a production provider."
   },
   "public_routes": [
+    "list_sessions",
     "start_session",
     "read_file",
     "open_session",
@@ -17,16 +18,22 @@
   ],
   "fault_boundary": "The first start response is discarded after durable execution. A fresh runtime process retries the same operation identity before reading the staged file and reopening the session.",
   "required_markers": [
+    "list-sessions",
+    "invalid-fixture",
     "dropped-response",
     "retry",
     "read_file",
     "reopen",
     "activity",
+    "installed-package-export",
     "installed-consumer-read"
   ],
   "assertions": [
     "the native executable is an explicit regular-file artifact",
     "the child process receives only the minimal platform environment",
+    "list_sessions returns a typed collection and an unsupported model fixture is rejected as invalid_input",
+    "the first start request is interrupted while its response is suppressed rather than synchronously consumed",
+    "every response is correlated to the exact request identifier that caused it",
     "the retry reuses the original operation identity",
     "the staged file has the exact fixture bytes and media type",
     "the installed createNodeGraphCoderConnection transport decodes readFile with a nonzero BigInt generation",
