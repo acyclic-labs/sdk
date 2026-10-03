@@ -31,13 +31,15 @@ through the host's idempotent timer operation, so process restart resumes the
 same wait identity.
 
 For task and inbox waits, an owner binds its existing journal through
-`DurableWaitStore`. `open` records the immutable request before observation;
+`DurableWaitStore`; `StreamWaitStore` is the ready adapter for an existing
+`StreamClient`. `open` records the immutable request before observation;
 `complete` records the first terminal result before it is returned. A replay
 of the same operation and request returns that retained result, while a reused
 operation identity with different request bytes is rejected. This seam keeps
 wait recovery in the owner journal without introducing a second orchestration
 engine. The live cancellation receiver remains an authenticated runtime
-concern and is never selected by model input.
+concern and is never selected by model input. Applications can provide that
+receiver through `WaitCancellationSource` when registering the model tools.
 
 ## Model-facing tools
 
