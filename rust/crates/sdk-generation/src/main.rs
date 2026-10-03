@@ -4751,6 +4751,19 @@ mod tests {
             )
             .is_ok()
         );
+        let mut generic_identity = manifest.clone();
+        generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_name"] =
+            Value::String("sdk-example-consumer".to_owned());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &generic_identity,
+                revision
+            )
+            .is_err()
+        );
         let mut unbound_package = manifest.clone();
         unbound_package["snippets"][0]["validation"]["receipt"]["package_resolution"]["compiled_snippet_sha256"] =
             Value::String(hash_bytes(b"different snippet"));
