@@ -218,12 +218,20 @@ function pageQuery(after: string | undefined, limit: number | undefined): PageQu
  */
 export class GraphCoderUi {
   #state: GraphCoderUiState = initialState;
+  #queue: Promise<void> = Promise.resolve();
 
   constructor(readonly transport: GraphCoderTransport) {}
 
   state(): GraphCoderUiState { return this.#state; }
 
   async dispatch(command: GraphCoderUiCommand): Promise<GraphCoderUiState> {
+    const run = this.#queue.then(() => this.#dispatchOne(command), () => this.#dispatchOne(command));
+    this.#queue = run.then(() => undefined, () => undefined);
+    await run;
+    return this.#state;
+  }
+
+  async #dispatchOne(command: GraphCoderUiCommand): Promise<void> {
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {
       await this.#dispatch(command);
@@ -235,7 +243,6 @@ export class GraphCoderUi {
       this.#state = { ...this.#state, pending: false, error: normalized };
       throw normalized;
     }
-    return this.#state;
   }
 
   async #dispatch(command: GraphCoderUiCommand): Promise<void> {
