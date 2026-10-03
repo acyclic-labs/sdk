@@ -767,6 +767,13 @@ export function validateModelContent(content: WasmModelContentInput, limits: Was
 export function validateModelContextSelection(conversation: any, selection: any): void;
 
 /**
+ * Validates durable model-input manifest evidence through the production
+ * Rust admission path. The manifest JSON is supplied as exact bytes so a
+ * caller cannot replace it with an equivalent but differently encoded value.
+ */
+export function validateModelInputManifest(request: any, limits: any, policy: any, manifest_json: string): void;
+
+/**
  * Validates a complete provider-neutral model message list with the native
  * role, message-count, and content bounds.  Context builders and the stock
  * TypeScript loop therefore share the same closed role set and limits as
@@ -908,6 +915,7 @@ export interface InitOutput {
     readonly validateIdentity: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly validateModelContent: (a: any, b: any) => [number, number];
     readonly validateModelContextSelection: (a: any, b: any) => [number, number];
+    readonly validateModelInputManifest: (a: any, b: any, c: any, d: number, e: number) => [number, number];
     readonly validateModelMessages: (a: any, b: any) => [number, number];
     readonly validateSelectedModelContext: (a: any, b: any) => [number, number];
     readonly validateTaskChildrenPage: (a: any) => [number, number, number];
