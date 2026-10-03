@@ -16,6 +16,7 @@ use acyclic_harness::{
         FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
         LocalSwarmConfig, PersistentLocalSwarm,
     },
+    core::Scope,
     interaction::InteractionResponse,
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
     resources::ProviderRef,
@@ -281,6 +282,27 @@ impl WireResponse {
 struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
+    /// Host-only approval authority. The terminal receives a callback for the
+    /// exact pending invocation and never creates an issuer or scope itself.
+    approval_authorizer: ApprovalAuthorizer,
+}
+
+/// Host-owned operator authorization for one exact pending interaction.
+///
+/// A production host supplies this callback when it composes the runtime. The
+/// default terminal entrypoint remains fail-closed because it has no authority
+/// from which it could mint a responder scope.
+type ApprovalAuthorizer = Arc<
+    dyn Fn(TaskId, InteractionId) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
+>;
+
+fn unavailable_approval_authorizer(_: TaskId, _: InteractionId) -> BoxFuture<'static, Result<Scope>> {
+    async {
+        Err(HarnessError::Unsupported(
+            "approval resolution requires a host-owned operator authorizer",
+        ))
+    }
+    .boxed()
 }
 
 async fn recursive_project(
@@ -315,6 +337,16 @@ async fn recursive_project(
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
+        Self::open_with_authorizer(args, Arc::new(unavailable_approval_authorizer)).await
+    }
+
+    /// Opens the terminal with a host-owned operator callback. The callback is
+    /// passed the exact task and pending interaction identity so the host can
+    /// issue only the corresponding responder grant.
+    async fn open_with_authorizer(
+        args: &Args,
+        approval_authorizer: ApprovalAuthorizer,
+    ) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
             value => {
@@ -359,6 +391,7 @@ impl Runtime {
         Ok(Self {
             swarm,
             model_fixture: fixture,
+            approval_authorizer,
         })
     }
 
@@ -628,6 +661,9 @@ impl Runtime {
             .get("approved")
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
+        let responder = (self.approval_authorizer)(task, id)
+            .await
+            .map_err(DispatchError::from_harness)?;
         self.swarm
             .resolve_approval(
                 task,
@@ -636,6 +672,7 @@ impl Runtime {
                     approved,
                     reason: None,
                 },
+                &responder,
             )
             .await
             .map_err(DispatchError::from_harness)?;
@@ -1492,5 +1529,25 @@ mod tests {
             })
             .await;
         assert!(matches!(empty_operation, WireResponse::Err { error: WireError { code: "invalid_input", .. }, .. }));
+    }
+
+    #[tokio::test]
+    async fn approval_authorizer_receives_the_exact_pending_invocation() {
+        let expected_task = TaskId::from_bytes([0x71; 16]);
+        let expected_id = InteractionId::from_bytes([0x72; 16]);
+        let seen = Arc::new(Mutex::new(None));
+        let callback_seen = seen.clone();
+        let authorizer: ApprovalAuthorizer = Arc::new(move |task, id| {
+            let callback_seen = callback_seen.clone();
+            async move {
+                *callback_seen.lock().await = Some((task, id));
+                Err(HarnessError::Unsupported("test host authorizer"))
+            }
+            .boxed()
+        });
+
+        let result = authorizer(expected_task, expected_id).await;
+        assert!(matches!(result, Err(HarnessError::Unsupported(message)) if message == "test host authorizer"));
+        assert_eq!(*seen.lock().await, Some((expected_task, expected_id)));
     }
 }
