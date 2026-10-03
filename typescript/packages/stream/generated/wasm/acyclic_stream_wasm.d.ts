@@ -59,6 +59,12 @@ export class WasmMemoryStream {
 export function __streamErrorCodeContract(value: StreamErrorCode): StreamErrorCode;
 
 /**
+ * Advances the cumulative byte count for a hosted response. The caller may
+ * read chunks natively, but Rust owns overflow and configured-bound policy.
+ */
+export function consumeHttpResponseBytes(total: bigint, chunk: bigint, maximum: bigint): bigint;
+
+/**
  * Validate and project one hosted HTTP JSON success response into the public
  * JavaScript shape. Rust owns the scalar widths and tagged response schema:
  * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
@@ -97,6 +103,12 @@ export function nextHttpFollowCursor(response_json: string, from: bigint): bigin
  * provider. Validation failures are thrown as stable error codes.
  */
 export function normalizeCommitRequest(input: Uint8Array): Uint8Array;
+
+/**
+ * Validates and projects one gRPC read response. Rust owns protobuf decoding,
+ * record bounds, commit identity width, and request-relative contiguity.
+ */
+export function projectGrpcReadResponse(input: Uint8Array, expected: bigint): unknown;
 
 /**
  * Decode one unary memory-provider response from canonical protobuf bytes
@@ -187,11 +199,13 @@ export interface InitOutput {
     readonly __streamErrorCodeContract: (a: any) => any;
     readonly __wbg_wasmfollow_free: (a: number, b: number) => void;
     readonly __wbg_wasmmemorystream_free: (a: number, b: number) => void;
+    readonly consumeHttpResponseBytes: (a: bigint, b: bigint, c: bigint) => [bigint, number, number];
     readonly decodeHttpResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly encodeHttpRequest: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly is_stream_error_code: (a: number, b: number) => number;
     readonly nextHttpFollowCursor: (a: number, b: number, c: bigint) => [bigint, number, number];
     readonly normalizeCommitRequest: (a: number, b: number) => [number, number, number, number];
+    readonly projectGrpcReadResponse: (a: number, b: number, c: bigint) => [number, number, number];
     readonly projectMemoryResponse: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];

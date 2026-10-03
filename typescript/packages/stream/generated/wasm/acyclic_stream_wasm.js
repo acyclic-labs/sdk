@@ -127,6 +127,22 @@ export function __streamErrorCodeContract(value) {
 }
 
 /**
+ * Advances the cumulative byte count for a hosted response. The caller may
+ * read chunks natively, but Rust owns overflow and configured-bound policy.
+ * @param {bigint} total
+ * @param {bigint} chunk
+ * @param {bigint} maximum
+ * @returns {bigint}
+ */
+export function consumeHttpResponseBytes(total, chunk, maximum) {
+    const ret = wasm.consumeHttpResponseBytes(total, chunk, maximum);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return BigInt.asUintN(64, ret[0]);
+}
+
+/**
  * Validate and project one hosted HTTP JSON success response into the public
  * JavaScript shape. Rust owns the scalar widths and tagged response schema:
  * decimal uint64 strings become `bigint`, base64 bytes become `Uint8Array`,
@@ -231,6 +247,23 @@ export function normalizeCommitRequest(input) {
     var v2 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
     wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
     return v2;
+}
+
+/**
+ * Validates and projects one gRPC read response. Rust owns protobuf decoding,
+ * record bounds, commit identity width, and request-relative contiguity.
+ * @param {Uint8Array} input
+ * @param {bigint} expected
+ * @returns {unknown}
+ */
+export function projectGrpcReadResponse(input, expected) {
+    const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.projectGrpcReadResponse(ptr0, len0, expected);
+    if (ret[2]) {
+        throw takeFromExternrefTable0(ret[1]);
+    }
+    return takeFromExternrefTable0(ret[0]);
 }
 
 /**
