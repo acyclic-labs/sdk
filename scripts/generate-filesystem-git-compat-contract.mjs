@@ -21,7 +21,7 @@ function readRustContract(root) {
       "--locked",
       "--quiet",
     ],
-    { cwd: root, encoding: "utf8" },
+    { cwd: root, encoding: "utf8", windowsHide: true },
   );
   if (result.status !== 0) {
     process.stderr.write(result.stdout ?? "");

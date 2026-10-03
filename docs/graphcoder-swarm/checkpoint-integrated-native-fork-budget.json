@@ -316,6 +316,17 @@
         "Storage local Stream root is already open"
       ],
       "contract_scope": "real production composition compiled after scoped approval caller fixes; first execution fails exclusive provider ownership before recursive swarm proof"
+    },
+    {
+      "suite": "Filesystem Git compatibility",
+      "source": "657b1309",
+      "passed": 42,
+      "failed": 0,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-fs --lib git_compat -j 2 -- --nocapture",
+      "artifact_sha256": "58dac2a97b15e19cad94a323c0ac878da3917b81a9157e26f77f11a686117c20",
+      "suite_sha256": "ad8403675bea861841e245ed4544ec92fcc92c79e5c2e814be0446a889752461",
+      "contract_scope": "actual native compatibility transitions, exact source/target fencing, typed recovery fixtures; does not qualify real plugin lazy abort or full swarming"
     }
   ],
   "input_digests": {
