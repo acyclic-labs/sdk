@@ -1,0 +1,13 @@
+{
+  "protocol": "acyclic.graphcoder.transport-fault-scenarios.v1",
+  "driver": "scripts/graphcoder-installed-transport-faults.mjs",
+  "fixture": "scripts/graphcoder-transport-fault-fixture.mjs",
+  "execution_kind": "package",
+  "requirements": ["INPUT-04", "API-07", "EFFECT-06", "FAULT-01", "FAULT-02", "QUAL-01", "QUAL-03"],
+  "cases": [
+    { "id": "malformed-framing", "mode": "malformed", "expected_diagnostic": "malformed_line", "contract": "Malformed response framing rejects the pending request and closes the bridge." },
+    { "id": "correlation-rejection", "mode": "unmatched", "expected_diagnostic": "unmatched_response", "contract": "A response with an unknown request identity is rejected and cannot satisfy another request." },
+    { "id": "cancelled-response", "mode": "cancel", "expected_diagnostic": "cancelled_response", "contract": "Cancellation rejects the request, suppresses its late response, and leaves no unbounded child process." }
+  ],
+  "evidence": "Each case must be run against the installed package export with a bounded driver timeout and an observed child exit; fixture behavior is transport evidence and does not qualify native runtime effects."
+}

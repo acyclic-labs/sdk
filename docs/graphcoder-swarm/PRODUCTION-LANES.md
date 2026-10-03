@@ -87,3 +87,11 @@ record's failed or uncertain outcome.
 
 These lanes deliberately do not accept `--fixture`. The mock fixture remains a
 separate explicit suite and cannot satisfy native, PTY, or package evidence.
+
+For installed transport fault qualification, run
+`node scripts/graphcoder-installed-transport-faults.mjs` with
+`GRAPHCODER_PACKAGE_ROOT` set to the extracted package. The driver resolves
+`@acyclic-labs/graphcoder/node` through the package export map, then exercises
+malformed framing, an unmatched response identity, and a late response after
+cancellation. Every case requires the typed transport failure, the expected
+diagnostic, and observed child-process cleanup within a bounded deadline.
