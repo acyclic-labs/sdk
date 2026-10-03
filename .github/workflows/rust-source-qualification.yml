@@ -84,6 +84,9 @@ jobs:
 
       - name: Install pinned Rust toolchain
         uses: ./.github/actions/rust-toolchain
+        with:
+          components: rustfmt
+          targets: wasm32-unknown-unknown
 
       - name: Verify pinned platform toolchain
         shell: bash
@@ -127,7 +130,7 @@ jobs:
           cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
             generate --source-root "$GITHUB_WORKSPACE" --output "$out"
           cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked -- \
-            check --source-root "$GITHUB_WORKSPACE" --output "$out"
+            drift --source-root "$GITHUB_WORKSPACE" --output "$out"
           test -s "$out/sdk-generation-manifest.json"
           python -c 'import json,sys; p=json.load(open(sys.argv[1],encoding="utf-8")); assert p["status"] == "generated", p["status"]; assert not [t for t in p["tools"] if t["required"] and t["status"] != "passed"], p["tools"]' "$out/sdk-generation-manifest.json"
 
