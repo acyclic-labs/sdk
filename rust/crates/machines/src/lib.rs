@@ -690,6 +690,14 @@ impl Machines {
     pub fn new(provider: Arc<dyn MachinesProvider>) -> Self {
         Self { provider }
     }
+    /// Returns a clone of the canonical provider boundary for native language bindings.
+    ///
+    /// Bindings use this boundary so request validation, operation identity, error mapping,
+    /// and streaming semantics remain owned by the Rust provider implementation.
+    #[must_use]
+    pub fn provider(&self) -> Arc<dyn MachinesProvider> {
+        Arc::clone(&self.provider)
+    }
     /// Returns the provider's actual assurance class.
     #[must_use]
     pub fn assurance(&self) -> ProviderAssurance {

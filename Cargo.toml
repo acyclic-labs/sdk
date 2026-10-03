@@ -13,6 +13,7 @@ members = [
   "rust/crates/inference-contract",
   "rust/crates/inference-wasm",
   "rust/crates/machines",
+  "rust/crates/sdk-machines-native",
   "rust/crates/machines-wasm",
   "rust/crates/machines-daytona",
   "rust/crates/native-runtime",
