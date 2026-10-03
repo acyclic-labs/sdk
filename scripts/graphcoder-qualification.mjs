@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
 
 const DEFAULT_MATRIX = "docs/graphcoder-swarm/requirements.json";
 const RECEIPT_PROTOCOL = "acyclic.graphcoder.qualification-receipt.v1";
@@ -12,6 +13,11 @@ const EXECUTION_KINDS = new Set(["native", "compile", "mock", "pty", "package", 
 const HEX64 = /^[0-9a-f]{64}$/;
 
 const readJson = path => JSON.parse(readFileSync(resolve(path), "utf8"));
+const receiptSchemaAjv = new Ajv2020({ allErrors: true });
+receiptSchemaAjv.addFormat("date-time", value => typeof value === "string" && !Number.isNaN(Date.parse(value)));
+const validateReceiptSchemaDocument = receiptSchemaAjv.compile(
+  readJson("docs/graphcoder-swarm/qualification-receipt.schema.json"),
+);
 const sha256 = bytes => createHash("sha256").update(bytes).digest("hex");
 const fileDigest = path => sha256(readFileSync(resolve(path)));
 const currentCommit = () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
@@ -138,6 +144,10 @@ function validateCase(caseRecord, entry, suites, final) {
 export function validateReceipt(matrix, receipt, { final = false, matrixPath = DEFAULT_MATRIX, gitOps = defaultGitOps } = {}) {
   validateMatrix(matrix);
   if (!receipt || typeof receipt !== "object" || receipt.protocol !== RECEIPT_PROTOCOL) failure("receipt protocol is invalid");
+  if (!validateReceiptSchemaDocument(receipt)) {
+    const details = receiptSchemaAjv.errors?.map(error => `${error.instancePath || "receipt"} ${error.message}`).join(", ");
+    failure(`receipt schema validation failed: ${details}`);
+  }
   const expectedMatrixPath = matrixPath.replaceAll("\\", "/");
   if (!receipt.matrix || receipt.matrix.path !== expectedMatrixPath) failure("receipt does not identify the locked matrix path");
   const matrixBytes = readFileSync(resolve(matrixPath));
