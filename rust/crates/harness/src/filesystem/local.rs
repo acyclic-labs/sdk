@@ -390,6 +390,7 @@ pub struct PersistentLocalHarness {
 #[derive(Clone, Default)]
 pub struct LocalHarnessTools {
     tools: ToolRegistry,
+    batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
 }
 
 impl LocalHarnessTools {
@@ -398,13 +399,27 @@ impl LocalHarnessTools {
     pub const fn new() -> Self {
         Self {
             tools: ToolRegistry::new(),
+            batch_publisher: None,
         }
     }
 
     /// Retains one explicitly assembled tool registry.
     #[must_use]
     pub fn from_registry(tools: ToolRegistry) -> Self {
-        Self { tools }
+        Self {
+            tools,
+            batch_publisher: None,
+        }
+    }
+
+    /// Binds the owner mediated completed batch publisher used by model turns.
+    #[must_use]
+    pub fn with_batch_publisher(
+        mut self,
+        publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
+    ) -> Self {
+        self.batch_publisher = Some(publisher);
+        self
     }
 
     pub(crate) fn install_into(
@@ -419,6 +434,9 @@ impl LocalHarnessTools {
                 .ok_or_else(|| Error::Storage("local tool registry lost selected revision".into()))?;
             builder = builder.tool(tool)?;
             builder = builder.grant(format!("tool:call:{}", definition.name));
+        }
+        if let Some(publisher) = &self.batch_publisher {
+            builder = builder.batch_publisher(publisher.clone());
         }
         Ok(builder)
     }
