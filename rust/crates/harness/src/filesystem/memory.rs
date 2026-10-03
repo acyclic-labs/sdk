@@ -36,6 +36,9 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "model_history.rs"]
+mod model_history;
+
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
 fn new_memory_store(
@@ -1031,15 +1034,7 @@ where
         }
         let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
         let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
-        let content = self
-            .stage(
-                operation_id,
-                &format!("turns/{operation_id}/assistant.txt"),
-                output.text.as_bytes(),
-                "text/plain",
-                "assistant.txt",
-            )
-            .await?;
+        let content = self.stage_final_assistant(operation_id, output).await?;
         let metadata = serde_json::to_vec(&output.metadata)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let metadata = self
@@ -1070,7 +1065,7 @@ where
                 .await?
         };
         let mut aggregate = self.open_conversation(limits).await?;
-        self.append_tool_history(&mut aggregate, operation_id, user_id)
+        self.append_tool_history(&mut aggregate, operation_id, user_id, limits)
             .await?;
         let state = aggregate
             .reducer()
@@ -1114,104 +1109,6 @@ where
             },
         )
         .await
-    }
-
-    async fn append_tool_history(
-        &self,
-        aggregate: &mut StreamAggregate<P>,
-        operation_id: OperationId,
-        user_id: Uuid,
-    ) -> Result<()> {
-        let mut calls = BTreeMap::new();
-        for record in self.journal.replay(operation_id).await? {
-            let (kind, content, attachments, reply_to, call_id, step) = match record.event {
-                ExecutionEvent::ToolStarted {
-                    step,
-                    call_id,
-                    invocation,
-                } => (
-                    MessageKind::ToolCall,
-                    invocation,
-                    ReferencedAttachments::Inline { items: Vec::new() },
-                    Some(user_id),
-                    call_id,
-                    step,
-                ),
-                ExecutionEvent::ToolCompleted {
-                    step,
-                    call_id,
-                    result,
-                    projection,
-                } => {
-                    let call = calls
-                        .get(&(step, call_id.clone()))
-                        .copied()
-                        .ok_or_else(|| Error::Storage("tool result has no durable start".into()))?;
-                    (
-                        MessageKind::ToolResult,
-                        result,
-                        ReferencedAttachments::Inline {
-                            items: vec![Attachment {
-                                file: projection,
-                                label: Some("model_projection".into()),
-                            }],
-                        },
-                        Some(call),
-                        call_id,
-                        step,
-                    )
-                }
-                _ => continue,
-            };
-            let publication = derived_operation_id(
-                operation_id,
-                format!("conversation-tool:{}", record.sequence).as_bytes(),
-            );
-            let id = Uuid::from_bytes(publication.into_bytes());
-            if kind == MessageKind::ToolCall && calls.insert((step, call_id.clone()), id).is_some()
-            {
-                return Err(Error::Storage(
-                    "duplicate durable tool call identity".into(),
-                ));
-            }
-            let state = aggregate
-                .reducer()
-                .conversation()
-                .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-            if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
-                if existing.kind != kind
-                    || existing.content != content
-                    || existing.attachments != attachments
-                    || existing.reply_to != reply_to
-                    || existing.tool_call_id.as_deref() != Some(call_id.as_str())
-                {
-                    return Err(Error::Conflict(
-                        "tool publication identity belongs to another message".into(),
-                    ));
-                }
-                continue;
-            }
-            let message = ConversationMessage {
-                id,
-                sequence: state.messages.len() as u64 + 1,
-                kind,
-                content,
-                attachments,
-                reply_to,
-                tool_call_id: Some(call_id),
-                extensions: BTreeMap::new(),
-            };
-            self.append_conversation(
-                aggregate,
-                publication,
-                "tool",
-                Action::AppendConversationMessage {
-                    message: Box::new(message),
-                },
-            )
-            .await?;
-        }
-        Ok(())
     }
 
     /// Reads a completed model/tool batch from its immutable journal reference.

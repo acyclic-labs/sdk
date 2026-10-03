@@ -53,3 +53,15 @@ until concrete recursive fork activation and fault scenarios pass.
 | EFFECT-02-A | Reconcile original admission; repeat dispatch only for idempotent guarantee | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED three guarantees |
 | EFFECT-02-B | Reject altered completed boundary on replay without dispatch | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED |
 | FORK-04-A | Typed fork adapter activates children only after the shared completed boundary | concrete swarm fault E2E | PENDING |
+
+## Authoritative exchange subcontracts
+
+These supplement the original required rows; they do not qualify the full swarm.
+
+| ID | Contract | Verification | Evidence/status |
+|---|---|---|---|
+| HISTORY-01 | Store completed text, calls, successful results and rejection feedback in exact order | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED native durable storage |
+| HISTORY-02 | Restore canonical text bytes and original text message representation | pinned_model_text_preserves_bytes_and_rejects_overflow_corruption_and_reinterpretation | checkpoint-history.json; TESTED |
+| HISTORY-03 | Retain intermediate assistant text once across follow-up turns | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED |
+| FORK-01-A | Two actual sibling workspace forks receive the same completed model prefix bytes | native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix | checkpoint-history.json; TESTED fixture through production executor and SDK fork providers |
+| EFFECT-05-A | Refuse stale completed conversation before writing publication artifacts | stale_completed_boundary_is_refused_before_publication_files_are_written | checkpoint-history.json; TESTED native generation unchanged |

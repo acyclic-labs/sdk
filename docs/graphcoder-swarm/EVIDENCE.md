@@ -70,3 +70,30 @@ indeterminate; only the declared idempotent guarantee allows redispatch.
 
 The concrete adapter to existing workspace forks and child task admission is
 still pending. This checkpoint does not qualify the recursive swarm or terminal.
+
+## Authoritative history checkpoint
+
+See checkpoint-history.json for source/suite/descriptor hashes.
+Windows native: 201 library, 6 execution-journal, 1 fork-preparer recovery and
+2 model-fork-boundary tests passed, with zero ignored. Native library lint and
+WASM compilation passed. WASM execution/parity is still unverified.
+
+The native fork fixture supplies a publisher to the production stock loop.
+It publishes a complete exchange through Harness, performs two real workspace
+forks with FilesystemForkPreparer and StreamAggregate.spawn_from_report, then
+runs child models using HarnessStorage.inherited_builder. Actual child provider
+requests are captured and their inherited serialized message bytes compared to
+the pinned parent prefix. Parent history includes exact whitespace/Unicode,
+malformed-call feedback, an actual private-file effect and ordered results.
+A follow-up request proves earlier assistant text is not duplicated.
+
+The first run caught text-to-file representation drift and was repaired with
+the versioned canonical model-text artifact. Negative artifact tests reject
+noncanonical JSON, corruption, invalid encoding/type and render overflow.
+A stale-boundary fault scenario interrupts publication, appends concurrent user
+input and proves repeated refusal leaves the private workspace generation unchanged.
+
+These are real native provider effects, but activation is supplied by the test
+fixture. Production fork tools, task scheduling, complete recursive swarm recovery,
+git facade, terminal, generated bindings and fresh package qualification remain
+required and pending.

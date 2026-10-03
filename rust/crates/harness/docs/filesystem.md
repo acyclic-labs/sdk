@@ -31,3 +31,22 @@ The raw Filesystem host and the `AuthorityIssuer`/verifier pair are trusted prov
 `FilesystemWorkflowJournal` applies the same rule to resumable state-machine transitions: checkpoint state and input live in descriptor-verified private files, while its Stream contains only exact `FileRef` records. Emitted `WorkflowCommand`s contain stable operation IDs, kinds, and immutable argument refs—not inline command bodies. The journal verifies each command payload's owner-private residency before commit and on public replay. Normal commits reuse a verified in-process checkpoint/identity summary; cold recovery and uncertain appends rescan authoritative record envelopes before proceeding. A workflow is bounded to 4,096 transitions and 65,536 total transition/command identities so recovery cannot accumulate an unbounded identity set. A lost append acknowledgement is reconciled by operation identity instead of blindly dispatching the transition again.
 
 `FilesystemSchedulerPayloadStore` stages join, quorum, and reducer JSON results in an explicitly granted agent-private volume. The coordinator verifies each exact staged result and its declared schema before publishing its `FileRef`, and repeats that verification on replay.
+
+## Exact completed model history
+
+Shared HarnessStorage publishes completed batches from their immutable model
+request and completed boundary records. This includes assistant text and tool
+rejection feedback, rather than inferring history only from successful effects.
+The versioned application/vnd.acyclic.model-text.v1+json artifact is a canonical
+JSON string; projection restores the exact text message and refuses corrupt,
+noncanonical or oversized content.
+
+completed_conversation(operation, step, limits) publishes the complete exchange
+before fork preparation. It checks the authoritative boundary before writing
+publication artifacts and refuses later conversation messages. Existing Stream
+and Filesystem fork preparation/publication still own recursive fork semantics.
+
+inherited_builder binds a child's private storage to the parent's pinned model
+and prefix with a declared suffix. Tool registration and grants remain explicit;
+the inherited transcript does not add mutable workspace permissions. Applications
+still need durable fork/task admission; the constructor does not create a child.

@@ -80,6 +80,9 @@ impl ModelRole {
     }
 }
 
+/// Versioned canonical JSON string used to preserve a model text message in ref-only history.
+pub const MODEL_TEXT_MEDIA_TYPE: &str = "application/vnd.acyclic.model-text.v1+json";
+
 /// Transient model-visible content. Canonical conversation storage always retains refs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]

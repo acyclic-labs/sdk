@@ -332,6 +332,23 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
                 )));
             }
         };
+        if message.content.descriptor().media_type() == crate::model::MODEL_TEXT_MEDIA_TYPE {
+            if !resolve_attachments(message, resolver, maximum_attachments)
+                .await?
+                .is_empty()
+            {
+                return Err(Error::Invalid(
+                    "model text artifact cannot carry implicit attachments".into(),
+                ));
+            }
+            messages.push(ModelMessage {
+                role,
+                content: ModelContent::Text(
+                    read_model_text(resolver, &message.content, maximum_render_bytes).await?,
+                ),
+            });
+            continue;
+        }
         let primary_policy = match message.content.descriptor().media_type() {
             "image/png" | "image/jpeg" | "image/gif" | "image/webp" => FileProjectionPolicy::Native,
             kind if kind.starts_with("text/")
@@ -498,6 +515,31 @@ pub fn validate_model_context_selection_at_revision(
         }
     }
     Ok(())
+}
+
+async fn read_model_text<R: AttachmentListResolver + ?Sized>(
+    resolver: &R,
+    file: &FileRef,
+    maximum_render_bytes: u64,
+) -> Result<String> {
+    if file.descriptor().byte_length() > MAX_PROJECTION_JSON_BYTES {
+        return Err(Error::Invalid(
+            "model text artifact exceeds parsing limit".into(),
+        ));
+    }
+    let bytes = resolver.read(file).await?;
+    file.descriptor().verify(&bytes)?;
+    let text: String = serde_json::from_slice(&bytes)
+        .map_err(|error| Error::Invalid(format!("model text artifact is invalid: {error}")))?;
+    if crate::contract::canonical_json_bytes(&text)? != bytes {
+        return Err(Error::Invalid(
+            "model text artifact is not canonical".into(),
+        ));
+    }
+    if text.len() as u64 > maximum_render_bytes {
+        return Err(Error::Invalid("model text exceeds render limit".into()));
+    }
+    Ok(text)
 }
 
 async fn read_json_artifact<T: DeserializeOwned, R: AttachmentListResolver + ?Sized>(
@@ -768,6 +810,62 @@ mod tests {
             select_model_context(&conversation, selection, &resolver, 256, 2, 128 * 1024).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pinned_model_text_preserves_bytes_and_rejects_overflow_corruption_and_reinterpretation()
+    -> Result<()> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::new()),
+        )?;
+        let text = " \nα🦀\t literal \\n\n";
+        let bytes = crate::contract::canonical_json_bytes(&text)?;
+        let reference = FileRef::new(
+            volume.clone(),
+            "message.json",
+            "v1",
+            FileDescriptor::from_bytes(&bytes, crate::model::MODEL_TEXT_MEDIA_TYPE)?,
+            "message.json",
+        )?;
+        let resolver = ArtifactResolver {
+            bytes: bytes.clone(),
+        };
+        assert_eq!(
+            read_model_text(&resolver, &reference, text.len() as u64)
+                .await?
+                .as_bytes(),
+            text.as_bytes()
+        );
+        assert!(matches!(
+            read_model_text(&resolver, &reference, text.len() as u64 - 1).await,
+            Err(Error::Invalid(message)) if message.contains("render limit")
+        ));
+        let corrupt = ArtifactResolver {
+            bytes: br#""changed""#.to_vec(),
+        };
+        assert!(read_model_text(&corrupt, &reference, 4096).await.is_err());
+        for bytes in [
+            br#" "literal" "#.to_vec(),
+            br#"{"text":"literal"}"#.to_vec(),
+            vec![0xff],
+        ] {
+            let reference = FileRef::new(
+                volume.clone(),
+                "bad.json",
+                "v1",
+                FileDescriptor::from_bytes(&bytes, crate::model::MODEL_TEXT_MEDIA_TYPE)?,
+                "bad.json",
+            )?;
+            assert!(
+                read_model_text(&ArtifactResolver { bytes }, &reference, 4096)
+                    .await
+                    .is_err()
+            );
+        }
         Ok(())
     }
 

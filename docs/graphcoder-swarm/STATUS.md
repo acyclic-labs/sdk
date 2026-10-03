@@ -24,6 +24,11 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Completed-batch publication has a pinned implementation/guarantee and immutable admission.
 - Publication uncertainty prevents the next parent request; reconciliation uses the original admission.
 - Publication retry is permitted only for the declared idempotent guarantee.
+- Authoritative history publishes the exact complete exchange, including assistant text and rejected-call feedback.
+- Versioned text artifacts restore the original model text representation with no regenerated content.
+- Follow-up history preserves intermediate text once and publishes only the final step's text as the final reply.
+- Completed-conversation boundaries reject stale histories before publication file writes.
+- Child prefix/model binding is supplied by the shared Harness inherited constructor.
 
 ## Verification
 - Existing Harness baseline: 176 passed.
@@ -38,12 +43,16 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Native library lint gate passed; WASM compilation passed (execution not tested).
 - Completed publication recovery: 200 library + 6 persistent-journal tests passed.
 - Final publication source: native lint and WASM compilation passed.
-- Source-bound checkpoint receipts: checkpoint-recovery.json and checkpoint-publication.json.
+- Exact authoritative history: 201 library + 6 journal + 1 fork recovery + 2 native fork tests passed.
+- Two native sibling forks receive byte-identical completed prefixes and declared suffixes.
+- A native stale-boundary test confirms refusal does not change the private workspace generation.
+- Source-bound checkpoint receipts: checkpoint-recovery.json, checkpoint-publication.json and checkpoint-history.json.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
-Connect the completed-batch publisher to existing typed workspace fork publication
-and child task admission. The publisher seam alone does not create or run children.
+Implement production fork intent tools, bounded task admission and durable child activation.
+The native fixture now connects the stock publisher to existing typed workspace
+forks and child models; application-facing swarm activation remains pending.
 Extend durable composition with scoped swarm communication and git integration,
 effect recovery, terminal app, and installed-artifact acceptance evidence.
 
