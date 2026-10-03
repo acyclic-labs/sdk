@@ -2600,30 +2600,54 @@ mod local_provider_tests {
         }
     }
 
-    struct FailAfterPublish {
-        inner: Arc<dyn ContentPublisher>,
-        fail_after_stage: Arc<AtomicBool>,
+    #[derive(Clone)]
+    struct CountingNativeRunner {
+        calls: Arc<AtomicUsize>,
     }
 
-    impl ContentPublisher for FailAfterPublish {
-        fn volume(&self) -> &crate::conversation::VolumeRef {
-            self.inner.volume()
+    impl ExecutionRunner for CountingNativeRunner {
+        fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            NativeExecutionRunner.run(request)
+        }
+    }
+
+    struct FailAfterReceiptPublish {
+        inner: Arc<dyn ExecutionReceiptStore>,
+        fail_after_publish: Arc<AtomicBool>,
+    }
+
+    impl ExecutionReceiptStore for FailAfterReceiptPublish {
+        fn claim<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
+            self.inner.claim(key)
         }
 
-        fn stage<'a>(
+        fn load<'a>(
             &'a self,
-            operation_id: OperationId,
-            path: &'a str,
-            bytes: &'a [u8],
-            media_type: &'a str,
-            display_name: &'a str,
-        ) -> BoxFuture<'a, Result<FileRef>> {
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            self.inner.load(key)
+        }
+
+        fn load_attempt<'a>(
+            &'a self,
+            attempt_id: EffectAttemptId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            self.inner.load_attempt(attempt_id)
+        }
+
+        fn publish<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+            handle: &'a ExecutionClaimHandle,
+            receipt: &'a ExecutionReceipt,
+        ) -> futures::future::BoxFuture<'a, Result<FileRef>> {
             Box::pin(async move {
-                let reference = self
-                    .inner
-                    .stage(operation_id, path, bytes, media_type, display_name)
-                    .await?;
-                if self.fail_after_stage.swap(false, Ordering::SeqCst) {
+                let reference = self.inner.publish(key, handle, receipt).await?;
+                if self.fail_after_publish.swap(false, Ordering::SeqCst) {
                     return Err(Error::Storage(
                         "fault injected after durable receipt publication".into(),
                     ));
@@ -2655,20 +2679,16 @@ mod local_provider_tests {
             )
             .await?;
         let calls = Arc::new(AtomicUsize::new(0));
-        let fail_after_stage = Arc::new(AtomicBool::new(true));
-        let provider = NativeExecutionProvider::new(
+        let receipt_store: Arc<dyn ExecutionReceiptStore> = session.execution_receipt_store()?;
+        let fail_after_publish = Arc::new(AtomicBool::new(true));
+        let provider = NativeExecutionProvider::new_with_receipt_store(
             session.storage().content_verifier(),
-            Arc::new(FailAfterPublish {
-                inner: session.storage().content_publisher(),
-                fail_after_stage,
+            Arc::new(FailAfterReceiptPublish {
+                inner: Arc::clone(&receipt_store),
+                fail_after_publish,
             }),
-            Arc::new(CountingRunner {
+            Arc::new(CountingNativeRunner {
                 calls: Arc::clone(&calls),
-                outcome: RunnerOutcome::Exited {
-                    status_code: Some(0),
-                    stdout: b"durable".to_vec(),
-                    stderr: Vec::new(),
-                },
             }),
             Arc::new(LocalApprovalVerifier),
         )?;
@@ -2694,9 +2714,9 @@ mod local_provider_tests {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         let second_calls = Arc::new(AtomicUsize::new(0));
-        let restarted = NativeExecutionProvider::new(
+        let restarted = NativeExecutionProvider::new_with_receipt_store(
             session.storage().content_verifier(),
-            session.storage().content_publisher(),
+            session.execution_receipt_store()?,
             Arc::new(CountingRunner {
                 calls: Arc::clone(&second_calls),
                 outcome: RunnerOutcome::Unknown {

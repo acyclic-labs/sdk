@@ -10,8 +10,8 @@ use crate::{
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
-        ExecutionApprovalVerifier, ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt,
-        ExecutionReceiptKey, ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
+        ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt, ExecutionReceiptKey,
+        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -890,29 +890,23 @@ impl PersistentLocalHarness {
         )?))
     }
 
-    /// Builds the approved local process provider over the host-owned receipt
-    /// journal and this session's authenticated content resolver.
-    pub fn native_execution_provider(
-        &self,
-        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
-    ) -> Result<Arc<NativeExecutionProvider>> {
-        Ok(Arc::new(
-            NativeExecutionProvider::native_with_receipt_store(
-                self.storage.content_verifier(),
-                self.execution_receipt_store()?,
-                approval_verifier,
-            )?,
-        ))
+    /// Composes the production native provider around this session's
+    /// host-owned receipt journal and authenticated interaction verifier.
+    /// The provider uses the native runner and never falls back to a
+    /// model-writable receipt path.
+    pub fn native_execution_provider(&self) -> Result<NativeExecutionProvider> {
+        NativeExecutionProvider::native_with_receipt_store(
+            self.storage.content_verifier(),
+            self.execution_receipt_store()?,
+            self.storage.execution_approval_verifier(),
+        )
     }
 
-    /// Creates the explicit effect registry used by the local host.
-    pub fn effect_registry_with_native_execution(
-        &self,
-        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
-    ) -> Result<EffectRegistry> {
+    /// Creates the effect registry with the authenticated host process provider.
+    pub fn effect_registry_with_native_execution(&self) -> Result<EffectRegistry> {
         let mut registry =
             EffectRegistry::default().with_result_resolver(self.storage.content_verifier());
-        registry.register(self.native_execution_provider(approval_verifier)?)?;
+        registry.register(Arc::new(self.native_execution_provider()?))?;
         Ok(registry)
     }
 }

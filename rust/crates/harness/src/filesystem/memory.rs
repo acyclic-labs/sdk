@@ -3,7 +3,7 @@
 use crate::filesystem::{FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost};
 use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
-    Result,
+    Result, SessionId,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
         FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation,
@@ -75,6 +75,19 @@ fn validate_storage_owner(
     Ok(())
 }
 
+fn derive_session_id(volume: &VolumeRef) -> Result<SessionId> {
+    let bytes = crate::contract::canonical_json_bytes(volume)?;
+    let mut input = Vec::with_capacity(32 + bytes.len());
+    input.extend_from_slice(b"acyclic:harness:local-session:v1");
+    input.extend_from_slice(&bytes);
+    let digest = blake3::hash(&input);
+    Ok(SessionId::from_bytes(
+        digest.as_bytes()[..16]
+            .try_into()
+            .map_err(|_| Error::Invalid("derived session identity has an invalid length".into()))?,
+    ))
+}
+
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
 pub type MemoryHarnessStorage =
@@ -96,6 +109,7 @@ pub struct HarnessStorage<P, A, O> {
     issuer: AuthorityIssuer,
     stream: StreamClient<P>,
     conversation: Authority,
+    session_id: SessionId,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
@@ -829,6 +843,7 @@ where
     ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
+        let session_id = derive_session_id(&volume)?;
         let read_capability = volume.capability(VolumeOperation::Read)?;
         let write_capability = volume.capability(VolumeOperation::Write)?;
         let scope = issuer.root_for_agent(
@@ -899,6 +914,7 @@ where
                 scope.clone(),
                 maximum_file_bytes,
             )?
+            .with_session_id(session_id)?
             .with_input_verifier(input.clone()),
         );
         let publisher = Arc::new(FilesystemContentPublisher {
@@ -923,6 +939,7 @@ where
             issuer,
             stream,
             conversation,
+            session_id,
             maximum_file_bytes,
             memory_store,
         })
@@ -938,6 +955,21 @@ where
     /// Supplies the exact ref-only journal required by `HarnessBuilder`.
     #[must_use]
     pub fn journal(&self) -> Arc<dyn ExecutionJournal> {
+        self.journal.clone()
+    }
+
+    /// Stable identity used to bind owner approvals to this storage session.
+    #[must_use]
+    pub const fn session_id(&self) -> SessionId {
+        self.session_id
+    }
+
+    /// Returns the authenticated interaction journal as the execution
+    /// approval verifier. The journal is session-bound during construction.
+    #[must_use]
+    pub fn execution_approval_verifier(
+        &self,
+    ) -> Arc<dyn crate::host_execution::ExecutionApprovalVerifier> {
         self.journal.clone()
     }
 
