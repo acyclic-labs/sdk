@@ -903,16 +903,35 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &project.storage_name()?,
                 )?)
                 .await?;
-            host.apply(
-                &concurrent_target.workspace,
-                Some(&concurrent_target.generation),
-                &[WorkspaceMutation::PutFile {
-                    path: "/concurrent-target-edit.txt".into(),
-                    bytes: b"concurrent target edit".to_vec(),
-                }],
-                &IdempotencyKey::new("concurrent-target-edit")?,
-            )
-            .await?;
+            assert_eq!(
+                host.generation_ref_id(terminal_plan.target_head())?,
+                concurrent_target.generation,
+                "the inspected plan must pin the current target workspace head"
+            );
+            let edited_target = host
+                .apply(
+                    &concurrent_target.workspace,
+                    Some(&concurrent_target.generation),
+                    &[WorkspaceMutation::PutFile {
+                        path: "/concurrent-target-edit.txt".into(),
+                        bytes: b"concurrent target edit".to_vec(),
+                    }],
+                    &IdempotencyKey::new("concurrent-target-edit")?,
+                )
+                .await?;
+            assert_ne!(
+                edited_target,
+                concurrent_target.generation,
+                "the concurrent provider edit must advance the target generation"
+            );
+            let resolved_after_edit = host
+                .resolve(&concurrent_target.workspace)
+                .await?;
+            assert_eq!(
+                resolved_after_edit.generation,
+                edited_target,
+                "the prepared merge and concurrent edit must use the same physical workspace"
+            );
             let terminal_operation = OperationId::from_bytes([93; 16]);
             let terminal_approval = RootWritebackApproval::issue(
                 &issuer.verifier(),
@@ -948,10 +967,23 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &terminal_recovery,
                 )
                 .await?;
-            assert!(matches!(
-                terminal_outcome,
-                acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_)
-            ));
+            let terminal_outcome_kind = match &terminal_outcome {
+                acyclic_harness::merge::ProjectJoinOutcome::Applied(_) => "Applied",
+                acyclic_harness::merge::ProjectJoinOutcome::AlreadyApplied(_) => {
+                    "AlreadyApplied"
+                }
+                acyclic_harness::merge::ProjectJoinOutcome::NoChanges(_) => "NoChanges",
+                acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_) => "StaleTarget",
+                acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. } => "Conflicted",
+                acyclic_harness::merge::ProjectJoinOutcome::Fenced => "Fenced",
+                acyclic_harness::merge::ProjectJoinOutcome::IdempotencyConflict => {
+                    "IdempotencyConflict"
+                }
+            };
+            assert_eq!(
+                terminal_outcome_kind, "StaleTarget",
+                "unexpected terminal provider outcome"
+            );
             let terminal_entry = terminal_recovery
                 .reopen()
                 .await?
