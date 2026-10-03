@@ -5,6 +5,8 @@ use std::{
 };
 
 use acyclic_stream::{MemoryStream, grpc::Service};
+use bytes::Bytes;
+use prost::Message;
 use rcgen::generate_simple_self_signed;
 use tokio::{net::TcpListener, sync::oneshot};
 use tokio_stream::wrappers::TcpListenerStream;
@@ -73,6 +75,27 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         fixture_package.join("acyclic_stream_native.node"),
     )?;
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
+    let commit_request = acyclic_stream::wire::CommitRequest {
+        conditions: vec![acyclic_stream::wire::CommitCondition {
+            condition: Some(acyclic_stream::wire::commit_condition::Condition::Absent(
+                acyclic_stream::wire::AbsentCondition {
+                    path: "native/commit".to_owned(),
+                },
+            )),
+        }],
+        mutations: vec![acyclic_stream::wire::CommitMutation {
+            mutation: Some(acyclic_stream::wire::commit_mutation::Mutation::Append(
+                acyclic_stream::wire::AppendMutation {
+                    path: "native/commit".to_owned(),
+                    records: vec![Bytes::from_static(b"three")],
+                },
+            )),
+        }],
+        idempotency_key: Bytes::from_static(b"native-runtime-commit"),
+        deadline_unix_millis: None,
+    };
+    let mut commit_request_bytes = Vec::new();
+    commit_request.encode(&mut commit_request_bytes)?;
     let output = Command::new("node")
         .arg(script)
         .env("ACYCLIC_STREAM_NATIVE_MODULE", &fixture_package)
@@ -80,6 +103,10 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .env(
             "ACYCLIC_STREAM_FIXTURE_CA",
             base64(certificate_pem.as_bytes()),
+        )
+        .env(
+            "ACYCLIC_STREAM_FIXTURE_COMMIT_REQUEST",
+            base64(&commit_request_bytes),
         )
         .output()?;
     let _ = shutdown_sender.send(());
