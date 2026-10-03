@@ -2803,13 +2803,9 @@ fn action_workspace_id(action: &GitFilesystemAction) -> Option<WorkspaceId> {
             .or(*source)
             .map(|tree| tree.workspace_id()),
         GitFilesystemAction::SwitchWorkspace { workspace_id } => Some(*workspace_id),
-        GitFilesystemAction::Blame { .. }
-        | GitFilesystemAction::Archive { .. }
-        | GitFilesystemAction::Bisect { .. }
-        | GitFilesystemAction::RevParse { .. }
-        | GitFilesystemAction::SymbolicRef { .. }
-        | GitFilesystemAction::MergeBase { .. }
-        | GitFilesystemAction::LsFiles => None,
+        GitFilesystemAction::ForkBranch { .. }
+        | GitFilesystemAction::Blame { .. }
+        | GitFilesystemAction::Archive { .. } => None,
     }
 }
 
@@ -2856,12 +2852,7 @@ fn action_expected_workspace_tree(action: &GitFilesystemAction) -> Option<GitTre
         GitFilesystemAction::ForkBranch { source_tree, .. } => Some(*source_tree),
         GitFilesystemAction::SwitchWorkspace { .. }
         | GitFilesystemAction::Blame { .. }
-        | GitFilesystemAction::Archive { .. }
-        | GitFilesystemAction::Bisect { .. }
-        | GitFilesystemAction::RevParse { .. }
-        | GitFilesystemAction::SymbolicRef { .. }
-        | GitFilesystemAction::MergeBase { .. }
-        | GitFilesystemAction::LsFiles => None,
+        | GitFilesystemAction::Archive { .. } => None,
     }
 }
 
