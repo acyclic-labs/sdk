@@ -330,4 +330,29 @@ mod tests {
             Err(TransportSelectionError::UnknownFamily)
         );
     }
+
+    #[test]
+    fn registry_transport_inventory_has_no_unqualified_browser_or_http_option() {
+        for family in crate::FAMILY_VIEWS {
+            assert!(
+                !family.transport.native.options.is_empty(),
+                "{} must expose a native transport option",
+                family.name
+            );
+            assert!(family
+                .transport
+                .browser
+                .options
+                .iter()
+                .all(|option| option.kind != TransportKind::Grpc));
+            assert!(family
+                .transport
+                .native
+                .options
+                .iter()
+                .chain(family.transport.browser.options.iter())
+                .filter(|option| option.kind == TransportKind::HttpJson)
+                .all(|_| family.has_http_projection()));
+        }
+    }
 }
