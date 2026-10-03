@@ -2497,11 +2497,12 @@ impl PersistentLocalSwarm {
         let output = harness
             .run_with_max_steps(operation, prompt, max_steps)
             .await?;
-        self.update_session(task, |session| {
-            session.operation = Some(operation);
-            session.phase = LocalSessionPhase::Completed;
-        })
-        .await?;
+        // The per-task mutex only fences handles in this process.  A second
+        // process can cancel the task while the model is running, so the
+        // registry must be refreshed before the terminal Session event is
+        // appended.  `complete_session` also makes same-operation recovery
+        // idempotent while rejecting a different operation key.
+        self.complete_session(task, operation).await?;
         Ok(output)
     }
 
@@ -3430,6 +3431,60 @@ impl PersistentLocalSwarm {
         append_record(&stream, StoredEvent::Session(next.clone().into())).await?;
         *current = next;
         Ok(())
+    }
+
+    /// Commits a model turn's terminal session state against the durable
+    /// registry.  The local task gate cannot protect a second process, so a
+    /// fresh replay is required immediately before the append.  A retry of
+    /// the same operation is an acknowledgement of the already committed
+    /// terminal state; a different operation or a cancellation is a conflict.
+    async fn complete_session(&self, task: TaskId, operation: OperationId) -> Result<()> {
+        self.refresh_registry_state().await?;
+        let current = self.session(task).await?;
+        if current.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "local swarm task was cancelled while its model turn was running".into(),
+            ));
+        }
+        if current.phase == LocalSessionPhase::Completed {
+            return if current.operation == Some(operation) {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "local swarm task already completed under another operation".into(),
+                ))
+            };
+        }
+        if let Some(existing) = current.operation
+            && existing != operation
+        {
+            return Err(Error::Conflict(
+                "local swarm task is bound to another operation".into(),
+            ));
+        }
+        match self
+            .update_session(task, |session| {
+                session.operation = Some(operation);
+                session.phase = LocalSessionPhase::Completed;
+            })
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                // Another handle may have won the append between the refresh
+                // and our CAS.  Reconcile once and only accept an identical
+                // terminal operation; never turn a cancellation into success.
+                self.refresh_registry_state().await?;
+                let latest = self.session(task).await?;
+                if latest.phase == LocalSessionPhase::Completed
+                    && latest.operation == Some(operation)
+                {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
+        }
     }
 
     async fn task_gate(&self, task: TaskId) -> Arc<Mutex<()>> {
