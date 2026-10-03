@@ -919,13 +919,13 @@ fn run_rust(
     fs::write(
         &package_manifest,
         format!(
-            "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n"
+            "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\n"
         ),
     )
     .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
-        b"//! Bundled generated Rust SDK crates.\n",
+        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\n",
     )
     .map_err(|error| format!("write SDK package library: {error}"))?;
     let crates_root = source_root.join("rust/crates");
@@ -947,6 +947,7 @@ fn run_rust(
     let archive = Command::new("tar")
         .args(["-czf"])
         .arg(&package_path)
+        .args(["--format", "ustar", "--mtime", "1970-01-01"])
         .args(["-C"])
         .arg(&packages)
         .arg(&package_dir_name)
@@ -958,12 +959,7 @@ fn run_rust(
             String::from_utf8_lossy(&archive.stderr).trim()
         ));
     }
-    add_gzip_comment(
-        &package_path,
-        &format!(
-            "package_name = \"{package_name}\"\npackage_version = \"0.0.0\"\npackage_tree_sha256 = \"{package_tree_digest}\"\n"
-        ),
-    )?;
+    normalize_gzip_header(&package_path)?;
     fs::remove_dir_all(&package_root)
         .map_err(|error| format!("remove package staging tree: {error}"))?;
     let extract = Command::new("tar")
@@ -982,9 +978,8 @@ fn run_rust(
     let package_manifest = package_root.join("Cargo.toml");
     let consumer_manifest = consumers.join(format!("{}-Cargo.toml", snippet.metadata.id));
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
-    let bundled_crates_path = format!("../../qualification/packages/{package_dir_name}/crates");
     let consumer_manifest_bytes = format!(
-        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ path = \"{bundled_crates_path}/actors\" }}\nacyclic-stream = {{ path = \"{bundled_crates_path}/stream\", features = [\"grpc\"] }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
+        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nacyclic-stream = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
     fs::write(staging.join("Cargo.toml"), &consumer_manifest_bytes)
@@ -1473,9 +1468,12 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
             destination.display()
         )
     })?;
-    for entry in fs::read_dir(source)
+    let mut entries = fs::read_dir(source)
         .map_err(|error| format!("read package directory {}: {error}", source.display()))?
-    {
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("read package entries: {error}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
         let entry = entry.map_err(|error| format!("read package entry: {error}"))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
@@ -1505,20 +1503,17 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn add_gzip_comment(path: &Path, comment: &str) -> Result<(), String> {
+fn normalize_gzip_header(path: &Path) -> Result<(), String> {
     let mut bytes = fs::read(path).map_err(|error| format!("read gzip archive: {error}"))?;
     if bytes.len() < 10 || bytes[0] != 0x1f || bytes[1] != 0x8b || bytes[2] != 8 {
         return Err("tar output is not a gzip stream".to_owned());
     }
-    if bytes[3] & 0x04 != 0 || bytes[3] & 0x08 != 0 || bytes[3] & 0x10 != 0 {
-        return Err("tar gzip header has unsupported optional fields".to_owned());
+    if bytes[3] != 0 {
+        return Err("tar gzip header has unexpected optional fields".to_owned());
     }
-    let mut header = bytes[..10].to_vec();
-    header[3] |= 0x10;
-    header.extend_from_slice(comment.as_bytes());
-    header.push(0);
-    header.extend_from_slice(&bytes[10..]);
-    bytes = header;
+    bytes[4..8].fill(0);
+    bytes[8] = 0;
+    bytes[9] = 3;
     fs::write(path, bytes).map_err(|error| format!("write gzip metadata: {error}"))
 }
 
