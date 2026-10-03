@@ -1842,6 +1842,7 @@ describe("typed agent runtime", () => {
     type Raw = { readonly private: string; readonly public: string };
     let modelStep = 0;
     const observed: ModelMessage[] = [];
+    const serializedRequests: string[] = [];
     const tool = defineTool<null, Raw>({
       name: "private-result", revision: "1", description: "private result",
       inputSchema: { type: "null" },
@@ -1860,6 +1861,7 @@ describe("typed agent runtime", () => {
     const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:private-result")
       .model(testModel, {
         async *generate(request) {
+          serializedRequests.push(JSON.stringify(request));
           observed.push(...request.messages);
           if (modelStep++ === 0) {
             yield { kind: "tool_call" as const, callId: "private-call", name: "private-result", arguments: null };
@@ -1878,6 +1880,8 @@ describe("typed agent runtime", () => {
     });
     expect(observed[3]?.content).toEqual({ kind: "tool_result", callId: "private-call", name: "private-result", value: { public: "shown" } });
     expect(JSON.stringify(observed[3]?.content)).not.toContain("secret");
+    expect(serializedRequests.every(request => !request.includes("secret"))).toBe(true);
+    expect(serializedRequests[1]).toContain('"modelOutputSchema"');
   });
 
   test("typed run input carries attachment refs into the model context", async () => {
