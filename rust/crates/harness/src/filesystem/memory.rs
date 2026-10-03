@@ -803,6 +803,26 @@ where
         &self.volume
     }
 
+    /// Host-owned binding used by the native local execution adapter. The
+    /// returned grant is the durable composition's owner grant; callers must
+    /// not derive a receipt store from model-provided content references.
+    #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+    pub(crate) fn execution_binding(
+        &self,
+    ) -> (
+        Arc<FilesystemHost<A, O>>,
+        StreamClient<P>,
+        ContentGrant,
+        u64,
+    ) {
+        (
+            Arc::clone(&self.host),
+            self.stream.clone(),
+            self.write.clone(),
+            self.maximum_file_bytes,
+        )
+    }
+
     /// Starts a runnable local composition with this owner-controlled journal.
     #[must_use]
     pub fn builder(&self) -> crate::bundle::HarnessBuilder {
