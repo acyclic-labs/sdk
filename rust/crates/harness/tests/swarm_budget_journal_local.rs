@@ -4,12 +4,12 @@ use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
     IdempotencyKey, OperationId,
     swarm_budget::{
-        ForkPublication, SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence,
-        SwarmResourceRequest, SwarmUsage,
+        SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmResourceRequest, SwarmUsage,
     },
     swarm_budget_journal::SwarmBudgetJournal,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use futures::future::join_all;
 use std::sync::Arc;
 use tempfile::tempdir;
 
@@ -24,6 +24,7 @@ fn request(operation_id: OperationId, key: &str) -> SwarmForkRequest {
             output_bytes: 64,
             execution_time_ms: 100,
         },
+        admission_digest: None,
     }
 }
 
@@ -88,28 +89,6 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     assert!(replay.replayed);
     assert_eq!(admission.reservation, replay.reservation);
 
-    let publication = ForkPublication {
-        operation_id: child,
-        parent_operation_id: None,
-        completed_boundary_digest: [1; 32],
-        workspace_generation_digest: [2; 32],
-    };
-    journal
-        .activate(child, owner.clone(), publication)
-        .await
-        .expect("activate child");
-    journal
-        .report_usage(
-            child,
-            &owner,
-            SwarmUsage {
-                model_steps: 2,
-                output_bytes: 16,
-                execution_time_ms: 20,
-            },
-        )
-        .await
-        .expect("report child usage");
     let consumed_before_cancel = journal.usage().expect("usage").consumed;
 
     drop(journal);
@@ -121,19 +100,15 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
         consumed_before_cancel
     );
     let new_owner = restarted
-        .takeover("worker-b", 0)
+        .takeover(&owner, "worker-b")
         .await
         .expect("take over budget");
     assert_eq!(new_owner.generation, 1);
     let stale = restarted
-        .activate(child, owner, publication)
+        .cancel(child, &owner)
         .await
         .expect_err("stale owner must be fenced");
     assert!(stale.to_string().contains("stale"));
-    restarted
-        .activate(child, new_owner.clone(), publication)
-        .await
-        .expect("re-activate with recovered owner");
     restarted
         .cancel(child, &new_owner)
         .await
@@ -207,4 +182,56 @@ async fn local_stream_budget_concurrent_reservations_are_tail_atomic() {
         second.reserve_child(second_request)
     );
     assert_ne!(first.is_ok(), second.is_ok());
+}
+
+#[tokio::test]
+async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let race_limits = SwarmBudgetLimits {
+        max_active_agents: 17,
+        max_total_agents: 17,
+        max_recursion_depth: 1,
+        max_model_steps: 64,
+        max_output_bytes: 1_024,
+        max_execution_time_ms: 1_600,
+    };
+    SwarmBudgetJournal::start(&client, session, owner, race_limits)
+        .await
+        .expect("start budget");
+    let journals = join_all((0..16).map(|_| SwarmBudgetJournal::open(&client, session)))
+        .await
+        .into_iter()
+        .map(|journal| journal.expect("open budget"));
+    let journals = journals.collect::<Vec<_>>();
+    let operation_id = OperationId::new();
+    let request = request(operation_id, "same-operation-race");
+    let results = join_all(journals.into_iter().map(|mut journal| {
+        let request = request.clone();
+        async move { journal.reserve_child(request).await }
+    }))
+    .await;
+    let applied = results
+        .iter()
+        .filter(|result| matches!(result, Ok(receipt) if !receipt.replayed))
+        .count();
+    let replayed = results
+        .iter()
+        .filter(|result| matches!(result, Ok(receipt) if receipt.replayed))
+        .count();
+    assert_eq!(applied, 1);
+    assert_eq!(replayed, 15);
+    let journal = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen budget");
+    let usage = journal.usage().expect("usage");
+    assert_eq!(usage.active_agents, 2);
+    assert_eq!(usage.total_agents, 2);
+    assert_eq!(usage.reserved.model_steps, 4);
 }
