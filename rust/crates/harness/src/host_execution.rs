@@ -446,6 +446,9 @@ pub struct ExecutionReceiptRecord {
     pub result: FileRef,
     /// Typed host outcome.
     pub receipt: ExecutionReceipt,
+    /// Authenticated principal that resolved an uncertain outcome, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operator_principal: Option<String>,
 }
 
 /// Opaque owner handle returned for the one caller that acquired a claim.
@@ -458,6 +461,7 @@ pub struct ExecutionClaimHandle {
     token: [u8; 32],
     generation: u64,
     operator: bool,
+    operator_principal: Option<String>,
 }
 
 /// Authenticated host capability required to resolve an uncertain native
@@ -466,7 +470,10 @@ pub struct ExecutionClaimHandle {
 #[derive(Clone, Eq, PartialEq)]
 pub struct ExecutionResolutionCapability {
     session_id: SessionId,
+    volume: crate::conversation::VolumeRef,
     token: [u8; 32],
+    principal: String,
+    operation_id: Option<OperationId>,
 }
 
 impl std::fmt::Debug for ExecutionResolutionCapability {
@@ -474,17 +481,20 @@ impl std::fmt::Debug for ExecutionResolutionCapability {
         formatter
             .debug_struct("ExecutionResolutionCapability")
             .field("session_id", &self.session_id)
+            .field("volume", &self.volume)
+            .field("principal", &self.principal)
+            .field("operation_id", &self.operation_id)
             .field("token", &"[redacted]")
             .finish()
     }
 }
 
 impl ExecutionResolutionCapability {
-    pub(crate) fn issue(
+    pub(crate) fn owner_token(
         session_id: SessionId,
         volume: &VolumeRef,
         owner_scope: &crate::core::Scope,
-    ) -> Result<Self> {
+    ) -> Result<[u8; 32]> {
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid(
                 "execution resolution session identity cannot be zero".into(),
@@ -495,18 +505,75 @@ impl ExecutionResolutionCapability {
         input.extend_from_slice(&session_id.into_bytes());
         input.extend_from_slice(volume.id().as_bytes());
         input.extend_from_slice(owner_scope.proof());
+        Ok(*blake3::hash(&input).as_bytes())
+    }
+
+    /// Authenticates an externally issued operator scope for one operation.
+    /// The signed scope is retained only as a principal proof; the model
+    /// cannot mint this capability from a public session or volume identity.
+    pub fn authenticate(
+        verifier: &crate::core::AuthorityVerifier,
+        operator: &crate::core::Scope,
+        session_id: SessionId,
+        volume: &VolumeRef,
+        operation_id: OperationId,
+    ) -> Result<Self> {
+        verifier.verify(operator)?;
+        if session_id.into_bytes() == [0; 16]
+            || operation_id.into_bytes() == [0; 16]
+            || operator.id().is_empty()
+            || !operator.capabilities().contains("execution:resolve")
+            || !operator
+                .capabilities()
+                .contains(&format!("execution:resolve:{operation_id}"))
+        {
+            return Err(Error::Unauthorized(
+                "operator scope lacks the exact execution resolution capability".into(),
+            ));
+        }
+        let mut input = Vec::with_capacity(96);
+        input.extend_from_slice(b"acyclic:harness:execution-resolution:v2");
+        input.extend_from_slice(&session_id.into_bytes());
+        input.extend_from_slice(volume.id().as_bytes());
+        input.extend_from_slice(&operation_id.into_bytes());
+        input.extend_from_slice(operator.proof());
         Ok(Self {
             session_id,
+            volume: volume.clone(),
             token: *blake3::hash(&input).as_bytes(),
+            principal: operator.id().to_owned(),
+            operation_id: Some(operation_id),
         })
     }
 
-    pub(crate) fn matches(&self, session_id: SessionId, token: &[u8; 32]) -> bool {
-        self.session_id == session_id && &self.token == token
+    pub(crate) fn matches(
+        &self,
+        session_id: SessionId,
+        volume: &crate::conversation::VolumeRef,
+        token: &[u8; 32],
+        operation_id: Option<OperationId>,
+    ) -> bool {
+        self.session_id == session_id
+            && self.volume == *volume
+            && &self.token == token
+            && operation_id
+                .is_none_or(|actual| self.operation_id.is_none_or(|expected| expected == actual))
     }
 
-    pub(crate) const fn token(&self) -> &[u8; 32] {
-        &self.token
+    pub(crate) fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    pub(crate) fn is_operator_for(
+        &self,
+        session_id: SessionId,
+        volume: &crate::conversation::VolumeRef,
+        operation_id: OperationId,
+    ) -> bool {
+        self.session_id == session_id
+            && self.volume == *volume
+            && self.operation_id == Some(operation_id)
+            && self.principal != "owner"
     }
 }
 
@@ -517,13 +584,14 @@ impl std::fmt::Debug for ExecutionClaimHandle {
             .field("key", &self.key)
             .field("generation", &self.generation)
             .field("operator", &self.operator)
+            .field("operator_principal", &self.operator_principal)
             .field("token", &"[redacted]")
             .finish()
     }
 }
 
 impl ExecutionClaimHandle {
-    pub(crate) fn issue(key: ExecutionReceiptKey, generation: u64, operator: bool) -> Self {
+    pub(crate) fn issue(key: ExecutionReceiptKey, generation: u64) -> Self {
         let nonce = OperationId::new().into_bytes();
         let mut input = Vec::with_capacity(32 + 16 + 8);
         input.extend_from_slice(&nonce);
@@ -533,22 +601,29 @@ impl ExecutionClaimHandle {
             key,
             token: *blake3::hash(&input).as_bytes(),
             generation,
-            operator,
+            operator: false,
+            operator_principal: None,
         }
     }
 
-    pub(crate) fn from_parts(
+    pub(crate) fn from_operator_parts(
         key: ExecutionReceiptKey,
         token: [u8; 32],
         generation: u64,
-        operator: bool,
-    ) -> Self {
-        Self {
+        principal: String,
+    ) -> Result<Self> {
+        if principal.is_empty() {
+            return Err(Error::Unauthorized(
+                "operator principal cannot be empty".into(),
+            ));
+        }
+        Ok(Self {
             key,
             token,
             generation,
-            operator,
-        }
+            operator: true,
+            operator_principal: Some(principal),
+        })
     }
 
     pub(crate) fn matches(&self, key: &ExecutionReceiptKey) -> bool {
@@ -565,6 +640,10 @@ impl ExecutionClaimHandle {
 
     pub(crate) const fn is_operator(&self) -> bool {
         self.operator
+    }
+
+    pub(crate) fn operator_principal(&self) -> Option<&str> {
+        self.operator_principal.as_deref()
     }
 }
 
@@ -592,6 +671,17 @@ impl ExecutionReceiptRecord {
         if self.result.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid(
                 "execution result must be JSON content".into(),
+            ));
+        }
+        if self
+            .operator_principal
+            .as_deref()
+            .is_some_and(str::is_empty)
+            || self.operator_principal.is_some()
+                != matches!(self.receipt, ExecutionReceipt::Unknown { .. })
+        {
+            return Err(Error::Invalid(
+                "execution receipt operator principal does not match its outcome".into(),
             ));
         }
         self.receipt.validate()
@@ -1402,11 +1492,7 @@ impl NativeExecutionProvider {
                     return Err(error);
                 }
             }
-            ExecutionClaimHandle::issue(
-                Self::receipt_key(&request, approval.operation_id),
-                0,
-                false,
-            )
+            ExecutionClaimHandle::issue(Self::receipt_key(&request, approval.operation_id), 0)
         };
         let receipt = if approval.approved {
             let runner = Arc::clone(&self.runner);
@@ -1706,8 +1792,7 @@ mod tests {
                 if state.pending.iter().any(|(candidate, _)| candidate == key) {
                     return Ok(ExecutionClaim::Pending);
                 }
-                let handle =
-                    ExecutionClaimHandle::issue(key.clone(), state.pending.len() as u64, false);
+                let handle = ExecutionClaimHandle::issue(key.clone(), state.pending.len() as u64);
                 state.pending.push((key.clone(), handle.clone()));
                 Ok(ExecutionClaim::Acquired { handle })
             })
@@ -1768,6 +1853,7 @@ mod tests {
                     key: key.clone(),
                     result: result.clone(),
                     receipt: receipt.clone(),
+                    operator_principal: None,
                 });
                 state.pending.retain(|(candidate, _)| candidate != key);
                 Ok(result)

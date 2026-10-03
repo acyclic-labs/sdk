@@ -45,6 +45,8 @@ enum ExecutionReceiptEvent {
         owner_token: [u8; 32],
         generation: u64,
         operator_resolution: bool,
+        #[serde(default)]
+        operator_principal: Option<String>,
     },
 }
 
@@ -78,7 +80,6 @@ where
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
         session_id: SessionId,
-        resolution: &ExecutionResolutionCapability,
         owner_scope: &crate::core::Scope,
         read: ContentGrant,
         write: ContentGrant,
@@ -94,13 +95,8 @@ where
         }
         write.require(&volume, VolumeOperation::Write)?;
         read.require(&volume, VolumeOperation::Read)?;
-        let expected_resolution =
-            ExecutionResolutionCapability::issue(session_id, &volume, owner_scope)?;
-        if resolution != &expected_resolution {
-            return Err(Error::Unauthorized(
-                "execution receipt resolver is not bound to this session and volume".into(),
-            ));
-        }
+        let resolution_token =
+            ExecutionResolutionCapability::owner_token(session_id, &volume, owner_scope)?;
         let stream_name = format!(
             "{EXECUTION_RECEIPT_STREAM}/{}/{}",
             volume.storage_name()?,
@@ -116,7 +112,7 @@ where
             read,
             write,
             session_id,
-            resolution_token: *resolution.token(),
+            resolution_token,
             maximum_bytes: maximum_bytes.min(EXECUTION_RECEIPT_MAX_BYTES),
         })
     }
@@ -188,6 +184,7 @@ where
                     owner_token,
                     generation,
                     operator_resolution,
+                    operator_principal,
                 } => {
                     self.validate_key(key)?;
                     self.validate_result_ref(key, result)?;
@@ -206,7 +203,10 @@ where
                     let receipt: ExecutionReceipt = serde_json::from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     receipt.validate()?;
-                    if *operator_resolution != matches!(receipt, ExecutionReceipt::Unknown { .. }) {
+                    if *operator_resolution != matches!(receipt, ExecutionReceipt::Unknown { .. })
+                        || operator_principal.is_some() != *operator_resolution
+                        || operator_principal.as_deref().is_some_and(str::is_empty)
+                    {
                         return Err(Error::Conflict(
                             "execution receipt operator marker does not match its typed outcome"
                                 .into(),
@@ -266,12 +266,13 @@ where
     }
 
     /// Lists claims that remain unresolved after a provider restart.
-    pub async fn pending_claims(
+    #[cfg(test)]
+    pub(crate) async fn pending_claims(
         &self,
         resolution: &ExecutionResolutionCapability,
         resolver: &ContentGrant,
     ) -> Result<Vec<(ExecutionReceiptKey, ExecutionClaimHandle)>> {
-        if !resolution.matches(self.session_id, &self.resolution_token) {
+        if !resolution.matches(self.session_id, &self.volume, &self.resolution_token, None) {
             return Err(Error::Unauthorized(
                 "execution receipt resolver is not authenticated for this session".into(),
             ));
@@ -289,7 +290,12 @@ where
                     if !pending.iter().any(|(candidate, _)| candidate == &key) {
                         pending.push((
                             key.clone(),
-                            ExecutionClaimHandle::from_parts(key, owner_token, generation, true),
+                            ExecutionClaimHandle::from_operator_parts(
+                                key,
+                                owner_token,
+                                generation,
+                                resolution.principal().to_owned(),
+                            )?,
                         ));
                     }
                 }
@@ -300,6 +306,55 @@ where
             }
         }
         Ok(pending)
+    }
+
+    /// Returns one pending claim for an externally authenticated operator.
+    ///
+    /// Operation capabilities are deliberately non-enumerating: a caller must
+    /// present a grant for this exact operation, session, and private volume
+    /// before the journal reveals the pending claim token.
+    pub async fn pending_claim_for_operator(
+        &self,
+        key: &ExecutionReceiptKey,
+        resolution: &ExecutionResolutionCapability,
+        resolver: &ContentGrant,
+    ) -> Result<ExecutionClaimHandle> {
+        self.validate_key(key)?;
+        if !resolution.is_operator_for(self.session_id, &self.volume, key.operation_id) {
+            return Err(Error::Unauthorized(
+                "operator capability is not bound to this execution operation".into(),
+            ));
+        }
+        resolver.require(&self.volume, VolumeOperation::Write)?;
+        let (_, events) = self.events().await?;
+        if events.iter().any(|event| {
+            matches!(event, ExecutionReceiptEvent::Completed { key: candidate, .. } if candidate == key)
+        }) {
+            return Err(Error::Conflict(
+                "execution attempt already has a terminal receipt".into(),
+            ));
+        }
+        let Some((owner_token, generation)) = events.iter().find_map(|event| {
+            let ExecutionReceiptEvent::Pending {
+                key: candidate,
+                owner_token,
+                generation,
+            } = event
+            else {
+                return None;
+            };
+            (candidate == key).then_some((*owner_token, *generation))
+        }) else {
+            return Err(Error::NotFound(
+                "execution attempt is not pending operator resolution".into(),
+            ));
+        };
+        ExecutionClaimHandle::from_operator_parts(
+            key.clone(),
+            owner_token,
+            generation,
+            resolution.principal().to_owned(),
+        )
     }
 
     /// Explicitly resolves a pending claim as unknown after operator review.
@@ -313,7 +368,7 @@ where
         handle: &ExecutionClaimHandle,
         reason: impl Into<String>,
     ) -> Result<FileRef> {
-        if !resolution.matches(self.session_id, &self.resolution_token) {
+        if !resolution.is_operator_for(self.session_id, &self.volume, key.operation_id) {
             return Err(Error::Unauthorized(
                 "execution receipt resolver is not authenticated for this session".into(),
             ));
@@ -322,6 +377,41 @@ where
         if !handle.is_operator() {
             return Err(Error::Unauthorized(
                 "pending execution resolution requires an operator handle".into(),
+            ));
+        }
+        if handle.operator_principal() != Some(resolution.principal()) {
+            return Err(Error::Unauthorized(
+                "operator handle is bound to a different authenticated principal".into(),
+            ));
+        }
+        self.publish(
+            key,
+            handle,
+            &ExecutionReceipt::Unknown {
+                reason: reason.into(),
+            },
+        )
+        .await
+    }
+
+    #[cfg(test)]
+    async fn resolve_unknown_owner(
+        &self,
+        key: &ExecutionReceiptKey,
+        resolution: &ExecutionResolutionCapability,
+        resolver: &ContentGrant,
+        handle: &ExecutionClaimHandle,
+        reason: impl Into<String>,
+    ) -> Result<FileRef> {
+        if !resolution.matches(self.session_id, &self.volume, &self.resolution_token, None) {
+            return Err(Error::Unauthorized(
+                "owner execution resolver is not authenticated for this session".into(),
+            ));
+        }
+        resolver.require(&self.volume, VolumeOperation::Write)?;
+        if !handle.is_operator() || handle.operator_principal() != Some("owner") {
+            return Err(Error::Unauthorized(
+                "owner recovery requires the internal owner resolution handle".into(),
             ));
         }
         self.publish(
@@ -349,6 +439,7 @@ where
                 ExecutionReceiptEvent::Completed {
                     key: candidate,
                     result,
+                    operator_principal,
                     ..
                 } if candidate == key => {
                     self.validate_result_ref(candidate, result)?;
@@ -371,6 +462,7 @@ where
                         key: candidate.clone(),
                         result: result.clone(),
                         receipt,
+                        operator_principal: operator_principal.clone(),
                     };
                     if !pending {
                         return Err(Error::Storage(
@@ -413,7 +505,7 @@ where
                 }) {
                     return Ok(ExecutionClaim::Pending);
                 }
-                let handle = ExecutionClaimHandle::issue(key.clone(), tail, false);
+                let handle = ExecutionClaimHandle::issue(key.clone(), tail);
                 if self
                     .append_at_tail(
                         tail,
@@ -502,6 +594,11 @@ where
                     "unknown execution outcomes require operator resolution".into(),
                 ));
             }
+            if handle.is_operator() && handle.operator_principal().is_none() {
+                return Err(Error::Unauthorized(
+                    "operator receipt publication lacks an authenticated principal".into(),
+                ));
+            }
             loop {
                 let (tail, events) = self.events().await?;
                 if let Some(record) = self.terminal_for(&events, key).await? {
@@ -562,6 +659,7 @@ where
                     key: key.clone(),
                     result,
                     receipt: receipt.clone(),
+                    operator_principal: handle.operator_principal().map(ToOwned::to_owned),
                 };
                 record.validate()?;
                 let published = record.result.clone();
@@ -574,6 +672,7 @@ where
                             owner_token: *handle.token(),
                             generation: handle.generation(),
                             operator_resolution: handle.is_operator(),
+                            operator_principal: handle.operator_principal().map(ToOwned::to_owned),
                         },
                     )
                     .await?
@@ -794,13 +893,11 @@ impl PersistentLocalHarness {
     ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>>
     {
         let (host, stream, read, write, maximum_bytes) = self.storage.execution_binding();
-        let resolution = self.execution_resolution_capability()?;
         Ok(Arc::new(FilesystemExecutionReceiptStore::new(
             stream,
             host,
             self.storage.volume().clone(),
             self.storage.session_id(),
-            &resolution,
             self.storage.owner_scope(),
             read,
             write,
@@ -810,20 +907,30 @@ impl PersistentLocalHarness {
 
     /// Returns the host application's separately authenticated authority for
     /// resolving uncertain process attempts after review. This constructor is
-    /// crate-private; applications use [`Self::resolve_unknown_execution`]
+    /// crate-private; applications must obtain an operator capability from a
+    /// host authority and use [`Self::resolve_unknown_execution_with_capability`]
     /// so model-visible code cannot mint an operator capability.
+    #[cfg(test)]
     pub(crate) fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
-        ExecutionResolutionCapability::issue(
+        let token = ExecutionResolutionCapability::owner_token(
             self.storage.session_id(),
             self.storage.volume(),
             self.storage.owner_scope(),
-        )
+        )?;
+        Ok(ExecutionResolutionCapability {
+            session_id: self.storage.session_id(),
+            volume: self.storage.volume().clone(),
+            token,
+            principal: "owner".into(),
+            operation_id: None,
+        })
     }
 
     /// Resolves one protected pending execution after an authenticated host
     /// operator has reviewed its outcome. The provider remains unable to
     /// retry the command until this explicit transition is durable.
-    pub async fn resolve_unknown_execution(
+    #[cfg(test)]
+    pub(crate) async fn resolve_unknown_execution(
         &self,
         key: &ExecutionReceiptKey,
         reason: impl Into<String>,
@@ -839,7 +946,27 @@ impl PersistentLocalHarness {
             ));
         };
         store
-            .resolve_unknown(&candidate, &resolution, &resolver, &handle, reason)
+            .resolve_unknown_owner(&candidate, &resolution, &resolver, &handle, reason)
+            .await
+    }
+
+    /// Resolves one uncertain execution with a separately authenticated
+    /// operator capability bound to the exact operation identity. The
+    /// capability must be issued from a host-verified scope carrying
+    /// `execution:resolve:{operation_id}`.
+    pub async fn resolve_unknown_execution_with_capability(
+        &self,
+        key: &ExecutionReceiptKey,
+        resolution: &ExecutionResolutionCapability,
+        reason: impl Into<String>,
+    ) -> Result<FileRef> {
+        let store = self.execution_receipt_store()?;
+        let (_, _, _, resolver, _) = self.storage.execution_binding();
+        let handle = store
+            .pending_claim_for_operator(key, resolution, &resolver)
+            .await?;
+        store
+            .resolve_unknown(key, resolution, &resolver, &handle, reason)
             .await
     }
 
@@ -983,7 +1110,7 @@ mod tests {
             assert_eq!(pending.len(), 1);
             let (_, operator) = pending.into_iter().next().unwrap();
             store
-                .resolve_unknown(
+                .resolve_unknown_owner(
                     &key,
                     &resolution,
                     &resolver,
@@ -1045,21 +1172,7 @@ mod tests {
         )
         .await?;
         let forged = second.execution_resolution_capability()?;
-        let (host, stream, read, write, maximum_bytes) = first.storage().execution_binding();
-        assert!(
-            FilesystemExecutionReceiptStore::new(
-                stream,
-                host,
-                first.storage().volume().clone(),
-                first.storage().session_id(),
-                &forged,
-                first.storage().owner_scope(),
-                read,
-                write,
-                maximum_bytes,
-            )
-            .is_err()
-        );
+        assert_ne!(forged, first.execution_resolution_capability()?);
         drop(second);
         drop(first);
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
