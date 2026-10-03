@@ -45,19 +45,35 @@ The runtime methods and parameter names are fixed: `list_sessions(query)`,
 `resume_session(session_id)`, `read_activity(session_id, query?)`,
 `read_messages(session_id, query?)`, `send_message(session_id, sender_id,
 recipient_id, body)`, `list_approvals(session_id, query?)`,
-`resolve_approval(approval_id, approved)`, `cancel_session(session_id)`,
+`resolve_approval(approval_id, approved, session_id?)`, `cancel_session(session_id)`,
 `list_changes(session_id)`, `read_change(session_id, path, generation)`,
 `read_file(session_id, path, generation)`, and
 `approve_writeback(session_id, operation_id, expected_generation, approved)`.
 Generations and activity sequences are unsigned decimal strings; file bodies
 use an array of octets. A failed response is
 `{"request_id":"...","ok":false,"error":{"code":"denied","message":"..."}}`.
+Session-bound responses include the requested `session_id`; change and file
+bodies use `unified_diff` and `media_type`, renamed entries use `old_path`, and
+writeback receipts echo the requested operation, session, generation, and
+boolean `applied` value. The adapter rejects a response that changes any of
+these bindings before exposing it to the UI.
+The default JSON-lines line and bridge-envelope bound is 16 MiB. File bodies
+have a 64 MiB protocol ceiling; a host that needs larger files must use its
+own chunking protocol or explicitly configure a larger line/envelope within
+that 64 MiB ceiling.
 
 Hosts consume it by constructing `new HarnessGraphCoderTransport(bridge)` and
 passing that transport to `new GraphCoderTerminal(transport, io)` or
 `new GraphCoderUi(transport)`. The host may implement `bridge.request` over a
 JSON-lines process, native callback, or WASM binding; the package does not
 choose or start that execution provider.
+
+Hosts that want the packaged command loop without the deterministic fixture can
+call `runCliWithTransport(argv, transport, io)` from the terminal entry point.
+Headless commands return status `1` when any command produces an error, and
+fixture flags are rejected by this production runner. The fixture-only
+`runCli` entry point requires an explicit supported `--fixture` and remains a
+test/demo surface.
 
 Node hosts that explicitly own a local runtime executable can use
 `@acyclic-labs/graphcoder/node`'s `JsonLineGraphCoderBridge`. It correlates

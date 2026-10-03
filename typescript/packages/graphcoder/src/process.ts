@@ -9,6 +9,8 @@ export interface GraphCoderProcessBridgeOptions {
   /** Environment is explicit; omitted means an empty environment. */
   readonly env?: NodeJS.ProcessEnv;
   readonly maximumLineBytes?: number;
+  /** Optional host-defined wire cancellation control for a pending request. */
+  readonly cancelMessage?: (requestId: string) => GraphCoderWireRequest | undefined;
   readonly onDiagnostic?: (event: GraphCoderProcessDiagnostic) => void;
 }
 
@@ -16,6 +18,8 @@ export type GraphCoderProcessDiagnostic =
   | { readonly kind: "stderr"; readonly text: string }
   | { readonly kind: "malformed_line"; readonly text: string }
   | { readonly kind: "unmatched_response"; readonly requestId: string }
+  | { readonly kind: "cancelled_response"; readonly requestId: string }
+  | { readonly kind: "cancel_control_failed"; readonly requestId: string; readonly message: string }
   | { readonly kind: "exit"; readonly code: number | null; readonly signal: NodeJS.Signals | null };
 
 interface PendingRequest {
@@ -23,7 +27,7 @@ interface PendingRequest {
   readonly reject: (error: GraphCoderError) => void;
 }
 
-const DEFAULT_MAXIMUM_LINE_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAXIMUM_PROCESS_LINE_BYTES = 16 * 1024 * 1024;
 
 /**
  * JSON-lines bridge for a host-owned local runtime executable.
@@ -36,15 +40,18 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #pending = new Map<string, PendingRequest>();
   readonly #onDiagnostic: (event: GraphCoderProcessDiagnostic) => void;
   readonly #maximumLineBytes: number;
+  readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
+  readonly #cancelled = new Set<string>();
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
 
   constructor(options: GraphCoderProcessBridgeOptions) {
-    this.#maximumLineBytes = options.maximumLineBytes ?? DEFAULT_MAXIMUM_LINE_BYTES;
+    this.#maximumLineBytes = options.maximumLineBytes ?? DEFAULT_MAXIMUM_PROCESS_LINE_BYTES;
     if (!Number.isSafeInteger(this.#maximumLineBytes) || this.#maximumLineBytes < 1) {
       throw new GraphCoderError("invalid_input", "maximum process line bytes must be positive");
     }
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
+    this.#cancelMessage = options.cancelMessage;
     const spawnOptions: SpawnOptions = {
       cwd: options.cwd,
       env: options.env ?? {},
@@ -95,6 +102,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     const pending = this.#pending.get(requestId);
     if (pending === undefined) return false;
     this.#pending.delete(requestId);
+    this.#cancelled.add(requestId);
+    while (this.#cancelled.size > 4_096) this.#cancelled.delete(this.#cancelled.values().next().value!);
+    try {
+      const control = this.#cancelMessage?.(requestId);
+      if (control !== undefined) this.#writeCancelControl(requestId, control);
+    } catch (error) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+    }
     pending.reject(new GraphCoderError("transport", reason));
     return true;
   }
@@ -148,6 +163,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     const requestId = (value as { request_id: string }).request_id;
     const pending = this.#pending.get(requestId);
     if (pending === undefined) {
+      if (this.#cancelled.delete(requestId)) {
+        this.#onDiagnostic({ kind: "cancelled_response", requestId });
+        return;
+      }
       this.#onDiagnostic({ kind: "unmatched_response", requestId });
       return;
     }
@@ -165,5 +184,25 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #rejectPending(error: GraphCoderError): void {
     for (const pending of this.#pending.values()) pending.reject(error);
     this.#pending.clear();
+  }
+
+  #writeCancelControl(requestId: string, request: GraphCoderWireRequest): void {
+    let line: string;
+    try { line = `${JSON.stringify(request)}\n`; }
+    catch (error) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    if (Buffer.byteLength(line, "utf8") > this.#maximumLineBytes) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control exceeds the configured line size" });
+      return;
+    }
+    try {
+      this.#child.stdin.write(line, error => {
+        if (error != null) this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error.message });
+      });
+    } catch (error) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+    }
   }
 }

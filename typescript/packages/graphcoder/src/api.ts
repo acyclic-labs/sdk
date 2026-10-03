@@ -144,7 +144,7 @@ export interface GraphCoderTransport {
   readMessages(sessionId: SessionId, query?: PageQuery): Promise<MessagePage>;
   sendMessage(input: { readonly sessionId: SessionId; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }): Promise<GraphMessage>;
   listApprovals(sessionId: SessionId, query?: PageQuery): Promise<ApprovalPage>;
-  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean }): Promise<ApprovalRequest>;
+  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId?: SessionId }): Promise<ApprovalRequest>;
   cancelSession(sessionId: SessionId): Promise<SessionSnapshot>;
   listChanges(sessionId: SessionId): Promise<{ readonly generation: bigint; readonly items: readonly ChangeSummary[] }>;
   readChange(sessionId: SessionId, path: string, generation: bigint): Promise<ChangeBody>;
@@ -207,6 +207,18 @@ function checkedId(value: string, label: string): string {
   return value;
 }
 
+function checkedPath(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  if (bytes.byteLength === 0 || bytes.byteLength > 4_096) throw new GraphCoderError("invalid_input", "path must be between 1 and 4096 UTF-8 bytes");
+  if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw new GraphCoderError("invalid_input", "path must be a relative slash-separated path");
+  }
+  if (value.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
+    throw new GraphCoderError("invalid_input", "path contains an empty or traversal segment");
+  }
+  return value;
+}
+
 function checkedPageLimit(limit: number | undefined): number | undefined {
   if (limit === undefined) return undefined;
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_024) {
@@ -230,24 +242,60 @@ function pageQuery(after: string | undefined, limit: number | undefined): PageQu
 export class GraphCoderUi {
   #state: GraphCoderUiState = initialState;
   #queue: Promise<void> = Promise.resolve();
+  #cancelEpoch = 0;
+  #lastCancellation: GraphCoderUiState | undefined;
 
   constructor(readonly transport: GraphCoderTransport) {}
 
   state(): GraphCoderUiState { return snapshotState(this.#state); }
 
   async dispatch(command: GraphCoderUiCommand): Promise<GraphCoderUiState> {
+    // Cancellation must be able to reach the durable owner while a history or
+    // model request is waiting. It is deliberately the only command that may
+    // bypass the presentation queue; stale work is fenced below.
+    if (command.kind === "cancel_session") return this.#cancelNow();
     const run = this.#queue.then(() => this.#dispatchOne(command), () => this.#dispatchOne(command));
     this.#queue = run.then(() => undefined, () => undefined);
     await run;
-    return this.#state;
+    // Never hand the private projection graph to a host.  In particular,
+    // dispatch callers must receive the same detached snapshot as state().
+    return this.state();
+  }
+
+  async #cancelNow(): Promise<GraphCoderUiState> {
+    const session = this.#requireSelected();
+    this.#cancelEpoch += 1;
+    this.#state = { ...this.#state, pending: true, error: undefined };
+    try {
+      this.#select(await this.transport.cancelSession(session.summary.id));
+      this.#state = { ...this.#state, pending: false };
+      this.#lastCancellation = this.#state;
+      return this.state();
+    } catch (error) {
+      const normalized = error instanceof GraphCoderError
+        ? error
+        : new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
+      this.#state = { ...this.#state, pending: false, error: normalized };
+      this.#lastCancellation = this.#state;
+      throw normalized;
+    }
   }
 
   async #dispatchOne(command: GraphCoderUiCommand): Promise<void> {
+    const epoch = this.#cancelEpoch;
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {
       await this.#dispatch(command);
+      if (epoch !== this.#cancelEpoch) {
+        if (this.#lastCancellation !== undefined) this.#state = this.#lastCancellation;
+        return;
+      }
       this.#state = { ...this.#state, pending: false };
     } catch (error) {
+      if (epoch !== this.#cancelEpoch) {
+        if (this.#lastCancellation !== undefined) this.#state = this.#lastCancellation;
+        return;
+      }
       const normalized = error instanceof GraphCoderError
         ? error
         : new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
@@ -303,7 +351,9 @@ export class GraphCoderUi {
         return;
       }
       case "resolve_approval": {
-        const approval = await this.transport.resolveApproval({ approvalId: checkedId(command.approvalId, "approval id") as ApprovalId, approved: command.approved });
+        const session = this.#requireSelected();
+        const approval = await this.transport.resolveApproval({ approvalId: checkedId(command.approvalId, "approval id") as ApprovalId, approved: command.approved, sessionId: session.summary.id });
+        if (approval.sessionId !== session.summary.id) throw new GraphCoderError("transport", "approval response is not bound to the selected session");
         this.#state = { ...this.#state, approvals: this.#state.approvals.map(item => item.id === approval.id ? approval : item) };
         return;
       }
@@ -322,7 +372,7 @@ export class GraphCoderUi {
         const session = this.#requireSelected();
         const generation = command.generation ?? this.#state.changesGeneration;
         if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a diff");
-        const changeBody = await this.transport.readChange(session.summary.id, checkedId(command.path, "change path"), generation);
+        const changeBody = await this.transport.readChange(session.summary.id, checkedPath(command.path), generation);
         this.#state = { ...this.#state, changeBody };
         return;
       }
@@ -330,7 +380,7 @@ export class GraphCoderUi {
         const session = this.#requireSelected();
         const generation = command.generation ?? this.#state.changesGeneration;
         if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a file");
-        const fileBody = await this.transport.readFile(session.summary.id, checkedId(command.path, "file path"), generation);
+        const fileBody = await this.transport.readFile(session.summary.id, checkedPath(command.path), generation);
         this.#state = { ...this.#state, fileBody };
         return;
       }
@@ -358,13 +408,70 @@ function assertNever(value: never): never { throw new GraphCoderError("invalid_i
 
 function snapshotState(state: GraphCoderUiState): GraphCoderUiState {
   return Object.freeze({
-    ...state,
-    sessions: Object.freeze([...state.sessions]),
-    activity: Object.freeze([...state.activity]),
-    messages: Object.freeze([...state.messages]),
-    approvals: Object.freeze([...state.approvals]),
-    changes: Object.freeze([...state.changes]),
+    sessions: Object.freeze(state.sessions.map(cloneSessionSummary)),
+    sessionsNext: state.sessionsNext,
+    selectedSession: state.selectedSession === undefined ? undefined : cloneSessionSnapshot(state.selectedSession),
+    activity: Object.freeze(state.activity.map(cloneActivityEvent)),
+    activityNext: state.activityNext,
+    messages: Object.freeze(state.messages.map(cloneMessage)),
+    messagesNext: state.messagesNext,
+    approvals: Object.freeze(state.approvals.map(cloneApproval)),
+    approvalsNext: state.approvalsNext,
+    changes: Object.freeze(state.changes.map(cloneChangeSummary)),
+    changesGeneration: state.changesGeneration,
+    changeBody: state.changeBody === undefined ? undefined : cloneChangeBody(state.changeBody),
+    fileBody: state.fileBody === undefined ? undefined : cloneFileBody(state.fileBody),
+    writeback: state.writeback === undefined ? undefined : cloneWritebackReceipt(state.writeback),
+    pending: state.pending,
+    error: state.error === undefined ? undefined : new GraphCoderError(state.error.code, state.error.message),
   });
+}
+
+function cloneSessionSummary(value: SessionSummary): SessionSummary {
+  return Object.freeze({ ...value });
+}
+
+function cloneAgentSummary(value: AgentSummary): AgentSummary {
+  return Object.freeze({ ...value, children: Object.freeze([...value.children]) });
+}
+
+function cloneSessionSnapshot(value: SessionSnapshot): SessionSnapshot {
+  return Object.freeze({
+    summary: cloneSessionSummary(value.summary),
+    agents: Object.freeze(value.agents.map(cloneAgentSummary)),
+    workspaceGeneration: value.workspaceGeneration,
+  });
+}
+
+function cloneActivityEvent(value: ActivityEvent): ActivityEvent {
+  return Object.freeze({ ...value });
+}
+
+function cloneMessage(value: GraphMessage): GraphMessage {
+  return Object.freeze({ ...value });
+}
+
+function cloneApproval(value: ApprovalRequest): ApprovalRequest {
+  return Object.freeze({ ...value });
+}
+
+function cloneChangeSummary(value: ChangeSummary): ChangeSummary {
+  return Object.freeze({ ...value });
+}
+
+function cloneChangeBody(value: ChangeBody): ChangeBody {
+  return Object.freeze({ ...value });
+}
+
+function cloneFileBody(value: FileBody): FileBody {
+  // Uint8Array instances cannot be frozen on all supported runtimes.  A
+  // detached copy still prevents mutation of a returned snapshot from
+  // changing the UI's private projection or a later snapshot.
+  return Object.freeze({ ...value, bytes: Uint8Array.from(value.bytes) });
+}
+
+function cloneWritebackReceipt(value: WritebackReceipt): WritebackReceipt {
+  return Object.freeze({ ...value });
 }
 
 export function sessionId(value: string): SessionId { return checkedId(value, "session id") as SessionId; }

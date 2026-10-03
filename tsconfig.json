@@ -10,6 +10,7 @@
     { "path": "./typescript/packages/machines" },
     { "path": "./typescript/packages/inference" },
     { "path": "./typescript/packages/pi" },
+    { "path": "./typescript/packages/graphcoder" },
     { "path": "./typescript/packages/sdk" }
   ]
 }

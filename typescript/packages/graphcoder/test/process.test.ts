@@ -37,12 +37,15 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("cancels one pending request while keeping the process available", async () => {
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => ({ request_id: `${requestId}:cancel`, method: "cancel_session", params: {} }) });
     const pending = bridge.request(request("cancel", 100));
     expect(bridge.cancel("cancel", "user cancelled")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport", message: "user cancelled" });
     const response = await bridge.request(request("after-cancel"));
     expect(response).toMatchObject({ request_id: "after-cancel", ok: true });
+    await new Promise<void>(resolve => setTimeout(resolve, 120));
+    expect(diagnostics.some(event => event.kind === "cancelled_response" && event.requestId === "cancel")).toBe(true);
     expect(bridge.cancel("missing")).toBe(false);
     bridge.close();
   });

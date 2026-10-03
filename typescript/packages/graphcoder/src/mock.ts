@@ -158,12 +158,13 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     return Promise.resolve(page(this.#session(sessionId).approvals, query));
   }
 
-  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean }): Promise<ApprovalRequest> {
+  resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId?: SessionId }): Promise<ApprovalRequest> {
     this.calls.push({ method: "resolveApproval" });
     for (const session of this.#sessions.values()) {
       const index = session.approvals.findIndex(approval => approval.id === input.approvalId);
       if (index >= 0) {
         const current = session.approvals[index]!;
+        if (input.sessionId !== undefined && input.sessionId !== current.sessionId) return Promise.reject(new GraphCoderError("denied", "approval belongs to another session"));
         const next: ApprovalRequest = { ...current, state: input.approved ? "approved" : "declined" };
         session.approvals[index] = next;
         return Promise.resolve(next);

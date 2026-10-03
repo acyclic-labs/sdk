@@ -23,6 +23,11 @@ function writeLine(io: TerminalIO, value: unknown): void {
   })}\n`);
 }
 
+function errorProjection(error: unknown): Record<string, unknown> {
+  if (error instanceof GraphCoderError) return { code: error.code, message: error.message };
+  return { code: "transport", message: error instanceof Error ? error.message : String(error) };
+}
+
 function words(line: string): string[] {
   const values = line.trim().split(/\s+/u);
   return values.length === 1 && values[0] === "" ? [] : values;
@@ -154,11 +159,16 @@ export class GraphCoderTerminal {
     throw new GraphCoderError("invalid_input", `unknown command ${command}`);
   }
 
-  async headless(commands: readonly string[]): Promise<void> {
+  async headless(commands: readonly string[]): Promise<number> {
+    let failed = false;
     for (const line of commands) {
       try { await this.command(line); }
-      catch (error) { writeLine(this.#io, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
+      catch (error) {
+        failed = true;
+        writeLine(this.#io, { ok: false, error: errorProjection(error) });
+      }
     }
+    return failed ? 1 : 0;
   }
 
   async interactive(): Promise<void> {
@@ -179,10 +189,30 @@ export class GraphCoderTerminal {
         }
         if (line.trim() === "quit" || line.trim() === "exit") { await this.command(line); return; }
         try { await this.command(line); }
-        catch (error) { writeLine(this.#io, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
+        catch (error) { writeLine(this.#io, { ok: false, error: errorProjection(error) }); }
       }
     } finally { readline.close(); }
   }
+}
+
+/**
+ * Runs the public terminal command loop against a host-owned transport. The
+ * executable, process bridge, and durable Harness remain the host's concern;
+ * this helper only selects headless versus interactive presentation.
+ */
+export async function runCliWithTransport(argv: readonly string[], transport: GraphCoderTransport, io: TerminalIO = {}): Promise<number> {
+  if (argv.some(value => value.startsWith("--fixture="))) {
+    writeLine(io, { ok: false, error: "--fixture is only supported by the explicit mock CLI" });
+    return 2;
+  }
+  const terminal = new GraphCoderTerminal(transport, io);
+  if (argv.length > 0) return await terminal.headless(argv);
+  if (io.input !== undefined || process.stdin.isTTY) {
+    await terminal.interactive();
+    return 0;
+  }
+  writeLine(io, { ok: true, usage: "graphcoder [command ...]" });
+  return 0;
 }
 
 export async function runCli(argv: readonly string[], io: TerminalIO = {}): Promise<number> {
@@ -193,10 +223,12 @@ export async function runCli(argv: readonly string[], io: TerminalIO = {}): Prom
     return 2;
   }
   const transport = createMockTransport({ fixture: fixture as MockFixture });
-  const terminal = new GraphCoderTerminal(transport, io);
   const commands = argv.filter(value => !value.startsWith("--fixture="));
-  if (commands.length > 0) { await terminal.headless(commands); return 0; }
-  if (io.input !== undefined || io.output !== undefined || process.stdin.isTTY) { await terminal.interactive(); return 0; }
+  if (commands.length > 0) return await runCliWithTransport(commands, transport, io);
+  if (io.input !== undefined || process.stdin.isTTY) {
+    await new GraphCoderTerminal(transport, io).interactive();
+    return 0;
+  }
   writeLine(io, { ok: true, usage: "graphcoder --fixture=deterministic [command ...]" });
   return 0;
 }

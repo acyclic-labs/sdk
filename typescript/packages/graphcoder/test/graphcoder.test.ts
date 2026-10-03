@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { GraphCoderError, GraphCoderUi, agentId, approvalId, sessionId, type SessionId } from "../src/api.js";
 import { BridgeGraphCoderTransport, type GraphCoderWireRequest, type GraphCoderWireResponse } from "../src/bridge.js";
 import { createMockTransport } from "../src/mock.js";
-import { GraphCoderTerminal, runCli } from "../src/terminal.js";
+import { GraphCoderTerminal, runCli, runCliWithTransport } from "../src/terminal.js";
 
 function writable(): { readonly stream: NodeJS.WritableStream; readonly lines: () => Array<{ readonly ok?: boolean; readonly [key: string]: unknown }> } {
   const values: string[] = [];
@@ -21,9 +21,9 @@ describe("GraphCoder UI transport boundary", () => {
         const response = (result: unknown): GraphCoderWireResponse => ({ request_id: request.request_id, ok: true, result });
         switch (request.method) {
           case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] }));
-          case "list_changes": return Promise.resolve(response({ generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
-          case "read_change": return Promise.resolve(response({ path: "README.md", unifiedDiff: "@@ -1 +1 @@", generation: "7" }));
-          case "read_file": return Promise.resolve(response({ path: "README.md", mediaType: "text/markdown", bytes: [72, 105], generation: "7" }));
+          case "list_changes": return Promise.resolve(response({ session_id: "session-1", generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
+          case "read_change": return Promise.resolve(response({ path: "README.md", unified_diff: "@@ -1 +1 @@", generation: "7" }));
+          case "read_file": return Promise.resolve(response({ path: "README.md", media_type: "text/markdown", bytes: [72, 105], generation: "7" }));
           default: return Promise.resolve({ request_id: request.request_id, ok: false, error: { code: "unsupported", message: `fixture does not implement ${request.method}` } });
         }
       },
@@ -52,10 +52,26 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedPage.listSessions()).rejects.toMatchObject({ code: "transport" });
     await expect(malformedPage.listSessions({ limit: 0 })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", -1n)).rejects.toMatchObject({ code: "invalid_input" });
-    const malformedFile = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { path: "README.md", mediaType: "text/markdown", bytes: [256], generation: "1" } }) });
+    await expect(malformedPage.readFile(sessionId("session-1"), "../secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(malformedPage.readFile(sessionId("session-1"), "C:\\secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(malformedPage.readFile(sessionId("session-1"), "a//b", 1n)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(malformedPage.readFile(sessionId("session-1"), "x".repeat(4_097), 1n)).rejects.toMatchObject({ code: "invalid_input" });
+    const malformedFile = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { path: "README.md", media_type: "text/markdown", bytes: [256], generation: "1" } }) });
     await expect(malformedFile.readFile(sessionId("session-1"), "README.md", 1n)).rejects.toMatchObject({ code: "transport" });
     const oversized = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "x".repeat(128), state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] } }) }, "test", 256);
     await expect(oversized.listSessions()).rejects.toMatchObject({ code: "transport" });
+  });
+
+  test("bridge rejects response bindings that do not match the requested session, path, generation, or receipt", async () => {
+    const snapshot = { summary: { id: "other", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }, agents: [], workspace_generation: "3" };
+    const wrongSession = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: snapshot }) });
+    await expect(wrongSession.openSession(sessionId("session-1"))).rejects.toMatchObject({ code: "transport" });
+
+    const wrongBody = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { path: "other.txt", unified_diff: "", generation: "8" } }) });
+    await expect(wrongBody.readChange(sessionId("session-1"), "README.md", 7n)).rejects.toMatchObject({ code: "transport" });
+
+    const wrongReceipt = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { operation_id: "other", session_id: "session-1", generation: "7", applied: "yes" } }) });
+    await expect(wrongReceipt.approveWriteback({ sessionId: sessionId("session-1"), operationId: "op-1", expectedGeneration: 7n, approved: true })).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bridge binds approval and cancellation arguments without local side effects", async () => {
@@ -64,16 +80,20 @@ describe("GraphCoder UI transport boundary", () => {
       request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
         requests.push(request);
         if (request.method === "approve_writeback") return Promise.resolve({ request_id: request.request_id, ok: true, result: { operation_id: "op-7", session_id: "session-1", generation: "3", applied: true } });
+        if (request.method === "resolve_approval") return Promise.resolve({ request_id: request.request_id, ok: true, result: { id: "approval-1", session_id: "session-1", agent_id: "agent-1", operation_id: "op-7", action_digest: "digest", description: "approve", state: "approved", created_at: "2026-01-01T00:00:00.000Z" } });
         return Promise.resolve({ request_id: request.request_id, ok: true, result: { summary: { id: "session-1", title: "inspect", state: "cancelled", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }, agents: [], workspace_generation: "3" } });
       },
     };
     const transport = new BridgeGraphCoderTransport(bridge);
+    const resolved = await transport.resolveApproval({ approvalId: approvalId("approval-1"), sessionId: sessionId("session-1"), approved: true });
+    expect(resolved.id).toBe(approvalId("approval-1"));
     const receipt = await transport.approveWriteback({ sessionId: sessionId("session-1"), operationId: "op-7", expectedGeneration: 3n, approved: true });
     expect(receipt).toMatchObject({ operationId: "op-7", sessionId: sessionId("session-1"), generation: 3n, applied: true });
     const cancelled = await transport.cancelSession(sessionId("session-1"));
     expect(cancelled.summary.state).toBe("cancelled");
-    expect(requests[0]?.params).toEqual({ session_id: "session-1", operation_id: "op-7", expected_generation: "3", approved: true });
-    expect(requests[1]?.params).toEqual({ session_id: "session-1" });
+    expect(requests[0]?.params).toEqual({ approval_id: "approval-1", session_id: "session-1", approved: true });
+    expect(requests[1]?.params).toEqual({ session_id: "session-1", operation_id: "op-7", expected_generation: "3", approved: true });
+    expect(requests[2]?.params).toEqual({ session_id: "session-1" });
   });
 
   test("session listing is summary-only and does not start workers or hydrate workspace", async () => {
@@ -157,6 +177,45 @@ describe("GraphCoder UI transport boundary", () => {
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "listSessions"]);
     expect(ui.state().sessions.map(session => session.id as string)).toEqual(["session-1"]);
   });
+
+  test("dispatch and nested snapshots are detached from private UI state", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    const dispatched = await ui.dispatch({ kind: "start_session", prompt: "inspect" });
+    expect(Object.isFrozen(dispatched.sessions)).toBe(true);
+    expect(Object.isFrozen(dispatched.selectedSession!.agents)).toBe(true);
+    expect(ui.state().sessions).toHaveLength(0);
+    expect(ui.state().selectedSession!.agents).toHaveLength(1);
+
+    await ui.dispatch({ kind: "list_changes" });
+    await ui.dispatch({ kind: "read_file", path: "README.md" });
+    const first = ui.state();
+    first.fileBody!.bytes[0] = 0;
+    expect(Object.isFrozen(first.changes)).toBe(true);
+    const second = ui.state();
+    expect(second.fileBody!.bytes[0]).toBe(new TextEncoder().encode("# GraphCoder fixture\n")[0]);
+    expect(second.changes).toHaveLength(1);
+  });
+
+  test("cancellation reaches the owner while a history request is pending", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", prompt: "inspect" });
+    let release!: () => void;
+    const original = transport.readActivity.bind(transport);
+    transport.readActivity = async (id, query) => {
+      await new Promise<void>(resolve => { release = resolve; });
+      return original(id, query);
+    };
+    const pendingRead = ui.dispatch({ kind: "load_activity" });
+    await Promise.resolve();
+    await Promise.resolve();
+    const cancelled = await ui.dispatch({ kind: "cancel_session" });
+    expect(cancelled.selectedSession?.summary.state).toBe("cancelled");
+    release();
+    await pendingRead;
+    expect(ui.state().selectedSession?.summary.state).toBe("cancelled");
+  });
 });
 
 describe("GraphCoder terminal adapter", () => {
@@ -178,6 +237,23 @@ describe("GraphCoder terminal adapter", () => {
     const output = writable();
     expect(await runCli(["--fixture=deterministic", "start hello", "list"], { output: output.stream })).toBe(0);
     expect(output.lines()).toHaveLength(2);
+  });
+
+  test("injected production transports use the same headless runner without a fixture", async () => {
+    const output = writable();
+    const transport = createMockTransport();
+    expect(await runCliWithTransport(["start hello", "list"], transport, { output: output.stream })).toBe(0);
+    expect(output.lines()).toHaveLength(2);
+    const rejected = writable();
+    expect(await runCliWithTransport(["--fixture=deterministic"], transport, { output: rejected.stream })).toBe(2);
+    expect(rejected.lines()[0]).toMatchObject({ ok: false });
+  });
+
+  test("headless runner returns failure when any command is rejected", async () => {
+    const output = writable();
+    const status = await runCliWithTransport(["open missing"], createMockTransport(), { output: output.stream });
+    expect(status).toBe(1);
+    expect(output.lines()[0]).toMatchObject({ ok: false });
   });
 
   test("headless and command-loop adapters issue the same lazy transport sequence", async () => {
