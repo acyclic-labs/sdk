@@ -1603,8 +1603,16 @@ impl PersistentLocalSwarm {
             .cloned()
             .collect();
         let harness = self.open_session(task).await?;
-        let conversation = harness.conversation_state(self.config.limits).await?;
-        let workspace_generation = match harness.list_private_directory("", None, None, 1).await {
+        let aggregate = harness.conversation_aggregate(self.config.limits).await?;
+        let conversation = aggregate
+            .reducer()
+            .conversation()
+            .cloned()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
+        let workspace_generation = match harness
+            .list_private_directory("", None, None, 1)
+            .await
+        {
             Ok(page) => Some(page.generation),
             Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
@@ -1612,7 +1620,7 @@ impl PersistentLocalSwarm {
         Ok(LocalSwarmSnapshot {
             session,
             children,
-            conversation_revision: conversation.messages.len() as u64,
+            conversation_revision: aggregate.reducer().revision(),
             workspace_generation,
         })
     }
@@ -1728,11 +1736,34 @@ impl PersistentLocalSwarm {
             .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
             .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
         if approval.resolution.is_some() {
-            return approval
+            let resolution = approval
                 .resolution
                 .as_ref()
-                .map(|resolution| resolution.outcome.clone())
-                .ok_or_else(|| Error::Storage("approval resolution disappeared".into()));
+                .ok_or_else(|| Error::Storage("approval resolution disappeared".into()))?;
+            let (approved, reason) = match &resolution.outcome {
+                crate::interaction::InteractionOutcome::Approved => (true, None),
+                crate::interaction::InteractionOutcome::Declined => (false, None),
+                _ => {
+                    return Err(Error::Conflict(
+                        "approval resolution has an invalid terminal outcome".into(),
+                    ));
+                }
+            };
+            let existing = if let Some(detail) = &resolution.detail {
+                let harness = self.open_session(task).await?;
+                serde_json::from_slice::<InteractionResponse>(&harness.storage().read(detail).await?)
+                    .map_err(|error| {
+                        Error::Storage(format!("invalid persisted approval response: {error}"))
+                    })?
+            } else {
+                InteractionResponse::Approval { approved, reason }
+            };
+            if existing != response {
+                return Err(Error::Conflict(
+                    "approval retry changes the previously committed decision".into(),
+                ));
+            }
+            return Ok(resolution.outcome.clone());
         }
         let harness = self.open_session(task).await?;
         harness.storage().resolve_interaction(id, response).await
@@ -1764,11 +1795,17 @@ impl PersistentLocalSwarm {
                 "swarm messages require a direct parent or child recipient".into(),
             ));
         };
-        let host =
-            self.bindings.communication_host.clone().ok_or_else(|| {
-                Error::Unsupported("durable communication host is not bound".into())
-            })?;
-        let harness = self.open_session(sender).await?;
+        let host = self
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        // Mail payloads are staged into the recipient's own private volume.
+        // A sender-owned FileRef would require an implicit sibling read grant
+        // and would make an otherwise valid parent/child message unreadable
+        // at inbox time. The owner host performs this copy before publishing
+        // the ref-only inbox event.
+        let harness = self.open_session(recipient).await?;
         let payload = harness
             .storage()
             .stage(
