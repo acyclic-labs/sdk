@@ -244,11 +244,15 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let host = fixture.host().await?;
     let parent = TaskId::from_bytes([1; 16]);
     let child = TaskId::from_bytes([2; 16]);
+    let sibling = TaskId::from_bytes([4; 16]);
     assert!(
         matches!(host.admit(fixture.admission(OperationId::from_bytes(parent.into_bytes()), None)?).await?, Admission::Accepted(id) if id == parent)
     );
     assert!(
         matches!(host.admit(fixture.admission(OperationId::from_bytes(child.into_bytes()), Some(parent))?).await?, Admission::Accepted(id) if id == child)
+    );
+    assert!(
+        matches!(host.admit(fixture.admission(OperationId::from_bytes(sibling.into_bytes()), Some(parent))?).await?, Admission::Accepted(id) if id == sibling)
     );
     let body = payload(&fixture, OperationId::from_bytes([3; 16])).await?;
     let request = MessageRequest {
@@ -267,16 +271,39 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         communication.send(conflicting).await,
         Err(Error::Conflict(_))
     ));
+    // The same caller message ID is valid on another endpoint pair. The
+    // durable stream key must include both endpoints rather than collapsing
+    // these two independently idempotent deliveries.
+    communication
+        .send(MessageRequest {
+            sender: child,
+            recipient: parent,
+            message_id: request.message_id,
+            target: MessageTarget::Parent,
+            payload: body.clone(),
+        })
+        .await?;
+    // A low-level host caller still cannot bypass the direct parent/child
+    // relationship enforced by the typed communication adapter.
+    assert!(matches!(
+        host.send(child, sibling, request.message_id, body.clone()).await,
+        Err(Error::Unauthorized(_))
+    ));
     drop(communication);
     drop(host);
     drop(fixture);
     let reopened_fixture = Fixture::open(directory.path()).await?;
     let reopened = reopened_fixture.host().await?;
-    let items = DurableCommunication::new(reopened)
+    let items = DurableCommunication::new(reopened.clone())
         .inbox(child, 0, 8)
         .await?;
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].message_id, request.message_id.to_string());
+    let parent_items = DurableCommunication::new(reopened)
+        .inbox(parent, 0, 8)
+        .await?;
+    assert_eq!(parent_items.len(), 1);
+    assert_eq!(parent_items[0].message_id, request.message_id.to_string());
     Ok(())
 }
 

@@ -4,6 +4,7 @@ use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
     conversation::{ContentResidencyVerifier, FileRef},
+    communication::message_endpoint_operation,
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
     durable_tool::DurableToolRunner,
@@ -1008,6 +1009,13 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let recipient_admission = self
                 .admission(OperationId::from_bytes(recipient.into_bytes()))
                 .await?;
+            if sender_admission.parent != Some(recipient)
+                && recipient_admission.parent != Some(sender)
+            {
+                return Err(Error::Unauthorized(
+                    "message endpoints are not direct parent and child".into(),
+                ));
+            }
             recipient_admission.limits.validate_file(&payload)?;
             if !read_granted(&recipient_admission.grants, &payload)? {
                 return Err(Error::Unauthorized(
@@ -1022,7 +1030,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             };
             let bytes = crate::contract::canonical_json_bytes(&event)?;
             let mailbox = self.mailbox(recipient)?;
-            self.publish_control(&mailbox, "mail", recipient, message_id, &bytes)
+            let endpoint_operation = message_endpoint_operation(sender, recipient, message_id);
+            self.publish_control(&mailbox, "mail", recipient, endpoint_operation, &bytes)
                 .await
         })
     }

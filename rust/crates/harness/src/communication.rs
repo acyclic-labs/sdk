@@ -33,6 +33,29 @@ pub const MAX_WAIT_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
 const MESSAGE_CONTRACT: &str = "harness.message.v1";
 const WAIT_CONTRACT: &str = "harness.wait.v1";
 
+/// Derives the stream idempotency identity for one message endpoint pair.
+///
+/// The caller supplied message operation remains the model-visible delivery
+/// identity.  Persistence must additionally namespace it by both endpoints so
+/// two senders can safely use the same operation value for their own message
+/// sequence without colliding in the recipient's mailbox stream.
+#[must_use]
+pub fn message_endpoint_operation(
+    sender: TaskId,
+    recipient: TaskId,
+    message_id: OperationId,
+) -> OperationId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"harness:message-endpoints:v1\0");
+    hasher.update(&sender.into_bytes());
+    hasher.update(&recipient.into_bytes());
+    hasher.update(&message_id.into_bytes());
+    let digest = hasher.finalize();
+    let mut bytes = [0; 16];
+    bytes.copy_from_slice(&digest.as_bytes()[..16]);
+    OperationId::from_bytes(bytes)
+}
+
 fn nonzero_task(task: TaskId, label: &str) -> Result<()> {
     if task.into_bytes() == [0; 16] {
         return Err(Error::Invalid(format!("{label} identity is nil")));
@@ -179,6 +202,13 @@ impl MessageRequest {
         hasher.update(&self.recipient.into_bytes());
         hasher.update(&self.message_id.into_bytes());
         *hasher.finalize().as_bytes()
+    }
+
+    /// Returns the endpoint-scoped stream idempotency identity used by the
+    /// durable host while retaining the caller's message ID in the inbox.
+    #[must_use]
+    pub fn endpoint_operation(&self) -> OperationId {
+        message_endpoint_operation(self.sender, self.recipient, self.message_id)
     }
 }
 
@@ -1393,6 +1423,11 @@ mod tests {
         let mut second = first.clone();
         second.recipient = task(4);
         assert_ne!(first.endpoint_digest(), second.endpoint_digest());
+        assert_eq!(
+            first.endpoint_operation(),
+            message_endpoint_operation(first.sender, first.recipient, first.message_id)
+        );
+        assert_ne!(first.endpoint_operation(), second.endpoint_operation());
         first.validate()?;
         let bytes = first.canonical_bytes()?;
         assert_eq!(MessageRequest::from_canonical_bytes(&bytes)?, first);
