@@ -568,6 +568,193 @@ async fn local_stream_sixteen_independent_receipt_issuers_share_one_cas_append()
     assert_eq!(reopened.usage().expect("usage").consumed, second_usage);
 }
 
+#[tokio::test]
+async fn local_stream_provider_receipts_stop_at_each_hard_dimension_before_append() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let dispatch_id = IdempotencyKey::new("hard-limit-root-dispatch").expect("dispatch");
+    let limits = SwarmBudgetLimits {
+        max_active_agents: 2,
+        max_total_agents: 3,
+        max_recursion_depth: 1,
+        max_model_steps: 12,
+        max_output_bytes: 120,
+        max_execution_time_ms: 1_200,
+    };
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner,
+        limits,
+        dispatch_id.clone(),
+    )
+    .await
+    .expect("start budget");
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("read initial tail");
+    let ceilings = SwarmResourceRequest {
+        model_steps: limits.max_model_steps,
+        output_bytes: limits.max_output_bytes,
+        execution_time_ms: limits.max_execution_time_ms,
+    };
+    let overages = [
+        SwarmUsage {
+            model_steps: ceilings.model_steps + 1,
+            output_bytes: ceilings.output_bytes,
+            execution_time_ms: ceilings.execution_time_ms,
+        },
+        SwarmUsage {
+            model_steps: ceilings.model_steps,
+            output_bytes: ceilings.output_bytes + 1,
+            execution_time_ms: ceilings.execution_time_ms,
+        },
+        SwarmUsage {
+            model_steps: ceilings.model_steps,
+            output_bytes: ceilings.output_bytes,
+            execution_time_ms: ceilings.execution_time_ms + 1,
+        },
+    ];
+    for (index, usage) in overages.into_iter().enumerate() {
+        let mut issuer = SwarmUsageReceiptIssuer::with_limits(
+            LocalMeasuredUsageSequence::new(format!("hard-limit-provider-{index}"), [usage]),
+            session,
+            dispatch_id.clone(),
+            ceilings,
+        )
+        .expect("construct bounded issuer");
+        assert!(
+            issuer.issue().is_err(),
+            "provider receipt over hard dimension {index} must fail before append"
+        );
+    }
+
+    assert_eq!(
+        stream.tail().await.expect("read unchanged tail"),
+        tail_before,
+        "rejected provider receipts must not publish durable events"
+    );
+    drop(journal);
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen after rejected receipts");
+    assert_eq!(reopened.usage().expect("usage").consumed, SwarmUsage::default());
+    assert_eq!(reopened.usage().expect("usage").reserved, SwarmUsage::default());
+}
+
+#[tokio::test]
+async fn local_stream_root_receipt_respects_live_descendant_boundary() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let dispatch_id = IdempotencyKey::new("root-boundary-dispatch").expect("dispatch");
+    let limits = SwarmBudgetLimits {
+        max_active_agents: 3,
+        max_total_agents: 4,
+        max_recursion_depth: 1,
+        max_model_steps: 12,
+        max_output_bytes: 120,
+        max_execution_time_ms: 1_200,
+    };
+    let first_usage = SwarmUsage {
+        model_steps: 7,
+        output_bytes: 70,
+        execution_time_ms: 700,
+    };
+    let second_usage = SwarmUsage {
+        model_steps: 8,
+        output_bytes: 80,
+        execution_time_ms: 800,
+    };
+    let child_resources = SwarmResourceRequest {
+        model_steps: 5,
+        output_bytes: 50,
+        execution_time_ms: 500,
+    };
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner.clone(),
+        limits,
+        dispatch_id.clone(),
+    )
+    .await
+    .expect("start budget");
+    let mut issuer = SwarmUsageReceiptIssuer::with_limits(
+        LocalMeasuredUsageSequence::new(
+            "root-boundary-provider",
+            [first_usage, second_usage],
+        ),
+        session,
+        dispatch_id,
+        SwarmResourceRequest {
+            model_steps: limits.max_model_steps,
+            output_bytes: limits.max_output_bytes,
+            execution_time_ms: limits.max_execution_time_ms,
+        },
+    )
+    .expect("construct root issuer");
+
+    let first_receipt = issuer.issue().expect("first root receipt");
+    journal
+        .report_root_usage_with_receipt(&owner, first_receipt)
+        .await
+        .expect("publish first root receipt");
+
+    let mut child_request = request(OperationId::new(), "root-boundary-child");
+    child_request.resources = child_resources;
+    let child = journal
+        .reserve_child(child_request)
+        .await
+        .expect("reserve exact remaining descendant budget");
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before_rejected_root = stream.tail().await.expect("read tail");
+
+    let second_receipt = issuer.issue().expect("second root receipt");
+    assert!(
+        journal
+            .report_root_usage_with_receipt(&owner, second_receipt)
+            .await
+            .is_err(),
+        "root cumulative usage must account for the live descendant reservation"
+    );
+    assert_eq!(
+        stream.tail().await.expect("read unchanged tail"),
+        tail_before_rejected_root,
+        "ancestor ceiling rejection must not publish a partial receipt"
+    );
+
+    drop(journal);
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen after rejected root receipt");
+    let usage = reopened.usage().expect("usage");
+    assert_eq!(usage.consumed, first_usage);
+    assert_eq!(usage.reserved, child_resources);
+    assert_eq!(
+        reopened
+            .reservation(child.reservation.operation_id)
+            .expect("child reservation")
+            .expect("retained reservation")
+            .resources,
+        child_resources
+    );
+}
+
 #[test]
 fn replay_rejects_live_usage_that_exceeds_an_ancestor_ceiling() -> acyclic_harness::Result<()> {
     let session_id = OperationId::new();
