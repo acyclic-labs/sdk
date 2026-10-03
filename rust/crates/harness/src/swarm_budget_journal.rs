@@ -24,6 +24,7 @@ use std::future::Future;
 
 const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
 const MAX_RECORDS: u64 = 1_000_000;
+const MAX_ADMISSION_RETRIES: u8 = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,20 +145,38 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         &mut self,
         request: SwarmForkRequest,
     ) -> Result<SwarmAdmissionReceipt> {
-        let projected = SwarmBudget::replay(self.events.clone())?;
-        let receipt = projected.reserve_child(request)?;
-        if receipt.replayed {
-            return Ok(receipt);
+        let mut retries = 0;
+        loop {
+            let projected = SwarmBudget::replay(self.events.clone())?;
+            let receipt = projected.reserve_child(request.clone())?;
+            if receipt.replayed {
+                return Ok(receipt);
+            }
+            match self
+                .commit(receipt.durable_event(), receipt.reservation.operation_id)
+                .await
+            {
+                Ok(applied) => {
+                    return self
+                        .budget
+                        .reservation(receipt.reservation.operation_id)?
+                        .map(|reservation| SwarmAdmissionReceipt {
+                            reservation,
+                            replayed: !applied,
+                        })
+                        .ok_or_else(|| {
+                            Error::Storage("committed swarm reservation is missing".into())
+                        });
+                }
+                Err(Error::Conflict(message))
+                    if message == "swarm budget tail changed"
+                        && retries < MAX_ADMISSION_RETRIES =>
+                {
+                    retries += 1;
+                }
+                Err(error) => return Err(error),
+            }
         }
-        self.commit(receipt.durable_event(), receipt.reservation.operation_id)
-            .await?;
-        self.budget
-            .reservation(receipt.reservation.operation_id)?
-            .map(|reservation| SwarmAdmissionReceipt {
-                reservation,
-                replayed: false,
-            })
-            .ok_or_else(|| Error::Storage("committed swarm reservation is missing".into()))
     }
 
     /// Admits a child from the canonical durable task admission envelope.
@@ -184,8 +203,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.reserve_child(request).await
     }
 
-    /// Activates a reservation only after complete fork publication evidence.
-    pub async fn activate(
+    async fn activate_raw(
         &mut self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
@@ -196,13 +214,25 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.commit(
             SwarmBudgetEvent::ChildActivated {
                 operation_id,
-                owner: token.owner.clone(),
+                owner: token.owner().clone(),
                 publication: token.publication(),
             },
             operation_id,
         )
         .await?;
         Ok(token)
+    }
+
+    /// Activates only publication evidence produced by the authoritative fork
+    /// helper. Raw digest fields cannot be supplied by an external caller.
+    pub async fn activate_verified(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: VerifiedForkPublication,
+    ) -> Result<SwarmDispatchToken> {
+        self.activate_raw(operation_id, owner, publication.into_publication())
+            .await
     }
 
     /// Activates verified publication evidence and invokes the production dispatcher.
@@ -223,10 +253,15 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Fut: Future<Output = Result<T>>,
     {
         let token = self
-            .activate(operation_id, owner.clone(), publication.into_publication())
+            .activate_verified(operation_id, owner.clone(), publication)
             .await?;
         match dispatch(token).await {
             Ok(value) => Ok(value),
+            // A storage failure after activation may have happened after the
+            // provider accepted the token. Keep the active reservation until
+            // recovery can reconcile the durable tail instead of releasing
+            // capacity based on an unproven dispatch failure.
+            Err(error @ Error::Indeterminate(_)) | Err(error @ Error::Storage(_)) => Err(error),
             Err(error) => match self.cancel(operation_id, &owner).await {
                 Ok(_) => Err(error),
                 Err(_) => Err(Error::Indeterminate(operation_id)),
@@ -317,11 +352,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     /// Advances the owner generation and fences all old callers durably.
     pub async fn takeover(
         &mut self,
+        expected_owner: &SwarmOwnerFence,
         owner: impl Into<String>,
-        expected_generation: u64,
     ) -> Result<SwarmOwnerFence> {
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let next = projected.takeover(owner, expected_generation)?;
+        let next = projected.takeover(expected_owner, owner)?;
         self.commit(
             SwarmBudgetEvent::OwnerTakenOver {
                 owner: next.clone(),
@@ -332,7 +367,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(next)
     }
 
-    async fn commit(&mut self, event: SwarmBudgetEvent, operation_id: OperationId) -> Result<()> {
+    async fn commit(&mut self, event: SwarmBudgetEvent, operation_id: OperationId) -> Result<bool> {
         let digest = event_digest(&event)?;
         if let Some(existing) = self
             .events
@@ -341,12 +376,15 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         {
             if existing == &event {
                 self.refresh().await?;
-                return Ok(());
+                return Ok(false);
             }
             return Err(Error::Conflict("swarm event digest collision".into()));
         }
         match append_record(&self.stream, self.revision, &event, operation_id).await {
-            Ok(()) => self.refresh().await,
+            Ok(()) => {
+                self.refresh().await?;
+                Ok(true)
+            }
             Err(Error::Conflict(_)) => {
                 self.refresh().await?;
                 if self
@@ -354,7 +392,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                     .iter()
                     .any(|candidate| event_digest(candidate).ok() == Some(digest))
                 {
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(Error::Conflict("swarm budget tail changed".into()))
                 }
@@ -366,7 +404,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                         .iter()
                         .any(|candidate| event_digest(candidate).ok() == Some(digest))
                 {
-                    Ok(())
+                    Ok(false)
                 } else {
                     Err(Error::Indeterminate(operation))
                 }
@@ -478,5 +516,115 @@ fn event_owner(event: &SwarmBudgetEvent) -> Result<SwarmOwnerFence> {
         _ => Err(Error::Invalid(
             "swarm session start event is invalid".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::swarm_budget::{SwarmResourceRequest, SwarmUsage};
+    use acyclic_stream::{MemoryStream, StreamClient};
+    use std::sync::Arc;
+
+    fn limits() -> SwarmBudgetLimits {
+        SwarmBudgetLimits {
+            max_active_agents: 2,
+            max_total_agents: 3,
+            max_recursion_depth: 1,
+            max_model_steps: 8,
+            max_output_bytes: 128,
+            max_execution_time_ms: 200,
+        }
+    }
+
+    #[tokio::test]
+    async fn verified_dispatch_commits_activation_before_releasing_rejected_child() {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0).expect("owner");
+        let mut journal = SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits())
+            .await
+            .expect("start");
+        let child = OperationId::new();
+        journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: child,
+                idempotency_key: IdempotencyKey::new("child").expect("key"),
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 64,
+                    execution_time_ms: 100,
+                },
+                admission_digest: None,
+            })
+            .await
+            .expect("reserve");
+        let retry = journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: child,
+                idempotency_key: IdempotencyKey::new("child").expect("key"),
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 64,
+                    execution_time_ms: 100,
+                },
+                admission_digest: None,
+            })
+            .await
+            .expect("retry reserve");
+        assert!(retry.replayed);
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [1; 32],
+            workspace_generation_digest: [2; 32],
+        })
+        .expect("verified publication");
+        let rejected = journal
+            .dispatch_after_publication(child, owner.clone(), publication, |_token| async {
+                Err::<(), _>(Error::Conflict("dispatcher rejected".into()))
+            })
+            .await;
+        assert!(rejected.is_err());
+        let usage = journal.usage().expect("usage");
+        assert_eq!(usage.active_agents, 1);
+        assert_eq!(usage.reserved, SwarmUsage::default());
+
+        let unknown_child = OperationId::new();
+        journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: unknown_child,
+                idempotency_key: IdempotencyKey::new("unknown-child").expect("key"),
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 64,
+                    execution_time_ms: 100,
+                },
+                admission_digest: None,
+            })
+            .await
+            .expect("reserve unknown child");
+        let unknown_publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: unknown_child,
+            parent_operation_id: None,
+            completed_boundary_digest: [3; 32],
+            workspace_generation_digest: [4; 32],
+        })
+        .expect("verified unknown publication");
+        let unknown = journal
+            .dispatch_after_publication(unknown_child, owner, unknown_publication, |_token| async {
+                Err::<(), _>(Error::Indeterminate(unknown_child))
+            })
+            .await;
+        assert!(matches!(unknown, Err(Error::Indeterminate(_))));
+        let usage = journal.usage().expect("unknown usage");
+        assert_eq!(usage.active_agents, 2);
+        assert_eq!(usage.reserved.model_steps, 4);
     }
 }

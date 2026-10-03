@@ -181,6 +181,11 @@ pub struct SwarmForkRequest {
     pub depth: u32,
     /// Requested child resources.
     pub resources: SwarmResourceRequest,
+    /// Canonical task admission digest, including its prerequisite set.
+    /// `None` is retained for low-level projection tests; production callers
+    /// should use `SwarmBudgetJournal::reserve_after_admission`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_digest: Option<[u8; 32]>,
 }
 
 impl SwarmForkRequest {
@@ -197,6 +202,11 @@ impl SwarmForkRequest {
             ));
         }
         IdempotencyKey::new(self.idempotency_key.0.clone())?;
+        if self.admission_digest == Some([0; 32]) {
+            return Err(Error::Invalid(
+                "swarm task admission digest is empty".into(),
+            ));
+        }
         self.resources.validate()
     }
 
@@ -218,6 +228,9 @@ impl SwarmForkRequest {
             parent_operation_id,
             depth,
             resources,
+            admission_digest: Some(crate::contract::canonical_json_digest(
+                &admission.canonical_value(),
+            )?),
         };
         request.validate()?;
         Ok(request)
@@ -316,6 +329,9 @@ pub struct SwarmForkReservation {
     pub publication: Option<ForkPublication>,
     /// Digest of the exact request and retry identity.
     pub request_digest: [u8; 32],
+    /// Canonical task admission digest retained through recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_digest: Option<[u8; 32]>,
 }
 
 /// Session usage projection, including resources held by admitted children.
@@ -421,18 +437,36 @@ impl SwarmAdmissionReceipt {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SwarmDispatchToken {
     /// Child operation identity.
-    pub operation_id: OperationId,
+    operation_id: OperationId,
     /// Direct parent operation identity.
-    pub parent_operation_id: Option<OperationId>,
+    parent_operation_id: Option<OperationId>,
     /// Current owner fence.
-    pub owner: SwarmOwnerFence,
+    owner: SwarmOwnerFence,
     /// Exact model boundary published for this child.
-    pub completed_boundary_digest: [u8; 32],
+    completed_boundary_digest: [u8; 32],
     /// Exact workspace generation published for this child.
-    pub workspace_generation_digest: [u8; 32],
+    workspace_generation_digest: [u8; 32],
 }
 
 impl SwarmDispatchToken {
+    /// Returns the admitted child operation identity.
+    #[must_use]
+    pub const fn operation_id(&self) -> OperationId {
+        self.operation_id
+    }
+
+    /// Returns the direct parent operation identity.
+    #[must_use]
+    pub const fn parent_operation_id(&self) -> Option<OperationId> {
+        self.parent_operation_id
+    }
+
+    /// Returns the owner fence bound to this dispatch authorization.
+    #[must_use]
+    pub const fn owner(&self) -> &SwarmOwnerFence {
+        &self.owner
+    }
+
     /// Returns the publication evidence bound to this dispatch authorization.
     #[must_use]
     pub fn publication(&self) -> ForkPublication {
@@ -596,6 +630,71 @@ impl SwarmBudget {
                     "swarm parent is not an active direct ancestor".into(),
                 ));
             }
+            let remaining = SwarmResourceRequest {
+                model_steps: parent
+                    .resources
+                    .model_steps
+                    .saturating_sub(parent.usage.model_steps),
+                output_bytes: parent
+                    .resources
+                    .output_bytes
+                    .saturating_sub(parent.usage.output_bytes),
+                execution_time_ms: parent
+                    .resources
+                    .execution_time_ms
+                    .saturating_sub(parent.usage.execution_time_ms),
+            };
+            // A parent may admit more than one child. Each live direct child
+            // holds a portion of the parent's ceiling, so a retry or a
+            // concurrent sibling cannot reserve the same remainder twice.
+            let allocated_to_children = state
+                .reservations
+                .values()
+                .filter(|child| {
+                    child.parent_operation_id == Some(parent.operation_id)
+                        && matches!(
+                            child.state,
+                            SwarmReservationState::Reserved | SwarmReservationState::Active
+                        )
+                })
+                .try_fold(SwarmUsage::default(), |allocated, child| {
+                    add_usage(
+                        allocated,
+                        SwarmUsage {
+                            model_steps: child.resources.model_steps,
+                            output_bytes: child.resources.output_bytes,
+                            execution_time_ms: child.resources.execution_time_ms,
+                        },
+                    )
+                })?;
+            let remaining = SwarmResourceRequest {
+                model_steps: remaining
+                    .model_steps
+                    .checked_sub(allocated_to_children.model_steps)
+                    .ok_or_else(|| {
+                        Error::Conflict("swarm parent child budget is exhausted".into())
+                    })?,
+                output_bytes: remaining
+                    .output_bytes
+                    .checked_sub(allocated_to_children.output_bytes)
+                    .ok_or_else(|| {
+                        Error::Conflict("swarm parent child budget is exhausted".into())
+                    })?,
+                execution_time_ms: remaining
+                    .execution_time_ms
+                    .checked_sub(allocated_to_children.execution_time_ms)
+                    .ok_or_else(|| {
+                        Error::Conflict("swarm parent child budget is exhausted".into())
+                    })?,
+            };
+            if request.resources.model_steps > remaining.model_steps
+                || request.resources.output_bytes > remaining.output_bytes
+                || request.resources.execution_time_ms > remaining.execution_time_ms
+            {
+                return Err(Error::Conflict(
+                    "swarm descendant exceeds parent remaining resource budget".into(),
+                ));
+            }
         } else if request.depth != 1 {
             return Err(Error::Conflict("root child must have depth one".into()));
         }
@@ -622,6 +721,7 @@ impl SwarmBudget {
             state: SwarmReservationState::Reserved,
             publication: None,
             request_digest: digest,
+            admission_digest: request.admission_digest,
         };
         state
             .idempotency
@@ -636,7 +736,7 @@ impl SwarmBudget {
     }
 
     /// Records complete model/workspace publication and returns a dispatch token.
-    pub fn activate(
+    pub(crate) fn activate(
         &self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
@@ -789,14 +889,16 @@ impl SwarmBudget {
     }
 
     /// Takes ownership after restart and advances the generation exactly once.
-    /// Active reservations are rebound to the new fence; stale tokens cannot mutate them.
+    /// The expected fence must be authenticated by the caller before recovery.
+    /// Active reservations are rebound to the new fence; stale tokens cannot
+    /// mutate them.
     pub fn takeover(
         &self,
+        expected_owner: &SwarmOwnerFence,
         owner: impl Into<String>,
-        expected_generation: u64,
     ) -> Result<SwarmOwnerFence> {
         let mut state = self.lock()?;
-        if expected_generation != state.owner.generation {
+        if &state.owner != expected_owner {
             return Err(Error::Conflict("swarm owner generation is stale".into()));
         }
         let generation = state
@@ -818,7 +920,7 @@ impl SwarmBudget {
     }
 
     /// Applies a previously persisted event exactly once at the projection layer.
-    pub fn apply_event(&self, event: SwarmBudgetEvent) -> Result<()> {
+    pub(crate) fn apply_event(&self, event: SwarmBudgetEvent) -> Result<()> {
         match event {
             SwarmBudgetEvent::Started { .. } => {
                 Err(Error::Conflict("swarm session already exists".into()))
@@ -857,9 +959,9 @@ impl SwarmBudget {
             } => self.cancel(operation_id, &owner).map(|_| ()),
             SwarmBudgetEvent::OwnerTakenOver { owner } => {
                 let state = self.lock()?;
-                let expected = state.owner.generation;
+                let expected = state.owner.clone();
                 drop(state);
-                let observed = self.takeover(owner.owner.clone(), expected)?;
+                let observed = self.takeover(&expected, owner.owner.clone())?;
                 if observed != owner {
                     return Err(Error::Conflict("persisted takeover differs".into()));
                 }
@@ -886,6 +988,7 @@ fn request_from_reservation(reservation: &SwarmForkReservation) -> Result<SwarmF
         parent_operation_id: reservation.parent_operation_id,
         depth: reservation.depth,
         resources: reservation.resources,
+        admission_digest: reservation.admission_digest,
     };
     if request_digest(&request)? != reservation.request_digest {
         return Err(Error::Conflict(
@@ -1137,6 +1240,7 @@ mod tests {
                 output_bytes: 40,
                 execution_time_ms: 400,
             },
+            admission_digest: None,
         }
     }
 
@@ -1176,10 +1280,35 @@ mod tests {
             publication(child.operation_id, None),
         )?;
         assert_eq!(token.operation_id, child.operation_id);
-        let grandchild = budget
-            .reserve_child(request(2, Some(child.operation_id)))?
-            .reservation;
+        budget.report_usage(
+            child.operation_id,
+            &owner(0),
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 10,
+                execution_time_ms: 100,
+            },
+        )?;
+        assert!(
+            budget
+                .reserve_child(request(2, Some(child.operation_id)))
+                .is_err()
+        );
+        let mut smaller = request(2, Some(child.operation_id));
+        smaller.resources = SwarmResourceRequest {
+            model_steps: 3,
+            output_bytes: 30,
+            execution_time_ms: 300,
+        };
+        let grandchild = budget.reserve_child(smaller)?.reservation;
         assert_eq!(grandchild.depth, 2);
+        let mut sibling = request(4, Some(child.operation_id));
+        sibling.resources = SwarmResourceRequest {
+            model_steps: 1,
+            output_bytes: 10,
+            execution_time_ms: 100,
+        };
+        assert!(budget.reserve_child(sibling).is_err());
         assert!(
             budget
                 .reserve_child(request(3, Some(grandchild.operation_id)))
@@ -1199,6 +1328,37 @@ mod tests {
         budget.cancel(child.operation_id, &owner(0))?;
         budget.cancel(parent.operation_id, &owner(0))?;
         assert_eq!(budget.usage()?.active_agents, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn sibling_reservations_share_the_parent_remaining_ceiling() -> Result<()> {
+        let mut limits = limits();
+        limits.max_model_steps = 32;
+        limits.max_output_bytes = 320;
+        limits.max_execution_time_ms = 3_200;
+        let budget = SwarmBudget::new(id(9), owner(0), limits)?;
+        let mut parent_request = request(1, None);
+        parent_request.resources = SwarmResourceRequest {
+            model_steps: 10,
+            output_bytes: 100,
+            execution_time_ms: 1_000,
+        };
+        let parent = budget.reserve_child(parent_request)?.reservation;
+        let mut first_request = request(2, Some(parent.operation_id));
+        first_request.resources = SwarmResourceRequest {
+            model_steps: 6,
+            output_bytes: 60,
+            execution_time_ms: 600,
+        };
+        budget.reserve_child(first_request)?;
+        let mut second_request = request(3, Some(parent.operation_id));
+        second_request.resources = SwarmResourceRequest {
+            model_steps: 6,
+            output_bytes: 60,
+            execution_time_ms: 600,
+        };
+        assert!(budget.reserve_child(second_request).is_err());
         Ok(())
     }
 
@@ -1263,7 +1423,7 @@ mod tests {
     fn takeover_rebinds_live_reservations_and_fences_old_owner() -> Result<()> {
         let budget = SwarmBudget::new(id(9), owner(0), limits())?;
         let child = budget.reserve_child(request(1, None))?.reservation;
-        let current = budget.takeover("restarted", 0)?;
+        let current = budget.takeover(&owner(0), "restarted")?;
         assert_eq!(current.generation, 1);
         assert!(
             budget
