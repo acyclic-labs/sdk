@@ -99,11 +99,24 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         .await
         .expect("open coordinator");
     let operation_id = OperationId::new();
+    let session_id = OperationId::new();
     let issuer = AuthorityIssuer::new("test-runtime", [9; 32], owner());
     let scope = issuer.root(
         "swarm",
         Capabilities::new(["operation:declare", "operation:admit"]),
     );
+    let mut session_spec = child_spec(session_id).expect("session spec");
+    session_spec.resources = Default::default();
+    coordinator
+        .declare_operation(
+            &owner(),
+            &scope,
+            &issuer.verifier(),
+            session_spec,
+            IdempotencyKey::new("declare-session").expect("key"),
+        )
+        .await
+        .expect("declare session root");
     coordinator
         .declare_operation(
             &owner(),
@@ -123,7 +136,6 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         max_output_bytes: 128,
         max_execution_time_ms: 200,
     };
-    let session_id = OperationId::new();
     let request = SwarmForkRequest {
         operation_id,
         idempotency_key: IdempotencyKey::new("fork-child").expect("fork key"),
