@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
-    actors_descriptor, actors_proto, descriptor_set_with_docs,
+    BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
     filesystem::{filesystem_descriptor, filesystem_proto},
-    generate_product_bindings,
+    generate_product_bindings, generate_remote_facades,
     harness::{harness_descriptor, harness_proto},
     inference::{inference_descriptor, inference_proto},
     machines::{machines_descriptor, machines_proto},
@@ -16,7 +16,6 @@ use acyclic_sdk_contract_wire::{
     protocol::{protocol_descriptor, protocol_proto},
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
-    BindingFamily,
 };
 use prost::Message;
 use prost_types::FileDescriptorSet;
@@ -272,6 +271,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
         artifacts.push((format!("generated/rust/{tonic}"), tonic_source.clone()));
         let package_tonic = package.trim_end_matches(".rs").to_owned() + ".tonic.rs";
         artifacts.push((package_tonic, tonic_source));
+    }
+    for facade in generate_remote_facades() {
+        artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
     }
     let _ = fs::remove_dir_all(staging);
     Ok(artifacts)
