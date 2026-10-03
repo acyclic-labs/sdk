@@ -291,8 +291,13 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmForkReservation> {
         let receipt = receipt.into_receipt();
-        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if self.receipt_replayed(operation_id, owner, &receipt, false) {
+            return projected
+                .reservation(operation_id)?
+                .ok_or_else(|| Error::Storage("replayed swarm reservation is missing".into()));
+        }
+        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let reservation = projected.report_usage(operation_id, owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::UsageReported {
@@ -326,8 +331,11 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmUsage> {
         let receipt = receipt.into_receipt();
-        self.validate_receipt(self.session_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if self.root_receipt_replayed(owner, &receipt) {
+            return projected.report_root_usage(owner, receipt.usage);
+        }
+        self.validate_receipt(self.session_id, receipt.usage, &receipt)?;
         let reported = projected.report_root_usage(owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::RootUsageReported {
@@ -362,8 +370,13 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmForkReservation> {
         let receipt = receipt.into_receipt();
-        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if self.receipt_replayed(operation_id, owner, &receipt, true) {
+            return projected
+                .reservation(operation_id)?
+                .ok_or_else(|| Error::Storage("replayed swarm reservation is missing".into()));
+        }
+        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let reservation = projected.complete(operation_id, owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::ChildCompleted {
@@ -376,6 +389,51 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         )
         .await?;
         Ok(reservation)
+    }
+
+    fn receipt_replayed(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        receipt: &crate::swarm_budget::SwarmUsageReceipt,
+        completion: bool,
+    ) -> bool {
+        self.events.iter().any(|event| match event {
+            SwarmBudgetEvent::UsageReported {
+                operation_id: event_operation,
+                owner: event_owner,
+                receipt: event_receipt,
+                ..
+            } if !completion => {
+                *event_operation == operation_id && event_owner == owner && event_receipt == receipt
+            }
+            SwarmBudgetEvent::ChildCompleted {
+                operation_id: event_operation,
+                owner: event_owner,
+                receipt: event_receipt,
+                ..
+            } if completion => {
+                *event_operation == operation_id && event_owner == owner && event_receipt == receipt
+            }
+            _ => false,
+        })
+    }
+
+    fn root_receipt_replayed(
+        &self,
+        owner: &SwarmOwnerFence,
+        receipt: &crate::swarm_budget::SwarmUsageReceipt,
+    ) -> bool {
+        self.events.iter().any(|event| {
+            matches!(
+                event,
+                SwarmBudgetEvent::RootUsageReported {
+                    owner: event_owner,
+                    receipt: event_receipt,
+                    ..
+                } if event_owner == owner && event_receipt == receipt
+            )
+        })
     }
 
     fn validate_receipt(
@@ -608,7 +666,9 @@ fn event_owner(event: &SwarmBudgetEvent) -> Result<SwarmOwnerFence> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::swarm_budget::{SwarmResourceRequest, SwarmUsage};
+    use crate::swarm_budget::{
+        SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer, SwarmUsageSource,
+    };
     use acyclic_stream::{MemoryStream, StreamClient};
     use std::sync::Arc;
 
@@ -620,6 +680,22 @@ mod tests {
             max_model_steps: 8,
             max_output_bytes: 128,
             max_execution_time_ms: 200,
+        }
+    }
+
+    struct ZeroSource;
+
+    impl SwarmUsageSource for ZeroSource {
+        fn provider_identity(&self) -> &str {
+            "journal-test-provider"
+        }
+
+        fn cumulative_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            Ok(SwarmUsage::default())
         }
     }
 
@@ -728,5 +804,53 @@ mod tests {
         let usage = journal.usage().expect("unknown usage");
         assert_eq!(usage.active_agents, 2);
         assert_eq!(usage.reserved.model_steps, 4);
+    }
+
+    #[tokio::test]
+    async fn exact_usage_receipt_retry_is_replayed_after_restart_projection() -> Result<()> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        let child = OperationId::new();
+        journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: child,
+                idempotency_key: IdempotencyKey::new("receipt-child")?,
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 64,
+                    execution_time_ms: 100,
+                },
+                admission_digest: None,
+            })
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [9; 32],
+            workspace_generation_digest: [8; 32],
+        })?;
+        journal
+            .activate_verified(child, owner.clone(), publication)
+            .await?;
+        let mut issuer = SwarmUsageReceiptIssuer::new(
+            ZeroSource,
+            child,
+            IdempotencyKey::new("receipt-dispatch")?,
+        )?;
+        let receipt = issuer.issue()?;
+        journal
+            .report_usage_with_receipt(child, &owner, receipt.clone())
+            .await?;
+        let retry = journal
+            .report_usage_with_receipt(child, &owner, receipt)
+            .await?;
+        assert_eq!(retry.usage, SwarmUsage::default());
+        assert_eq!(journal.usage()?.active_agents, 2);
+        Ok(())
     }
 }
