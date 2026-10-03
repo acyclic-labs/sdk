@@ -322,25 +322,10 @@ fn frame_error(code: i32) -> Error {
 /// Maps canonical service details, falling back to stable transport categories.
 #[must_use]
 pub fn error_from_status(status: &tonic::Status) -> Error {
-    if let Ok(detail) = wire::ErrorDetail::decode(status.details())
-        && let Ok(code) = wire::ErrorCode::try_from(detail.code)
-        && code != wire::ErrorCode::Unspecified
-    {
-        return code.into();
-    }
-    match status.code() {
-        tonic::Code::InvalidArgument => wire::ErrorCode::InvalidArgument,
-        tonic::Code::NotFound => wire::ErrorCode::NotFound,
-        tonic::Code::AlreadyExists => wire::ErrorCode::AlreadyExists,
-        tonic::Code::FailedPrecondition => wire::ErrorCode::PreconditionFailed,
-        tonic::Code::PermissionDenied | tonic::Code::Unauthenticated => {
-            wire::ErrorCode::AccessDenied
-        }
-        tonic::Code::ResourceExhausted => wire::ErrorCode::QuotaExceeded,
-        tonic::Code::Unimplemented => wire::ErrorCode::Unsupported,
-        _ => wire::ErrorCode::Unavailable,
-    }
-    .into()
+    let detail = wire::ErrorDetail::decode(status.details())
+        .ok()
+        .map(|detail| detail.code);
+    response::grpc_error_code(status.code() as u32, detail).into()
 }
 fn bounded<T: Message>(query: &T) -> Result<(), Error> {
     if query.encoded_len() > MESSAGE_BYTES {
