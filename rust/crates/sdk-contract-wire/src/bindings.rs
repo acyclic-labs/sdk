@@ -1222,6 +1222,50 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_docs_overlay_only_appends_source_info_to_model_files() {
+        for &family in BindingFamily::ALL {
+            let model = family.model_descriptor();
+            let overlaid = descriptor_set_with_docs(family, &model).expect("docs overlay");
+            let model_files = raw_descriptor_files(&model).expect("model descriptor files");
+            let overlay_files = raw_descriptor_files(&overlaid).expect("overlay descriptor files");
+            assert_eq!(
+                model_files.len(),
+                overlay_files.len(),
+                "{} file count",
+                family.name()
+            );
+
+            let decoded = FileDescriptorSet::decode(model.as_slice()).expect("model set");
+            for ((model_file, overlay_file), descriptor) in model_files
+                .iter()
+                .zip(overlay_files.iter())
+                .zip(decoded.file.iter())
+            {
+                let has_docs = descriptor.package.as_deref() == Some(family.package());
+                if has_docs {
+                    assert!(
+                        overlay_file.starts_with(model_file),
+                        "{} overlay rewrote a model file before source info",
+                        family.name()
+                    );
+                    assert!(
+                        overlay_file.len() > model_file.len(),
+                        "{} overlay did not append source info",
+                        family.name()
+                    );
+                } else {
+                    assert_eq!(
+                        overlay_file,
+                        model_file,
+                        "{} dependency file changed under docs overlay",
+                        family.name()
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn prost_generation_uses_model_descriptor_and_keeps_archived_handshake() {
         let output = temporary_output(BindingFamily::Actors, BindingTransport::Prost);
         let _ = fs::remove_dir_all(&output);

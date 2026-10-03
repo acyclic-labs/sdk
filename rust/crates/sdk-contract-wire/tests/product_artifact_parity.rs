@@ -52,8 +52,11 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
         "rust/crates/filesystem/src/generated/rust-model-filesystem-v2.bin",
         "rust/crates/inference/inference_model_descriptor.bin",
         "rust/crates/inference-contract/inference_model_descriptor.bin",
+        "rust/crates/inference/inference_model_descriptor_docs.bin",
+        "rust/crates/inference-contract/inference_model_descriptor_docs.bin",
         "rust/crates/inference/inference_descriptor.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin",
+        "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin",
         "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
     ] {
         let path = root.join(relative);
