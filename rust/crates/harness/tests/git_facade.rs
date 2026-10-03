@@ -203,6 +203,7 @@ struct ApprovalPlan {
     source: GenerationRef,
     target: GenerationRef,
     project: VolumeRef,
+    applied: Arc<AtomicBool>,
 }
 
 impl ProjectJoinPlan for ApprovalPlan {
@@ -226,6 +227,7 @@ impl ProjectJoinPlan for ApprovalPlan {
         _notice: &'a ConversationMessage,
         _selections: &'a [ProjectConflictSelection],
     ) -> BoxFuture<'a, Result<ProjectJoinOutcome>> {
+        self.applied.store(true, Ordering::SeqCst);
         Box::pin(async { Err(Error::Conflict("approval guard was bypassed".into())) })
     }
 }
@@ -546,6 +548,7 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         source,
         target,
         project: volume.clone(),
+        applied: Arc::new(AtomicBool::new(false)),
     };
     let mut malformed_notice = notice.clone();
     malformed_notice.kind = MessageKind::User;
@@ -562,6 +565,7 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         .err()
         .ok_or_else(|| Error::Invalid("unbound writeback plan was accepted".into()))?;
     assert!(matches!(error, Error::Unauthorized(_)));
+    assert!(!plan.applied.load(Ordering::SeqCst));
     let error = facade
         .apply_root_writeback(&request, &plan, &authority, &notice, &[])
         .await
