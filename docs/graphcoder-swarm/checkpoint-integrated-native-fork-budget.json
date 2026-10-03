@@ -401,6 +401,19 @@
       "suite_sha256": "06cd87a57525f1a267f8baa5800a0abf66ab9abb36c5f0da5d0dc3f656273575",
       "declaration_sha256": "a8b45ed85feb5fe1c7e62b08f7c1b5c23cb94b45f7939ebcfdda0cb6f593d4ee",
       "contract_scope": "authoritative native Rust generator matches checked-in declarations including Join.source_tree; separate TS consumer/native-WASM tests still required"
+    },
+    {
+      "suite": "production plugin root conflict and abort",
+      "source": "65bfbde7",
+      "exit_code": 1,
+      "command": "cargo test -p acyclic-plugin root_git_conflicted_merge_can_abort_through_the_public_tool -j 2 -- --nocapture",
+      "suite_sha256": "7739a3903f4920959b175084091decc81f46a1a8a05f2a1fef0eda5752610bf2",
+      "failures": [
+        "NamespacePath does not implement Display",
+        "Generation.id field is private",
+        "GenerationId has no id method"
+      ],
+      "contract_scope": "native compilation failure; real root conflict/abort scenario has not executed"
     }
   ],
   "input_digests": {
