@@ -1,21 +1,26 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { assemble } from "./assemble-graphcoder-receipt.mjs";
 
-const ROOT = process.cwd();
-const ASSEMBLER = join(ROOT, "scripts", "assemble-graphcoder-receipt.mjs");
 const digest = value => createHash("sha256").update(value).digest("hex");
+const TEST_COMMIT = "f".repeat(40);
+const TEST_TREE = "e".repeat(40);
+const testGitOps = {
+  currentCommit: () => TEST_COMMIT,
+  currentBranch: () => "codex/graphcoder-validation",
+  gitStatus: () => "",
+  gitRoot: () => process.cwd(),
+  gitTree: () => TEST_TREE,
+  gitIsAncestor: () => true,
+  gitMergeCount: () => 0,
+};
 
-function run(directory, configPath) {
-  return execFileSync(process.execPath, [ASSEMBLER, "assemble", configPath], {
-    cwd: ROOT,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+function run(configPath) {
+  return assemble(configPath, { gitOps: testGitOps });
 }
 
 function suiteRecord(directory, id = "mock-suite") {
@@ -56,7 +61,7 @@ test("assembler emits every matrix ID and binds only explicit suite cases", () =
       cases: [{ id: "SCOPE-01", suites: ["mock-suite"] }],
       output: receiptPath,
     }));
-    run(directory, configPath);
+    run(configPath);
     const receipt = JSON.parse(readFileSync(receiptPath, "utf8"));
     assert.equal(receipt.cases.length, 68);
     assert.equal(receipt.cases.find(item => item.id === "SCOPE-01").status, "passed");
@@ -74,10 +79,7 @@ test("assembler refuses a final receipt while any matrix case is unbound", () =>
     const receiptPath = join(directory, "final-receipt.json");
     const configPath = join(directory, "final-config.json");
     writeFileSync(configPath, JSON.stringify({ final: true, output: receiptPath }));
-    assert.throws(() => run(directory, configPath), error => {
-      assert.equal(error.status, 1);
-      return /required cases must be passed|missing/.test(String(error.stderr));
-    });
+    assert.throws(() => run(configPath), /required cases must be passed|missing/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
