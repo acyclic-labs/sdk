@@ -2511,7 +2511,7 @@ mod tests {
             output_bytes: 8,
             execution_time_ms: 10,
         };
-        scheduler.apply(SchedulerEvent::SwarmCompleted {
+        let completion = SchedulerEvent::SwarmCompleted {
             operation_id: child,
             fence: Some(LeaseFence {
                 reservation_id: "lease-child".into(),
@@ -2529,7 +2529,12 @@ mod tests {
             outcome: Outcome::Indeterminate {
                 operation_id: child,
             },
-        })?;
+        };
+        scheduler.apply(completion.clone())?;
+        assert!(matches!(
+            scheduler.apply(completion),
+            Err(Error::Conflict(_))
+        ));
         let usage = scheduler.swarm_budget_usage()?.expect("swarm usage");
         assert_eq!(usage.active_agents, 2);
         assert_eq!(usage.consumed.model_steps, 1);
