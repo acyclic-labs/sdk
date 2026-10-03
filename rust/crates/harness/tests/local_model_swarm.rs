@@ -150,7 +150,8 @@ impl DeterministicProvider {
 }
 
 impl ModelProvider for DeterministicProvider {
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        let request = prepared.request().clone();
         Self::assert_request_round_trips(&request);
         let bytes = serde_json::to_vec(&request).expect("serialize model request");
         self.requests_decoded

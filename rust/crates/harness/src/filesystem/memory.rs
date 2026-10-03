@@ -1832,7 +1832,8 @@ mod tests {
     struct TextModel(Arc<Mutex<Vec<ModelRequest>>>);
 
     impl ModelProvider for TextModel {
-        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             self.0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2204,7 +2205,8 @@ mod tests {
     }
 
     impl ModelProvider for ReadFileModel {
-        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 let Some(file) = self
                     .file

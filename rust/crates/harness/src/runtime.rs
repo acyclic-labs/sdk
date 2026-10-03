@@ -3657,12 +3657,12 @@ impl TaskContext {
             self.scope.limits(),
         )?;
         prepared.validate_complete_exchange()?;
-        let request = prepared.into_request();
+        let request = prepared.request().clone();
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
         binding.provider.admit(&request)?;
-        let mut stream = binding.provider.generate(request);
+        let mut stream = binding.provider.generate(prepared);
         loop {
             let next = match deadline {
                 Some(deadline) => tokio::time::timeout_at(deadline, stream.next())
@@ -6266,14 +6266,14 @@ mod tests {
     impl ModelProvider for CompletedModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            prepared: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             let Ok(mut requests) = self.requests.lock() else {
                 return Box::pin(futures::stream::iter([Err(Error::Storage(
                     "test model lock poisoned".into(),
                 ))]));
             };
-            requests.push(request);
+            requests.push(prepared.into_request());
             Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
                 metadata: Value::Null,
             })]))

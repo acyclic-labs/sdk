@@ -6,6 +6,7 @@ import type {
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
   WasmTaskDependencyInput, WasmModelRequestWire, WasmModelLimitsInput,
+  WasmModelOptionPolicyWire,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -30,6 +31,7 @@ export type NativeJsonValue = WasmToolJsonValue;
 export type TaskAdmissionWire = WasmTaskAdmissionWire;
 export type DurableBatchWire = WasmDurableBatchWire;
 export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
+export type NativeModelOptionPolicyWire = WasmModelOptionPolicyWire;
 
 /** Exact serde shape admitted by Rust `DurableBatchRequest`; hosts retain this value. */
 export interface ExecutionPlacementWire {
@@ -292,12 +294,16 @@ export class NativeContracts {
    * request bounds, tool pairing, and digest work; this facade does not
    * rebuild or reinterpret the serialized request.
    */
-  prepareModelRequest(request: WasmModelRequestWire, limits: NativeLimitsWire): PreparedModelRequest {
+  prepareModelRequest(
+    request: WasmModelRequestWire,
+    limits: NativeLimitsWire,
+    policy: NativeModelOptionPolicyWire | null = null,
+  ): PreparedModelRequest {
     const prepare = (this.native as NativeExports & {
-      readonly prepareModelRequest?: (request: WasmModelRequestWire, limits: WasmModelLimitsInput) => unknown;
+      readonly prepareModelRequest?: (request: WasmModelRequestWire, limits: WasmModelLimitsInput, policy: NativeModelOptionPolicyWire | null) => unknown;
     }).prepareModelRequest;
     if (typeof prepare !== "function") throw new Error("harness WASM does not provide canonical model request admission");
-    const admitted = normalizeNativeValue(prepare(request, limits));
+    const admitted = normalizeNativeValue(prepare(request, limits, policy));
     if (admitted === null || typeof admitted !== "object" || Array.isArray(admitted)) {
       throw new TypeError("native model request admission returned an invalid result");
     }

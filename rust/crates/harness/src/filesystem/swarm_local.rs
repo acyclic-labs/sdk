@@ -4240,7 +4240,8 @@ mod tests {
     }
 
     impl ModelProvider for MockModel {
-        fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             self.requests.lock().expect("request lock").push(request);
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if call > 0 {

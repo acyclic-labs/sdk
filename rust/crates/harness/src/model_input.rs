@@ -41,6 +41,9 @@ pub struct ModelInputManifest {
     /// was supplied by the provider binding.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_option_policy: Option<ComponentIdentity>,
+    /// Canonical digest of the registered model-option schema.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_option_schema_digest: Option<[u8; 32]>,
     /// Ordered message identities.
     pub messages: Vec<InputMessageManifest>,
     /// Authenticated rejection evidence for malformed tool calls in the
@@ -115,12 +118,14 @@ impl PreparedModelInput {
                 "aggregate model request exceeds byte limit".into(),
             ));
         }
+        let option_schema_digest = policy.map(ModelOptionPolicy::schema_digest).transpose()?;
         let manifest = ModelInputManifest {
             version: MODEL_INPUT_VERSION,
-            binding_digest: binding_digest(&request, policy)?,
+            binding_digest: binding_digest(&request, policy, option_schema_digest)?,
             request_digest: *blake3::hash(&bytes).as_bytes(),
             messages,
             model_option_policy: policy.map(|value| value.identity.clone()),
+            model_option_schema_digest: option_schema_digest,
             rejection_evidence: Vec::new(),
         };
         Ok(Self {
@@ -248,12 +253,14 @@ impl FrozenModelPrefix {
 fn binding_digest(
     request: &ModelRequest,
     policy: Option<&ModelOptionPolicy>,
+    option_schema_digest: Option<[u8; 32]>,
 ) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(&(
         MODEL_INPUT_VERSION,
         &request.model,
         &request.tools,
         policy.map(|value| &value.identity),
+        option_schema_digest,
     ))
 }
 fn prefix_digest(binding: [u8; 32], messages: &[Vec<u8>]) -> Result<[u8; 32]> {
@@ -722,21 +729,12 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
     }
     fn generate<'a>(
         &'a self,
-        request: ModelRequest,
-    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
-        if let Err(error) = self.admit(&request) {
-            return Box::pin(futures::stream::iter(vec![Err(error)]));
-        }
-        self.provider.generate(request)
-    }
-    fn generate_prepared<'a>(
-        &'a self,
         prepared: PreparedModelInput,
     ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
         if let Err(error) = self.admit(prepared.request()) {
             return Box::pin(futures::stream::iter(vec![Err(error)]));
         }
-        self.provider.generate_prepared(prepared)
+        self.provider.generate(prepared)
     }
     fn reconcile_admitted<'a>(
         &'a self,
@@ -929,10 +927,14 @@ mod tests {
         let changed = ModelOptionPolicy::new(
             ComponentIdentity {
                 name: "mock.options".into(),
-                version: "2".into(),
-                digest: [9; 32],
+                version: "1".into(),
+                digest: [8; 32],
             },
-            json!({"type": "object", "additionalProperties": false}),
+            json!({
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "additionalProperties": false,
+            }),
         )?;
         let request = request()?;
         let first = PreparedModelInput::prepare_with_policy(
@@ -948,11 +950,50 @@ mod tests {
         assert_eq!(first.bytes(), second.bytes());
         assert_ne!(first.manifest().binding_digest, second.manifest().binding_digest);
         assert_eq!(first.manifest().model_option_policy, Some(policy.identity.clone()));
+        assert_ne!(
+            first.manifest().model_option_schema_digest,
+            second.manifest().model_option_schema_digest
+        );
         let prefix = FrozenModelPrefix::capture(&first, first.request().messages.len())?;
         assert!(matches!(
             prefix.verify(&second),
             Err(Error::Conflict(message)) if message == "fork changed model or tool definitions"
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn option_policy_mutation_changes_frozen_binding_and_invalidates_admission() -> Result<()> {
+        let mut policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "mock.options".into(),
+                version: "1".into(),
+                digest: [8; 32],
+            },
+            json!({"type": "object", "additionalProperties": false}),
+        )?;
+        let request = request()?;
+        let first = PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            Limits::default(),
+            Some(&policy),
+        )?;
+        policy.schema = json!({"type": "object", "properties": {"mode": {"type": "string"}}});
+        let second = PreparedModelInput::prepare_with_policy(
+            request,
+            Limits::default(),
+            Some(&policy),
+        )?;
+        assert_ne!(
+            first.manifest().model_option_schema_digest,
+            second.manifest().model_option_schema_digest
+        );
+        let prefix = FrozenModelPrefix::capture(&first, first.request().messages.len())?;
+        assert!(prefix.verify(&second).is_err());
+        policy.schema = json!({"type": "not-a-schema-type"});
+        assert!(policy.validate(&json!({})).is_err());
+        policy.identity.name.clear();
+        assert!(policy.validate(&json!({})).is_err());
         Ok(())
     }
 
@@ -1140,7 +1181,7 @@ mod tests {
         };
         struct Capture(AtomicUsize);
         impl ModelProvider for Capture {
-            fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(&'a self, _: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Box::pin(futures::stream::empty())
             }
@@ -1158,7 +1199,11 @@ mod tests {
         let mut child = input.request().clone();
         child.messages.push(text("explicit child task"));
         assert!(provider.admit(&child).is_ok());
-        assert!(provider.generate(child.clone()).next().await.is_none());
+        assert!(provider
+            .generate(PreparedModelInput::prepare(child.clone(), Limits::default())?)
+            .next()
+            .await
+            .is_none());
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
         let attempt = crate::model::ModelAttempt {
             operation_id: crate::OperationId::new(),
@@ -1183,7 +1228,12 @@ mod tests {
             .await
             .is_err());
         assert!(provider.admit(&child).is_err());
-        assert!(provider.generate(child).next().await.unwrap().is_err());
+        assert!(provider
+            .generate(PreparedModelInput::prepare(child, Limits::default())?)
+            .next()
+            .await
+            .unwrap()
+            .is_err());
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
         Ok(())
     }
@@ -1200,7 +1250,8 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Script(Mutex<Vec<ModelRequest>>);
         impl ModelProvider for Script {
-            fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+                let request = prepared.request().clone();
                 let mut requests = self.0.lock().unwrap();
                 requests.push(request);
                 let events = if requests.len() == 1 {
@@ -1313,28 +1364,7 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Capture(Mutex<Vec<(ModelRequest, Vec<u8>, [u8; 32])>>);
         impl ModelProvider for Capture {
-            fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
-                self.0
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push((
-                        request.clone(),
-                        crate::contract::canonical_json_bytes(&request).unwrap(),
-                        crate::contract::canonical_json_digest(&request).unwrap(),
-                    ));
-                Box::pin(futures::stream::iter(vec![
-                    Ok(ModelEvent::Content {
-                        delta: "done".into(),
-                    }),
-                    Ok(ModelEvent::Completed {
-                        metadata: serde_json::Value::Null,
-                    }),
-                ]))
-            }
-            fn generate_prepared<'a>(
-                &'a self,
-                prepared: PreparedModelInput,
-            ) -> BoxStream<'a, Result<ModelEvent>> {
+            fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)

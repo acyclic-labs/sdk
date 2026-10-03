@@ -41,23 +41,36 @@ pub struct ModelOptionPolicy {
 impl ModelOptionPolicy {
     /// Registers one immutable option schema and its non-empty identity.
     pub fn new(identity: ComponentIdentity, schema: Value) -> Result<Self> {
-        crate::registry::validate_component_label(&identity.name, "model option policy name")?;
+        let policy = Self { identity, schema };
+        policy.validate_registration()?;
+        Ok(policy)
+    }
+
+    /// Returns the canonical digest of the registered model-visible schema.
+    pub fn schema_digest(&self) -> Result<[u8; 32]> {
+        self.validate_registration()?;
+        crate::contract::canonical_json_digest(&self.schema)
+    }
+
+    fn validate_registration(&self) -> Result<()> {
+        crate::registry::validate_component_label(&self.identity.name, "model option policy name")?;
         crate::registry::validate_component_label(
-            &identity.version,
+            &self.identity.version,
             "model option policy revision",
         )?;
-        if identity.digest == [0; 32] {
+        if self.identity.digest == [0; 32] {
             return Err(Error::Invalid(
                 "model option policy digest is empty".into(),
             ));
         }
-        jsonschema::validator_for(&schema)
+        jsonschema::validator_for(&self.schema)
             .map_err(|error| Error::Invalid(format!("invalid model option schema: {error}")))?;
-        Ok(Self { identity, schema })
+        Ok(())
     }
 
     /// Validates only the model-visible option value against the pinned schema.
     pub fn validate(&self, options: &Value) -> Result<()> {
+        self.validate_registration()?;
         crate::tool::validate_value(&self.schema, options, "model options")
     }
 }
@@ -390,18 +403,12 @@ pub trait ModelProvider: Send + Sync {
 
     /// Starts one request from the exact bytes admitted by the harness.
     ///
-    /// Providers that serialize a wire request can override this method and
-    /// consume [`crate::model_input::PreparedModelInput::bytes`] directly. The default preserves
-    /// compatibility with providers that accept the provider-neutral request.
-    fn generate_prepared<'a>(
+    /// Providers that serialize a wire request must consume
+    /// [`crate::model_input::PreparedModelInput::bytes`] directly.
+    fn generate<'a>(
         &'a self,
         prepared: crate::model_input::PreparedModelInput,
-    ) -> BoxStream<'a, Result<ModelEvent>> {
-        self.generate(prepared.into_request())
-    }
-
-    /// Starts one request and yields ordered model events.
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
+    ) -> BoxStream<'a, Result<ModelEvent>>;
 
     /// Reconciles only after verifying the original complete request.
     fn reconcile_admitted<'a>(
@@ -499,6 +506,24 @@ mod wire_contract_tests {
         )?;
         assert!(policy.validate(&json!({"mode": "safe"})).is_ok());
         assert!(policy.validate(&json!({"credential": "secret"})).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn deserialized_model_option_policy_revalidates_identity_and_schema() -> Result<()> {
+        let policy = ModelOptionPolicy::new(
+            crate::registry::ComponentIdentity {
+                name: "mock.options".into(),
+                version: "1".into(),
+                digest: [7; 32],
+            },
+            json!({"type": "object", "additionalProperties": false}),
+        )?;
+        let mut encoded = serde_json::to_value(&policy).map_err(|error| Error::Invalid(error.to_string()))?;
+        encoded["schema"] = json!({"type": "not-a-schema-type"});
+        let decoded: ModelOptionPolicy =
+            serde_json::from_value(encoded).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(decoded.validate(&json!({})).is_err());
         Ok(())
     }
 }

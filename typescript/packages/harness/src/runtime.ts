@@ -1,7 +1,7 @@
 import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
-import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
+import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type NativeModelOptionPolicyWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
@@ -167,6 +167,18 @@ function validateModelBinding(contracts: NativeContracts, identity: Model, provi
   contracts.encodeCanonicalJson(policy.schema);
   contracts.validateToolValue(policy.schema as ToolJsonSchema, identity.options);
   contracts.encodeCanonicalJson(identity.options);
+}
+function nativeModelOptionPolicy(
+  contracts: NativeContracts,
+  identity: Model,
+  policy: NonNullable<ModelProvider["modelOptions"]>,
+): NativeModelOptionPolicyWire {
+  return {
+    name: "model-options",
+    version: `${identity.provider}.${identity.name}.${identity.revision}`,
+    digest: [...contracts.digestCanonicalJson(policy.schema)],
+    schema: policy.schema,
+  };
 }
 export type ResumableTaskOptions<Input, Output> = TaskDefinitionOptions<Input, Output> & Readonly<{
   input: RuntimeSchema<Input>;
@@ -2512,7 +2524,10 @@ export class AgentHarness {
         } satisfies WasmModelRequestWire;
         let prepared: ReturnType<NativeContracts["prepareModelRequest"]>;
         try {
-          prepared = this.contracts.prepareModelRequest(wireRequest, nativeLimits(this.limits));
+          const optionPolicy = model.provider.modelOptions === undefined
+            ? null
+            : nativeModelOptionPolicy(this.contracts, model.identity, model.provider.modelOptions);
+          prepared = this.contracts.prepareModelRequest(wireRequest, nativeLimits(this.limits), optionPolicy);
         } catch (error) {
           throw asHarnessLimitError(error) ?? error;
         }
