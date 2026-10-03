@@ -351,6 +351,26 @@ export function validateChildrenPageResponse(request, response) {
 }
 
 /**
+ * Validates request-relative gRPC identities through the canonical wire
+ * model. The adapter supplies only the expected identity bytes.
+ * @param {string} operation
+ * @param {Uint8Array} input
+ * @param {Uint8Array} expected
+ */
+export function validateGrpcResponseIdentity(operation, input, expected) {
+    const ptr0 = passStringToWasm0(operation, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(expected, wasm.__wbindgen_malloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.validateGrpcResponseIdentity(ptr0, len0, ptr1, len1, ptr2, len2);
+    if (ret[1]) {
+        throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
  * Validates the endpoint policy shared by native and browser HTTP clients.
  * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
  * fixture servers. The return value is empty for a valid endpoint.
@@ -407,6 +427,26 @@ export function validateHttpResponse(route, response_json) {
     const ret = wasm.validateHttpResponse(ptr0, len0, ptr1, len1);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
+    }
+}
+
+/**
+ * Validate one caller retry identity through the canonical Stream model.
+ * @param {Uint8Array} input
+ * @returns {string}
+ */
+export function validateIdempotencyKey(input) {
+    let deferred2_0;
+    let deferred2_1;
+    try {
+        const ptr0 = passArray8ToWasm0(input, wasm.__wbindgen_malloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.validateIdempotencyKey(ptr0, len0);
+        deferred2_0 = ret[0];
+        deferred2_1 = ret[1];
+        return getStringFromWasm0(ret[0], ret[1]);
+    } finally {
+        wasm.__wbindgen_free(deferred2_0, deferred2_1, 1);
     }
 }
 

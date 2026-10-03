@@ -141,6 +141,12 @@ export function validateAppendRequest(input: Uint8Array): string;
 export function validateChildrenPageResponse(request: Uint8Array, response: Uint8Array): void;
 
 /**
+ * Validates request-relative gRPC identities through the canonical wire
+ * model. The adapter supplies only the expected identity bytes.
+ */
+export function validateGrpcResponseIdentity(operation: string, input: Uint8Array, expected: Uint8Array): void;
+
+/**
  * Validates the endpoint policy shared by native and browser HTTP clients.
  * HTTPS is required for hosted endpoints; HTTP is allowed only for loopback
  * fixture servers. The return value is empty for a valid endpoint.
@@ -164,6 +170,11 @@ export function validateHttpReadResponse(response_json: string, from: bigint): v
  * `decodeHttpResponse`, without crossing a second scalar schema boundary.
  */
 export function validateHttpResponse(route: string, response_json: string): void;
+
+/**
+ * Validate one caller retry identity through the canonical Stream model.
+ */
+export function validateIdempotencyKey(input: Uint8Array): string;
 
 /**
  * Validate one canonical Stream path using the same parser used by every
@@ -210,9 +221,11 @@ export interface InitOutput {
     readonly publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateAppendRequest: (a: number, b: number) => [number, number];
     readonly validateChildrenPageResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateGrpcResponseIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
     readonly validateHttpEndpoint: (a: number, b: number) => [number, number];
     readonly validateHttpReadResponse: (a: number, b: number, c: bigint) => [number, number];
     readonly validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
+    readonly validateIdempotencyKey: (a: number, b: number) => [number, number];
     readonly validatePath: (a: number, b: number) => [number, number];
     readonly validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
     readonly validateSequence: (a: number, b: number) => [number, number];

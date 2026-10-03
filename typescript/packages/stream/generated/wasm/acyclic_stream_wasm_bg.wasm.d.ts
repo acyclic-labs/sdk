@@ -15,9 +15,11 @@ export const projectMemoryResponse: (a: number, b: number, c: number, d: number)
 export const publicHttpErrorCode: (a: number, b: number, c: number, d: number) => [number, number];
 export const validateAppendRequest: (a: number, b: number) => [number, number];
 export const validateChildrenPageResponse: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateGrpcResponseIdentity: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number];
 export const validateHttpEndpoint: (a: number, b: number) => [number, number];
 export const validateHttpReadResponse: (a: number, b: number, c: bigint) => [number, number];
 export const validateHttpResponse: (a: number, b: number, c: number, d: number) => [number, number];
+export const validateIdempotencyKey: (a: number, b: number) => [number, number];
 export const validatePath: (a: number, b: number) => [number, number];
 export const validateRequest: (a: number, b: number, c: number, d: number) => [number, number];
 export const validateSequence: (a: number, b: number) => [number, number];

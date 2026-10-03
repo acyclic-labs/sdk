@@ -15,7 +15,7 @@ import type {
   Record as WireRecord, TailConflict as WireTailConflict,
   CreateTokenRequest as WireCreateTokenRequest, TokenGrant as WireTokenGrant,
 } from "../generated/proto/stream/v2/stream_pb.js";
-import { StreamLimit } from "../generated/proto/stream/v2/stream_pb.js";
+import { validateIdempotencyKey as validateIdempotencyKeyRust } from "../generated/wasm/acyclic_stream_wasm.js";
 import type { TokenOperation } from "./token-operations.js";
 export { TOKEN_OPERATIONS } from "./token-operations.js";
 export type { TokenOperation } from "./token-operations.js";
@@ -51,19 +51,11 @@ export function commitId(value: Uint8Array): CommitId {
   return value.slice() as CommitId;
 }
 export function idempotencyKey(value: Uint8Array): IdempotencyKey {
-  if (!(value instanceof Uint8Array) || value.byteLength < 1 || value.byteLength > StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES) throw new RangeError(`idempotency key must contain 1..${StreamLimit.MAX_IDEMPOTENCY_KEY_BYTES} bytes`);
+  if (!(value instanceof Uint8Array)) throw new TypeError("idempotency key must be bytes");
+  const error = validateIdempotencyKeyRust(value);
+  if (error) throw new RangeError("idempotency key is outside the Rust Stream bounds");
   return value.slice() as IdempotencyKey;
 }
-/** Rust-compatible UTF-8 path ordering for pages and cursors. */
-export function compareStreamPaths(left: string, right: string): number {
-  const leftBytes = new TextEncoder().encode(left);
-  const rightBytes = new TextEncoder().encode(right);
-  for (let index = 0; index < Math.min(leftBytes.length, rightBytes.length); index += 1) {
-    if (leftBytes[index] !== rightBytes[index]) return leftBytes[index]! - rightBytes[index]!;
-  }
-  return leftBytes.length - rightBytes.length;
-}
-
 export type Record<Value = Uint8Array> = PublicWire<WireRecord, { readonly value: Value; readonly commitId: CommitId }>;
 export type EncodedRecord = Record<Uint8Array>;
 export type AppendResult =
@@ -119,16 +111,16 @@ export interface ProviderCommitRequest {
   )[];
 }
 export interface StreamProvider {
-  inspectIdempotency(idempotencyKey: IdempotencyKey): Promise<IdempotencyObservation | undefined>;
-  tail(path: string): Promise<Sequence>;
-  append(path: string, values: readonly Uint8Array[], options?: AppendOptions): Promise<AppendResult>;
-  fork(source: string, destination: string, options?: ForkOptions): Promise<ForkReceipt>;
-  read(path: string, options: ReadOptions): AsyncIterable<EncodedRecord>;
+  inspectIdempotency(idempotencyKey: IdempotencyKey, signal?: AbortSignal): Promise<IdempotencyObservation | undefined>;
+  tail(path: string, signal?: AbortSignal): Promise<Sequence>;
+  append(path: string, values: readonly Uint8Array[], options?: AppendOptions, signal?: AbortSignal): Promise<AppendResult>;
+  fork(source: string, destination: string, options?: ForkOptions, signal?: AbortSignal): Promise<ForkReceipt>;
+  read(path: string, options: ReadOptions, signal?: AbortSignal): AsyncIterable<EncodedRecord>;
   follow(path: string, options: FollowOptions): AsyncIterable<EncodedRecord>;
-  childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage>;
-  commit(request: ProviderCommitRequest, options: CommitOptions): Promise<CommitResult>;
-  readCommit(commitId: CommitId): Promise<CommittedEnvelope>;
-  createToken?(request: CreateTokenRequest): Promise<AccessToken>;
+  childrenPage(request: ChildrenPageRequest, signal?: AbortSignal): Promise<ChildrenPage>;
+  commit(request: ProviderCommitRequest, options: CommitOptions, signal?: AbortSignal): Promise<CommitResult>;
+  readCommit(commitId: CommitId, signal?: AbortSignal): Promise<CommittedEnvelope>;
+  createToken?(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken>;
 }
 
 export interface StreamEnvironment { readonly endpoint: string; readonly token: string }

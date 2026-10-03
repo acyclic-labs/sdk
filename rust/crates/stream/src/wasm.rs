@@ -457,6 +457,13 @@ pub fn validate_append_request(input: &[u8]) -> String {
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
+/// Validate one caller retry identity through the canonical Stream model.
+#[wasm_bindgen(js_name = validateIdempotencyKey)]
+pub fn validate_idempotency_key(input: &[u8]) -> String {
+    crate::IdempotencyKey::new(input.to_vec())
+        .map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
+}
+
 /// Validate one canonical Stream path using the same parser used by every
 /// provider and wire decoder.
 ///
@@ -653,6 +660,37 @@ pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue
     )
     .map_err(|_| js_error(StreamError::Unavailable))?;
     Ok(result.into())
+}
+
+/// Validates request-relative gRPC identities through the canonical wire
+/// model. The adapter supplies only the expected identity bytes.
+#[wasm_bindgen(js_name = validateGrpcResponseIdentity)]
+pub fn validate_grpc_response_identity(
+    operation: &str,
+    input: &[u8],
+    expected: &[u8],
+) -> Result<(), JsValue> {
+    match operation {
+        "inspect_idempotency" => {
+            let response = wire::InspectIdempotencyResponse::decode(input)
+                .map_err(|_| js_error(StreamError::InvalidArgument))?;
+            if response
+                .observation
+                .is_some_and(|observation| observation.idempotency_key != expected)
+            {
+                return Err(js_error(StreamError::Unavailable));
+            }
+        }
+        "read_commit" => {
+            let response = wire::CommittedEnvelope::decode(input)
+                .map_err(|_| js_error(StreamError::InvalidArgument))?;
+            if response.commit_id != expected {
+                return Err(js_error(StreamError::Unavailable));
+            }
+        }
+        _ => return Err(js_error(StreamError::InvalidArgument)),
+    }
+    Ok(())
 }
 
 /// Validates request-relative child-page semantics through the canonical Rust

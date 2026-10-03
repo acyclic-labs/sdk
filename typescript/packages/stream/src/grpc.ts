@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { projectGrpcReadResponse, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectGrpcReadResponse, projectMemoryResponse, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError } from "./types.js";
@@ -47,7 +47,8 @@ export class GrpcStreamProvider implements StreamProvider {
   async inspectIdempotency(key: IdempotencyKey): Promise<IdempotencyObservation | undefined> {
     const request = fromBinary(wire.InspectIdempotencyRequestSchema, wireInspectIdempotencyRequest(key));
     const response = await this.#call("inspect_idempotency", () => this.#client.inspectIdempotency(request));
-    if (response.observation !== undefined && !sameBytes(response.observation.idempotencyKey, key)) throw new StreamError("invalid_response", "idempotency response names another retry identity");
+    try { validateGrpcResponseIdentity("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response), key); }
+    catch { throw new StreamError("invalid_response", "idempotency response names another retry identity"); }
     return this.#project("inspect_idempotency", toBinary(wire.InspectIdempotencyResponseSchema, response));
   }
   async tail(path: string): Promise<bigint> {
@@ -121,14 +122,12 @@ export class GrpcStreamProvider implements StreamProvider {
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const request = fromBinary(wire.ReadCommitRequestSchema, wireReadCommitRequest(id));
     const response = await this.#call("read_commit", () => this.#client.readCommit(request));
-    if (!sameBytes(response.commitId, id)) throw new StreamError("invalid_response", "commit response names another commit");
+    try { validateGrpcResponseIdentity("read_commit", toBinary(wire.CommittedEnvelopeSchema, response), id); }
+    catch { throw new StreamError("invalid_response", "commit response names another commit"); }
     return this.#project("read_commit", toBinary(wire.CommittedEnvelopeSchema, response));
   }
 }
 
-function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
-}
 /** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
 function providerError(error: unknown, operation: string): Error {
   if (error instanceof StreamError) return error;
