@@ -39,6 +39,10 @@ The final gate requires each listed artifact to name the qualified source
 commit and tree, a build ID, and a timestamp, then hashes it from disk. Stale or
 missing files are rejected, so evidence cannot be satisfied by a filename,
 boolean freshness flag, or an earlier checkpoint alone.
+Use `node scripts/graphcoder-artifact.mjs describe PATH BUILD_ID` at the
+packaging boundary to emit this record from the exact bytes and Git tree that
+will be supplied to the suite configuration. The helper records provenance; it
+does not build, install, or qualify an artifact.
 
 The intended loop is:
 
