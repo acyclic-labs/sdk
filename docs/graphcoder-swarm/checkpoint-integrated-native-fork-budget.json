@@ -110,6 +110,23 @@
       "failed": 0,
       "command": "node --test scripts/graphcoder-qualification-suite.test.mjs scripts/graphcoder-scenario.test.mjs",
       "contract_scope": "freshness/timeout/scenario descriptor tests; no native fault or PTY execution"
+    },
+    {
+      "suite": "filesystem generated Git contract check",
+      "source": "3a92665d",
+      "command": "node scripts/generate-filesystem-git-compat-contract.mjs check",
+      "exit_code": 0,
+      "contract_scope": "actual Rust-derived schema equals committed generated TypeScript action contract"
+    },
+    {
+      "suite": "workflow_journal",
+      "source": "153ed614",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test workflow_journal -j 2 -- --nocapture",
+      "artifact_sha256": "2e9fdf1fb7c4dc31ac71eac6e857766e02d3fa26725bdfd00b3b476c35238a8d",
+      "contract_scope": "real durable ref-only workflow reopen and exact retry, private host records with authorized ordinary command payloads"
     }
   ],
   "input_digests": {
