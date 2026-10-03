@@ -16,7 +16,7 @@ use acyclic_harness::{
         LocalSessionPhase, PersistentLocalSwarm,
     },
     model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
-        ModelProvider, ModelRequest},
+        ModelProvider},
     registry::ComponentIdentity,
     resources::ProviderRef,
     Error as HarnessError, InteractionId, OperationId, TaskId,
