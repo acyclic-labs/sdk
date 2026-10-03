@@ -436,6 +436,7 @@ where
                 result,
                 projection,
                 invocation_digest,
+                ..
             } = &record.event
             else {
                 continue;

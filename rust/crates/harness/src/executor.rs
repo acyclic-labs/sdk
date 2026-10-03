@@ -1122,6 +1122,7 @@ impl StockExecutor {
                     result,
                     projection,
                     invocation_digest,
+                    ..
                 } if *event_step == step && call_id == &invocation.call_id => {
                     if completed_tool.is_some() {
                         return Err(Error::Storage("duplicate completed tool result".into()));
@@ -3347,12 +3348,12 @@ mod tests {
                 _ => None,
             })
             .ok_or_else(|| Error::Storage("missing completed tool record".into()))?;
-        let mut old_wire = serde_json::to_value(&completed)?;
+        let mut old_wire = serde_json::to_value(&completed).unwrap();
         old_wire
             .as_object_mut()
             .ok_or_else(|| Error::Storage("completed tool event is not an object".into()))?
             .remove("schema_version");
-        let old_event: ExecutionEvent = serde_json::from_value(old_wire)?;
+        let old_event: ExecutionEvent = serde_json::from_value(old_wire).unwrap();
         assert!(matches!(
             old_event.validate_schema_version(),
             Err(Error::Conflict(message)) if message.contains("schema version")
@@ -3586,7 +3587,7 @@ mod tests {
             model.clone(),
             ContextPipeline::new([Arc::new(CountingContext {
                 runs: context_runs.clone(),
-            })]),
+            }) as Arc<dyn ContextStage>]),
             ToolRegistry::default(),
         );
         let journal = Journal::default();
