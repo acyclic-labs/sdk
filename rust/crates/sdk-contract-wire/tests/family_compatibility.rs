@@ -1,11 +1,13 @@
 use acyclic_sdk_contract_validation::compare_bytes;
 use acyclic_sdk_contract_wire::{
-    actors_descriptor, filesystem::filesystem_descriptor, harness::harness_descriptor,
+    ACTORS, ContractSpec, INFERENCE, MACHINES, OBJECTS_V2, STREAM, WORKERS, actors_descriptor,
+    filesystem::filesystem_descriptor, harness::harness_descriptor,
     inference::inference_descriptor, machines::machines_descriptor, objects::objects_descriptor,
     stream::stream_descriptor, workers::workers_descriptor,
 };
 use prost::Message;
 use prost_types::{FileDescriptorSet, field_descriptor_proto};
+use std::collections::BTreeSet;
 
 fn fixture(path: &str) -> &'static [u8] {
     match path {
@@ -51,6 +53,145 @@ fn without_source_info(bytes: &[u8]) -> FileDescriptorSet {
         file.source_code_info = None;
     }
     set
+}
+
+fn assert_routes_cover_services(contract: &ContractSpec) {
+    let method_count: usize = contract
+        .services
+        .iter()
+        .map(|service| service.methods.len())
+        .sum();
+    assert_eq!(
+        contract.routes.len(),
+        method_count,
+        "{} route count does not cover every modeled RPC",
+        contract.package
+    );
+
+    let mut operation_ids = BTreeSet::new();
+    for route in contract.routes {
+        assert!(
+            !route.method.is_empty(),
+            "{} route method is empty",
+            contract.package
+        );
+        assert!(
+            !route.path.is_empty(),
+            "{} route path is empty",
+            contract.package
+        );
+        assert!(
+            !route.operation_id.is_empty(),
+            "{} route operation ID is empty",
+            contract.package
+        );
+        assert!(
+            !route.docs.is_empty(),
+            "{} route docs are empty",
+            contract.package
+        );
+        assert!(
+            operation_ids.insert(route.operation_id),
+            "{} route operation ID is duplicated: {}",
+            contract.package,
+            route.operation_id
+        );
+
+        let (qualified_service, method_name) = route
+            .rpc
+            .rsplit_once('/')
+            .expect("route RPC has service and method");
+        let service_name = qualified_service
+            .rsplit_once('.')
+            .map(|(_, name)| name)
+            .expect("route RPC has qualified service");
+        let service = contract
+            .services
+            .iter()
+            .find(|service| service.name == service_name)
+            .unwrap_or_else(|| panic!("{} route service missing: {}", contract.package, route.rpc));
+        let method = service
+            .methods
+            .iter()
+            .find(|method| method.name == method_name)
+            .unwrap_or_else(|| panic!("{} route method missing: {}", contract.package, route.rpc));
+        assert_eq!(route.request, method.input, "{} request drifted", route.rpc);
+        assert_eq!(
+            route.response, method.output,
+            "{} response drifted",
+            route.rpc
+        );
+        assert_eq!(route.docs, method.docs, "{} docs drifted", route.rpc);
+    }
+}
+
+#[test]
+fn routed_contracts_cover_every_rpc_with_explicit_projection_metadata() {
+    for contract in [&ACTORS, &STREAM, &WORKERS, &OBJECTS_V2, &INFERENCE] {
+        assert_routes_cover_services(contract);
+    }
+    assert!(
+        MACHINES.routes.is_empty(),
+        "Machines must not gain an implicit HTTP projection"
+    );
+}
+
+#[test]
+fn modeled_operation_policies_cover_each_policy_backed_rpc() {
+    for contract in [&ACTORS, &STREAM, &WORKERS] {
+        let policies = contract.operation_policies();
+        let method_count: usize = contract
+            .services
+            .iter()
+            .map(|service| service.methods.len())
+            .sum();
+        assert_eq!(
+            policies.len(),
+            method_count,
+            "{} policy count does not cover every modeled RPC",
+            contract.package
+        );
+        let mut rpcs = BTreeSet::new();
+        for policy in policies {
+            assert!(
+                rpcs.insert(policy.rpc),
+                "duplicate policy RPC: {}",
+                policy.rpc
+            );
+            assert!(
+                !policy.capabilities.is_empty(),
+                "{} has no capabilities",
+                policy.rpc
+            );
+            assert!(!policy.errors.is_empty(), "{} has no errors", policy.rpc);
+            assert!(
+                !policy.validations.is_empty(),
+                "{} has no validations",
+                policy.rpc
+            );
+            let (qualified_service, method_name) = policy
+                .rpc
+                .rsplit_once('/')
+                .expect("policy RPC has service and method");
+            let service_name = qualified_service
+                .rsplit_once('.')
+                .map(|(_, name)| name)
+                .expect("policy RPC has qualified service");
+            let service = contract
+                .services
+                .iter()
+                .find(|service| service.name == service_name)
+                .expect("policy service exists");
+            assert!(
+                service
+                    .methods
+                    .iter()
+                    .any(|method| method.name == method_name),
+                "policy RPC is not a modeled method: {}",
+                policy.rpc
+            );
+        }
+    }
 }
 
 #[test]
