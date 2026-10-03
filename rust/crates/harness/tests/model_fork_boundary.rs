@@ -57,7 +57,7 @@ struct CapturedModel {
     overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
-    fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         let prepared = match PreparedModelInput::prepare(request.clone(), Limits::default()) {
             Ok(prepared) => prepared,
