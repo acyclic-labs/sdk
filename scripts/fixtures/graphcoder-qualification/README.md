@@ -29,6 +29,7 @@ The fixture IDs are stable qualification references:
 | `NEG-APPROVAL-01` | Session identity on approval responses and operation/generation/session identity on writeback receipts. |
 | `NEG-BYTES-01` | Invalid octets and a process response line over an explicitly configured 256-byte limit. |
 | `NEG-IDENTITY-01` | Snapshot, page, and diff response identities are checked against the request. |
+| `PKG-HARNESS-CONTRACT-01` | Installed `@acyclic-labs/harness/proto` and `/protocol` subpaths expose their generated descriptors and public message schemas. |
 | `PKG-HARNESS-MODEL-01` | Installed `@acyclic-labs/harness` model dispatch retains provider/name/revision/options, including a full-width integer, in one frozen canonical request; request and manifest digests agree with the canonical bytes and differ when model identity changes. |
 | `NEG-MODEL-PAIR-01` | An unpaired context tool call is rejected before a model provider callback runs. |
 | `NEG-MODEL-BOUNDS-01` | An aggregate model context over the configured byte bound is rejected before provider dispatch. |
