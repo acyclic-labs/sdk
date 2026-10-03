@@ -2,35 +2,52 @@ import { expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import {
-  createDocsReleaseArchive,
-  loadDocsVersion,
-  referenceBundleSha256,
-  setDocsVersionData,
-  type DocsVersionIdentity,
-  type ReferenceBundle,
-} from "../../../src/lib/docs/versions";
+import { pathToFileURL } from "node:url";
 
-const root = (path: string) => fileURLToPath(new URL(`../../../${path}`, import.meta.url));
+const websiteRoot = process.env.ACYC_DOCS_WEBSITE_ROOT ?? "Q:/sdk/work/rust-sdk-docs-website";
+const root = (path: string) => join(websiteRoot, path);
+const websiteVersions = () => import(pathToFileURL(root("src/lib/docs/versions.ts")).href);
 
-const qualifiedReleaseBundle = (revision: string): ReferenceBundle => ({
-  sourceRevision: revision,
-  source: { revision, channel: "release", status: "qualified" },
-  guides: [{ path: "guide.md", contents: "release guide" }],
-  snippets: [{ path: "example.ts", contents: "export {};" }],
-  packages: [{ name: "acyclic-sdk", version: "1.0.0" }],
+const qualifiedReleaseBundle = (revision: string) => ({
+  schemaVersion: "sdk-docs-bundle.v1",
+  source: {
+    repository: "https://github.com/acyclic-labs/sdk",
+    revision,
+    generator: "fixture",
+    generatorVersion: "fixture",
+    channel: "release",
+    releaseQualification: {
+      schema: "acyclic.sdk.docs.release-qualification.v1",
+      version: "1.2.3",
+      tag: "v1.2.3",
+      revision,
+      qualified: true,
+    },
+  },
+  families: [{
+    slug: "actors",
+    title: "Actors",
+    crate: "acyclic-actors",
+    version: null,
+    maturity: null,
+    deployment: null,
+    qualification: null,
+    summary: "fixture",
+    items: [],
+  }],
 });
 
-test("archive loader currently accepts a release-qualified bundle relabeled as preview", async () => {
+test("archive loader rejects a release-qualified bundle relabeled as preview", async () => {
+  const { createDocsReleaseArchive, loadDocsVersion, referenceBundleSha256, setDocsVersionData } = await websiteVersions();
   const bundle = qualifiedReleaseBundle("1".repeat(40));
   const release = await createDocsReleaseArchive("1.2.3", bundle);
+  const { tag: _releaseTag, ...releaseWithoutTag } = release;
   const relabeled = {
-    ...release,
+    ...releaseWithoutTag,
     version: "preview",
     channel: "preview" as const,
   };
-  const preview: DocsVersionIdentity = {
+  const preview = {
     version: "preview",
     channel: "preview",
     revision: release.revision,
@@ -42,9 +59,8 @@ test("archive loader currently accepts a release-qualified bundle relabeled as p
     { schemaVersion: 1, releases: [], preview },
     { "preview.json": relabeled },
   );
-  const resolved = await loadDocsVersion("preview");
-  expect(resolved?.bundle.source).toMatchObject({ channel: "release", status: "qualified" });
-  expect(await referenceBundleSha256(resolved!.bundle)).toBe(release.bundleSha256);
+  await expect(loadDocsVersion("preview")).rejects.toThrow("archive source channel does not match preview");
+  expect(await referenceBundleSha256(release.bundle)).toBe(release.bundleSha256);
 });
 
 test("browser bundle embeds the cataloged preview archive and preserves the optional Vite glob branch", async () => {
