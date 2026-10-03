@@ -23,4 +23,11 @@ describe("hosted filesystem endpoint policy", () => {
     ]) expect(() => parse(endpoint)).toThrow(RangeError);
     await expect(openHostedFs({ endpoint: "http://filesystem.example", bearerToken: "token" })).rejects.toBeInstanceOf(RangeError);
   });
+
+  test("applies the Rust-owned bearer policy before opening a hosted client", async () => {
+    for (const bearerToken of ["", "   ", "valid\r\nInjected: yes"]) {
+      await expect(openHostedFs({ endpoint: "https://filesystem.example", bearerToken }))
+        .rejects.toThrow("invalid bearer token");
+    }
+  });
 });

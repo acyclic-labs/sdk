@@ -45,6 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import {
   EvaluationsService,
   file_inference_v1_inference,
@@ -419,9 +420,18 @@ export class HttpInferenceTransport implements InferenceTransport {
     if (utf8Length(body) > this.maximumMessageBytes) {
       throw new InferenceTransportError(0, "request exceeds configured bound");
     }
-    const headers = new Headers(await this.authorization());
-    if ((headers.get("authorization") ?? "").trim().length === 0) {
-      throw new InferenceTransportError(0, "authorization header is required");
+    let headers: Headers;
+    try {
+      headers = new Headers(await this.authorization());
+    } catch {
+      throw new InferenceTransportError(0, "invalid authorization header");
+    }
+    const authorization = headers.get("authorization");
+    const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
+    try {
+      validateRustOwnedCredentialPolicy(token);
+    } catch {
+      throw new InferenceTransportError(0, "invalid bearer credential");
     }
     headers.set("content-type", "application/json");
     const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}/v1/inference/${path}`, {

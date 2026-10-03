@@ -87,6 +87,7 @@ import type {
   WorkspaceStat,
 } from "./contracts.js";
 import { secureServiceEndpoint } from "./endpoint.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS } from "./contracts.js";
@@ -110,7 +111,11 @@ interface HostedClient {
 
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
-  if (options.bearerToken.length === 0) throw new RangeError("bearer token must be non-empty");
+  try {
+    validateRustOwnedCredentialPolicy(options.bearerToken);
+  } catch {
+    throw new RangeError("invalid bearer token");
+  }
   const maximumResponseBytes = options.maximumResponseBytes ?? DEFAULT_HOSTED_OPTIONS.maximumResponseBytes;
   positiveSafeInteger(maximumResponseBytes, "maximum response bytes");
   if (maximumResponseBytes < DEFAULT_HOSTED_OPTIONS.minimumHandshakeResponseBytes) {

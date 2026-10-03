@@ -449,6 +449,10 @@ test("HTTP lifecycle transport requires authorization and parses bounded run eve
 
   const unauthorized = new HttpInferenceTransport("https://example.test", () => ({}), fetcher);
   await expect(unauthorized.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+  for (const authorization of ["Bearer ", "Bearer   ", "Basic test", "Bearer invalid\r\nInjected: yes"]) {
+    const invalid = new HttpInferenceTransport("https://example.test", () => ({ authorization }), fetcher);
+    await expect(invalid.listModels()).rejects.toBeInstanceOf(InferenceTransportError);
+  }
 });
 
 test("HTTP transport applies one byte ceiling per message without conflating network chunks", async () => {
