@@ -60,9 +60,11 @@ function commandContext(transcript) {
       const payload = value && typeof value === "object" ? value.value : undefined;
       if (!payload || typeof payload !== "object") continue;
       const selected = payload.selectedSession;
-      if (selected?.summary?.id && typeof selected.summary.id === "string") context.session_id = selected.summary.id;
-      if (Array.isArray(payload.approvals)) {
-        const pending = payload.approvals.find(item => item?.state === "pending");
+      const selectedId = selected?.summary?.id ?? selected?.id;
+      if (typeof selectedId === "string") context.session_id = selectedId;
+      const approvals = Array.isArray(payload) ? payload : payload.approvals;
+      if (Array.isArray(approvals)) {
+        const pending = approvals.find(item => item?.state === "pending");
         if (pending?.id && typeof pending.id === "string") context.approval_id = pending.id;
         if (pending?.operationId && typeof pending.operationId === "string") context.writeback_operation_id = pending.operationId;
       }

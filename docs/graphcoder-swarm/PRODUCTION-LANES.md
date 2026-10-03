@@ -8,6 +8,24 @@ commands through `runCliWithTransport`. The bridge receives only the explicit
 `GRAPHCODER_BRIDGE_ENV_JSON` object; credentials from the invoking process are
 not inherited.
 
+For the packaged mock stage, use the checked-in JSON-lines bridge with an
+explicit fixture. This validates package loading, process framing, dispatcher
+correlation, and terminal behavior; it does not qualify the local Harness,
+filesystem effects, native runtime, or PTY/package acceptance rows:
+
+```json
+{
+  "env": {
+    "GRAPHCODER_BRIDGE_ARGS_JSON": "[\"scripts/graphcoder-mock-bridge.mjs\"]",
+    "GRAPHCODER_BRIDGE_ENV_JSON": "{\"GRAPHCODER_PACKAGE_ROOT\":\"<installed-consumer>/node_modules/@acyclic-labs/graphcoder\",\"GRAPHCODER_MOCK_FIXTURE\":\"deterministic\"}"
+  }
+}
+```
+
+The production bridge must replace this helper before native or PTY evidence
+can be bound to a receipt. Its runtime must exercise the durable local Harness
+and real filesystem effects through the typed host boundary.
+
 Build and install the GraphCoder package into a clean consumer directory, then
 set these values in the suite capture configuration:
 
