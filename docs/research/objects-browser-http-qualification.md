@@ -59,3 +59,23 @@ E47981A1FEEA6D394328BA358DA69A2904B13F4441122982FE22F5CE502AEBC5  typescript/pac
 ```
 
 The temporary consumer is intentionally outside the repository and was removed after the run. Its output above is retained as the review receipt; the canonical repository conformance source and Rust HTTP fixture remain the source of record.
+
+## Packed-package provenance
+
+To exclude ambient workspace imports, `npm pack --pack-destination <temp>` produced `@acyclic-labs/objects@0.2.0`, SHA-256 `316C83104194DBE919E5E1CD49CF22C459D2A14A9246764E06D9321BACC60AAB`. A clean temporary consumer staged that tarball under `node_modules/@acyclic-labs/objects` and supplied only copies of the three declared runtime dependencies (`@bufbuild/protobuf`, `@connectrpc/connect`, and `@connectrpc/connect-node`). Its consumer imported the public package specifiers `@acyclic-labs/objects/browser` and `@acyclic-labs/objects/proto`; the Rust fixture WASM was loaded from the unpacked package directory.
+
+The tarball contains 29 entries under `dist/`, `generated/`, `CHANGELOG.md`, `README.md`, and `package.json`; it contains no `src/` tree. Package-local hashes were:
+
+```text
+43B6A11742E8E47C525531B74D9C2E6D7658FA5178C234AF68B87B0089B41987  dist/browser.js
+134A3E262637103B147FBC2141BF9594C770CC20D6528DB73B2544FAD0500E4E  generated/wasm/acyclic_objects_wasm_bg.wasm
+91FE1D27A1E64DCEF8A9674B3F3EC35390FC2DAF9FC6D32F151BB5E6B6C1682D  package.json
+```
+
+The clean tarball consumer passed the same Rust-backed 135,000-byte upload/download, idempotency conflict, and authentication assertions:
+
+```text
+{"packageImport":"@acyclic-labs/objects/browser","tarball":true,"rustFixture":true,"uploadBytes":135000,"downloadBytes":135000,"idempotencyConflict":true,"authentication":true}
+```
+
+The remaining TypeScript Objects HTTP code is transport glue: it builds bounded protobuf-JSON/NDJSON frames, invokes `fetch`, forwards `AbortSignal`, reads response chunks, and calls the generated Rust WASM functions for route typing, JSON codec behavior, endpoint admission, response identity, and range/body bounds (`typescript/packages/objects/src/v2-http.ts:3-4,39-145`). It does not duplicate the Rust Objects memory/provider state machine or retry policy. `v2-client-browser.ts` only selects the Rust-emitted browser HTTP option, initializes the package-local WASM asset, and constructs the HTTP adapter. No TypeScript product change is required by this review.
