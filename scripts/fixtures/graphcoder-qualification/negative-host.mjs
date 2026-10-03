@@ -57,6 +57,8 @@ function handle(request) {
     case "wrong-approval-session":
       if (request.method === "open_session") return respond(request, snapshot("session-1"));
       return respond(request, approval("session-2"));
+    case "missing-approval-session":
+      return respond(request, approval("session-2"));
     case "bad-bytes":
       return respond(request, { path: "README.md", media_type: "text/markdown", bytes: [-1, 256, 1.5], generation: "7" });
     case "malformed-envelope":

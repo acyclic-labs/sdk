@@ -25,8 +25,9 @@ The fixture IDs are stable qualification references:
 | `NEG-CANCEL-01` | A hung history request must not prevent an explicit cancellation from reaching the transport. |
 | `NEG-EPOCH-01` | A canceled process request ID is quarantined so a delayed old reply cannot settle a later request with the same ID. |
 | `NEG-PATH-01` | Empty, traversal, absolute, separator, NUL, and 4097-byte paths are rejected before the bridge; a 4096-byte relative path is the accepted boundary case. |
+| `NEG-INPUT-01` | Non-string paths, page cursors, session prompts, and session IDs return typed `invalid_input` errors without reaching the bridge. |
 | `NEG-ERROR-01` | Malformed envelopes, bridge error-code retention, and structured terminal error output/status. |
-| `NEG-APPROVAL-01` | Session identity on approval responses and operation/generation/session identity on writeback receipts. |
+| `NEG-APPROVAL-01` | Session identity on approval responses, mandatory session scope for direct approval calls, and operation/generation/session identity on writeback receipts. |
 | `NEG-BYTES-01` | Invalid octets and a process response line over an explicitly configured 256-byte limit. |
 | `NEG-IDENTITY-01` | Snapshot, page, and diff response identities are checked against the request. |
 | `PKG-HARNESS-CONTRACT-01` | Installed `@acyclic-labs/harness/proto` and `/protocol` subpaths expose their generated descriptors and public message schemas. |

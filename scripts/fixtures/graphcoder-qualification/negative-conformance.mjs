@@ -74,6 +74,9 @@ await withProcessBridge(nodeApi, bridgeApi, hostPath, async (_bridge, transport)
   await expectCode("NEG-APPROVAL-01 session", "transport", () => ui.dispatch({ kind: "resolve_approval", approvalId: api.approvalId("approval-1"), approved: true }));
 }, { args: ["--case", "wrong-approval-session"] });
 await withProcessBridge(nodeApi, bridgeApi, hostPath, async (_bridge, transport) => {
+  await expectCode("NEG-APPROVAL-01 missing session", "invalid_input", () => transport.resolveApproval({ approvalId: api.approvalId("approval-1"), approved: true }));
+}, { args: ["--case", "missing-approval-session"] });
+await withProcessBridge(nodeApi, bridgeApi, hostPath, async (_bridge, transport) => {
   await expectCode("NEG-BYTES-01", "transport", () => transport.readFile(api.sessionId("session-1"), "README.md", 7n));
 }, { args: ["--case", "bad-bytes"] });
 
@@ -101,6 +104,12 @@ const pathTransport = new bridgeApi.HarnessGraphCoderTransport(pathBridge);
 for (const path of ["", "  ", ".", "..", "/absolute", "C:\\absolute", "..\\secret", "a/../b", "a//b", "\u0000bad", "a".repeat(4097)]) {
   await expectCode(`NEG-PATH-01 ${JSON.stringify(path.slice(0, 24))}`, "invalid_input", () => pathTransport.readFile(api.sessionId("session-1"), path, 7n));
 }
+for (const path of [null, 1, {}, []]) {
+  await expectCode(`NEG-INPUT-01 path ${String(path)}`, "invalid_input", () => pathTransport.readFile(api.sessionId("session-1"), path, 7n));
+}
+await expectCode("NEG-INPUT-01 page cursor", "invalid_input", () => pathTransport.listSessions({ after: 42 }));
+await expectCode("NEG-INPUT-01 session prompt", "invalid_input", () => pathTransport.startSession({ prompt: null }));
+await expectCode("NEG-INPUT-01 session id", "invalid_input", () => pathTransport.openSession(null));
 assert(pathRequests.length === 0, "NEG-PATH-01 sent invalid paths to the bridge");
 const boundaryPath = "a".repeat(4096);
 const boundaryFile = await pathTransport.readFile(api.sessionId("session-1"), boundaryPath, 7n);
@@ -148,5 +157,5 @@ try {
 
 process.stdout.write(JSON.stringify({
   ok: true,
-  scenarios: ["NEG-CANCEL-01", "NEG-EPOCH-01", "NEG-PATH-01", "NEG-ERROR-01", "NEG-APPROVAL-01", "NEG-BYTES-01", "NEG-IDENTITY-01"],
+  scenarios: ["NEG-CANCEL-01", "NEG-EPOCH-01", "NEG-PATH-01", "NEG-INPUT-01", "NEG-ERROR-01", "NEG-APPROVAL-01", "NEG-BYTES-01", "NEG-IDENTITY-01"],
 }) + "\n");
