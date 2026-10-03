@@ -65,7 +65,7 @@ the completed-batch publication. It is a prospective activation dependency, not
 proof of completed publication or a permission grant. The admission provider
 must still persist bounded child admission and gate activation on publication.
 
-The executor admission identity is now acyclic.stock.v3. Earlier executor
+The executor admission identity is now acyclic.stock.v4. Earlier executor
 journals are refused before dispatch; this change does not migrate them.
 `FilesystemGitFacade` is the small model-facing bridge for Git-shaped workspace
 commands. It binds one authenticated project scope and delegates parsing,

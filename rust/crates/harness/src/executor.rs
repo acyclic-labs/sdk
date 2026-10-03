@@ -41,7 +41,6 @@ pub struct TurnInput {
     /// Maximum model/tool steps permitted for this turn.
     pub max_steps: u32,
 }
-
 impl TurnInput {
     /// Constructs a turn from an exact, already recorded conversation
     /// selection. The final selected user message is the turn input, so no
@@ -443,7 +442,7 @@ impl StockExecutor {
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v3",
+            "executor": "acyclic.stock.v4",
             "input": input,
             "model": self.model,
             "context": self.context.contracts(),
@@ -454,6 +453,29 @@ impl StockExecutor {
             "batch_publisher": (&self.batch_identity, self.batch_guarantee),
             "authenticated_task": self.authenticated_task,
         }))
+    }
+
+    fn project_replayed_tool_result(
+        &self,
+        tool: &crate::tool::Tool,
+        invocation: &ToolInvocation,
+        result: &ToolResult,
+    ) -> Result<Value> {
+        validate_value(&tool.definition.output_schema, &result.value, "tool output")?;
+        let projection = tool.projection.project(invocation, result)?;
+        validate_value(
+            &tool.definition.model_output_schema,
+            &projection,
+            "tool projection",
+        )?;
+        if crate::contract::canonical_json_bytes(&projection)?.len() as u64
+            > self.limits.render_bytes
+        {
+            return Err(Error::Invalid(
+                "tool projection exceeds render limit".into(),
+            ));
+        }
+        Ok(projection)
     }
 
     /// Replays the durable journal for one turn, verifying it is gapless and bound to the
@@ -767,7 +789,7 @@ impl StockExecutor {
         let mut rejections = Vec::new();
         for record in &records {
             let ExecutionEvent::ToolAdmissionRejected {
-                step: _,
+                step: rejected_step,
                 reason: ToolRejectionKind::InvalidArguments,
                 feedback: Some(feedback),
                 ..
@@ -775,6 +797,9 @@ impl StockExecutor {
             else {
                 continue;
             };
+            if *rejected_step > step {
+                continue;
+            }
             rejections.push(load_json(journal, feedback).await?);
         }
         let boundary = crate::model_input::CompletedModelBoundary::capture_with_rejections(
@@ -970,7 +995,126 @@ impl StockExecutor {
     ) -> Result<()> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
-        let Some(tool) = self.tools.get(&invocation.name) else {
+        let mut started = None;
+        let mut completed_tool = None;
+        let mut retained_rejection = None;
+        for record in &records {
+            match &record.event {
+                ExecutionEvent::ToolStarted {
+                    step: event_step,
+                    call_id,
+                    invocation: existing,
+                } if *event_step == step && call_id == &invocation.call_id => {
+                    if started.is_some() {
+                        return Err(Error::Storage("duplicate admitted tool invocation".into()));
+                    }
+                    let existing = load_json::<ToolInvocation>(journal, existing).await?;
+                    if existing != invocation {
+                        return Err(Error::Conflict(
+                            "tool call identity is bound to another invocation".into(),
+                        ));
+                    }
+                    started = Some(());
+                }
+                ExecutionEvent::ToolCompleted {
+                    step: event_step,
+                    call_id,
+                    result,
+                    projection,
+                    invocation_digest,
+                } if *event_step == step && call_id == &invocation.call_id => {
+                    if completed_tool.is_some() {
+                        return Err(Error::Storage("duplicate completed tool result".into()));
+                    }
+                    completed_tool = Some((result.clone(), projection.clone(), *invocation_digest));
+                }
+                ExecutionEvent::ToolAdmissionRejected {
+                    step: event_step,
+                    invocation: existing,
+                    reason,
+                    feedback,
+                } if *event_step == step => {
+                    let existing = load_json::<ToolInvocation>(journal, existing).await?;
+                    if existing.call_id != invocation.call_id {
+                        continue;
+                    }
+                    if existing != invocation {
+                        return Err(Error::Conflict(
+                            "rejected tool call identity is bound to another invocation".into(),
+                        ));
+                    }
+                    if retained_rejection.is_some() {
+                        return Err(Error::Storage("duplicate tool admission rejection".into()));
+                    }
+                    retained_rejection = Some((*reason, feedback.clone()));
+                }
+                _ => {}
+            }
+        }
+        if completed_tool.is_some() && started.is_none() {
+            return Err(Error::Invalid(
+                "completed tool has no admitted invocation".into(),
+            ));
+        }
+        let tool = self.tools.get(&invocation.name);
+        if let Some((reason, feedback)) = retained_rejection {
+            match reason {
+                ToolRejectionKind::InvalidArguments => {
+                    let tool = tool.ok_or_else(|| {
+                        Error::Storage("invalid-argument rejection lacks pinned tool".into())
+                    })?;
+                    let error_text = match validate_value(
+                        &tool.definition.input_schema,
+                        &invocation.arguments,
+                        "tool input",
+                    ) {
+                        Ok(()) => {
+                            return Err(Error::Conflict(
+                                "durable invalid-argument rejection no longer applies".into(),
+                            ));
+                        }
+                        Err(error) => error.to_string(),
+                    };
+                    let feedback = feedback.ok_or_else(|| {
+                        Error::Storage("invalid-argument rejection lacks feedback".into())
+                    })?;
+                    let durable: ToolRejectionFeedback = load_json(journal, &feedback).await?;
+                    let expected = ToolRejectionFeedback::invalid_arguments(
+                        &invocation,
+                        &tool.definition.input_schema,
+                        &error_text,
+                    )?;
+                    if durable != expected {
+                        return Err(Error::Conflict("durable rejection feedback changed".into()));
+                    }
+                    let message = ModelMessage {
+                        role: ModelRole::Tool,
+                        content: ModelContent::Part(ModelContentPart::ToolResult {
+                            call_id: invocation.call_id.clone(),
+                            name: invocation.name.clone(),
+                            value: durable.to_model_value(&error_text)?,
+                        }),
+                    };
+                    message.content.validate_limits(self.limits)?;
+                    prior_messages.push(message);
+                    return Ok(());
+                }
+                ToolRejectionKind::UnknownTool => {
+                    return Err(Error::NotFound(format!("tool {}", invocation.name)));
+                }
+                ToolRejectionKind::Unauthorized | ToolRejectionKind::ResourceDenied => {
+                    return Err(Error::Unauthorized(
+                        "durable tool admission was denied".into(),
+                    ));
+                }
+                ToolRejectionKind::PolicyDenied => {
+                    return Err(Error::Unauthorized(
+                        "durable tool policy denied admission".into(),
+                    ));
+                }
+            }
+        }
+        let Some(tool) = tool else {
             self.record_tool_rejection(
                 journal,
                 operation_id,
@@ -982,6 +1126,34 @@ impl StockExecutor {
             .await?;
             return Err(Error::NotFound(format!("tool {}", invocation.name)));
         };
+        if let Some((result_ref, projection_ref, invocation_digest)) = completed_tool {
+            if invocation_digest != crate::contract::canonical_json_digest(&invocation)? {
+                return Err(Error::Conflict(
+                    "completed tool result is bound to another invocation".into(),
+                ));
+            }
+            let result: ToolResult = load_json(journal, &result_ref).await?;
+            let projection = self.project_replayed_tool_result(tool, &invocation, &result)?;
+            let persisted_projection: Value = load_json(journal, &projection_ref).await?;
+            if crate::contract::canonical_json_bytes(&persisted_projection)?
+                != crate::contract::canonical_json_bytes(&projection)?
+            {
+                return Err(Error::Conflict(
+                    "completed tool projection differs from pinned projection".into(),
+                ));
+            }
+            let message = ModelMessage {
+                role: ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: invocation.call_id.clone(),
+                    name: invocation.name.clone(),
+                    value: projection,
+                }),
+            };
+            message.content.validate_limits(self.limits)?;
+            prior_messages.push(message);
+            return Ok(());
+        }
         // Authorization precedes argument validation, and must stay that way. A validation error
         // describes the tool's pinned input schema, so answering one for a tool the caller was
         // never granted would let a model probe the contract of an ungranted tool by naming it
@@ -1051,21 +1223,7 @@ impl StockExecutor {
             prior_messages.push(message);
             return Ok(());
         }
-        let started = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolStarted {
-                step: event_step,
-                call_id,
-                invocation: existing,
-            } if *event_step == step && call_id == &invocation.call_id => Some(existing),
-            _ => None,
-        });
-        if let Some(existing) = started
-            && load_json::<ToolInvocation>(journal, existing).await? != invocation
-        {
-            return Err(Error::Conflict(
-                "tool call identity is bound to another invocation".into(),
-            ));
-        }
+        let started = started.is_some();
         if let Some(reason) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolFailed {
                 step: event_step,
@@ -1076,34 +1234,7 @@ impl StockExecutor {
         }) {
             return Err(Error::Invalid(reason.message().into()));
         }
-        let completed_tool = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolCompleted {
-                step: event_step,
-                call_id,
-                result,
-                projection,
-                invocation_digest,
-            } if *event_step == step && call_id == &invocation.call_id => {
-                Some((result.clone(), projection.clone(), *invocation_digest))
-            }
-            _ => None,
-        });
-        if completed_tool.is_some() && started.is_none() {
-            return Err(Error::Invalid(
-                "completed tool has no admitted invocation".into(),
-            ));
-        }
-        let (result, projection) = if let Some(completed) = completed_tool {
-            if completed.2 != crate::contract::canonical_json_digest(&invocation)? {
-                return Err(Error::Conflict(
-                    "completed tool result is bound to another invocation".into(),
-                ));
-            }
-            (
-                load_json::<ToolResult>(journal, &completed.0).await?,
-                load_json::<Value>(journal, &completed.1).await?,
-            )
-        } else {
+        let (result, projection) = {
             {
                 let scope = &self.tool_scope;
                 if let Some(policy) = &self.policy {
@@ -1172,7 +1303,7 @@ impl StockExecutor {
                     }
                 }
             }
-            let claimed = if started.is_some() {
+            let claimed = if started {
                 false
             } else {
                 let invocation_ref = stage_json(
@@ -2018,7 +2149,7 @@ mod tests {
             max_steps: 1,
         };
         let old_digest = crate::contract::canonical_json_digest(&json!({
-            "executor": "acyclic.stock.v2",
+            "executor": "acyclic.stock.v3",
             "input": input,
             "model": executor.model,
             "context": executor.context.contracts(),
@@ -2993,6 +3124,69 @@ mod tests {
         assert!(matches!(
             executor.execute(input, &journal).await,
             Err(Error::Conflict(_) | Error::Storage(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_completed_tool_records_fail_before_model_replay() -> Result<()> {
+        let model = Arc::new(ProjectionModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.private".into(),
+                revision: "1".into(),
+                description: "Private result".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object", "required": ["private", "public"], "properties": {"private": {"type": "string"}, "public": {"type": "string"}}, "additionalProperties": false}),
+                model_output_schema: json!({"type": "object", "required": ["public"], "properties": {"public": {"type": "string"}}, "additionalProperties": false}),
+            },
+            executor: Arc::new(PrivateResultTool),
+            projection: Arc::new(NarrowProjection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.private"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([82; 16]),
+            input: ModelContent::Text("show public result".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        assert_eq!(
+            executor.execute(input.clone(), &journal).await?.text,
+            "done"
+        );
+        let completed = journal
+            .replay(input.operation_id)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                ExecutionEvent::ToolCompleted { .. } => Some(record.event),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("missing completed tool record".into()))?;
+        journal
+            .append(input.operation_id, "duplicate-completed".into(), completed)
+            .await?;
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Storage(message)) if message.contains("duplicate completed tool result")
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())

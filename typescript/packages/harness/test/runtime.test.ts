@@ -1884,6 +1884,29 @@ describe("typed agent runtime", () => {
     expect(serializedRequests[1]).toContain('"modelOutputSchema"');
   });
 
+  test("oversized tool projections refuse the model step without an omission sentinel", async () => {
+    let generated = 0;
+    const tool = defineTool<null, { readonly text: string }>({
+      name: "oversized-result", revision: "1", description: "oversized result",
+      inputSchema: { type: "null" },
+      outputSchema: { type: "object", required: ["text"], properties: { text: { type: "string" } }, additionalProperties: false },
+      modelOutputSchema: { type: "object", required: ["text"], properties: { text: { type: "string" } }, additionalProperties: false },
+      parseInput: parseNull,
+      parseOutput: value => value as { readonly text: string },
+    }, async () => ({ text: "this projection is too large" }));
+    const runtime = Harness.builder(contracts).limits({ render_bytes: 16 }).tool(tool)
+      .grant("tool:call:oversized-result").model(testModel, {
+        async *generate() {
+          generated++;
+          yield { kind: "tool_call" as const, callId: "oversized-call", name: "oversized-result", arguments: null };
+          yield { kind: "completed" as const, metadata: {} };
+        },
+        async reconcile() { return undefined; },
+      }).build();
+    await expect(runtime.run("project")).rejects.toThrow("tool projection exceeds render limit");
+    expect(generated).toBe(1);
+  });
+
   test("typed run input carries attachment refs into the model context", async () => {
     let observed: readonly ModelMessage[] = [];
     const file = {

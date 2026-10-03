@@ -1,4 +1,4 @@
-import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
@@ -297,9 +297,17 @@ function validateModelContent(content: ModelContent, limits: Limits): void {
   validateModelContentWasm(content, limits);
 }
 
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || ArrayBuffer.isView(value) || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  return Object.freeze(value);
+}
+
+/** A model projection is an exact bounded value; oversized values are an admission failure. */
 async function boundedToolValue(value: unknown, renderLimit: number, contracts: NativeContracts): Promise<unknown> {
   const bytes = contracts.encodeCanonicalJson(value).byteLength;
-  return bytes <= renderLimit ? value : { omitted: true, byteLength: bytes };
+  if (bytes > renderLimit) throw new Error("tool projection exceeds render limit");
+  return deepFreeze(structuredClone(value));
 }
 export interface AgentHarnessHost { connect(): Promise<AgentHarness> }
 /** Exact ref-valued Rust effect status; recovered values never acquire a caller-chosen type. */
@@ -2348,12 +2356,12 @@ export class AgentHarness {
         if (prepared.requestJson.length === 0 || prepared.manifestJson.length === 0 || prepared.requestDigest.length !== 32) {
           throw new Error("canonical model request admission returned empty evidence");
         }
-        const providerRequest = {
-          model: model.identity,
-          messages,
-          tools,
+        const providerRequest: ModelRequest = {
+          model: deepFreeze(structuredClone(model.identity)),
+          messages: deepFreeze(structuredClone(messages)),
+          tools: deepFreeze(structuredClone(tools)),
           signal: context.signal,
-          canonical: prepared,
+          canonical: structuredClone(prepared),
         };
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
@@ -2384,7 +2392,9 @@ export class AgentHarness {
           const projected = this.#projectToolOutput(tool, value);
           const projection = await boundedToolValue(projected, this.limits.render_bytes, this.contracts);
           this.contracts.validateToolProjection(tool.definition, { value: projection });
-          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
+          receipts.push({ kind: "tool", step, callId: call.callId, name: call.name,
+            arguments: deepFreeze(structuredClone(call.arguments)),
+            value: deepFreeze(structuredClone(value)), projection });
           messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
         }
       }

@@ -428,18 +428,27 @@ where
         tools: &[crate::tool::ToolDefinition],
         records: &[ExecutionRecord],
     ) -> Result<(FileRef, FileRef)> {
-        if let Some((result, projection, invocation_digest)) = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolCompleted {
+        let mut completed = None;
+        for record in records {
+            let ExecutionEvent::ToolCompleted {
                 step: candidate,
                 call_id: call,
                 result,
                 projection,
                 invocation_digest,
-            } if *candidate == step && call == &invocation.call_id => {
-                Some((result, projection, invocation_digest))
+            } = &record.event
+            else {
+                continue;
+            };
+            if *candidate != step || call != &invocation.call_id {
+                continue;
             }
-            _ => None,
-        }) {
+            if completed.is_some() {
+                return Err(Error::Storage("duplicate completed tool result".into()));
+            }
+            completed = Some((result, projection, invocation_digest));
+        }
+        if let Some((result, projection, invocation_digest)) = completed {
             let definition = tools
                 .iter()
                 .find(|definition| definition.name == invocation.name)
@@ -554,11 +563,11 @@ where
                 "model rejection feedback differs from durable feedback".into(),
             ));
         }
-        crate::tool::validate_value(
-            &definition.model_output_schema,
-            value,
-            "durable rejection projection",
-        )?;
+        // Rejection envelopes have their own authenticated contract. They
+        // carry bounded diagnostic text and durable call/schema/error
+        // digests, so they are intentionally validated through
+        // `ToolRejectionFeedback` above rather than the successful result's
+        // model projection schema.
         Ok((
             self.stage_history_json(
                 operation,
