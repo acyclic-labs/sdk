@@ -95,6 +95,20 @@ struct RemotePolicyMetadata {
     credential_policy: String,
     response_limit_policy: String,
     behavior_binding: String,
+    transport: TransportPolicyMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TransportPolicyMetadata {
+    native: Vec<TransportOptionMetadata>,
+    browser: Vec<TransportOptionMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TransportOptionMetadata {
+    kind: String,
+    streaming: bool,
+    bearer_auth: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -150,6 +164,50 @@ struct RustService<'a> {
     descriptor: Vec<u8>,
     routes: Vec<(&'a str, &'a str, &'a str)>,
     operations: &'a [acyclic_sdk_contract_wire::OperationPolicy],
+    transport: acyclic_sdk_contract_wire::FamilyTransportPolicy,
+}
+
+fn transport_kind(kind: acyclic_sdk_contract_wire::TransportKind) -> &'static str {
+    match kind {
+        acyclic_sdk_contract_wire::TransportKind::Grpc => "grpc",
+        acyclic_sdk_contract_wire::TransportKind::GrpcWeb => "grpc-web",
+        acyclic_sdk_contract_wire::TransportKind::HttpJson => "http",
+    }
+}
+
+fn transport_options(
+    policy: acyclic_sdk_contract_wire::RuntimeTransportPolicy,
+) -> Vec<TransportOptionMetadata> {
+    policy
+        .options
+        .iter()
+        .map(|option| TransportOptionMetadata {
+            kind: transport_kind(option.kind).to_owned(),
+            streaming: option.streaming,
+            bearer_auth: option.bearer_auth,
+        })
+        .collect()
+}
+
+fn transport_policy_metadata(
+    policy: acyclic_sdk_contract_wire::FamilyTransportPolicy,
+) -> TransportPolicyMetadata {
+    TransportPolicyMetadata {
+        native: transport_options(policy.native),
+        browser: transport_options(policy.browser),
+    }
+}
+
+/// The published Inference TypeScript package currently ships the canonical
+/// HTTP projection only. Keep that installed-adapter qualification in the
+/// Rust-generated policy so native consumers select HTTP instead of claiming
+/// an unavailable gRPC adapter.
+fn inference_transport_policy_metadata(
+    policy: acyclic_sdk_contract_wire::FamilyTransportPolicy,
+) -> TransportPolicyMetadata {
+    let mut metadata = transport_policy_metadata(policy);
+    metadata.native.retain(|option| option.kind == "http");
+    metadata
 }
 
 fn lower_camel(name: &str) -> String {
@@ -384,6 +442,16 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         modeled_operations,
         http_projection: !spec.routes.is_empty(),
         remote_policy: match spec.family {
+            "actors" | "workers" => Some(RemotePolicyMetadata {
+                protocol: "https-or-loopback-http".to_owned(),
+                auth: "bearer".to_owned(),
+                credential_policy: "bearer-no-crlf".to_owned(),
+                request_encoding: "protobuf-json".to_owned(),
+                response_encoding: "protobuf-json".to_owned(),
+                response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                behavior_binding: "generated-client".to_owned(),
+                transport: transport_policy_metadata(spec.transport),
+            }),
             "objects" => Some(RemotePolicyMetadata {
                 protocol: "https-or-loopback-http".to_owned(),
                 auth: "bearer".to_owned(),
@@ -392,6 +460,7 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
                 behavior_binding: "native-wasm".to_owned(),
+                transport: transport_policy_metadata(spec.transport),
             }),
             "stream" => Some(RemotePolicyMetadata {
                 protocol: "https-or-loopback-http".to_owned(),
@@ -401,6 +470,17 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 response_encoding: "protobuf-json".to_owned(),
                 response_limit_policy: "bounded-cumulative-utf8".to_owned(),
                 behavior_binding: "native-wasm".to_owned(),
+                transport: transport_policy_metadata(spec.transport),
+            }),
+            "inference" => Some(RemotePolicyMetadata {
+                protocol: "https".to_owned(),
+                auth: "bearer".to_owned(),
+                credential_policy: "bearer-no-crlf".to_owned(),
+                request_encoding: "protobuf-json".to_owned(),
+                response_encoding: "protobuf-json".to_owned(),
+                response_limit_policy: "bounded-cumulative-utf8".to_owned(),
+                behavior_binding: "generated-client".to_owned(),
+                transport: inference_transport_policy_metadata(spec.transport),
             }),
             _ => None,
         },
@@ -467,12 +547,17 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
         env!("CARGO_MANIFEST_DIR"),
         "/../sdk-contract-wire/src/credential.rs"
     ));
+    let transport = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sdk-contract-wire/src/transport.rs"
+    ));
     match family {
-        "actors" => model_source_content(&[lib, registry, credential]),
+        "actors" => model_source_content(&[lib, registry, credential, transport]),
         "workers" => model_source_content(&[
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/workers.rs"
@@ -482,6 +567,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/objects.rs"
@@ -491,6 +577,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/stream.rs"
@@ -500,6 +587,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/inference.rs"
@@ -509,6 +597,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/machines.rs"
@@ -518,6 +607,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/filesystem.rs"
@@ -527,6 +617,7 @@ fn source_content_for_family(family: &str) -> Vec<u8> {
             lib,
             registry,
             credential,
+            transport,
             include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/../sdk-contract-wire/src/harness.rs"
@@ -574,6 +665,7 @@ fn rust_service(view: &'static acyclic_sdk_contract_wire::FamilyView) -> RustSer
         descriptor: view.model.descriptor(),
         routes: contract_routes(view.routes()),
         operations: view.operation_policies,
+        transport: view.transport,
     }
 }
 
@@ -629,8 +721,32 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
     output.push_str("export interface RustOwnedFieldMetadata { readonly name: string; readonly jsonName: string; readonly number: number; readonly wireType: string; readonly repeated: boolean; readonly optional: boolean; readonly oneof?: string | undefined; readonly proto3Optional: boolean; }\n\n");
     output.push_str("export interface RustOwnedMethodMetadata {\n  readonly operationId: string;\n  readonly rpc: string;\n  readonly docs: string;\n  readonly path: string;\n  readonly pathParameters: readonly string[];\n  readonly httpMethod: \"POST\";\n  readonly requestType: string;\n  readonly responseType: string;\n  readonly clientStreaming: boolean;\n  readonly serverStreaming: boolean;\n  readonly requestEncoding: \"protobuf-json\";\n  readonly responseEncoding: \"protobuf-json\";\n  readonly auth: \"bearer\";\n  readonly credentialPolicy: \"bearer-no-crlf\";\n  readonly responseLimitPolicy: \"bounded-cumulative-utf8\";\n  readonly requestFields: readonly RustOwnedFieldMetadata[];\n  readonly responseFields: readonly RustOwnedFieldMetadata[];\n}\n\n");
     if let Some(policy) = &service.remote_policy {
+        let native = policy
+            .transport
+            .native
+            .iter()
+            .map(|option| {
+                format!(
+                    "{{ kind: {:?}, streaming: {}, bearerAuth: {} }}",
+                    option.kind, option.streaming, option.bearer_auth
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let browser = policy
+            .transport
+            .browser
+            .iter()
+            .map(|option| {
+                format!(
+                    "{{ kind: {:?}, streaming: {}, bearerAuth: {} }}",
+                    option.kind, option.streaming, option.bearer_auth
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
         output.push_str(&format!(
-            "export interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly behaviorBinding: {:?}; }}\n\n",
+            "export interface RustOwnedTransportOption {{ readonly kind: \"grpc\" | \"grpc-web\" | \"http\"; readonly streaming: boolean; readonly bearerAuth: boolean; }}\nexport interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly behaviorBinding: {:?}; readonly transport: {{ readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }}; }}\n\n",
             policy.protocol,
             policy.auth,
             policy.credential_policy,
@@ -640,7 +756,7 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
             policy.behavior_binding,
         ));
         output.push_str(&format!(
-            "export const {}_REMOTE_POLICY: RustOwnedRemotePolicy = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, behaviorBinding: {:?} }};\n",
+            "export const {}_REMOTE_POLICY: RustOwnedRemotePolicy = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, behaviorBinding: {:?}, transport: {{ native: [{}], browser: [{}] }} }};\n",
             service.family.to_ascii_uppercase(),
             policy.protocol,
             policy.auth,
@@ -649,6 +765,8 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
             policy.response_encoding,
             policy.response_limit_policy,
             policy.behavior_binding,
+            native,
+            browser,
         ));
     }
     output.push_str("export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }\n\n");
@@ -1014,6 +1132,7 @@ mod tests {
         let source = String::from_utf8_lossy(&bytes);
         assert!(source.contains("BEARER_NO_CRLF"));
         assert!(source.contains("FAMILY_VIEWS"));
+        assert!(source.contains("TransportKind::Grpc"));
         assert!(source.contains("ActorsService/CreateActor"));
     }
 }
