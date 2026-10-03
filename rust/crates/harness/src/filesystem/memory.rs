@@ -756,6 +756,15 @@ where
         seed.validate()?;
         let volume = seed.child_private_volume.clone();
         validate_storage_owner(seed.child_agent, maximum_file_bytes, &volume)?;
+        // Recheck the complete immutable seed against the parent's durable
+        // fork event before consulting allocation journals. This includes the
+        // model-boundary attestation and child identity, so a tampered seed
+        // cannot be accepted merely because the child was already bound.
+        if parent.reducer().fork(&seed.child) != Some(seed) {
+            return Err(Error::Unauthorized(
+                "fork child seed differs from the published parent fork".into(),
+            ));
+        }
         if volume.provider() != &host.provider {
             return Err(Error::Invalid(
                 "fork private volume belongs to another provider".into(),

@@ -458,6 +458,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     )]
     async fn prepare_inner(&self, request: ForkRequest) -> Result<ForkReport> {
         self.check_request(&request)?;
+        if let Some(model_boundary) = &request.model_boundary {
+            // Authenticate the exact child identity and model manifest before
+            // claiming the durable preparation journal. A forged proof must
+            // not leave a retry claim or any later allocation effect behind.
+            self.verifier.verify_model_boundary(
+                &request.parent,
+                &request.child,
+                request.child_agent,
+                &request.attached_agents,
+                model_boundary,
+            )?;
+        }
         let journal = self.claim(&request).await?;
         if let Some(report) = self.read_report(&journal, &request).await? {
             return Ok(report);
