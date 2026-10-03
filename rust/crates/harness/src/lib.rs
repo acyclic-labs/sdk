@@ -29,7 +29,9 @@ pub mod fork;
 pub mod grpc;
 mod handles;
 pub mod interaction;
+pub mod integrations;
 pub mod live;
+pub mod managed_agent_runtime;
 #[cfg(feature = "machines")]
 pub mod machines;
 #[cfg(any(

@@ -9,11 +9,11 @@ The package identity for this guide is `acyclic-fs = 0.2.0`. Pin the exact
 source revision in the generated docs bundle when publishing a guide; the
 working checkout may contain unreleased changes.
 
-The crate's default features include the local backend, memory support, native
-watching, and native mounting. The local backend is available on native targets
-when the `local` feature is enabled. The `wasm32` target exposes the portable
-parts of the crate and does not expose the native local or hosted service
-adapters.
+The crate's default profile selects the local backend, memory support, native
+watching, and native mounting on native targets. Cargo selects the target-specific
+dependencies automatically, so native consumers use the local backend without a
+feature flag. The `wasm32` target exposes the portable parts of the crate and
+does not expose the native local or hosted service adapters.
 
 The following is the complete executable example from
 [`examples/embedded_workspace.rs`](../examples/embedded_workspace.rs). It
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Run that example from the crate directory with:
 
 ```sh
-cargo run --example embedded_workspace --features local
+cargo run --example embedded_workspace
 ```
 
 The installed embedded proof uses the same portable model through an in-memory

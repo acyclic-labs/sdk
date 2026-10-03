@@ -7,7 +7,7 @@ constraints:
 | Capability | Rust surface | Availability |
 | --- | --- | --- |
 | Portable workspace model | `acyclic_fs::workspace`, `model`, `path`, and related modules | Default crate surface, including `wasm32` where target-compatible |
-| Embedded local storage | `Fs::local`, `LocalFs`, `LocalOptions` | Native targets with feature `local`; included by default |
+| Embedded local storage | `Fs::local`, `LocalFs`, `LocalOptions` | Native targets in the default profile; target dependencies are selected automatically |
 | In-memory distributed test backend | `MemoryFs` | Features `memory` and `distributed` |
 | Hosted workspace client | `HostedFs`, `HostedFsOptions` | Native targets; unavailable on `wasm32` |
 | Native filesystem watching | `watch` and native capture support | Native targets with feature `native-watch` |

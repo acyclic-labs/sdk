@@ -42,9 +42,10 @@ second volume.
 `TrackingSafe` consistency and `PrivateOverlay` mutations are the safe defaults
 used by the executable example. `Lifecycle::Durable` and
 `Lifecycle::Ephemeral` select volume lifecycle behavior; provider-specific
-durability controls remain in the local storage options. Native local builds
-also expose deferred authority flushing through `LocalFs::flush_deferred_authority`
-when the `local` feature is active.
+durability controls remain in the local storage options. Native builds also expose
+deferred authority flushing through `LocalFs::flush_deferred_authority`; the
+default profile selects this backend without a consumer feature flag. Cargo omits
+native-only dependencies for `wasm32`.
 
 ## Files and content ([facade.rs](../src/facade.rs), [kernel](../src/kernel/mod.rs))
 
@@ -65,8 +66,8 @@ invalid mount paths.
 
 ## Local and hosted deployments ([facade.rs](../src/facade.rs), [hosted.rs](../src/hosted.rs))
 
-`Fs::local(LocalOptions)` is the embedded native backend and is available with
-the `local` feature. `HostedFs`, `HostedFsOptions`, `HostedWorkspace`, and
+`Fs::local(LocalOptions)` is the embedded native backend in the default native
+profile. `HostedFs`, `HostedFsOptions`, `HostedWorkspace`, and
 `HostedTransaction` are the native hosted client path. The hosted client is
 not a `wasm32` surface. See [service availability](service-availability.md)
 for the complete feature and target matrix.
@@ -85,5 +86,5 @@ compiled. It does not turn the embedded backend into an S3 service.
 The stable public reference is the crate's rustdoc surface and the exported
 wire descriptor in `FILE_DESCRIPTOR_SET`. The descriptor identifies
 `acyclic.filesystem.v2` and the shared `acyclic.protocol.v1` handshake. Use
-`cargo check --example embedded_workspace --features local` to qualify the
+`cargo check --example embedded_workspace` to qualify the
 local guide example against the current package revision.
