@@ -1,13 +1,16 @@
 //! Stream-backed execution observations with private Filesystem payloads.
 
-use super::{FilesystemHost, FilesystemInteractionHost, InternalContentClass};
+use super::{
+    FilesystemHost, FilesystemInteractionHost, InternalContentClass, is_host_owned_internal_path,
+};
 use crate::{
-    Error, IdempotencyKey, InteractionId, OperationId, Result,
+    Error, IdempotencyKey, InteractionId, OperationId, Result, SessionId,
     conversation::{
         ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, SchemaRegistry, Scope},
     executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
+    host_execution::{ExecutionApproval, ExecutionApprovalContext, ExecutionApprovalVerifier},
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     projection::{SelectedModelContext, select_model_context},
     store::StreamAggregate,
@@ -43,6 +46,9 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: FilesystemInteractionHost<P, A, O>,
+    /// Session identity authenticated by the composition that owns this
+    /// journal.  A journal without this binding cannot authorize execution.
+    session_id: Option<SessionId>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -116,7 +122,21 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
             input_verifier: None,
             interactions,
+            session_id: None,
         })
+    }
+
+    /// Binds the journal to the authenticated session that owns its
+    /// interaction ledger.  Production execution must use this binding;
+    /// leaving it unset makes every execution approval fail closed.
+    pub fn with_session_id(mut self, session_id: SessionId) -> Result<Self> {
+        if session_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid(
+                "execution journal session identity cannot be zero".into(),
+            ));
+        }
+        self.session_id = Some(session_id);
+        Ok(self)
     }
 
     /// Routes turn-input attachment admission through an explicitly bound provider set.
@@ -346,6 +366,72 @@ where
     }
 }
 
+impl<P, A, O> ExecutionApprovalVerifier for FilesystemExecutionJournal<P, A, O>
+where
+    P: StreamProvider + Send + Sync,
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn verify<'a>(
+        &'a self,
+        context: ExecutionApprovalContext<'a>,
+        approval: &'a ExecutionApproval,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            if context.session_id.into_bytes() == [0; 16]
+                || context.interaction_id.into_bytes() == [0; 16]
+                || context.session_id != approval.session_id
+                || context.interaction_id != approval.interaction_id
+                || context.operation_id != approval.operation_id
+                || self.session_id != Some(context.session_id)
+            {
+                return Err(Error::Unauthorized(
+                    "execution approval is not bound to the authenticated owner session".into(),
+                ));
+            }
+            let Some((ticket, Some(resolution))) =
+                self.interactions.read(approval.interaction_id).await?
+            else {
+                return Err(Error::Unauthorized(
+                    "execution approval lacks a resolved owner interaction".into(),
+                ));
+            };
+            let expected_outcome = if approval.approved {
+                InteractionOutcome::Approved
+            } else {
+                InteractionOutcome::Declined
+            };
+            let action_digest = approval.request.digest()?;
+            if resolution.outcome != expected_outcome
+                || !ticket.approval.as_ref().is_some_and(|binding| {
+                    binding.operation_id == approval.operation_id
+                        && binding.action_digest == action_digest
+                })
+            {
+                return Err(Error::Unauthorized(
+                    "owner interaction does not authorize this exact execution request".into(),
+                ));
+            }
+            let request = self
+                .interactions
+                .read_request(approval.interaction_id)
+                .await?
+                .ok_or_else(|| Error::Storage("approved interaction request is missing".into()))?;
+            if let Some(detail) = &resolution.detail {
+                let bytes = self
+                    .interactions
+                    .read_decision_detail(approval.interaction_id)
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Storage("approved interaction decision is missing".into())
+                    })?;
+                ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &bytes)?;
+            }
+            Ok(())
+        })
+    }
+}
+
 impl<P, A, O> ExecutionJournal for FilesystemExecutionJournal<P, A, O>
 where
     P: StreamProvider + Send + Sync,
@@ -564,6 +650,11 @@ where
                 }
                 return Err(Error::Unsupported(
                     "turn input file belongs to another content provider".into(),
+                ));
+            }
+            if is_host_owned_internal_path(reference.path()) {
+                return Err(Error::Unauthorized(
+                    "host-owned internal content cannot enter model context".into(),
                 ));
             }
             let grant = if reference.volume().class() == VolumeClass::AgentPrivate
