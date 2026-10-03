@@ -352,7 +352,7 @@ impl Runtime {
             "list_sessions" => self.list_sessions(&request.params).await,
             "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
-            "resume_session" => self.open_session(&request.params, true).await,
+            "resume_session" => self.resume_session(&request.params).await,
             "read_activity" => self.read_activity(&request.params).await,
             "read_messages" => self.read_messages(&request.params).await,
             "send_message" => {
@@ -419,6 +419,60 @@ impl Runtime {
 
     async fn start_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
+        let (prompt, operation_id) = self.run_inputs(params)?;
+        let operation = operation_for(operation_id);
+        let output = self
+            .swarm
+            .run_root(operation, prompt)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let task = self
+            .swarm
+            .root_task()
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
+    }
+
+    async fn resume_session(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let has_prompt = params.get("prompt").is_some();
+        let has_operation = params.get("operation_id").is_some();
+        if has_prompt != has_operation {
+            return Err(DispatchError::invalid(
+                "resume_session requires prompt and operation_id together",
+            ));
+        }
+        if !has_prompt {
+            let session = self
+                .swarm
+                .resume(task)
+                .await
+                .map_err(DispatchError::from_harness)?;
+            return self.snapshot_from_session(session).await;
+        }
+        let (prompt, operation_id) = self.run_inputs(params)?;
+        let output = self
+            .swarm
+            .run(task, operation_for(operation_id), prompt)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let mut snapshot = self.snapshot(task).await?;
+        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
+            DispatchError::invalid(format!("outcome is not serializable: {error}"))
+        })?;
+        Ok(snapshot)
+    }
+
+    fn run_inputs<'a>(
+        &self,
+        params: &'a serde_json::Map<String, Value>,
+    ) -> Result<(&'a str, &'a str), DispatchError> {
         let prompt = required_text(params, "prompt")?;
         let operation_id = required_text(params, "operation_id")?;
         if operation_id.trim().is_empty() || operation_id.len() > 256 {
@@ -438,22 +492,7 @@ impl Runtime {
                 ));
             }
         }
-        let operation = operation_for(operation_id);
-        let output = self
-            .swarm
-            .run_root(operation, prompt)
-            .await
-            .map_err(DispatchError::from_harness)?;
-        let task = self
-            .swarm
-            .root_task()
-            .await
-            .map_err(DispatchError::from_harness)?;
-        let mut snapshot = self.snapshot(task).await?;
-        snapshot["outcome"] = serde_json::to_value(output).map_err(|error| {
-            DispatchError::invalid(format!("outcome is not serializable: {error}"))
-        })?;
-        Ok(snapshot)
+        Ok((prompt, operation_id))
     }
 
     async fn open_session(&self, params: &Value, resume: bool) -> Result<Value, DispatchError> {
@@ -492,29 +531,15 @@ impl Runtime {
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_messages_with_content(task, after_sequence, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
-            .swarm
-            .list_files(task, "", None, None, 1)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
         let mut items = Vec::with_capacity(messages.len());
-        for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| DispatchError {
-                            code: "transport",
-                            message: "message content is not UTF-8".into(),
-                        })
-                })?;
+        for (message, bytes) in messages {
+            let body = String::from_utf8(bytes).map_err(|_| DispatchError {
+                code: "transport",
+                message: "message content is not UTF-8".into(),
+            })?;
             items.push(json!({
                 "id": message.id.to_string(),
                 "sequence": message.sequence.to_string(),
@@ -1319,6 +1344,54 @@ mod tests {
         assert!(started["result"]["workspace_generation"]
             .as_str()
             .is_some_and(|generation| !generation.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn resume_session_submits_from_ready_durable_session() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"list-1","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let session_id = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+        let resumed = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"resume-1",
+                "method":"resume_session",
+                "params":{
+                    "session_id":session_id.clone(),
+                    "prompt":"resume me",
+                    "operation_id":"op-resume-1",
+                    "model_fixture":"echo"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(resumed["ok"], true);
+        assert_eq!(resumed["result"]["summary"]["state"], "completed");
+        let messages = exchange(
+            runtime,
+            json!({
+                "request_id":"messages-1",
+                "method":"read_messages",
+                "params":{"session_id":session_id}
+            }),
+        )
+        .await;
+        assert_eq!(messages["ok"], true);
+        assert!(messages["result"]["items"]
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| item["body"] == "resume me")));
     }
 
     #[tokio::test]

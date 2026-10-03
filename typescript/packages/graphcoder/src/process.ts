@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "n
 import { randomUUID } from "node:crypto";
 import { GraphCoderError } from "./api.js";
 import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
+import { OwnedChild, type OwnedChildClose } from "./owned-child.js";
 
 export interface GraphCoderProcessBridgeOptions {
   readonly executable: string;
@@ -43,6 +44,7 @@ export const DEFAULT_MAXIMUM_PENDING_PROCESS_REQUESTS = 64;
  */
 export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #child: ChildProcessWithoutNullStreams;
+  readonly #ownedChild: OwnedChild;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #onDiagnostic: (event: GraphCoderProcessDiagnostic) => void;
   readonly #maximumLineBytes: number;
@@ -74,8 +76,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       windowsHide: true,
     };
     const child = spawn(options.executable, [...(options.args ?? [])], spawnOptions);
-    if (child.stdin === null || child.stdout === null || child.stderr === null) throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
+    const ownedChild = new OwnedChild(child);
+    if (child.stdin === null || child.stdout === null || child.stderr === null) {
+      ownedChild.terminate("SIGTERM");
+      void ownedChild.waitForClose(5_000);
+      throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
+    }
     this.#child = child as ChildProcessWithoutNullStreams;
+    this.#ownedChild = ownedChild;
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     this.#child.stderr.on("data", chunk => this.#onDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
     this.#child.on("error", error => this.#finish(new GraphCoderError("transport", `bridge process error: ${error.message}`)));
@@ -157,7 +165,12 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#closed) return;
     this.#closed = true;
     this.#rejectPending(new GraphCoderError("transport", reason));
-    this.#child.kill();
+    this.#ownedChild.terminate("SIGTERM");
+  }
+
+  /** Resolves only after the owned child emits `close`, or reports unknown. */
+  waitForExit(timeoutMs = 5_000): Promise<OwnedChildClose | { readonly kind: "timeout" }> {
+    return this.#ownedChild.waitForClose(timeoutMs);
   }
 
   #consumeStdout(chunk: Buffer): void {
@@ -235,7 +248,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#closed) return;
     this.#closed = true;
     this.#rejectPending(error);
-    this.#child.kill();
+    this.#ownedChild.terminate("SIGTERM");
   }
 
   #rejectPending(error: GraphCoderError): void {

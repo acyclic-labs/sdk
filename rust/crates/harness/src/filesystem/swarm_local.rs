@@ -2495,6 +2495,36 @@ impl PersistentLocalSwarm {
             .collect())
     }
 
+    /// Reads one bounded page of canonical messages and their immutable body
+    /// bytes. Each body is resolved through its signed [`FileRef`], so a page
+    /// never combines historical messages with the current workspace head.
+    pub async fn read_messages_with_content(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<(ConversationMessage, Vec<u8>)>> {
+        if limit == 0 || limit > 1_024 {
+            return Err(Error::Invalid(
+                "conversation message page limit must be between 1 and 1024".into(),
+            ));
+        }
+        let harness = self.open_session(task).await?;
+        let state = harness.conversation_state(self.config.limits).await?;
+        let mut page = Vec::new();
+        for message in state
+            .messages
+            .into_iter()
+            .filter(|message| message.sequence > after_sequence)
+            .take(limit)
+        {
+            self.config.limits.validate_file(&message.content)?;
+            let body = harness.storage().read(&message.content).await?;
+            page.push((message, body));
+        }
+        Ok(page)
+    }
+
     /// Reads one page of owner-authenticated private files. The generation
     /// returned by the first page must be supplied for subsequent pages.
     pub async fn list_files(

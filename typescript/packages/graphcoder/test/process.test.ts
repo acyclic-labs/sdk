@@ -41,6 +41,17 @@ describe("JSON-lines process bridge", () => {
     connection.bridge.close();
   });
 
+  test("reports close evidence and keeps a timeout observable", async () => {
+    const bridge = new JsonLineGraphCoderBridge({
+      executable: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      env: env(),
+    });
+    await expect(bridge.waitForExit(1)).resolves.toEqual({ kind: "timeout" });
+    bridge.close();
+    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+  });
+
   test("correlates concurrent responses and preserves explicit parameters", async () => {
     const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
     const [slow, fast] = await Promise.all([bridge.request(request("slow", 40)), bridge.request(request("fast"))]);
