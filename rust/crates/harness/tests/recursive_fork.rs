@@ -2132,14 +2132,6 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             .is_err(),
         "the root cannot merge a grandchild directly"
     );
-    let grandchild_plan = child_facade
-        .prepare_project_merge_for_child(
-            host.as_ref(),
-            &child_reducer,
-            &grandchild_authority,
-            &grandchild_project,
-        )
-        .await?;
     let child_notice_write = ContentGrant::verify(
         &child_issuer.verifier(),
         &child_scope,
@@ -2168,6 +2160,17 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         tool_call_id: None,
         extensions: BTreeMap::new(),
     };
+    // Staging the notice is a real write to the child project. Inspect the
+    // merge only after that write so the provider CAS pins the actual target
+    // generation used by the approved publication.
+    let grandchild_plan = child_facade
+        .prepare_project_merge_for_child(
+            host.as_ref(),
+            &child_reducer,
+            &grandchild_authority,
+            &grandchild_project,
+        )
+        .await?;
     let grandchild_outcome = child_facade
         .apply_project_merge_for_child_with_notice(
             host.as_ref(),
