@@ -1222,8 +1222,14 @@ impl LocalModelForkPlans {
         parent: TaskId,
         invocation: &ToolInvocation,
         input: &LocalForkToolInput,
-    ) -> Option<LocalForkIntent> {
-        self.intents
+    ) -> Result<Option<LocalForkIntent>> {
+        // A second handle may have selected this child after the current
+        // process opened its plan cache. Reconcile the durable intent stream
+        // before accepting a replay, so the model-facing path uses the same
+        // owner projection as publication and recovery.
+        self.refresh_intents_from_journal().await?;
+        Ok(self
+            .intents
             .lock()
             .await
             .values()
@@ -1246,7 +1252,7 @@ impl LocalModelForkPlans {
                         .fork_operation
                         .is_none_or(|operation| operation == intent.fork_operation)
             })
-            .cloned()
+            .cloned())
     }
 }
 
@@ -1502,13 +1508,13 @@ impl ToolExecutor for LocalForkToolExecutor {
             if invocation.name != "acyclic.fork_child" {
                 return Ok(None);
             }
+            invocation.validate()?;
             let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
-            invocation.validate()?;
             let Some(intent) = self
                 .plans
                 .replay_intent(self.parent, &invocation, &input)
-                .await
+                .await?
             else {
                 return Ok(None);
             };
@@ -2749,6 +2755,11 @@ impl PersistentLocalSwarm {
                 "completed local swarm task cannot be cancelled".into(),
             ));
         }
+        if matches!(&session.phase, LocalSessionPhase::Failed(_)) {
+            return Err(Error::Conflict(
+                "failed local swarm task cannot be cancelled".into(),
+            ));
+        }
         let registry = self
             .registry
             .stream(REGISTRY_STREAM)
@@ -2888,9 +2899,12 @@ impl PersistentLocalSwarm {
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         let session = self.session(task).await?;
-        if session.phase == LocalSessionPhase::Cancelled {
+        if matches!(
+            &session.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+        ) {
             return Err(Error::Conflict(
-                "cancelled local swarm task cannot run again".into(),
+                "terminal local swarm task cannot run again".into(),
             ));
         }
         // A published child owns one durable turn identity and prompt. Check
@@ -2921,9 +2935,12 @@ impl PersistentLocalSwarm {
             // harness so a cancellation that won the adjacent race cannot
             // fall through from a stale Ready snapshot.
             session = self.session(task).await?;
-            if session.phase == LocalSessionPhase::Cancelled {
+            if matches!(
+                &session.phase,
+                LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+            ) {
                 return Err(Error::Conflict(
-                    "cancelled local swarm task cannot run again".into(),
+                    "terminal local swarm task cannot run again".into(),
                 ));
             }
         } else if session.operation != Some(operation) {
@@ -2947,9 +2964,12 @@ impl PersistentLocalSwarm {
         // fall through from this handle's stale session snapshot.
         self.refresh_registry_state().await?;
         let admitted = self.session(task).await?;
-        if admitted.phase == LocalSessionPhase::Cancelled {
+        if matches!(
+            &admitted.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+        ) {
             return Err(Error::Conflict(
-                "cancelled local swarm task cannot dispatch a model turn".into(),
+                "terminal local swarm task cannot dispatch a model turn".into(),
             ));
         }
         if admitted.phase == LocalSessionPhase::Completed {
@@ -3122,6 +3142,11 @@ impl PersistentLocalSwarm {
                         "cancelled child operation is terminal and cannot be resurrected".into(),
                     ));
                 }
+                if matches!(&session.phase, LocalSessionPhase::Failed(_)) {
+                    return Err(Error::Conflict(
+                        "failed child operation is terminal and cannot be resurrected".into(),
+                    ));
+                }
                 false
             }
         };
@@ -3151,6 +3176,11 @@ impl PersistentLocalSwarm {
                 if session.phase == LocalSessionPhase::Cancelled {
                     return Err(Error::Conflict(
                         "cancelled child operation is terminal and cannot be resurrected".into(),
+                    ));
+                }
+                if matches!(&session.phase, LocalSessionPhase::Failed(_)) {
+                    return Err(Error::Conflict(
+                        "failed child operation is terminal and cannot be resurrected".into(),
                     ));
                 }
                 if session.phase == LocalSessionPhase::Completed {
@@ -3215,10 +3245,13 @@ impl PersistentLocalSwarm {
                         .lock()
                         .await
                         .get(&child)
-                        .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+                        .is_some_and(|session| {
+                            session.phase == LocalSessionPhase::Cancelled
+                                || matches!(&session.phase, LocalSessionPhase::Failed(_))
+                        })
                     {
                         return Err(Error::Conflict(
-                            "child operation was cancelled during admission".into(),
+                            "child operation became terminal during admission".into(),
                         ));
                     }
                     self.records.lock().await.insert(
@@ -3250,6 +3283,11 @@ impl PersistentLocalSwarm {
             if phase == Some(LocalSessionPhase::Cancelled) {
                 return Err(Error::Conflict(
                     "cancelled child operation is terminal and cannot be resurrected".into(),
+                ));
+            }
+            if matches!(&phase, Some(LocalSessionPhase::Failed(_))) {
+                return Err(Error::Conflict(
+                    "failed child operation is terminal and cannot be resurrected".into(),
                 ));
             }
             if phase == Some(LocalSessionPhase::Completed) {
@@ -3405,6 +3443,11 @@ impl PersistentLocalSwarm {
                     "cancelled child operation is terminal and cannot be resurrected".into(),
                 ));
             }
+            if matches!(&existing.phase, LocalSessionPhase::Failed(_)) {
+                return Err(Error::Conflict(
+                    "failed child operation is terminal and cannot be resurrected".into(),
+                ));
+            }
             if self.publications.lock().await.get(&child) != Some(&publication)
                 || self.declarations.lock().await.get(&child) != Some(&declaration)
             {
@@ -3453,10 +3496,13 @@ impl PersistentLocalSwarm {
             .lock()
             .await
             .get(&child)
-            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            .is_some_and(|session| {
+                session.phase == LocalSessionPhase::Cancelled
+                    || matches!(&session.phase, LocalSessionPhase::Failed(_))
+            })
         {
             return Err(Error::Conflict(
-                "child operation was cancelled during admission preparation".into(),
+                "child operation became terminal during admission preparation".into(),
             ));
         }
         self.records.lock().await.insert(
@@ -3611,10 +3657,13 @@ impl PersistentLocalSwarm {
             .lock()
             .await
             .get(&child)
-            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            .is_some_and(|session| {
+                session.phase == LocalSessionPhase::Cancelled
+                    || matches!(&session.phase, LocalSessionPhase::Failed(_))
+            })
         {
             return Err(Error::Conflict(
-                "cancelled child operation is terminal and cannot be activated".into(),
+                "terminal child operation cannot be activated".into(),
             ));
         }
         if let Some(output) = self.outcomes.lock().await.get(&child).cloned() {
@@ -3694,10 +3743,13 @@ impl PersistentLocalSwarm {
             .lock()
             .await
             .get(&child)
-            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            .is_some_and(|session| {
+                session.phase == LocalSessionPhase::Cancelled
+                    || matches!(&session.phase, LocalSessionPhase::Failed(_))
+            })
         {
             return Err(Error::Conflict(
-                "child operation was cancelled before completion acknowledgement".into(),
+                "child operation became terminal before completion acknowledgement".into(),
             ));
         }
         // The refresh above is also the authoritative tail observation for
@@ -3723,10 +3775,13 @@ impl PersistentLocalSwarm {
         let terminal = self.records.lock().await.get(&child).cloned();
         if terminal
             .as_ref()
-            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            .is_some_and(|session| {
+                session.phase == LocalSessionPhase::Cancelled
+                    || matches!(&session.phase, LocalSessionPhase::Failed(_))
+            })
         {
             return Err(Error::Conflict(
-                "child operation was cancelled before completion acknowledgement".into(),
+                "child operation became terminal before completion acknowledgement".into(),
             ));
         }
         if terminal
@@ -4150,9 +4205,12 @@ impl PersistentLocalSwarm {
     ) -> Result<()> {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let current = self.session(task).await?;
-        if current.phase == LocalSessionPhase::Cancelled {
+        if matches!(
+            &current.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+        ) {
             return Err(Error::Conflict(
-                "cancelled local swarm task cannot reserve another operation".into(),
+                "terminal local swarm task cannot reserve another operation".into(),
             ));
         }
         if let Some(existing) = current.operation {
@@ -4227,9 +4285,12 @@ impl PersistentLocalSwarm {
     ) -> Result<()> {
         self.refresh_registry_state().await?;
         let current = self.session(task).await?;
-        if current.phase == LocalSessionPhase::Cancelled {
+        if matches!(
+            &current.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+        ) {
             return Err(Error::Conflict(
-                "local swarm task was cancelled while its model turn was running".into(),
+                "terminal local swarm task cannot complete its model turn".into(),
             ));
         }
         if current.phase == LocalSessionPhase::Completed {
@@ -4275,9 +4336,12 @@ impl PersistentLocalSwarm {
         // terminal Session CAS, so cancellation remains authoritative.
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let current = self.session(task).await?;
-        if current.phase == LocalSessionPhase::Cancelled {
+        if matches!(
+            &current.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Failed(_)
+        ) {
             return Err(Error::Conflict(
-                "local swarm task was cancelled before completion acknowledgement".into(),
+                "terminal local swarm task cannot accept a completion acknowledgement".into(),
             ));
         }
         if current.phase == LocalSessionPhase::Completed {
@@ -4840,7 +4904,7 @@ fn apply_record(
                     "persisted child completion follows a terminal cancellation".into(),
                 ));
             }
-            if matches!(session.phase, LocalSessionPhase::Failed(_)) {
+            if matches!(&session.phase, LocalSessionPhase::Failed(_)) {
                 return Err(Error::Conflict(
                     "persisted child completion follows a terminal failure".into(),
                 ));
@@ -4915,7 +4979,7 @@ fn apply_record(
         StoredEvent::ForkFailed { child, reason } => {
             if let Some(session) = sessions.get_mut(&child) {
                 if matches!(
-                    session.phase,
+                    &session.phase,
                     LocalSessionPhase::Completed | LocalSessionPhase::Cancelled
                 ) {
                     return Ok(());
@@ -4936,6 +5000,11 @@ fn apply_record(
                 if session.phase == LocalSessionPhase::Completed {
                     return Err(Error::Conflict(
                         "persisted child cancellation follows terminal completion".into(),
+                    ));
+                }
+                if matches!(&session.phase, LocalSessionPhase::Failed(_)) {
+                    return Err(Error::Conflict(
+                        "persisted child cancellation follows terminal failure".into(),
                     ));
                 }
                 session.phase = LocalSessionPhase::Cancelled;

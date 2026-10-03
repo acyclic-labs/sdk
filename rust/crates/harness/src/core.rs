@@ -1611,7 +1611,7 @@ impl Reducer {
         Ok(())
     }
 
-    fn conversation_at_revision(&self, revision: u64) -> Result<ConversationState> {
+    pub(crate) fn conversation_at_revision(&self, revision: u64) -> Result<ConversationState> {
         if revision > self.revision {
             return Err(Error::Invalid(
                 "historical conversation revision is newer than parent".into(),
@@ -2160,8 +2160,15 @@ impl Reducer {
     fn validate_fork_reference_ownership(&self, seed: &ForkSeed) -> Result<()> {
         let inherited_count = usize::try_from(seed.inherited_through_sequence)
             .map_err(|_| Error::Invalid("inherited conversation prefix is too large".into()))?;
-        let parent_agent = self
-            .conversation
+        if seed.inherited_parent_revision > self.revision {
+            return Err(Error::Invalid(
+                "fork inherited prefix revision is newer than parent".into(),
+            ));
+        }
+        // Validate transcript-derived references against the immutable
+        // capture revision rather than the current conversation tail.
+        let historical = self.conversation_at_revision(seed.inherited_parent_revision)?;
+        let parent_agent = historical
             .agent
             .ok_or_else(|| Error::Conflict("fork parent conversation is unbound".into()))?;
         if seed.child_agent == parent_agent {
@@ -2169,7 +2176,7 @@ impl Reducer {
                 "fork child must have a distinct agent identity".into(),
             ));
         }
-        if seed.inherited_through_sequence > self.conversation.messages.len() as u64 {
+        if seed.inherited_through_sequence > historical.messages.len() as u64 {
             return Err(Error::Invalid(
                 "fork inherited prefix exceeds parent conversation".into(),
             ));
@@ -2190,7 +2197,7 @@ impl Reducer {
                 parent_agent,
                 seed.inherited_through_sequence,
                 &seed.attached_agents,
-                &self.conversation.messages,
+                &historical.messages,
             )?;
             let bytes = prefix.canonical_bytes()?;
             let expected = FileDescriptor::from_bytes(
@@ -2207,7 +2214,7 @@ impl Reducer {
         }
         let mut published_refs = std::collections::BTreeMap::new();
         let mut published_manifests = std::collections::BTreeSet::new();
-        for message in self.conversation.messages.iter().take(inherited_count) {
+        for message in historical.messages.iter().take(inherited_count) {
             let mut retain = |file: &crate::conversation::FileRef| -> Result<()> {
                 published_refs.insert(file.read_capability()?, file.clone());
                 Ok(())
@@ -2260,15 +2267,6 @@ impl Reducer {
             std::collections::BTreeSet::new()
         };
         if let Some(model_boundary) = &seed.model_boundary {
-            let parent_agent = self
-                .conversation
-                .agent
-                .ok_or_else(|| Error::Invalid("fork parent conversation agent is missing".into()))?;
-            if model_boundary.inherited_parent_revision > self.revision {
-                return Err(Error::Invalid(
-                    "model boundary inherited prefix revision is newer than parent".into(),
-                ));
-            }
             if model_boundary.inherited_parent_revision != seed.inherited_parent_revision
                 || model_boundary.inherited_through_sequence
                     != seed.inherited_through_sequence
@@ -2283,7 +2281,7 @@ impl Reducer {
                 parent_agent,
                 model_boundary.inherited_through_sequence,
                 &seed.attached_agents,
-                &self.conversation.messages,
+                &historical.messages,
             )?;
             if crate::contract::canonical_json_digest(&prefix)?
                 != model_boundary.inherited_prefix_digest
