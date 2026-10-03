@@ -61,6 +61,19 @@ impl ModelProvider for EchoModel {
         request: ModelRequest,
     ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if self.fixture == "stage" && call > 0 {
+            let result = request.messages.iter().rev().find_map(|message| match &message.content {
+                acyclic_harness::model::ModelContent::Part(
+                    acyclic_harness::model::ModelContentPart::ToolResult { value, .. }
+                ) => Some(value),
+                _ => None,
+            });
+            if !result.is_some_and(|value| value.get("file").is_some()) {
+                return Box::pin(futures::stream::iter([Err(HarnessError::Storage(
+                    format!("stage fixture lacks successful file result: {result:?}")
+                ))]));
+            }
+        }
         let text = match self.fixture.as_str() {
             "echo" => request
                 .messages
@@ -85,10 +98,7 @@ impl ModelProvider for EchoModel {
                     name: "acyclic.stage_file".to_owned(),
                     arguments: json!({
                         "path": "graphcoder-fixture.txt",
-                        "text": request.messages.iter().rev().find_map(|message| match &message.content {
-                            acyclic_harness::model::ModelContent::Text(value) => Some(value.clone()),
-                            _ => None,
-                        }).unwrap_or_else(|| "fixture:stage".to_owned()),
+                        "text": "fixture:stage",
                         "media_type": "text/plain",
                         "display_name": "graphcoder-fixture.txt",
                     }),
@@ -328,7 +338,7 @@ impl Runtime {
     async fn read_activity(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let (after, limit) = page_bounds(params)?;
+        let (after, limit) = page_bounds_object(params)?;
         let after_revision = parse_cursor(after, "activity cursor")?;
         let events = self
             .swarm
@@ -345,7 +355,7 @@ impl Runtime {
     async fn read_messages(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let (after, limit) = page_bounds(params)?;
+        let (after, limit) = page_bounds_object(params)?;
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
@@ -354,7 +364,7 @@ impl Runtime {
             .map_err(DispatchError::from_harness)?;
         let generation = self
             .swarm
-            .list_files(task, "system", None, None, 1)
+            .list_files(task, "", None, None, 1)
             .await
             .map_err(DispatchError::from_harness)?
             .generation;
@@ -420,7 +430,7 @@ impl Runtime {
     async fn list_approvals(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let (after, limit) = page_bounds(params)?;
+        let (after, limit) = page_bounds_object(params)?;
         let approvals = self
             .swarm
             .list_approvals(task)
@@ -478,7 +488,7 @@ impl Runtime {
             .await
             .map_err(DispatchError::from_harness)?
             .into_iter()
-            .find(|approval| approval.ticket.id == id)
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
             .ok_or_else(|| {
                 DispatchError::from_harness(HarnessError::NotFound("approval".into()))
             })?;
@@ -503,7 +513,7 @@ impl Runtime {
         let requested_generation = required_text(params, "generation")?;
         let page = self
             .swarm
-            .list_files(task, "system", None, None, 1)
+            .list_files(task, "", None, None, 1)
             .await
             .map_err(DispatchError::from_harness)?;
         let generation = generation_token(&page.generation);
@@ -555,7 +565,7 @@ impl Runtime {
             })
             .collect::<Vec<_>>();
         Ok(json!({
-            "summary": session_summary(session),
+            "summary": session_summary(session.clone()),
             "agents": agents,
             "workspace_generation": self
                 .swarm
@@ -630,7 +640,10 @@ fn task_from_value(
 }
 
 fn page_bounds(params: &Value) -> Result<(Option<&str>, usize), DispatchError> {
-    let object = object(params)?;
+    page_bounds_object(object(params)?)
+}
+
+fn page_bounds_object(object: &serde_json::Map<String, Value>) -> Result<(Option<&str>, usize), DispatchError> {
     let Some(query) = object.get("query") else {
         return Ok((None, 1024));
     };
@@ -1025,12 +1038,12 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(file["ok"], true);
+        assert_eq!(file["ok"], true, "{file}");
         assert_eq!(file["result"]["path"], "graphcoder-fixture.txt");
         assert_eq!(file["result"]["media_type"], "text/plain");
         assert_eq!(
             file["result"]["bytes"],
-            json!([119, 114, 105, 116, 101, 32, 102, 105, 120, 116, 117, 114, 101])
+            json!(b"fixture:stage".as_slice())
         );
         let resumed = exchange(
             reopened.clone(),

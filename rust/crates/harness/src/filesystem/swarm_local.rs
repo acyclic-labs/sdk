@@ -1108,7 +1108,7 @@ impl PersistentLocalSwarm {
             .conversation_state(self.config.limits)
             .await?;
         let workspace_generation = match harness
-            .list_private_directory("system", None, None, 1)
+            .list_private_directory("", None, None, 1)
             .await
         {
             Ok(page) => Some(page.generation),
