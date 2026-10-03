@@ -21,16 +21,24 @@ const PAGES = ["browser-harness-filesystem.html"];
 // except for an actor to start (see `openActor`).
 const PAGE_DEADLINE_MS = 120_000;
 const root = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
+const harnessPackageRoot = resolve(process.env.HARNESS_PACKAGE_ROOT ?? join(root, "work/harness-installed/package"));
 const require = createRequire(import.meta.url);
+const packageRoots = new Map([
+  ["/installed-harness/", harnessPackageRoot],
+]);
 const requiredArtifacts = [
   "typescript/packages/filesystem/dist/memory.js",
   "typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm.js",
   "typescript/packages/filesystem/generated/wasm/acyclic_fs_wasm_bg.wasm",
-  "typescript/packages/harness/dist/index.js",
-  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js",
-  "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm",
 ];
-const missingArtifacts = requiredArtifacts.filter((relative) => !existsSync(join(root, relative)));
+const harnessArtifacts = [
+  "dist/index.js",
+  "generated/wasm/acyclic_harness_wasm.js",
+  "generated/wasm/acyclic_harness_wasm_bg.wasm",
+];
+const missingArtifacts = requiredArtifacts.filter((relative) => !existsSync(join(root, relative)))
+  .concat(harnessArtifacts.filter((relative) => !existsSync(join(harnessPackageRoot, relative)))
+    .map((relative) => `installed-harness/${relative}`));
 if (missingArtifacts.length > 0) {
   throw new Error(`installed WASM package artifacts are missing: ${missingArtifacts.join(", ")}`);
 }
@@ -79,7 +87,7 @@ async function serve() {
       }
     });
     const pathname = decodeURIComponent(new URL(request.url, "http://host").pathname);
-    const dependency = [...dependencyRoots].find(([prefix]) => pathname.startsWith(prefix));
+    const dependency = [...dependencyRoots, ...packageRoots].find(([prefix]) => pathname.startsWith(prefix));
     const base = dependency?.[1] ?? root;
     const relative = dependency === undefined ? pathname : pathname.slice(dependency[0].length);
     const path = normalize(join(base, relative));
