@@ -1570,7 +1570,8 @@ where
 
     /// Resolves an addressable local interaction under a host-issued exact
     /// responder grant. This method belongs to the local host, not the agent.
-    pub async fn resolve_interaction(
+    #[cfg(test)]
+    pub(crate) async fn resolve_interaction(
         &self,
         id: InteractionId,
         response: InteractionResponse,
@@ -1584,6 +1585,24 @@ where
         );
         self.journal
             .resolve_interaction(id, response, &responder)
+            .await?;
+        self.journal
+            .interaction_outcome(id)
+            .await?
+            .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
+    }
+
+    /// Resolves an interaction using an externally authenticated responder
+    /// scope. The scope must be verified by the conversation journal and carry
+    /// both the generic resolution capability and the exact interaction grant.
+    pub async fn resolve_interaction_with_scope(
+        &self,
+        id: InteractionId,
+        response: InteractionResponse,
+        responder: &Scope,
+    ) -> Result<InteractionOutcome> {
+        self.journal
+            .resolve_interaction(id, response, responder)
             .await?;
         self.journal
             .interaction_outcome(id)
