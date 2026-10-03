@@ -83,6 +83,12 @@ status through `onDiagnostic`. Pass `executable`, `args`, `cwd`, and `env`
 explicitly; an omitted environment is empty and does not inherit host
 credentials.
 
+`createNodeGraphCoderConnection(options)` composes that bridge with
+`HarnessGraphCoderTransport` and returns both objects. The host must call
+`connection.bridge.close()` when the runtime process should stop; process
+launch, executable selection, and environment policy remain explicit host
+decisions.
+
 After building, the Windows PTY qualification can be run when Python's
 `winpty` binding is installed:
 

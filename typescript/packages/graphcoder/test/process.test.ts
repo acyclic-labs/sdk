@@ -1,6 +1,11 @@
-import { describe, expect, test } from "bun:test";
-import { JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic } from "../src/node.js";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { createNodeGraphCoderConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic } from "../src/node.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
+
+// Native process startup can take several seconds on the Windows qualification
+// lane while other SDK workers are compiling; keep the assertions bounded but
+// avoid mistaking host scheduling pressure for a protocol failure.
+setDefaultTimeout(30_000);
 
 const childScript = `
 let buffer = "";
@@ -28,6 +33,14 @@ function env(): NodeJS.ProcessEnv {
 }
 
 describe("JSON-lines process bridge", () => {
+  test("composes the process bridge with the public transport adapter", async () => {
+    const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
+    const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", script], env: env() });
+    const page = await connection.transport.listSessions();
+    expect(page.items).toEqual([]);
+    connection.bridge.close();
+  });
+
   test("correlates concurrent responses and preserves explicit parameters", async () => {
     const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
     const [slow, fast] = await Promise.all([bridge.request(request("slow", 40)), bridge.request(request("fast"))]);
@@ -44,7 +57,10 @@ describe("JSON-lines process bridge", () => {
     await expect(pending).rejects.toMatchObject({ code: "transport", message: "user cancelled" });
     const response = await bridge.request(request("after-cancel"));
     expect(response).toMatchObject({ request_id: "after-cancel", ok: true });
-    await new Promise<void>(resolve => setTimeout(resolve, 120));
+    const deadline = Date.now() + 2_000;
+    while (!diagnostics.some(event => event.kind === "cancelled_response" && event.requestId === "cancel") && Date.now() < deadline) {
+      await new Promise<void>(resolve => setTimeout(resolve, 20));
+    }
     expect(diagnostics.some(event => event.kind === "cancelled_response" && event.requestId === "cancel")).toBe(true);
     expect(bridge.cancel("missing")).toBe(false);
     bridge.close();
