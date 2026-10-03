@@ -292,6 +292,16 @@
         "local and swarm approval wrappers still call removed unauthenticated resolver"
       ],
       "contract_scope": "compile failure only; no recovery scenario execution"
+    },
+    {
+      "suite": "GraphCoder TypeScript terminal",
+      "source": "c8dd2c45",
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts typescript/packages/graphcoder/test/dispatcher.test.ts typescript/packages/graphcoder/test/process.test.ts",
+      "passed": 44,
+      "failed": 0,
+      "assertions": 143,
+      "log_sha256": "bef1d7aece0f90d246a7f124cee2ae05cf57e599a372d0d483cba1b9b64cc6e8",
+      "contract_scope": "actual source control-capacity, queued UI generation, byte decoding, cancellation ID and public input bounds; not native durable cancellation or packaged PTY"
     }
   ],
   "input_digests": {
