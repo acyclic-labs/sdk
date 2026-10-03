@@ -57,6 +57,33 @@ bodies use `unified_diff` and `media_type`, renamed entries use `old_path`, and
 writeback receipts echo the requested operation, session, generation, and
 boolean `applied` value. The adapter rejects a response that changes any of
 these bindings before exposing it to the UI.
+
+The durable local dispatcher maps these methods to the existing Harness
+composition. `list_sessions` reads `PersistentLocalSwarm.sessions()` only;
+`start_session` admits one stable operation identity and calls
+`run_root(operation, prompt)`; `open_session` reads one lazy descriptor and
+hydrates its snapshot on demand; and `resume_session` calls `resume(task)`
+before returning that snapshot. A task identity is the stable session and
+agent identity for this local protocol, with its direct parent and depth
+forming the agent tree. The dispatcher maps `Ready`, `Activating`,
+`Completed`, and `Failed` to the public session states and retains an
+explicit cancelled state in the local runtime's durable operation journal
+when a run is cancelled.
+
+The remaining endpoints must project the owner-owned durable records: activity
+and messages come from the task journal and authenticated communication host,
+approvals come from the interaction journal, and changes, generations, diffs,
+and file bodies come from the Filesystem/Git facade at the requested pinned
+generation. `approve_writeback` is the only root publication path and must
+recheck the operation identity, session, approval, and expected generation
+before invoking the typed facade operation. The dispatcher allocates an
+operation identity before admission and retries the same request after
+recovery; it must not derive a new identity from each transport attempt.
+These are projections over Harness and Filesystem state, rather than a second
+GraphCoder storage or merge implementation. The exported
+`GraphCoderWireParamsByMethod` and `GraphCoderWireResultByMethod` maps keep
+native and JSON-lines dispatchers on this same schema.
+
 The default JSON-lines line and bridge-envelope bound is 16 MiB. File bodies
 have a 64 MiB protocol ceiling; a host that needs larger files must use its
 own chunking protocol or explicitly configure a larger line/envelope within

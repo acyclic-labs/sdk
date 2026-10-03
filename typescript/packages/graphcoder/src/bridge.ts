@@ -49,12 +49,34 @@ export interface GraphCoderWirePageQuery {
   readonly limit?: number;
 }
 
-export type GraphCoderWireParams = Readonly<Record<string, unknown>>;
+/**
+ * Method-specific request parameters. Keeping this map public gives native
+ * and process hosts one source of truth for the dispatcher boundary instead
+ * of making each host recreate stringly typed payloads.
+ */
+export interface GraphCoderWireParamsByMethod {
+  readonly list_sessions: { readonly query?: GraphCoderWirePageQuery };
+  readonly start_session: { readonly prompt: string; readonly model_fixture?: string };
+  readonly open_session: { readonly session_id: string };
+  readonly resume_session: { readonly session_id: string };
+  readonly read_activity: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
+  readonly read_messages: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
+  readonly send_message: { readonly session_id: string; readonly sender_id: string; readonly recipient_id: string; readonly body: string };
+  readonly list_approvals: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
+  readonly resolve_approval: { readonly approval_id: string; readonly approved: boolean; readonly session_id?: string };
+  readonly cancel_session: { readonly session_id: string };
+  readonly list_changes: { readonly session_id: string };
+  readonly read_change: { readonly session_id: string; readonly path: string; readonly generation: string };
+  readonly read_file: { readonly session_id: string; readonly path: string; readonly generation: string };
+  readonly approve_writeback: { readonly session_id: string; readonly operation_id: string; readonly expected_generation: string; readonly approved: boolean };
+}
+
+export type GraphCoderWireParams<M extends GraphCoderWireMethod = GraphCoderWireMethod> = Readonly<GraphCoderWireParamsByMethod[M]>;
 
 export interface GraphCoderWireRequest<M extends GraphCoderWireMethod = GraphCoderWireMethod> {
   readonly request_id: string;
   readonly method: M;
-  readonly params: GraphCoderWireParams;
+  readonly params: GraphCoderWireParams<M>;
 }
 
 export interface GraphCoderWireError {
@@ -76,34 +98,34 @@ export const DEFAULT_MAX_BRIDGE_RESPONSE_BYTES = 16 * 1024 * 1024;
 /** Protocol ceiling for one file body after a host selects a larger/chunked envelope. */
 export const MAX_BRIDGE_FILE_BYTES = 64 * 1024 * 1024;
 
-type WireSessionSummary = Omit<SessionSummary, "id" | "rootAgentId"> & { readonly id: string; readonly root_agent_id: string };
-type WireAgentSummary = Omit<AgentSummary, "id" | "parentId" | "children"> & { readonly id: string; readonly parent_id: string | null; readonly children: readonly string[] };
-type WireActivityEvent = Omit<ActivityEvent, "sequence" | "actorId"> & { readonly sequence: string; readonly actor_id: string | null };
-type WireMessage = Omit<GraphMessage, "id" | "sessionId" | "senderId" | "recipientId"> & { readonly id: string; readonly session_id: string; readonly sender_id: string; readonly recipient_id: string };
-type WireApproval = Omit<ApprovalRequest, "id" | "sessionId" | "agentId"> & { readonly id: string; readonly session_id: string; readonly agent_id: string };
-type WireChangeSummary = Omit<ChangeSummary, "oldPath"> & { readonly old_path?: string };
-type WireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly generation: string; readonly unified_diff: string };
-type WireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
-type WireSnapshot = Omit<SessionSnapshot, "summary" | "agents" | "workspaceGeneration"> & { readonly summary: WireSessionSummary; readonly agents: readonly WireAgentSummary[]; readonly workspace_generation: string };
+export type GraphCoderWireSessionSummary = Omit<SessionSummary, "id" | "rootAgentId"> & { readonly id: string; readonly root_agent_id: string };
+export type GraphCoderWireAgentSummary = Omit<AgentSummary, "id" | "parentId" | "children"> & { readonly id: string; readonly parent_id: string | null; readonly children: readonly string[] };
+export type GraphCoderWireActivityEvent = Omit<ActivityEvent, "sequence" | "actorId"> & { readonly sequence: string; readonly actor_id: string | null };
+export type GraphCoderWireMessage = Omit<GraphMessage, "id" | "sessionId" | "senderId" | "recipientId"> & { readonly id: string; readonly session_id: string; readonly sender_id: string; readonly recipient_id: string };
+export type GraphCoderWireApproval = Omit<ApprovalRequest, "id" | "sessionId" | "agentId"> & { readonly id: string; readonly session_id: string; readonly agent_id: string };
+export type GraphCoderWireChangeSummary = Omit<ChangeSummary, "oldPath"> & { readonly old_path?: string };
+export type GraphCoderWireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly generation: string; readonly unified_diff: string };
+export type GraphCoderWireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
+export type GraphCoderWireSnapshot = Omit<SessionSnapshot, "summary" | "agents" | "workspaceGeneration"> & { readonly summary: GraphCoderWireSessionSummary; readonly agents: readonly GraphCoderWireAgentSummary[]; readonly workspace_generation: string };
 
-interface WireResultMap {
-  list_sessions: { readonly items: readonly WireSessionSummary[]; readonly next?: string };
-  start_session: WireSnapshot;
-  open_session: WireSnapshot;
-  resume_session: WireSnapshot;
-  read_activity: { readonly session_id: string; readonly items: readonly WireActivityEvent[]; readonly next?: string };
-  read_messages: { readonly session_id: string; readonly items: readonly WireMessage[]; readonly next?: string };
-  send_message: WireMessage;
-  list_approvals: { readonly session_id: string; readonly items: readonly WireApproval[]; readonly next?: string };
-  resolve_approval: WireApproval;
-  cancel_session: WireSnapshot;
-  list_changes: { readonly session_id: string; readonly generation: string; readonly items: readonly WireChangeSummary[] };
-  read_change: WireChangeBody;
-  read_file: WireFileBody;
-  approve_writeback: { readonly operation_id: string; readonly session_id: string; readonly generation: string; readonly applied: boolean };
+export interface GraphCoderWireResultByMethod {
+  readonly list_sessions: { readonly items: readonly GraphCoderWireSessionSummary[]; readonly next?: string };
+  readonly start_session: GraphCoderWireSnapshot;
+  readonly open_session: GraphCoderWireSnapshot;
+  readonly resume_session: GraphCoderWireSnapshot;
+  readonly read_activity: { readonly session_id: string; readonly items: readonly GraphCoderWireActivityEvent[]; readonly next?: string };
+  readonly read_messages: { readonly session_id: string; readonly items: readonly GraphCoderWireMessage[]; readonly next?: string };
+  readonly send_message: GraphCoderWireMessage;
+  readonly list_approvals: { readonly session_id: string; readonly items: readonly GraphCoderWireApproval[]; readonly next?: string };
+  readonly resolve_approval: GraphCoderWireApproval;
+  readonly cancel_session: GraphCoderWireSnapshot;
+  readonly list_changes: { readonly session_id: string; readonly generation: string; readonly items: readonly GraphCoderWireChangeSummary[] };
+  readonly read_change: GraphCoderWireChangeBody;
+  readonly read_file: GraphCoderWireFileBody;
+  readonly approve_writeback: { readonly operation_id: string; readonly session_id: string; readonly generation: string; readonly applied: boolean };
 }
 
-type WireParams<M extends GraphCoderWireMethod> = GraphCoderWireParams & { readonly method?: M };
+export type GraphCoderWireResult<M extends GraphCoderWireMethod> = GraphCoderWireResultByMethod[M];
 
 /**
  * Production transport adapter. It has no filesystem, process, model, or
@@ -131,7 +153,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async startSession(input: StartSessionInput): Promise<SessionSnapshot> {
-    const params: GraphCoderWireParams = input.modelFixture === undefined
+    const params: GraphCoderWireParams<"start_session"> = input.modelFixture === undefined
       ? { prompt: input.prompt }
       : { prompt: input.prompt, model_fixture: input.modelFixture };
     return decodeSnapshot(await this.#call("start_session", params));
@@ -166,8 +188,9 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async resolveApproval(input: { readonly approvalId: ApprovalRequest["id"]; readonly approved: boolean; readonly sessionId?: SessionSummary["id"] }): Promise<ApprovalRequest> {
-    const params: Record<string, unknown> = { approval_id: input.approvalId, approved: input.approved };
-    if (input.sessionId !== undefined) params.session_id = input.sessionId;
+    const params: GraphCoderWireParams<"resolve_approval"> = input.sessionId === undefined
+      ? { approval_id: input.approvalId, approved: input.approved }
+      : { approval_id: input.approvalId, approved: input.approved, session_id: input.sessionId };
     const approval = decodeApproval(await this.#call("resolve_approval", params));
     if (approval.id !== input.approvalId || (input.sessionId !== undefined && approval.sessionId !== input.sessionId)) throw new GraphCoderError("transport", "approval response is not bound to its request");
     return approval;
@@ -217,7 +240,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
     return { operationId, sessionId: responseSession, generation: responseGeneration, applied: result.applied };
   }
 
-  async #call<M extends GraphCoderWireMethod>(method: M, params: WireParams<M>): Promise<WireResultMap[M]> {
+  async #call<M extends GraphCoderWireMethod>(method: M, params: GraphCoderWireParams<M>): Promise<GraphCoderWireResult<M>> {
     const requestId = `${this.requestPrefix}-${this.#nextRequest++}`;
     const request = { request_id: requestId, method, params } as GraphCoderWireRequest<M>;
     let response: unknown;
@@ -227,10 +250,10 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
       throw new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
     }
     const result = decodeResponse(response, requestId, this.maximumResponseBytes);
-    return result as WireResultMap[M];
+    return result as GraphCoderWireResult<M>;
   }
 
-  async #page<M extends "list_sessions" | "read_activity" | "read_messages" | "list_approvals", T>(method: M, params: WireParams<M>, decode: (value: unknown) => T, expectedSession?: SessionSnapshot["summary"]["id"]): Promise<{ readonly items: readonly T[]; readonly next?: string }> {
+  async #page<M extends "list_sessions" | "read_activity" | "read_messages" | "list_approvals", T>(method: M, params: GraphCoderWireParams<M>, decode: (value: unknown) => T, expectedSession?: SessionSnapshot["summary"]["id"]): Promise<{ readonly items: readonly T[]; readonly next?: string }> {
     const result = await this.#call(method, params);
     const raw = record(result, `${method} result`);
     if (expectedSession !== undefined && sessionId(text(raw.session_id, `${method} session id`)) !== expectedSession) {
@@ -255,7 +278,7 @@ function wireQuery(query: PageQuery | undefined): GraphCoderWirePageQuery | unde
   return value;
 }
 
-function queryParams(query: PageQuery | undefined): GraphCoderWireParams {
+function queryParams(query: PageQuery | undefined): { readonly query?: GraphCoderWirePageQuery } {
   const value = wireQuery(query);
   return value === undefined ? {} : { query: value };
 }
