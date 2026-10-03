@@ -1,0 +1,27 @@
+{
+  "recorded_at": "2026-10-03T21:51:24.0611228Z",
+  "execution_journal": {
+    "failed": 0,
+    "artifact_sha256": "CB15B1E0CCB76A857F87FE0E4DCBC26B3BE4A00AA07CB329A86E2871D9030C52",
+    "suite_sha256": "E74A7044B568D32B430DE224E8525769D95A465B8050BA43EADCC531683D57F1",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --test execution_journal -j2 -- --nocapture",
+    "exit_code": 0,
+    "source": "794458e8",
+    "handle": 91195,
+    "passed": 6
+  },
+  "recursive_workspace": {
+    "exit_code": 0,
+    "coverage": "recursive direct-parent isolation and restart; stale target and provider conflict retained and replayed; target edits preserved",
+    "failed": 0,
+    "source": "c8e20366",
+    "passed": 2,
+    "command": "cargo test -p acyclic-harness --features filesystem-local --test local_recursive_fork -j2 -- --nocapture",
+    "handle": 96102,
+    "suite_sha256": "EE0A10DD195E2477345AC29FBBE575757649F4F57649C8759B0E084121199764",
+    "repaired_compile_failure": "67cdc59d moved child_authority; c8e20366 retains authority with clone",
+    "artifact_sha256": "F968F11DBDC474C909E231A89A417B37992E36C6B2DD6448E79A806EFB6220E4"
+  },
+  "scope": "Native journal and recursive workspace gates; does not prove model-selected swarm, actual cold conflict provider restart, full process cleanup or installed artifacts",
+  "qualification": "incomplete"
+}
