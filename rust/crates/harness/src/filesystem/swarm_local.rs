@@ -18,7 +18,7 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry},
     executor::TurnOutput,
     fork::{
-        ForkPreparation, ForkPreparer, ForkReport, ForkRequest, ForkSeed, ForkSelection,
+        Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
     interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
