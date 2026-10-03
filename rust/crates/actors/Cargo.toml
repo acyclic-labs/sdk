@@ -10,6 +10,7 @@ description = "Public Actors v1 contract and validation"
 readme = "README.md"
 
 [dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 prost.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
 reqwest.workspace = true

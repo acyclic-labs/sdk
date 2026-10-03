@@ -2,10 +2,10 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
+import { projectGrpcReadResponse, projectMemoryResponse } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { StreamError, commitId } from "./types.js";
+import { StreamError } from "./types.js";
 import type { StreamProvider, AppendOptions, AppendResult, ForkOptions, ForkReceipt, ReadOptions, FollowOptions, EncodedRecord, ChildrenPageRequest, ChildrenPage, ProviderCommitRequest, CommitOptions, CommitResult, CommitId, CommittedEnvelope, IdempotencyKey, IdempotencyObservation } from "./types.js";
 import { createGrpcTransport } from "@connectrpc/connect-node";
 import { StreamService } from "../generated/proto/stream/v2/stream_pb.js";
@@ -76,7 +76,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       for await (const response of this.#client.read(fromBinary(wire.ReadRequestSchema, wireRequest(request)))) {
         if (++count > request.limit) throw new StreamError("invalid_response", "read exceeds requested limit");
-        const record = checkedRecord(response.record, next);
+        const record = this.#projectGrpcRecord(response, next);
         next = record.sequence + 1n;
         yield record;
       }
@@ -90,7 +90,7 @@ export class GrpcStreamProvider implements StreamProvider {
     try {
       for await (const response of this.#client.follow(fromBinary(wire.FollowRequestSchema, wireRequest(request)), options.signal === undefined ? {} : { signal: options.signal })) {
         if (options.signal?.aborted) return;
-        const record = checkedRecord(response.record, next);
+        const record = this.#projectGrpcRecord(response, next);
         next = record.sequence + 1n;
         yield record;
       }
@@ -98,6 +98,10 @@ export class GrpcStreamProvider implements StreamProvider {
       if (options.signal?.aborted) return;
       throw providerError(error, "follow");
     }
+  }
+  #projectGrpcRecord(response: wire.ReadResponse, expected: bigint): EncodedRecord {
+    try { return projectGrpcReadResponse(toBinary(wire.ReadResponseSchema, response), expected) as EncodedRecord; }
+    catch { throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body"); }
   }
   async childrenPage(request: ChildrenPageRequest): Promise<ChildrenPage> {
     const authored = { kind: "children_page" as const, limit: request.limit,
@@ -124,11 +128,6 @@ export class GrpcStreamProvider implements StreamProvider {
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
-}
-function checkedRecord(record: wire.Record | undefined, expected: bigint): EncodedRecord {
-  if (record === undefined || record.sequence !== expected || record.value.length > wire.StreamLimit.MAX_RECORD_BYTES) throw new StreamError("invalid_response", "stream response contains an invalid record cursor or body");
-  try { return { sequence: record.sequence, value: record.value, commitId: commitId(record.commitId), committedAtMicros: record.committedAtMicros }; }
-  catch { throw new StreamError("invalid_response", "stream record omitted its canonical commit identity"); }
 }
 /** Matches the Rust gRPC status mapping; unknown peer statuses remain unavailable. */
 function providerError(error: unknown, operation: string): Error {

@@ -14,7 +14,7 @@ import type {
   SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse,
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
-import { HTTP_ROUTES } from "./routes.js";
+import { WORKERS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 
 export interface HttpWorkersOptions {
   readonly endpoint: string;
@@ -40,7 +40,7 @@ export class HttpWorkersClient {
     if ((!localHttp && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
       throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
     }
-    if (!options.token.trim()) throw new TypeError("token is required");
+    validateRustOwnedCredential(WORKERS_METHODS.publishVersion, options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -48,40 +48,38 @@ export class HttpWorkersClient {
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
 
-  async publishVersion(request: PublishVersionRequest): Promise<PublishVersionResponse> {
-    return fromJsonString(PublishVersionResponseSchema, await this.#post(HTTP_ROUTES.publishVersion, toJsonString(PublishVersionRequestSchema, request)));
+  async publishVersion(request: PublishVersionRequest, signal?: AbortSignal): Promise<PublishVersionResponse> {
+    return fromJsonString(PublishVersionResponseSchema, await this.#post(WORKERS_METHODS.publishVersion, request, toJsonString(PublishVersionRequestSchema, request), signal));
   }
-  async selectDeployment(request: SelectDeploymentRequest): Promise<SelectDeploymentResponse> {
-    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(HTTP_ROUTES.selectDeployment, toJsonString(SelectDeploymentRequestSchema, request)));
+  async selectDeployment(request: SelectDeploymentRequest, signal?: AbortSignal): Promise<SelectDeploymentResponse> {
+    return fromJsonString(SelectDeploymentResponseSchema, await this.#post(WORKERS_METHODS.selectDeployment, request, toJsonString(SelectDeploymentRequestSchema, request), signal));
   }
-  async submitJob(request: SubmitJobRequest): Promise<SubmitJobResponse> {
-    return fromJsonString(SubmitJobResponseSchema, await this.#post(HTTP_ROUTES.submitJob, toJsonString(SubmitJobRequestSchema, request)));
+  async submitJob(request: SubmitJobRequest, signal?: AbortSignal): Promise<SubmitJobResponse> {
+    return fromJsonString(SubmitJobResponseSchema, await this.#post(WORKERS_METHODS.submitJob, request, toJsonString(SubmitJobRequestSchema, request), signal));
   }
-  async inspectJob(request: InspectJobRequest): Promise<InspectJobResponse> {
-    return fromJsonString(InspectJobResponseSchema, await this.#post(HTTP_ROUTES.inspectJob, toJsonString(InspectJobRequestSchema, request)));
+  async inspectJob(request: InspectJobRequest, signal?: AbortSignal): Promise<InspectJobResponse> {
+    return fromJsonString(InspectJobResponseSchema, await this.#post(WORKERS_METHODS.inspectJob, request, toJsonString(InspectJobRequestSchema, request), signal));
   }
-  async cancelJob(request: CancelJobRequest): Promise<CancelJobResponse> {
-    return fromJsonString(CancelJobResponseSchema, await this.#post(HTTP_ROUTES.cancelJob, toJsonString(CancelJobRequestSchema, request)));
+  async cancelJob(request: CancelJobRequest, signal?: AbortSignal): Promise<CancelJobResponse> {
+    return fromJsonString(CancelJobResponseSchema, await this.#post(WORKERS_METHODS.cancelJob, request, toJsonString(CancelJobRequestSchema, request), signal));
   }
   /** Invokes exact immutable code bytes with ordinary HTTP request ambiguity. */
-  async invokeVersion(request: InvokeVersionRequest): Promise<InvokeResponse> {
+  async invokeVersion(request: InvokeVersionRequest, signal?: AbortSignal): Promise<InvokeResponse> {
     if (request.versionSha256.byteLength !== 32) throw new RangeError("version digest must contain exactly 32 bytes");
-    const digest = Array.from(request.versionSha256, byte => byte.toString(16).padStart(2, "0")).join("");
-    const path = HTTP_ROUTES.invokeVersion.replace("{sha256hex}", digest);
-    return fromJsonString(InvokeResponseSchema, await this.#post(path, toJsonString(InvokeVersionRequestSchema, request)));
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeVersion, request, toJsonString(InvokeVersionRequestSchema, request), signal));
   }
   /** Resolves the alias once at ingress and reports the resolved digest/revision. */
-  async invokeDeployment(request: InvokeDeploymentRequest): Promise<InvokeResponse> {
+  async invokeDeployment(request: InvokeDeploymentRequest, signal?: AbortSignal): Promise<InvokeResponse> {
     if (!/^[A-Za-z0-9._-]{1,256}$/.test(request.alias) || request.alias === "." || request.alias === "..") throw new TypeError("invalid deployment alias");
-    const path = HTTP_ROUTES.invokeDeployment.replace("{alias}", encodeURIComponent(request.alias));
-    return fromJsonString(InvokeResponseSchema, await this.#post(path, toJsonString(InvokeDeploymentRequestSchema, request)));
+    return fromJsonString(InvokeResponseSchema, await this.#post(WORKERS_METHODS.invokeDeployment, request, toJsonString(InvokeDeploymentRequestSchema, request), signal));
   }
 
-  async #post(path: string, body: string): Promise<string> {
-    const response = await this.#fetcher(new URL(path, `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
+  async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
       headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
       body,
+      signal,
     });
     const bytes = await boundedBytes(response, this.#maximum);
     let json: string;

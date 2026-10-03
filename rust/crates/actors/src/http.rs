@@ -1,5 +1,6 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
+use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
@@ -55,8 +56,7 @@ impl Client {
             || endpoint.password().is_some()
             || endpoint.query().is_some()
             || endpoint.fragment().is_some()
-            || token.trim().is_empty()
-            || token.contains(['\r', '\n'])
+            || !credential::validate(BEARER_NO_CRLF, token)
             || maximum_response_bytes == 0
         {
             return Err(Error::InvalidArgument);

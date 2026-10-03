@@ -21,7 +21,7 @@ import type {
   UpdateActorRequest, UpdateActorResponse,
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
-import { HTTP_ROUTES } from "./routes.js";
+import { ACTORS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 
 export interface HttpActorsOptions {
   readonly endpoint: string;
@@ -47,7 +47,7 @@ export class HttpActorsClient {
     if ((!localHttp && endpoint.protocol !== "https:") || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) {
       throw new TypeError("endpoint must be HTTPS or loopback HTTP without credentials, query, or fragment");
     }
-    if (!options.token.trim()) throw new TypeError("token is required");
+    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
@@ -55,37 +55,38 @@ export class HttpActorsClient {
     if (!Number.isSafeInteger(this.#maximum) || this.#maximum < 1) throw new RangeError("maximumResponseBytes must be a positive safe integer");
   }
 
-  async createActor(request: CreateActorRequest): Promise<CreateActorResponse> {
-    return fromJsonString(CreateActorResponseSchema, await this.#post(HTTP_ROUTES.createActor, toJsonString(CreateActorRequestSchema, request)));
+  async createActor(request: CreateActorRequest, signal?: AbortSignal): Promise<CreateActorResponse> {
+    return fromJsonString(CreateActorResponseSchema, await this.#post(ACTORS_METHODS.createActor, request, toJsonString(CreateActorRequestSchema, request), signal));
   }
-  async updateActor(request: UpdateActorRequest): Promise<UpdateActorResponse> {
-    return fromJsonString(UpdateActorResponseSchema, await this.#post(HTTP_ROUTES.updateActor, toJsonString(UpdateActorRequestSchema, request)));
+  async updateActor(request: UpdateActorRequest, signal?: AbortSignal): Promise<UpdateActorResponse> {
+    return fromJsonString(UpdateActorResponseSchema, await this.#post(ACTORS_METHODS.updateActor, request, toJsonString(UpdateActorRequestSchema, request), signal));
   }
-  async inspectActor(request: InspectActorRequest): Promise<InspectActorResponse> {
-    return fromJsonString(InspectActorResponseSchema, await this.#post(HTTP_ROUTES.inspectActor, toJsonString(InspectActorRequestSchema, request)));
+  async inspectActor(request: InspectActorRequest, signal?: AbortSignal): Promise<InspectActorResponse> {
+    return fromJsonString(InspectActorResponseSchema, await this.#post(ACTORS_METHODS.inspectActor, request, toJsonString(InspectActorRequestSchema, request), signal));
   }
-  async addSubscription(request: AddSubscriptionRequest): Promise<AddSubscriptionResponse> {
-    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.addSubscription, toJsonString(AddSubscriptionRequestSchema, request)));
+  async addSubscription(request: AddSubscriptionRequest, signal?: AbortSignal): Promise<AddSubscriptionResponse> {
+    return fromJsonString(AddSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.addSubscription, request, toJsonString(AddSubscriptionRequestSchema, request), signal));
   }
-  async removeSubscription(request: RemoveSubscriptionRequest): Promise<RemoveSubscriptionResponse> {
-    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.removeSubscription, toJsonString(RemoveSubscriptionRequestSchema, request)));
+  async removeSubscription(request: RemoveSubscriptionRequest, signal?: AbortSignal): Promise<RemoveSubscriptionResponse> {
+    return fromJsonString(RemoveSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.removeSubscription, request, toJsonString(RemoveSubscriptionRequestSchema, request), signal));
   }
-  async resumeSubscription(request: ResumeSubscriptionRequest): Promise<ResumeSubscriptionResponse> {
-    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(HTTP_ROUTES.resumeSubscription, toJsonString(ResumeSubscriptionRequestSchema, request)));
+  async resumeSubscription(request: ResumeSubscriptionRequest, signal?: AbortSignal): Promise<ResumeSubscriptionResponse> {
+    return fromJsonString(ResumeSubscriptionResponseSchema, await this.#post(ACTORS_METHODS.resumeSubscription, request, toJsonString(ResumeSubscriptionRequestSchema, request), signal));
   }
-  async checkpointActor(request: CheckpointActorRequest): Promise<CheckpointActorResponse> {
-    return fromJsonString(CheckpointActorResponseSchema, await this.#post(HTTP_ROUTES.checkpointActor, toJsonString(CheckpointActorRequestSchema, request)));
+  async checkpointActor(request: CheckpointActorRequest, signal?: AbortSignal): Promise<CheckpointActorResponse> {
+    return fromJsonString(CheckpointActorResponseSchema, await this.#post(ACTORS_METHODS.checkpointActor, request, toJsonString(CheckpointActorRequestSchema, request), signal));
   }
   /** Invocation is not a Stream append or a durable checkpoint. */
-  async invokeActor(request: InvokeActorRequest): Promise<InvokeActorResponse> {
-    return fromJsonString(InvokeActorResponseSchema, await this.#post(HTTP_ROUTES.invokeActor, toJsonString(InvokeActorRequestSchema, request)));
+  async invokeActor(request: InvokeActorRequest, signal?: AbortSignal): Promise<InvokeActorResponse> {
+    return fromJsonString(InvokeActorResponseSchema, await this.#post(ACTORS_METHODS.invokeActor, request, toJsonString(InvokeActorRequestSchema, request), signal));
   }
 
-  async #post(path: string, body: string): Promise<string> {
-    const response = await this.#fetcher(new URL(path, `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
+  async #post(method: RustOwnedMethodMetadata, request: unknown, body: string, signal?: AbortSignal): Promise<string> {
+    const response = await this.#fetcher(new URL(interpolateRustOwnedPath(method, request), `${this.#endpoint.href.replace(/\/?$/, "/")}`), {
       method: "POST",
       headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" },
       body,
+      signal,
     });
     const bytes = await boundedBytes(response, this.#maximum);
     let json: string;

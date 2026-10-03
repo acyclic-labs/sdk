@@ -602,6 +602,54 @@ pub fn next_http_follow_cursor(response_json: &str, from: u64) -> Result<u64, Js
     crate::http_validation::next_follow_cursor(&value, from).map_err(JsValue::from_str)
 }
 
+/// Advances the cumulative byte count for a hosted response. The caller may
+/// read chunks natively, but Rust owns overflow and configured-bound policy.
+#[wasm_bindgen(js_name = consumeHttpResponseBytes)]
+pub fn consume_http_response_bytes(total: u64, chunk: u64, maximum: u64) -> Result<u64, JsValue> {
+    crate::http_validation::consume_response_bytes(total, chunk, maximum).map_err(JsValue::from_str)
+}
+
+/// Validates and projects one gRPC read response. Rust owns protobuf decoding,
+/// record bounds, commit identity width, and request-relative contiguity.
+#[wasm_bindgen(js_name = projectGrpcReadResponse, unchecked_return_type = "unknown")]
+pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue, JsValue> {
+    let response =
+        wire::ReadResponse::decode(input).map_err(|_| js_error(StreamError::InvalidArgument))?;
+    let record = wire_codec::record(response.record.ok_or(StreamError::Unavailable)?)
+        .and_then(|record| {
+            (record.sequence == expected)
+                .then_some(record)
+                .ok_or(StreamError::Unavailable)
+        })
+        .map_err(js_error)?;
+    let result = Object::new();
+    Reflect::set(
+        result.as_ref(),
+        &JsValue::from_str("sequence"),
+        &BigInt::from(record.sequence),
+    )
+    .map_err(|_| js_error(StreamError::Unavailable))?;
+    Reflect::set(
+        result.as_ref(),
+        &JsValue::from_str("value"),
+        &Uint8Array::from(record.value.as_slice()),
+    )
+    .map_err(|_| js_error(StreamError::Unavailable))?;
+    Reflect::set(
+        result.as_ref(),
+        &JsValue::from_str("commitId"),
+        &Uint8Array::from(record.commit_id.as_bytes().as_slice()),
+    )
+    .map_err(|_| js_error(StreamError::Unavailable))?;
+    Reflect::set(
+        result.as_ref(),
+        &JsValue::from_str("committedAtMicros"),
+        &BigInt::from(record.committed_at_micros),
+    )
+    .map_err(|_| js_error(StreamError::Unavailable))?;
+    Ok(result.into())
+}
+
 /// Validates request-relative child-page semantics through the canonical Rust
 /// provider rules before a public page reaches a TypeScript caller.
 #[wasm_bindgen(js_name = validateChildrenPageResponse)]

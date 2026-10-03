@@ -1,6 +1,7 @@
 //! Authenticated client for the generated Actors v1 service.
 
 use crate::wire;
+use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
 use prost::Message;
 use tonic::{
     Request, Status,
@@ -71,7 +72,7 @@ pub async fn connect_with_ca_certificate(
     if !valid_endpoint {
         return Err(ConnectError::InsecureEndpoint);
     }
-    if token.trim().is_empty() {
+    if !credential::validate(BEARER_NO_CRLF, token) {
         return Err(ConnectError::InvalidCredential);
     }
     let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")

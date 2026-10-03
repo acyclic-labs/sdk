@@ -427,6 +427,16 @@ pub fn next_follow_cursor(value: &Value, from: u64) -> Result<u64> {
     sequence.checked_add(1).ok_or("non-contiguous cursor")
 }
 
+/// Advances the cumulative response byte count while enforcing one canonical
+/// bound for streamed hosted responses.
+pub(crate) fn consume_response_bytes(total: u64, chunk: u64, maximum: u64) -> Result<u64> {
+    let next = total.checked_add(chunk).ok_or("response_too_large")?;
+    if next > maximum {
+        return Err("response_too_large");
+    }
+    Ok(next)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::Value;
@@ -536,6 +546,19 @@ mod tests {
         );
         assert!(super::next_follow_cursor(&json_fixture(&response)?, 8).is_err());
         Ok(())
+    }
+
+    #[test]
+    fn cumulative_response_bytes_are_checked_in_rust() {
+        assert_eq!(super::consume_response_bytes(4, 3, 8), Ok(7));
+        assert_eq!(
+            super::consume_response_bytes(7, 2, 8),
+            Err("response_too_large")
+        );
+        assert_eq!(
+            super::consume_response_bytes(u64::MAX, 1, u64::MAX),
+            Err("response_too_large")
+        );
     }
 
     #[test]
