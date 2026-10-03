@@ -46,6 +46,7 @@ struct RecoveryProvider {
     blocked: AtomicBool,
     release: Arc<AtomicBool>,
     fail_first: AtomicBool,
+    fail_after_prefix: AtomicBool,
     reconcile_none: AtomicBool,
 }
 
@@ -58,6 +59,7 @@ impl RecoveryProvider {
             blocked: AtomicBool::new(false),
             release: Arc::new(AtomicBool::new(false)),
             fail_first: AtomicBool::new(false),
+            fail_after_prefix: AtomicBool::new(false),
             reconcile_none: AtomicBool::new(true),
         })
     }
@@ -71,6 +73,12 @@ impl RecoveryProvider {
     fn fail_once() -> Arc<Self> {
         let provider = Self::normal();
         provider.fail_first.store(true, Ordering::SeqCst);
+        provider
+    }
+
+    fn fail_after_prefix() -> Arc<Self> {
+        let provider = Self::normal();
+        provider.fail_after_prefix.store(true, Ordering::SeqCst);
         provider
     }
 
@@ -129,6 +137,11 @@ impl ModelProvider for RecoveryProvider {
                 delta: "durable local result".into(),
             })
         });
+        if self.fail_after_prefix.load(Ordering::SeqCst) && call == 0 {
+            return Box::pin(first.chain(stream::once(async {
+                Err(Error::Storage("simulated interrupted provider stream".into()))
+            })));
+        }
         Box::pin(first.chain(stream::iter([Ok(ModelEvent::Completed {
             metadata: json!({"finish": "stop"}),
         })])))
@@ -317,6 +330,40 @@ async fn local_retry_with_changed_input_cannot_reuse_claimed_operation() -> Resu
 }
 
 #[tokio::test]
+async fn local_persisted_prefix_reconciles_without_redispatch() -> Result<()> {
+    let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    prepare_local_root(root.path()).await?;
+    let provider = RecoveryProvider::fail_after_prefix();
+    let operation = OperationId::new();
+    let swarm = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    assert!(swarm.run_root(operation, "recover a partial result").await.is_err());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    drop(swarm);
+
+    provider.reconcile_none.store(false, Ordering::SeqCst);
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let recovered = reopened
+        .run_root(operation, "recover a partial result")
+        .await?;
+    assert_eq!(recovered.text, "durable local resultreconciled local result");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.requests().len(), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     prepare_local_root(root.path()).await?;
@@ -336,8 +383,12 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
     )
     .await?;
     let operation = OperationId::new();
-    let left = first.run_root(operation, "one durable operation");
-    let right = second.run_root(operation, "one durable operation");
+    let left = tokio::spawn(async move {
+        first.run_root(operation, "one durable operation").await
+    });
+    let right = tokio::spawn(async move {
+        second.run_root(operation, "one durable operation").await
+    });
     provider.wait_for_calls(1).await;
     // Give a second independent handle a chance to cross the admission
     // window.  A corrected implementation remains at one call; the current
@@ -349,8 +400,8 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
     let (left, right) = timeout(Duration::from_secs(2), async { tokio::join!(left, right) })
         .await
         .expect("shared operation did not finish after provider release");
-    let left = left?;
-    let right = right?;
+    let left = left.expect("first operation task panicked")?;
+    let right = right.expect("second operation task panicked")?;
     assert_eq!(left, right);
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     Ok(())
@@ -377,14 +428,15 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
     .await?;
     let task = first.root_task().await?;
     let operation = OperationId::new();
-    let running = first.run_root(operation, "cancel while running");
+    let running = tokio::spawn(async move {
+        first.run_root(operation, "cancel while running").await
+    });
     provider.wait_for_calls(1).await;
     second.cancel(task).await?;
     provider.release();
     let _ = timeout(Duration::from_secs(2), running)
         .await
         .expect("cancelled in-flight operation did not finish after provider release");
-    drop(first);
     drop(second);
 
     let reopened = PersistentLocalSwarm::open_shared_with_model(
