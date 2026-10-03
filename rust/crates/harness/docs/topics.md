@@ -71,9 +71,7 @@ does not grant access.
 
 ## Infrastructure and providers ([runtime.rs](../src/runtime.rs), [filesystem](../src/filesystem/mod.rs), [objects](../src/objects.rs))
 
-The core crate is provider-neutral. The `filesystem`, `objects`, `machines`,
-and `grpc` features add their respective adapters; `filesystem-local` adds
-local filesystem and stream persistence. The [availability table](service-availability.md)
+The core runtime remains provider-neutral. The native default profile includes `filesystem-local` for durable local filesystem and stream persistence; `filesystem`, `objects`, `machines`, and `grpc` add their respective adapters. The wasm profile selects `wasm` with defaults disabled so native storage dependencies are not pulled into the browser target. The [availability table](service-availability.md)
 is the source for feature and target claims. An adapter supplies integration
 types only: applications still provide owner authentication, scopes, and
 provider implementations.

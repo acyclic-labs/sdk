@@ -15,6 +15,7 @@ build = "build.rs"
 crate-type = ["rlib", "cdylib"]
 
 [features]
+default = ["filesystem-local"]
 wasm = ["dep:js-sys", "dep:serde-wasm-bindgen", "dep:tsify-next", "dep:wasm-bindgen", "dep:wasm-bindgen-futures"]
 # Provider adapters. Each pulls only its own SDK family.
 filesystem = ["dep:acyclic-fs", "acyclic-fs/memory", "dep:hex"]

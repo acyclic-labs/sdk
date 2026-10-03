@@ -1,6 +1,6 @@
 # Filesystem adapter
 
-Enabled by the `filesystem` feature (`filesystem-local` adds the durable local stores).
+The native default profile enables the `filesystem-local` adapter and its durable local stores. The portable `wasm32` profile keeps the workspace model available and selects target-compatible providers explicitly.
 
 Explicit bridge from Harness resource references to versioned Filesystem workspaces. It keeps generation identities visible rather than pretending mutable paths are durable references.
 
