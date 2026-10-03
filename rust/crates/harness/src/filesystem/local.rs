@@ -9,7 +9,7 @@ use crate::{
     executor::TurnOutput,
     host_execution::{
         ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt, ExecutionReceiptKey,
-        ExecutionReceiptRecord, ExecutionReceiptStore,
+        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -676,6 +676,18 @@ impl PersistentLocalHarness {
             write,
             maximum_bytes,
         )?))
+    }
+
+    /// Composes the production native provider around this session's
+    /// host-owned receipt journal and authenticated interaction verifier.
+    /// The provider uses the native runner and never falls back to a
+    /// model-writable receipt path.
+    pub fn native_execution_provider(&self) -> Result<NativeExecutionProvider> {
+        NativeExecutionProvider::native_with_receipt_store(
+            self.storage.content_verifier(),
+            self.execution_receipt_store()?,
+            self.storage.execution_approval_verifier(),
+        )
     }
 }
 
