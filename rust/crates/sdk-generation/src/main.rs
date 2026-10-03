@@ -7,6 +7,7 @@
 //! evidence remain "pending"; they are never represented as successful output.
 
 use acyclic_sdk_contract_wire::{FAMILY_VIEWS, explicit_http_family_views};
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,9 +15,10 @@ use std::collections::BTreeSet;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
-use std::io::{self, Write};
+use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use tar::Archive;
 
 const GENERATION_SCHEMA: &str = "acyclic.sdk.generation.manifest.v1";
 const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
@@ -1157,7 +1159,7 @@ fn verify_resolution_file_binding(
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new(format!("{label} is missing {digest_field}")))?;
     let expected_prefix = match prefix {
-        "package_manifest" => "qualification/packages/",
+        "package_manifest" | "package_artifact" => "qualification/packages/",
         _ => "qualification/consumers/",
     };
     if !is_portable_relative(path_text)
@@ -1195,6 +1197,11 @@ fn verify_package_resolution(
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty())
         .ok_or_else(|| CliError::new(format!("{label} is missing package name")))?;
+    if package_name == "sdk-example-consumer" {
+        return Err(CliError::new(format!(
+            "{label} package identity is a generic test consumer, not an SDK package"
+        )));
+    }
     let package_version = resolution
         .get("package_version")
         .and_then(Value::as_str)
@@ -1277,18 +1284,162 @@ fn verify_package_resolution(
         .get("package_artifact_path")
         .and_then(Value::as_str)
         .ok_or_else(|| CliError::new(format!("{label} is missing package artifact path")))?;
-    let package_archive_bytes = fs::read(output.join(package_artifact))?;
-    let package_archive_text = String::from_utf8_lossy(&package_archive_bytes);
-    if !package_archive_text.contains(&format!("package_name = \"{package_name}\""))
-        || !package_archive_text.contains(&format!("package_version = \"{package_version}\""))
-        || !package_archive_text
-            .contains(&format!("package_tree_sha256 = \"{package_tree_digest}\""))
+    verify_resolution_file_binding(output, label, resolution, "package_artifact")?;
+    verify_package_archive(
+        output,
+        label,
+        package_artifact,
+        package_root,
+        &package_root_path,
+        package_tree_digest,
+    )?;
+    Ok(())
+}
+
+fn verify_package_archive(
+    output: &Path,
+    label: &str,
+    package_artifact: &str,
+    package_root: &str,
+    package_root_path: &Path,
+    package_tree_digest: &str,
+) -> Result<(), CliError> {
+    if !is_portable_relative(package_artifact)
+        || !package_artifact.starts_with("qualification/packages/")
+        || !is_portable_relative(package_root)
     {
         return Err(CliError::new(format!(
-            "{label} package archive does not describe the extracted bytes"
+            "{label} package archive binding is not portable"
+        )));
+    }
+    if directory_digest(package_root_path)? != package_tree_digest {
+        return Err(CliError::new(format!(
+            "{label} extracted package bytes differ from receipt"
+        )));
+    }
+    let expected_files = {
+        let mut files = Vec::new();
+        collect_output_files(package_root_path, package_root_path, &mut files)?;
+        files.sort();
+        files
+    };
+    let package_dir = Path::new(package_root)
+        .file_name()
+        .ok_or_else(|| CliError::new(format!("{label} has an invalid package root")))?
+        .to_string_lossy()
+        .into_owned();
+    let archive_bytes = fs::read(output.join(package_artifact))?;
+    let mut decoder = GzDecoder::new(BytewiseCursor::new(&archive_bytes));
+    let mut tar_bytes = Vec::new();
+    decoder.read_to_end(&mut tar_bytes).map_err(|error| {
+        CliError::new(format!(
+            "{label} package archive is not valid gzip: {error}"
+        ))
+    })?;
+    let compressed = decoder.into_inner();
+    if compressed.position != archive_bytes.len() {
+        return Err(CliError::new(format!(
+            "{label} package archive has trailing compressed bytes"
+        )));
+    }
+
+    let mut archive = Archive::new(Cursor::new(tar_bytes));
+    let mut seen = BTreeSet::new();
+    let entries = archive
+        .entries()
+        .map_err(|error| CliError::new(format!("{label} package tar cannot be read: {error}")))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|error| {
+            CliError::new(format!("{label} package tar entry is invalid: {error}"))
+        })?;
+        let entry_type = entry.header().entry_type();
+        let entry_path = entry
+            .path()
+            .map_err(|error| {
+                CliError::new(format!("{label} package tar path is invalid: {error}"))
+            })?
+            .to_string_lossy()
+            .replace('\\', "/");
+        let prefix = format!("{package_dir}/");
+        if entry_path == package_dir {
+            if !entry_type.is_dir() {
+                return Err(CliError::new(format!(
+                    "{label} package root member is not a directory"
+                )));
+            }
+            continue;
+        }
+        let Some(relative) = entry_path.strip_prefix(&prefix) else {
+            return Err(CliError::new(format!(
+                "{label} package member escapes extracted package: {entry_path}"
+            )));
+        };
+        if !is_portable_relative(relative) {
+            return Err(CliError::new(format!(
+                "{label} package member is not portable: {entry_path}"
+            )));
+        }
+        if entry_type.is_dir() {
+            continue;
+        }
+        if !entry_type.is_file() {
+            return Err(CliError::new(format!(
+                "{label} package member is not a regular file: {entry_path}"
+            )));
+        }
+        if !seen.insert(relative.to_owned()) {
+            return Err(CliError::new(format!(
+                "{label} package archive contains duplicate member: {entry_path}"
+            )));
+        }
+        let extracted = package_root_path.join(relative);
+        let metadata = fs::symlink_metadata(&extracted)?;
+        if !metadata.file_type().is_file() {
+            return Err(CliError::new(format!(
+                "{label} extracted package member is not a regular file: {relative}"
+            )));
+        }
+        let mut archived_bytes = Vec::new();
+        entry.read_to_end(&mut archived_bytes).map_err(|error| {
+            CliError::new(format!(
+                "{label} package member cannot be read: {entry_path}: {error}"
+            ))
+        })?;
+        if archived_bytes != fs::read(&extracted)? {
+            return Err(CliError::new(format!(
+                "{label} package member differs from extracted bytes: {relative}"
+            )));
+        }
+    }
+    let expected = expected_files.into_iter().collect::<BTreeSet<_>>();
+    if seen != expected {
+        return Err(CliError::new(format!(
+            "{label} package archive member set differs from extracted package"
         )));
     }
     Ok(())
+}
+
+struct BytewiseCursor<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> BytewiseCursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+}
+
+impl Read for BytewiseCursor<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() || self.position == self.bytes.len() {
+            return Ok(0);
+        }
+        buffer[0] = self.bytes[self.position];
+        self.position += 1;
+        Ok(1)
+    }
 }
 
 fn lock_resolves_local_package(lock_text: &str, package_name: &str, package_version: &str) -> bool {
@@ -3813,6 +3964,8 @@ fn command_stdout(root: &Path, command: &str, args: &[&str]) -> Result<String, C
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::{Compression, write::GzEncoder};
+    use tar::Builder;
 
     fn test_directory(name: &str) -> PathBuf {
         let path = env::temp_dir().join(format!(
@@ -4504,10 +4657,25 @@ mod tests {
             .expect("write consumer manifest");
         fs::write(&consumer_lock_path, consumer_lock_bytes).expect("write consumer lock");
         let package_tree_digest = directory_digest(&package_root).expect("package tree hash");
-        let package_bytes = format!(
-            "package_name = \"actors-sdk\"\npackage_version = \"0.1.0\"\npackage_tree_sha256 = \"{package_tree_digest}\"\n"
-        );
-        fs::write(&package_path, package_bytes.as_bytes()).expect("write package artifact");
+        let package_bytes = {
+            let encoder = GzEncoder::new(Vec::new(), Compression::default());
+            let mut builder = Builder::new(encoder);
+            builder
+                .append_dir("actors-sdk", &package_root)
+                .expect("append package root");
+            builder
+                .append_path_with_name(&package_manifest_path, "actors-sdk/Cargo.toml")
+                .expect("append package manifest");
+            builder
+                .append_path_with_name(&package_root.join("src.rs"), "actors-sdk/src.rs")
+                .expect("append package source");
+            builder
+                .into_inner()
+                .expect("finish tar builder")
+                .finish()
+                .expect("finish gzip archive")
+        };
+        fs::write(&package_path, &package_bytes).expect("write package artifact");
         let source_path = "rust/crates/sdk-examples/src/lib.rs";
         let source_bytes = b"pub fn actors_example() {}\n";
         let source_digest = hash_bytes(source_bytes);
@@ -4526,7 +4694,7 @@ mod tests {
             "compiled_snippet_sha256": snippet_digest,
             "compile_artifact_sha256": hash_bytes(compile_bytes),
             "package_artifact_path": "qualification/packages/actors-sdk.tgz",
-            "package_artifact_sha256": hash_bytes(package_bytes.as_bytes()),
+            "package_artifact_sha256": hash_bytes(&package_bytes),
             "package_name": "actors-sdk",
             "package_version": "0.1.0",
             "package_root_path": "qualification/packages/actors-sdk",
@@ -4565,7 +4733,7 @@ mod tests {
                         "runtime_artifact_path": "qualification/consumers/actors-runtime.bin",
                         "runtime_artifact_sha256": hash_bytes(runtime_bytes),
                         "package_artifact_path": "qualification/packages/actors-sdk.tgz",
-                        "package_artifact_sha256": hash_bytes(package_bytes.as_bytes()),
+                        "package_artifact_sha256": hash_bytes(&package_bytes),
                         "package_resolution": package_resolution,
                         "stdout_sha256": hash_bytes(b"snippet stdout"),
                         "stderr_sha256": hash_bytes(b"")
@@ -4658,14 +4826,15 @@ mod tests {
         fs::write(package_root.join("src.rs"), b"pub fn actors() {}\n")
             .expect("restore extracted package source");
 
-        let mismatched_package_bytes =
-            b"package_name = \"actors-sdk\"\npackage_version = \"0.1.0\"\npackage_tree_sha256 = \"sha256:0000000000000000000000000000000000000000000000000000000000000000\"\n";
-        fs::write(&package_path, mismatched_package_bytes).expect("alter package archive");
+        let mut mismatched_package_bytes = package_bytes.clone();
+        let midpoint = mismatched_package_bytes.len() / 2;
+        mismatched_package_bytes[midpoint] ^= 0x01;
+        fs::write(&package_path, &mismatched_package_bytes).expect("alter package archive");
         let mut mismatched_archive = manifest.clone();
         mismatched_archive["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
-            Value::String(hash_bytes(mismatched_package_bytes));
+            Value::String(hash_bytes(&mismatched_package_bytes));
         mismatched_archive["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
-            Value::String(hash_bytes(mismatched_package_bytes));
+            Value::String(hash_bytes(&mismatched_package_bytes));
         assert!(
             verify_rust_snippet_receipts(
                 &root,
@@ -4676,7 +4845,27 @@ mod tests {
             )
             .is_err()
         );
-        fs::write(&package_path, package_bytes.as_bytes()).expect("restore package archive");
+        fs::write(&package_path, &package_bytes).expect("restore package archive");
+
+        let mut trailing_archive = package_bytes.clone();
+        trailing_archive.extend_from_slice(b"trailing-junk");
+        fs::write(&package_path, &trailing_archive).expect("append archive trailing junk");
+        let mut trailing_receipt = manifest.clone();
+        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
+            Value::String(hash_bytes(&trailing_archive));
+        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
+            Value::String(hash_bytes(&trailing_archive));
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &trailing_receipt,
+                revision
+            )
+            .is_err()
+        );
+        fs::write(&package_path, &package_bytes).expect("restore package archive after junk test");
 
         let changed_lock =
             b"# disposable locked consumer\nversion = 4\n\n[[package]]\nname = \"actors-sdk\"\nversion = \"0.1.0\"\nsource = \"registry+https://example.invalid/index\"\n";
