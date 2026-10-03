@@ -1,0 +1,14 @@
+{
+  "source": "f519cafc2",
+  "handle": 95079,
+  "command": "cargo test -p acyclic-harness --features filesystem-local --test local_recursive_fork -j2 -- --nocapture",
+  "exit_code": 0,
+  "passed": 2,
+  "failed": 0,
+  "seconds": 56.78,
+  "artifact_sha256": "87C780C4E8769EBBDFF560C56EC14EA10037AB4DE253D97E13F87510CF5A4FF3",
+  "suite_sha256": "68386CAF5DB73C13DFF51E61F4B39504D51E990223B335A96FC9C8869BED369C",
+  "coverage": "Direct-parent recursive workspace isolation/reopen/integration, typed stale target, real overlapping conflict, cold Filesystem+Stream+aggregate+facade+journal reopen, immutable plan reconstruction and same-operation conflict replay without publication",
+  "scope": "Focused recursive Filesystem integration; not default model-selected swarm, full conflict continuation/abort/rebase/discard, process faults or installed qualification",
+  "qualification": "incomplete"
+}
