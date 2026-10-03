@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-cold-conflict-pass-2026-10-03.json](checkpoint-cold-conflict-pass-2026-10-03.json) records two passing recursive native workspace cases, including actual cold provider reopening after a typed conflict and replay of the same immutable merge operation. [checkpoint-cold-replay-communication-2026-10-03.json](checkpoint-cold-replay-communication-2026-10-03.json) records completed-turn replay without dispatch and two durable local communication cases. [checkpoint-model-wait-cold-conflict-2026-10-03.json](checkpoint-model-wait-cold-conflict-2026-10-03.json) separately records the passing production model-invoked wait and the earlier retained-handle conflict failure, subsequently repaired.
+
 [checkpoint-central-manifest-wasm-2026-10-03.json](checkpoint-central-manifest-wasm-2026-10-03.json) records the fresh Rust-owned manifest validator build and generated declarations: TypeScript source and test types pass, with 239 runtime tests and 1,196 assertions passing. TypeScript no longer duplicates the manifest validation rules.
 
 [checkpoint-native-prepared-input-2026-10-03.json](checkpoint-native-prepared-input-2026-10-03.json) records 17 passing native model-input cases and the separate cold replay fixture failure at its host-owned content reader. [checkpoint-native-journal-conflict-pass-2026-10-03.json](checkpoint-native-journal-conflict-pass-2026-10-03.json) records six passing execution-journal cases and two passing recursive workspace/conflict cases. Conflict journal reopening does not yet prove cold provider reopening after conflict.
