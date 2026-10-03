@@ -25,6 +25,9 @@ function suiteFixture(directory, executionKind = "native") {
     platform: "windows-x86_64",
     execution_kind: executionKind,
     status: "passed",
+    started_at: "2026-10-03T00:00:00.000Z",
+    completed_at: "2026-10-03T00:00:01.000Z",
+    artifact_paths: [],
     transcript_path: transcriptPath,
     transcript_sha256: digest(transcript),
   };
@@ -74,7 +77,7 @@ test("evidence cannot relabel a compile suite as native", () => {
     receipt.cases[0] = {
       id: receipt.cases[0].id,
       status: "passed",
-      evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native" }],
+      evidence: [{ suite: suite.id, descriptor_sha256: suite.descriptor_sha256, execution_kind: "native", artifact_paths: [] }],
     };
     receipt.gate.missing--;
     assert.throws(() => validateReceipt(matrix, receipt), /execution kind does not match suite/);
@@ -91,6 +94,19 @@ test("suite evidence is bound to the descriptor and transcript bytes on disk", (
     const receipt = makePendingReceipt();
     receipt.suites = [suite];
     assert.throws(() => validateReceipt(matrix, receipt), /descriptor digest mismatch/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("final package suites must identify the installed artifact used by their evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
+  try {
+    const suite = suiteFixture(directory, "package");
+    const receipt = makePendingReceipt();
+    receipt.suites = [suite];
+    receipt.gate.final = true;
+    assert.throws(() => validateReceipt(matrix, receipt), /final package suite .*must reference/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

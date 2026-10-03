@@ -63,13 +63,18 @@ export function validateMatrix(matrix) {
   return matrix;
 }
 
-function validateSuite(suite, index) {
+function validateSuite(suite, index, final, artifactPaths) {
   if (!suite || typeof suite !== "object") failure(`suite ${index} is not an object`);
-  for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "transcript_path", "transcript_sha256"]) {
+  for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "execution_kind", "status", "started_at", "completed_at", "transcript_path", "transcript_sha256"]) {
     if (typeof suite[field] !== "string" || suite[field].trim() === "") failure(`suite ${index} lacks ${field}`);
   }
   if (!EXECUTION_KINDS.has(suite.execution_kind)) failure(`suite ${suite.id} has invalid execution_kind`);
   if (!new Set(["passed", "failed", "skipped", "flaky"]).has(suite.status)) failure(`suite ${suite.id} has invalid status`);
+  if (Number.isNaN(Date.parse(suite.started_at)) || Number.isNaN(Date.parse(suite.completed_at))) failure(`suite ${suite.id} has invalid execution timestamps`);
+  if (Date.parse(suite.completed_at) < Date.parse(suite.started_at)) failure(`suite ${suite.id} completed before it started`);
+  if (!Array.isArray(suite.artifact_paths) || suite.artifact_paths.some(path => typeof path !== "string" || path.trim() === "")) failure(`suite ${suite.id} has invalid artifact paths`);
+  if (suite.artifact_paths.some(path => !artifactPaths.has(path))) failure(`suite ${suite.id} references an unknown artifact`);
+  if (final && suite.execution_kind === "package" && suite.artifact_paths.length === 0) failure(`final package suite ${suite.id} must reference its installed artifact`);
   if (!HEX64.test(suite.descriptor_sha256)) failure(`suite ${suite.id} has invalid descriptor digest`);
   if (!HEX64.test(suite.transcript_sha256)) failure(`suite ${suite.id} has invalid transcript digest`);
   for (const [kind, path, expected] of [["descriptor", suite.descriptor_path, suite.descriptor_sha256], ["transcript", suite.transcript_path, suite.transcript_sha256]]) {
@@ -115,6 +120,10 @@ function validateCase(caseRecord, entry, suites, final) {
     const suite = suiteById.get(evidence.suite);
     if (evidence.execution_kind !== suite.execution_kind) failure(`${entry.id} evidence ${index} execution kind does not match suite ${suite.id}`);
     if (evidence.descriptor_sha256 !== suite.descriptor_sha256) failure(`${entry.id} evidence ${index} descriptor is not the referenced suite descriptor`);
+    if (evidence.artifact_paths !== undefined && (!Array.isArray(evidence.artifact_paths) || evidence.artifact_paths.some(path => typeof path !== "string"))) failure(`${entry.id} evidence ${index} has invalid artifact paths`);
+    const evidenceArtifacts = [...new Set(evidence.artifact_paths ?? [])].sort();
+    const suiteArtifacts = [...new Set(suite.artifact_paths)].sort();
+    if (JSON.stringify(evidenceArtifacts) !== JSON.stringify(suiteArtifacts)) failure(`${entry.id} evidence ${index} artifact use does not match suite ${suite.id}`);
     modes.add(evidence.execution_kind);
   }
   if (final) {
@@ -153,8 +162,9 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   if (!receipt.gate || typeof receipt.gate !== "object") failure("receipt gate is missing");
   const effectiveFinal = final || receipt.gate.final === true;
   const suiteIds = new Set();
+  const artifactPaths = new Set(receipt.artifacts.map(artifact => artifact?.path));
   for (const [index, suite] of receipt.suites.entries()) {
-    validateSuite(suite, index);
+    validateSuite(suite, index, effectiveFinal, artifactPaths);
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
