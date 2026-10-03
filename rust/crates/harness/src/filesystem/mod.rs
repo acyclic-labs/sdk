@@ -70,7 +70,8 @@ pub use workflow_journal::FilesystemWorkflowJournal;
 mod local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{
-    DurableHarnessStorage, FilesystemExecutionReceiptStore, LocalHarnessTools, PersistentLocalHarness,
+    DurableHarnessStorage, FilesystemExecutionReceiptStore, LocalHarnessTools,
+    PersistentLocalHarness,
 };
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod swarm_local;
@@ -78,8 +79,8 @@ mod swarm_local;
 pub use swarm_local::{
     LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration, LocalModelForkPlan,
     LocalModelForkPlans, LocalModelForkPublisher, LocalSessionPhase, LocalSwarmApproval,
-    LocalSwarmBindings, LocalSwarmConfig, LocalSwarmMessage, LocalSwarmSession,
-    LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalSwarmBindings, LocalSwarmConfig, LocalSwarmMessage, LocalSwarmSession, LocalSwarmSnapshot,
+    PersistentLocalSwarm,
 };
 
 mod memory;
@@ -597,7 +598,11 @@ where
                 .iter()
                 .chain(seed.reference_grants.iter().map(|grant| &grant.file))
                 .chain(seed.attachment_manifests.iter())
-                .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+                .chain(
+                    seed.model_boundary
+                        .iter()
+                        .flat_map(|boundary| boundary.files.iter()),
+                )
             {
                 if file.volume().provider() == &self.host.provider {
                     unique_files.insert(file.read_capability()?, file);
@@ -922,10 +927,18 @@ impl InternalContentClass {
 }
 
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
-#[derive(Clone)]
 pub struct FilesystemHost<A, O> {
     filesystem: Fs<A, O>,
     provider: ProviderRef,
+}
+
+impl<A, O> Clone for FilesystemHost<A, O> {
+    fn clone(&self) -> Self {
+        Self {
+            filesystem: self.filesystem.clone(),
+            provider: self.provider.clone(),
+        }
+    }
 }
 
 /// Provider-side proof for a parent-published project merge receipt.

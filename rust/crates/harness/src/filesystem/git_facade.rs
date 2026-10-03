@@ -820,8 +820,8 @@ impl<S> FilesystemGitFacade<S> {
         recovery: &ProjectMergeRecovery<'_>,
     ) -> Result<ProjectMergeReceipt>
     where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
@@ -874,8 +874,8 @@ impl<S> FilesystemGitFacade<S> {
         entry: &ProjectMergeRecoveryEntry,
     ) -> Result<ProjectMergeReceipt>
     where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
     {
         entry.validate()?;
         if entry.intent.target_project != self.volume {
