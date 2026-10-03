@@ -167,6 +167,28 @@ impl SwarmUsage {
     }
 }
 
+/// Durable cursor for a provider's cumulative usage receipt stream.
+///
+/// A cursor is empty before the first receipt. Once a receipt has been
+/// accepted, both fields must be present so a restarted issuer cannot reset
+/// its sequence while retaining (or losing) only part of its measurement.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwarmUsageReceiptCursor {
+    /// Last durable receipt sequence, or zero before the first receipt.
+    pub sequence: u64,
+    /// Last cumulative provider measurement, when `sequence` is nonzero.
+    pub usage: Option<SwarmUsage>,
+}
+
+impl SwarmUsageReceiptCursor {
+    /// Creates and validates a restart cursor.
+    pub fn new(sequence: u64, usage: Option<SwarmUsage>) -> Result<Self> {
+        validate_issuer_cursor(sequence, usage)?;
+        Ok(Self { sequence, usage })
+    }
+}
+
 /// Provider-side guard that stops work before it crosses a child ceiling.
 ///
 /// A runtime should call the step guard before starting a model step, the
@@ -182,10 +204,27 @@ pub struct SwarmUsageLimiter {
 impl SwarmUsageLimiter {
     /// Creates a provider guard from the exact admitted child ceiling.
     pub fn new(limits: SwarmResourceRequest) -> Result<Self> {
+        Self::resume(limits, SwarmUsage::default())
+    }
+
+    /// Restores a provider guard from the last durable cumulative measurement.
+    ///
+    /// Restarted runtimes must carry forward accepted usage before dispatching
+    /// another provider slice. Starting a fresh guard would reopen capacity
+    /// already consumed by the same dispatch attempt.
+    pub fn resume(limits: SwarmResourceRequest, usage: SwarmUsage) -> Result<Self> {
         limits.validate()?;
+        if usage.model_steps > limits.model_steps
+            || usage.output_bytes > limits.output_bytes
+            || usage.execution_time_ms > limits.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "restored provider usage exceeds the child reservation ceiling".into(),
+            ));
+        }
         Ok(Self {
             limits,
-            usage: SwarmUsage::default(),
+            usage,
         })
     }
 
@@ -193,6 +232,12 @@ impl SwarmUsageLimiter {
     #[must_use]
     pub const fn usage(self) -> SwarmUsage {
         self.usage
+    }
+
+    /// Returns the exact ceiling enforced by this guard.
+    #[must_use]
+    pub const fn limits(self) -> SwarmResourceRequest {
+        self.limits
     }
 
     /// Reserves one model step before invoking the model.
@@ -404,6 +449,22 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         Ok(issuer)
     }
 
+    /// Reopens an issuer from a durable cursor.
+    pub fn resume_with_cursor(
+        source: S,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        cursor: SwarmUsageReceiptCursor,
+    ) -> Result<Self> {
+        Self::resume(
+            source,
+            operation_id,
+            dispatch_id,
+            cursor.sequence,
+            cursor.usage,
+        )
+    }
+
     /// Reopens an issuer with both its durable cursor and child ceiling.
     pub fn resume_with_limits(
         source: S,
@@ -428,6 +489,24 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         issuer.sequence = sequence;
         issuer.last_usage = last_usage;
         Ok(issuer)
+    }
+
+    /// Reopens an issuer from a durable cursor and exact child ceiling.
+    pub fn resume_with_cursor_and_limits(
+        source: S,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        cursor: SwarmUsageReceiptCursor,
+        limits: SwarmResourceRequest,
+    ) -> Result<Self> {
+        Self::resume_with_limits(
+            source,
+            operation_id,
+            dispatch_id,
+            cursor.sequence,
+            cursor.usage,
+            limits,
+        )
     }
 
     /// Reads provider counters and issues the next verified durable receipt.
@@ -470,6 +549,21 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         self.sequence
             .checked_add(1)
             .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))
+    }
+
+    /// Returns the last durable issuer cursor.
+    #[must_use]
+    pub fn cursor(&self) -> SwarmUsageReceiptCursor {
+        SwarmUsageReceiptCursor {
+            sequence: self.sequence,
+            usage: self.last_usage,
+        }
+    }
+
+    /// Returns the last cumulative provider measurement, when one was issued.
+    #[must_use]
+    pub const fn last_usage(&self) -> Option<SwarmUsage> {
+        self.last_usage
     }
 }
 
@@ -686,6 +780,16 @@ pub struct SwarmForkReservation {
     pub admission_digest: Option<[u8; 32]>,
 }
 
+impl SwarmForkReservation {
+    /// Returns the durable provider receipt cursor for this child.
+    pub fn usage_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        SwarmUsageReceiptCursor::new(
+            self.usage_sequence,
+            (self.usage_sequence != 0).then_some(self.usage),
+        )
+    }
+}
+
 /// Session usage projection, including resources held by admitted children.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -837,6 +941,13 @@ impl SwarmDispatchToken {
         self.dispatch_id.as_ref()
     }
 
+    /// Returns the provider dispatch identity required for measured receipts.
+    pub fn required_dispatch_id(&self) -> Result<&IdempotencyKey> {
+        self.dispatch_id.as_ref().ok_or_else(|| {
+            Error::Unauthorized("provider dispatch identity is not bound to the token".into())
+        })
+    }
+
     /// Returns the exact resource ceiling the provider must enforce before
     /// doing additional model work.
     #[must_use]
@@ -849,6 +960,40 @@ impl SwarmDispatchToken {
     /// call it before each step, output write, and elapsed-time slice.
     pub fn usage_limiter(&self) -> Result<SwarmUsageLimiter> {
         SwarmUsageLimiter::new(self.resources)
+    }
+
+    /// Restores a provider guard from usage already accepted for this token.
+    pub fn usage_limiter_from(&self, usage: SwarmUsage) -> Result<SwarmUsageLimiter> {
+        SwarmUsageLimiter::resume(self.resources, usage)
+    }
+
+    /// Binds a provider measurement source to this dispatch authorization.
+    ///
+    /// The source receives the operation and durable dispatch identity from
+    /// the token; callers cannot substitute a second lease while issuing
+    /// receipts.
+    pub fn usage_receipt_issuer<S: SwarmUsageSource>(
+        &self,
+        source: S,
+    ) -> Result<SwarmUsageReceiptIssuer<S>> {
+        let dispatch_id = self.required_dispatch_id()?.clone();
+        SwarmUsageReceiptIssuer::with_limits(source, self.operation_id, dispatch_id, self.resources)
+    }
+
+    /// Reopens a provider measurement issuer from its durable cursor.
+    pub fn resume_usage_receipt_issuer<S: SwarmUsageSource>(
+        &self,
+        source: S,
+        cursor: SwarmUsageReceiptCursor,
+    ) -> Result<SwarmUsageReceiptIssuer<S>> {
+        let dispatch_id = self.required_dispatch_id()?.clone();
+        SwarmUsageReceiptIssuer::resume_with_cursor_and_limits(
+            source,
+            self.operation_id,
+            dispatch_id,
+            cursor,
+            self.resources,
+        )
     }
 
     /// Returns the owner fence bound to this dispatch authorization.
@@ -1003,6 +1148,15 @@ impl SwarmBudget {
     /// Returns the canonical provider lease bound to root usage receipts.
     pub fn root_dispatch_id(&self) -> Result<Option<IdempotencyKey>> {
         Ok(self.lock()?.root_dispatch_id.clone())
+    }
+
+    /// Returns the durable provider receipt cursor for root usage.
+    pub fn root_usage_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        let state = self.lock()?;
+        SwarmUsageReceiptCursor::new(
+            state.root_usage_sequence,
+            (state.root_usage_sequence != 0).then_some(state.root_usage),
+        )
     }
 
     /// Atomically admits one child. Persist the corresponding
@@ -2211,6 +2365,41 @@ mod tests {
                 execution_time_ms: 10,
             }
         );
+        Ok(())
+    }
+
+    #[test]
+    fn provider_limiter_resume_preserves_consumed_capacity() -> Result<()> {
+        let limits = SwarmResourceRequest {
+            model_steps: 2,
+            output_bytes: 8,
+            execution_time_ms: 20,
+        };
+        let mut limiter = SwarmUsageLimiter::resume(
+            limits,
+            SwarmUsage {
+                model_steps: 1,
+                output_bytes: 8,
+                execution_time_ms: 10,
+            },
+        )?;
+        assert!(limiter.admit_output(1).is_err());
+        limiter.admit_model_step()?;
+        assert!(limiter.admit_model_step().is_err());
+        limiter.admit_execution_time(10)?;
+        assert_eq!(limiter.usage().model_steps, 2);
+        Ok(())
+    }
+
+    #[test]
+    fn reservation_cursor_requires_a_durable_sequence() -> Result<()> {
+        let budget = SwarmBudget::new(id(23), owner(0), limits())?;
+        let reservation = budget.reserve_child(request(24, None))?.reservation;
+        assert_eq!(
+            reservation.usage_cursor()?,
+            SwarmUsageReceiptCursor::default()
+        );
+        assert!(SwarmUsageReceiptCursor::new(1, None).is_err());
         Ok(())
     }
 

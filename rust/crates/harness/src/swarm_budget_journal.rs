@@ -12,8 +12,8 @@ use crate::{
     swarm_budget::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
-        SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, VerifiedForkPublication,
-        VerifiedSwarmUsageReceipt,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptCursor,
+        VerifiedForkPublication, VerifiedSwarmUsageReceipt,
     },
 };
 use acyclic_stream::{
@@ -169,6 +169,21 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     /// Returns a reservation snapshot for recovery and dispatch reconciliation.
     pub fn reservation(&self, operation_id: OperationId) -> Result<Option<SwarmForkReservation>> {
         self.budget.reservation(operation_id)
+    }
+
+    /// Returns the durable provider receipt cursor for one child.
+    pub fn usage_cursor(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<SwarmUsageReceiptCursor>> {
+        self.reservation(operation_id)?
+            .map(|reservation| reservation.usage_cursor())
+            .transpose()
+    }
+
+    /// Returns the durable provider receipt cursor for root usage.
+    pub fn root_usage_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        self.budget.root_usage_cursor()
     }
 
     /// Reloads all committed records from the provider's current tail.
