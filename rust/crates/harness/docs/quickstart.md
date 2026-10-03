@@ -6,9 +6,7 @@ context, tools, journal, content provider, and optional execution providers.
 `HarnessBuilder` keeps those choices explicit and validates the composition at
 build time.
 
-The package identity for this guide is `acyclic-harness = 0.2.0`. Generated
-docs must attach the exact source revision and feature profile to this package
-identity before presenting an example as qualified.
+
 
 The smallest complete replacement loop is the executable
 [`examples/custom_executor.rs`](../examples/custom_executor.rs). Its executor

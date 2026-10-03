@@ -1,9 +1,8 @@
 # Managed Agent Runtime
 
-Managed Agent Runtime is the planned hosted composition of the open-source
-Harness. This guide records the intended customer contract from Rust-owned
-semantics. It does not advertise a public managed endpoint, capacity, price, or
-service guarantee.
+Managed Agent Runtime describes a hosted composition of the open-source Harness.
+The Rust crate defines the customer contract and does not expose a managed
+endpoint.
 
 ## The same harness, operated for you
 
@@ -29,15 +28,6 @@ A qualified host must:
 4. Connect through the normal Harness API, admit tasks, observe their handles,
    and route interactions to the application or an authorized policy service.
 
-The following is a proposed shape only; no managed endpoint is advertised:
-
-```rust
-// Proposed API; no public managed endpoint is advertised.
-let harness = Harness::connect(managed_host).await?;
-let review = harness.task::<ReviewInput, Findings>("review")?;
-let task = harness.spawn(&review, input).await?;
-let outcome = task.result().await?;
-```
 
 ## Placement and data boundaries
 
@@ -63,11 +53,8 @@ execution. The host reports expired references, incompatible code versions, and
 unsupported recovery rather than silently restarting from scratch. A release
 change pins existing operations or uses a supported recorded migration.
 
-## Qualification before availability
+## Usage and billing
 
-This page defines the intended customer experience, not an available service.
-Publication requires a usable Harness release, documented deployment and support
-profiles, recovery and isolation evidence, and measured workload performance.
-Capacity limits, prices, and service guarantees remain unpublished until
-qualified. Usage comes from selected providers' receipts and any published
-managed-service charges; the Harness does not invent a fifth Inference meter or charge a child again at each ancestor.
+Usage comes from selected providers' receipts and any published managed-service
+charges; the Harness does not invent a fifth Inference meter or charge a child
+again at each ancestor.

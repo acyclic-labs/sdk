@@ -1,9 +1,7 @@
 # Harness topic guide
 
 This guide is the Rust source counterpart for the existing Harness topic
-routes. The package is `acyclic-harness` at the workspace version (`0.2.0` in
-this checkout). Generated documentation must attach the exact source revision,
-feature profile, and qualification receipt when publishing a projection.
+routes. The package is `acyclic-harness` at the workspace version (`0.2.0`).
 
 | Existing topic data module | Rust-owned section | Source anchor |
 | --- | --- | --- |

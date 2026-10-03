@@ -5,9 +5,8 @@ a checkout reads one generation and stages changes against it. A commit creates
 a new generation, so callers can retain an earlier generation as an immutable
 reference.
 
-The package identity for this guide is `acyclic-fs = 0.2.0`. Pin the exact
-source revision in the generated docs bundle when publishing a guide; the
-working checkout may contain unreleased changes.
+
+
 
 The crate's default profile selects the local backend, memory support, native
 watching, and native mounting on native targets. Cargo selects the target-specific

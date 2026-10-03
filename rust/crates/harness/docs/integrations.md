@@ -1,9 +1,6 @@
 # Harness integrations and extensions
 
-This guide defines the planned integration boundary for `acyclic-harness`. It is
-Rust-owned product documentation; it does not claim that a CLI, plugin package,
-lifecycle hook, compatibility version, or hosted integration is currently
-available.
+This guide defines the integration boundary for `acyclic-harness`.
 
 ## Integrations and harness extensions
 
@@ -42,9 +39,8 @@ or process cloning. A lost connection may leave the invocation indeterminate.
 
 Prefer an explicit typed tool or task integration when the host supports it. Reuse
 one task identity and reconcile unknown execution rather than launching another
-external agent after every connection failure. This page records the intended
-contract; release availability requires a separately qualified integration.
+external agent after every connection failure.
 
 ## Related contract guides
 
-Use the [Filesystem branches and joins](../../filesystem/docs/topics.md) and [Harness filesystem](filesystem.md) guides for the promotion and tool-approval boundaries. Recovery profiles and design references remain planned documentation until their host integrations are qualified.
+Use the [Filesystem branches and joins](../../filesystem/docs/topics.md) and [Harness filesystem](filesystem.md) guides for the promotion and tool-approval boundaries.

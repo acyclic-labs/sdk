@@ -1,10 +1,7 @@
 # Filesystem topic guide
 
 This guide is the Rust source counterpart for the existing Filesystem topic
-routes. The package is `acyclic-fs` at the workspace version (`0.2.0` in this
-checkout). Generated documentation must record the source revision and feature
-profile alongside this Markdown; this guide does not claim a hosted release or
-registry availability by itself.
+routes. The package is `acyclic-fs` at the workspace version (`0.2.0`).
 
 | Existing route topic | Rust-owned section | Source anchor |
 | --- | --- | --- |
