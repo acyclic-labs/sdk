@@ -2548,7 +2548,7 @@ export class AgentHarness {
           || actualRequestBytes.some((byte, index) => byte !== expectedRequestBytes[index])) {
           throw new Error("canonical model request evidence differs from the admitted provider request");
         }
-        const providerRequest: PreparedModelRequest = {
+        const providerRequest: PreparedModelRequest = Object.freeze({
           model: deepFreeze(structuredClone(model.identity)),
           messages: deepFreeze(structuredClone(messages)),
           tools: deepFreeze(structuredClone(tools)),
@@ -2558,7 +2558,7 @@ export class AgentHarness {
             manifestJson: prepared.manifestJson,
             requestDigest: [...prepared.requestDigest],
           }),
-        };
+        });
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
         for await (const event of model.provider.generate(providerRequest)) {
