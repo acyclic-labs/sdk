@@ -7,8 +7,14 @@ export async function ensureObjectsWasm(): Promise<void> {
     const attempt = (async () => {
       const url = new URL("../generated/wasm/acyclic_objects_wasm_bg.wasm", import.meta.url);
       if (url.protocol === "file:") {
-        const { readFile } = await import("node:fs/promises");
-        await initObjectsWasm({ module_or_path: Uint8Array.from(await readFile(url)) });
+        const runtime = globalThis as typeof globalThis & {
+          process?: { getBuiltinModule?: (name: string) => unknown };
+        };
+        const filesystem = runtime.process?.getBuiltinModule?.(["node", "fs/promises"].join(":")) as {
+          readFile?: (path: URL) => Promise<Uint8Array>;
+        } | undefined;
+        if (filesystem?.readFile === undefined) throw new Error("Objects WASM file loading requires a native runtime");
+        await initObjectsWasm({ module_or_path: Uint8Array.from(await filesystem.readFile(url)) });
       } else {
         await initObjectsWasm({ module_or_path: url });
       }
@@ -21,7 +27,10 @@ export async function ensureObjectsWasm(): Promise<void> {
 
 // HTTP constructors synchronously validate their endpoint. Load the packaged
 // module before consumers can construct one, matching the Stream boundary.
-if (!initializeObjectsWasmSync()) await ensureObjectsWasm();
+// Start browser/async loading without making package import itself fail when
+// an optional generated asset was omitted. Callers still await ensureObjectsWasm
+// before executing a Rust-backed operation and receive the concrete load error.
+if (!initializeObjectsWasmSync()) void ensureObjectsWasm().catch(() => {});
 
 function initializeObjectsWasmSync(): boolean {
   const runtime = globalThis as typeof globalThis & {
@@ -29,9 +38,13 @@ function initializeObjectsWasmSync(): boolean {
   };
   const getBuiltinModule = runtime.process?.getBuiltinModule;
   if (getBuiltinModule === undefined) return false;
-  const filesystem = getBuiltinModule("node:fs") as { readFileSync?: (path: URL) => Uint8Array } | undefined;
+  const filesystem = getBuiltinModule(["node", "fs"].join(":")) as { readFileSync?: (path: URL) => Uint8Array } | undefined;
   if (filesystem?.readFileSync === undefined) return false;
   const wasmUrl = new URL("../generated/wasm/acyclic_objects_wasm_bg.wasm", import.meta.url);
-  initObjectsWasmSync({ module: filesystem.readFileSync(wasmUrl) });
-  return true;
+  try {
+    initObjectsWasmSync({ module: filesystem.readFileSync(wasmUrl) });
+    return true;
+  } catch {
+    return false;
+  }
 }
