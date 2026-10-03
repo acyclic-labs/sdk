@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_error_code, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -25,7 +26,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     } catch {
       throw new TypeError("invalid Objects HTTP endpoint");
     }
-    if (!options.token.trim() || new TextEncoder().encode(options.token).byteLength > 8192 || /[\r\n\0]/.test(options.token)) throw new TypeError("invalid bearer token");
+    validateRustOwnedCredentialPolicy(options.token);
+    if (new TextEncoder().encode(options.token).byteLength > 8192 || /\0/.test(options.token)) throw new TypeError("invalid bearer token");
     this.maximumResponse = options.maximumResponseBytes ?? 64 * 1024 * 1024;
     this.maximumRequest = options.maximumRequestBytes ?? 64 * 1024 * 1024;
     for (const maximum of [this.maximumResponse, this.maximumRequest]) if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 0xffff_ffff) throw new RangeError("wire limit must be a positive uint32");

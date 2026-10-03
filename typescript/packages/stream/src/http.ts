@@ -5,6 +5,7 @@ import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateHttpEndpointValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
+import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -17,7 +18,7 @@ export class HttpStreamProvider implements StreamProvider {
   constructor(options: HttpStreamProviderOptions) {
     validateHttpEndpointValue(options.endpoint);
     const endpoint = new URL(options.endpoint);
-    if (!options.token.trim()) throw new TypeError("token is required");
+    validateRustOwnedCredentialPolicy(options.token);
     this.#endpoint = endpoint.href.endsWith("/") ? endpoint.href : `${endpoint.href}/`;
     this.#token = options.token;
     this.#fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
