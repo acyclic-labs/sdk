@@ -259,13 +259,6 @@ export interface WasmModelWire {
     options: WasmModelJsonValue;
 }
 
-export interface WasmModelOptionPolicyWire {
-    name: string;
-    version: string;
-    digest: readonly number[];
-    schema: WasmModelJsonSchema;
-}
-
 export interface WasmBatchAdmissionInput {
     group_id: string;
     batch_id: string;
@@ -324,6 +317,13 @@ export interface WasmModelEventAdmissionState {
 export interface WasmModelMessageWire {
     role: WasmModelRole;
     content: WasmModelContent;
+}
+
+export interface WasmModelOptionPolicyWire {
+    name: string;
+    version: string;
+    digest: readonly number[];
+    schema: WasmModelJsonSchema;
 }
 
 export interface WasmModelRequestWire {
@@ -898,7 +898,7 @@ export interface InitOutput {
     readonly fileDescriptor: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly forkSeedFromReport: (a: any) => [number, number, number];
     readonly prepareConversationTurn: (a: any, b: number, c: number, d: any, e: any, f: any, g: any, h: number, i: number) => [number, number, number];
-    readonly prepareModelRequest: (a: any, b: any) => [number, number, number];
+    readonly prepareModelRequest: (a: any, b: any, c: any) => [number, number, number];
     readonly selectModelContext: (a: any, b: any, c: any, d: number, e: number, f: number, g: number) => any;
     readonly taskAdmissionIdentities: (a: any) => [number, number, number];
     readonly taskIdentityDigest: (a: number, b: number, c: number, d: number, e: any, f: any, g: any, h: number, i: number) => [number, number, number, number];
