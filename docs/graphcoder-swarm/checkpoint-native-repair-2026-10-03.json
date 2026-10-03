@@ -114,5 +114,17 @@
     "command": "cargo test -p acyclic-harness --features filesystem-local --test local_recursive_fork -j2 -- --nocapture",
     "suite_sha256": "e01b84f25ab4c56a3df8fdcca05f2d01d90cdb5f3349be0544bb677ec3fdf0ea",
     "artifact_sha256": "19152de7dc754c0c5e5e568902b4bc6a3ad6842724c77705e10874b523fe6dd6"
+  },
+  "cli_followup": {
+    "source": "0e15465d",
+    "terminal_handle": 86472,
+    "exit_code": 1,
+    "passed": 6,
+    "failed": 2,
+    "compilation": "passed",
+    "failure": "echo and stage fixtures refused nonempty model options without registered provider policy",
+    "command": "cargo test -p acyclic-graphcoder-cli -j2 -- --nocapture",
+    "suite_sha256": "6cbd21b99d882aff06231258f05fcf345b4eb6757cb72b2853740f7440ff76c4",
+    "artifact_sha256": "4630458d227cd233798f9ac3070dad1f652a9120ac65c902f7dede3b674af7aa"
   }
 }
