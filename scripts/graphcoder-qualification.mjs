@@ -170,6 +170,15 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   }
   const qualifiedTree = gitTree(qualifiedCommit);
   for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, effectiveFinal, qualifiedCommit, qualifiedTree);
+  const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact.path, artifact]));
+  for (const suite of receipt.suites) {
+    for (const path of suite.artifact_paths) {
+      const artifact = artifactByPath.get(path);
+      if (artifact && Date.parse(artifact.built_at) > Date.parse(suite.started_at)) {
+        failure(`suite ${suite.id} started before artifact ${path} was built`);
+      }
+    }
+  }
   const casesById = new Map();
   for (const record of receipt.cases) {
     if (casesById.has(record?.id)) failure(`duplicate case id ${record?.id}`);
