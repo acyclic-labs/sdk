@@ -17,6 +17,18 @@ const fileDigest = path => sha256(readFileSync(resolve(path)));
 const currentCommit = () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
 const currentBranch = () => execFileSync("git", ["branch", "--show-current"], { encoding: "utf8" }).trim();
 const gitStatus = () => execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
+const gitRoot = () => execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+const gitTree = commit => execFileSync("git", ["rev-parse", `${commit}^{tree}`], { encoding: "utf8" }).trim();
+const gitIsAncestor = (base, commit) => {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", base, commit], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+};
+const gitMergeCount = (base, commit) => Number(execFileSync("git", ["rev-list", "--count", "--merges", `${base}..${commit}`], { encoding: "utf8" }).trim());
+const samePath = (left, right) => resolve(left).toLowerCase() === resolve(right).toLowerCase();
 
 function failure(message) {
   throw new Error(`qualification: ${message}`);
@@ -53,26 +65,33 @@ export function validateMatrix(matrix) {
 
 function validateSuite(suite, index) {
   if (!suite || typeof suite !== "object") failure(`suite ${index} is not an object`);
-  for (const field of ["id", "descriptor", "platform", "transcript_sha256"]) {
+  for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "transcript_path", "transcript_sha256"]) {
     if (typeof suite[field] !== "string" || suite[field].trim() === "") failure(`suite ${index} lacks ${field}`);
   }
   if (!EXECUTION_KINDS.has(suite.execution_kind)) failure(`suite ${suite.id} has invalid execution_kind`);
   if (!new Set(["passed", "failed", "skipped", "flaky"]).has(suite.status)) failure(`suite ${suite.id} has invalid status`);
+  if (!HEX64.test(suite.descriptor_sha256)) failure(`suite ${suite.id} has invalid descriptor digest`);
   if (!HEX64.test(suite.transcript_sha256)) failure(`suite ${suite.id} has invalid transcript digest`);
+  for (const [kind, path, expected] of [["descriptor", suite.descriptor_path, suite.descriptor_sha256], ["transcript", suite.transcript_path, suite.transcript_sha256]]) {
+    if (!existsSync(resolve(path))) failure(`suite ${suite.id} ${kind} file is missing: ${path}`);
+    const actual = fileDigest(path);
+    if (actual !== expected) failure(`suite ${suite.id} ${kind} digest mismatch: ${path}`);
+  }
 }
 
-function validateArtifact(artifact, index, final) {
+function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree) {
   if (!artifact || typeof artifact !== "object") failure(`artifact ${index} is not an object`);
-  for (const field of ["path", "sha256", "source_commit"]) {
+  for (const field of ["path", "sha256", "source_commit", "source_tree", "built_at", "build_id"]) {
     if (typeof artifact[field] !== "string" || artifact[field].trim() === "") failure(`artifact ${index} lacks ${field}`);
   }
   if (!HEX64.test(artifact.sha256)) failure(`artifact ${artifact.path} has invalid digest`);
+  if (!/^[0-9a-f]{40}$/.test(artifact.source_tree)) failure(`artifact ${artifact.path} has invalid source tree`);
+  if (artifact.source_commit !== qualifiedCommit) failure(`artifact ${artifact.path} was not built from the qualified source commit`);
+  if (artifact.source_tree !== qualifiedTree) failure(`artifact ${artifact.path} was not built from the qualified source tree`);
+  if (Number.isNaN(Date.parse(artifact.built_at))) failure(`artifact ${artifact.path} has invalid build time`);
   if (typeof artifact.fresh !== "boolean") failure(`artifact ${artifact.path} must declare fresh`);
   const path = resolve(artifact.path);
-  if (!existsSync(path)) {
-    if (final) failure(`final artifact is missing: ${artifact.path}`);
-    return;
-  }
+  if (!existsSync(path)) failure(`artifact is missing: ${artifact.path}`);
   const actual = fileDigest(path);
   if (actual !== artifact.sha256) failure(`artifact digest mismatch: ${artifact.path}`);
 }
@@ -83,13 +102,16 @@ function validateCase(caseRecord, entry, suites, final) {
   if (!STATUS_VALUES.has(caseRecord.status)) failure(`${entry.id} has invalid status`);
   if (!Array.isArray(caseRecord.evidence)) failure(`${entry.id} evidence must be an array`);
   if (caseRecord.status === "passed" && caseRecord.evidence.length === 0) failure(`${entry.id} passed without evidence`);
-  const suiteIds = new Set(suites.map(suite => suite.id));
+  const suiteById = new Map(suites.map(suite => [suite.id, suite]));
   const modes = new Set();
   for (const [index, evidence] of caseRecord.evidence.entries()) {
     if (!evidence || typeof evidence !== "object") failure(`${entry.id} evidence ${index} is not an object`);
-    if (typeof evidence.suite !== "string" || !suiteIds.has(evidence.suite)) failure(`${entry.id} references unknown suite ${evidence.suite}`);
+    if (typeof evidence.suite !== "string" || !suiteById.has(evidence.suite)) failure(`${entry.id} references unknown suite ${evidence.suite}`);
     if (!HEX64.test(evidence.descriptor_sha256)) failure(`${entry.id} evidence ${index} has invalid descriptor digest`);
     if (!EXECUTION_KINDS.has(evidence.execution_kind)) failure(`${entry.id} evidence ${index} has invalid execution kind`);
+    const suite = suiteById.get(evidence.suite);
+    if (evidence.execution_kind !== suite.execution_kind) failure(`${entry.id} evidence ${index} execution kind does not match suite ${suite.id}`);
+    if (evidence.descriptor_sha256 !== suite.descriptor_sha256) failure(`${entry.id} evidence ${index} descriptor is not the referenced suite descriptor`);
     modes.add(evidence.execution_kind);
   }
   if (final) {
@@ -112,10 +134,21 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
     if (typeof receipt.source[field] !== "string" || receipt.source[field].trim() === "") failure(`receipt source lacks ${field}`);
   }
   if (typeof receipt.source.clean !== "boolean" || typeof receipt.source.merged !== "boolean") failure("receipt source must declare clean and merged");
+  const qualifiedCommit = currentCommit();
+  if (receipt.source.commit !== qualifiedCommit) failure("receipt source commit does not match the current checkout");
+  if (receipt.source.branch !== currentBranch()) failure("receipt source branch does not match the current checkout");
+  if (!samePath(receipt.source.worktree, gitRoot())) failure("receipt source worktree does not match the current checkout");
+  const actualClean = gitStatus() === "";
+  if (receipt.source.clean !== actualClean) failure("receipt source clean claim does not match the current checkout");
+  if (receipt.source.merged) failure("receipt source claims a merge, which is forbidden");
+  if (receipt.source.base_commit !== matrix.scope.base_commit) failure("receipt source base commit does not match the locked scope");
+  if (!gitIsAncestor(receipt.source.base_commit, qualifiedCommit)) failure("locked base commit is not an ancestor of the qualified source");
+  if (gitMergeCount(receipt.source.base_commit, qualifiedCommit) !== 0) failure("qualified source contains a merge commit");
   if (!Array.isArray(receipt.suites)) failure("receipt suites must be an array");
   if (!Array.isArray(receipt.cases)) failure("receipt cases must be an array");
   if (!Array.isArray(receipt.artifacts)) failure("receipt artifacts must be an array");
   if (!receipt.gate || typeof receipt.gate !== "object") failure("receipt gate is missing");
+  const effectiveFinal = final || receipt.gate.final === true;
   const suiteIds = new Set();
   for (const [index, suite] of receipt.suites.entries()) {
     validateSuite(suite, index);
@@ -130,10 +163,11 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   for (const entry of matrix.entries) {
     const record = casesById.get(entry.id);
     if (!record) failure(`receipt is missing matrix case ${entry.id}`);
-    validateCase(record, entry, receipt.suites, final);
+    validateCase(record, entry, receipt.suites, effectiveFinal);
   }
   if (casesById.size !== matrix.entries.length) failure("receipt contains a case not present in the locked matrix");
-  for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, final);
+  const qualifiedTree = gitTree(qualifiedCommit);
+  for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree);
   const counts = { failed: 0, skipped: 0, flaky: 0, missing: 0 };
   for (const record of receipt.cases) {
     if (record.status === "failed") counts.failed++;
@@ -144,12 +178,10 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   for (const key of Object.keys(counts)) {
     if (receipt.gate[key] !== counts[key]) failure(`gate.${key} is ${receipt.gate[key]}, expected ${counts[key]}`);
   }
-  if (final || receipt.gate.final) {
+  if (effectiveFinal) {
     if (!receipt.gate.final) failure("receipt was requested as final but gate.final is false");
     if (!receipt.source.clean || receipt.source.merged) failure("final receipt requires a clean, unmerged source worktree");
     if (receipt.source.branch !== matrix.scope.branch) failure(`final receipt branch must be ${matrix.scope.branch}`);
-    if (receipt.source.base_commit !== matrix.scope.base_commit) failure("final receipt base commit does not match the locked scope");
-    if (receipt.source.commit !== currentCommit()) failure("final receipt source commit is not the current commit");
     if (counts.failed || counts.skipped || counts.flaky || counts.missing) failure("final receipt contains failed, skipped, flaky, or missing cases");
     if (!receipt.artifacts.length || receipt.artifacts.some(artifact => !artifact.fresh)) failure("final receipt requires fresh distributable artifacts");
     if (receipt.suites.some(suite => suite.status !== "passed")) failure("final receipt contains a non-passing suite");

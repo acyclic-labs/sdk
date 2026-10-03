@@ -18,16 +18,18 @@ node scripts/graphcoder-qualification.mjs receipt-check docs/graphcoder-swarm/re
 
 The template is deliberately incomplete. It records every matrix ID as
 `pending` and cannot pass the final gate. A qualification run replaces those
-records with evidence that names the suite, descriptor digest, execution kind,
-and artifact digests. The receipt also records the source commit, worktree,
-branch, pinned base, clean/unmerged state, suite transcript digests, and fresh
-distributable digests.
+records with evidence that names the suite, its on-disk descriptor and
+transcript digests, and the execution kind. The receipt also records the source
+commit, worktree, branch, pinned base, clean/unmerged state, suite transcript
+digests, and distributable build provenance. The validator compares those claims
+with the current Git checkout and hashes the referenced files itself.
 
 Compilation is a separate execution kind. It may prove that code targets a
 platform, but it cannot satisfy a native, PTY, package, or WASM runtime row.
-The final gate also hashes every listed artifact from disk and rejects stale or
-missing files, so evidence cannot be satisfied by a filename or an earlier
-checkpoint alone.
+The final gate also requires each listed artifact to name the qualified source
+commit and tree, a build ID, and a timestamp, then hashes it from disk. Stale or
+missing files are rejected, so evidence cannot be satisfied by a filename,
+boolean freshness flag, or an earlier checkpoint alone.
 
 The intended loop is:
 
