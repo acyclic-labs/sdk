@@ -532,39 +532,59 @@ impl PersistentLocalSwarm {
             .await?
             .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
-        if self.records.lock().await.contains_key(&child) {
-            return Err(Error::Conflict("child operation is already a session".into()));
-        }
+        let existing = self.records.lock().await.get(&child).cloned();
+        let new_admission = match existing {
+            None => true,
+            Some(session) => {
+                if self.requests.lock().await.get(&child) != Some(&request) {
+                    return Err(Error::Conflict("child operation is already a different session".into()));
+                }
+                if session.phase == LocalSessionPhase::Completed {
+                    return Err(Error::Conflict("child operation is already complete".into()));
+                }
+                if self.seeds.lock().await.get(&child) != Some(seed) {
+                    return Err(Error::Conflict("existing child seed differs from published fork".into()));
+                }
+                false
+            }
+        };
         let registry = self
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(
-            &registry,
-            StoredEvent::ForkAdmitted {
-                parent: request.parent,
-                parent_operation: request.parent_operation,
-                parent_step: request.parent_step,
+        if new_admission {
+            append_record(
+                &registry,
+                StoredEvent::ForkAdmitted {
+                    parent: request.parent,
+                    parent_operation: request.parent_operation,
+                    parent_step: request.parent_step,
+                    child,
+                    child_operation: request.child_operation,
+                    task: request.task.clone(),
+                    prompt: request.prompt.clone(),
+                    seed: Some(seed.clone()),
+                },
+            )
+            .await?;
+            self.records.lock().await.insert(
                 child,
-                child_operation: request.child_operation,
-                task: request.task.clone(),
-                prompt: request.prompt.clone(),
-                seed: Some(seed.clone()),
-            },
-        )
-        .await?;
-        self.records.lock().await.insert(
-            child,
-            LocalSwarmSession {
-                task: child,
-                parent: Some(request.parent),
-                depth: parent_session.depth + 1,
-                task_description: request.task.clone(),
-                operation: Some(request.child_operation),
-                phase: LocalSessionPhase::Activating,
-            },
-        );
-        self.requests.lock().await.insert(child, request.clone());
+                LocalSwarmSession {
+                    task: child,
+                    parent: Some(request.parent),
+                    depth: parent_session.depth + 1,
+                    task_description: request.task.clone(),
+                    operation: Some(request.child_operation),
+                    phase: LocalSessionPhase::Activating,
+                },
+            );
+            self.requests.lock().await.insert(child, request.clone());
+        } else {
+            self.update_session(child, |session| {
+                session.phase = LocalSessionPhase::Activating;
+            })
+            .await?;
+        }
         self.seeds.lock().await.insert(child, seed.clone());
         let harness = match PersistentLocalHarness::from_published_fork(
             self.config.model.clone(),
@@ -758,6 +778,28 @@ impl PersistentLocalSwarm {
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("local swarm fork request {task}")))?;
         self.fork(request).await
+    }
+
+    /// Replays a typed child activation after interruption, preserving the
+    /// exact request and published seed recorded in the swarm registry.
+    pub async fn retry_published_child(
+        &self,
+        task: TaskId,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+    ) -> Result<LocalForkOutcome> {
+        let request = self
+            .requests
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm fork request {task}")))?;
+        let seed = self.published_seed(task).await?;
+        self.activate_published_child(request, host, stream, issuer, parent, &seed)
+            .await
     }
 
     /// Reopens a child lazily after recovery. No child is dispatched merely
