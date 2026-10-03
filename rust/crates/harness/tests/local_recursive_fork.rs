@@ -1016,6 +1016,22 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 retried_outcome,
                 acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_)
             ));
+            let terminal_receipt_error = reopened_facade
+                .apply_root_writeback_plan_for_child_with_recovery(
+                    &terminal_request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority.clone(),
+                    &child_project,
+                    &terminal_plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &terminal_recovery,
+                )
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("terminal stale result produced a receipt".into()))?;
+            assert!(matches!(terminal_receipt_error, Error::Conflict(_)));
 
             // A fresh inspection after an overlapping target edit produces a
             // real provider conflict. Its terminal result must survive a
