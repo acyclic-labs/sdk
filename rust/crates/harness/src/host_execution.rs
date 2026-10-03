@@ -3581,6 +3581,7 @@ mod local_provider_tests {
                         approved: true,
                         reason: None,
                     },
+                    &session.storage().test_interaction_responder(interaction_id),
                 )
                 .await?;
             dispatch = EffectDispatch {
@@ -3673,6 +3674,7 @@ mod local_provider_tests {
                         approved: false,
                         reason: Some("owner declined".into()),
                     },
+                    &session.storage().test_interaction_responder(denied_interaction),
                 )
                 .await?;
             let denied_observation = provider
@@ -3827,6 +3829,7 @@ mod local_provider_tests {
                         approved: true,
                         reason: None,
                     },
+                    &session.storage().test_interaction_responder(interaction_id),
                 )
                 .await?;
             dispatch = EffectDispatch {

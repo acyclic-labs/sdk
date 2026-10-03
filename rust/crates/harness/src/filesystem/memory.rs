@@ -1585,6 +1585,18 @@ where
         )
     }
 
+    /// Issues an exact responder scope for native host contract fixtures.
+    #[cfg(test)]
+    pub(crate) fn test_interaction_responder(&self, id: InteractionId) -> Scope {
+        self.issuer.root(
+            "test-host-operator",
+            Capabilities::new([
+                "interaction:resolve".to_owned(),
+                format!("interaction:respond:{id}"),
+            ]),
+        )
+    }
+
     /// Resolves an addressable local interaction under a host-issued exact
     /// responder grant. This method belongs to the local host, not the agent.
     #[cfg(test)]
