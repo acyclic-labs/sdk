@@ -789,18 +789,34 @@ impl ForkAtBatch {
                 .as_mut()
                 .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
                 .attestation[0] ^= 1;
-            let forged_report = parent.prepare_fork(&preparer, forged).await?;
-            let forged_seed = forged_report.clone().into_seed()?;
-            self.assert_child_unbound(&forged_seed, &child_issuer)
-                .await?;
+            let forged_private_workspace =
+                workspace_ref(private.provider().clone(), &forged.preparation.child_private_volume.storage_name()?)?;
+            let forged_project_workspace =
+                workspace_ref(project.provider().clone(), &forged.preparation.child_project_volume.storage_name()?)?;
+            let forged_journal = workspace_ref(
+                provider.clone(),
+                &format!("harness-fork-preparation-{}", forged.operation_id),
+            )?;
             let forged_error = parent
-                .publish_fork_report(forged_report, parent_scope.clone())
+                .prepare_fork(&preparer, forged)
                 .await
-                .expect_err("forged model boundary was published");
+                .expect_err("forged model boundary reached preparation effects");
             assert!(
-                matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
+                matches!(forged_error, Error::Unauthorized(ref message) if message.contains("attestation")),
                 "unexpected forged model boundary error: {forged_error:?}"
             );
+            assert!(matches!(
+                self.host.resolve(&forged_private_workspace).await,
+                Err(Error::NotFound(_))
+            ));
+            assert!(matches!(
+                self.host.resolve(&forged_project_workspace).await,
+                Err(Error::NotFound(_))
+            ));
+            assert!(matches!(
+                self.host.resolve(&forged_journal).await,
+                Err(Error::NotFound(_))
+            ));
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;
@@ -1138,18 +1154,38 @@ impl ForkAtBatch {
             .as_mut()
             .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?
             .attestation[0] ^= 1;
-        let forged_report = parent.prepare_fork(&preparer, forged).await?;
-        let forged_seed = forged_report.clone().into_seed()?;
-        self.assert_child_unbound(&forged_seed, &grandchild_issuer)
-            .await?;
+        let forged_private_workspace = workspace_ref(
+            private.provider().clone(),
+            &forged.preparation.child_private_volume.storage_name()?,
+        )?;
+        let forged_project_workspace = workspace_ref(
+            project.provider().clone(),
+            &forged.preparation.child_project_volume.storage_name()?,
+        )?;
+        let forged_journal = workspace_ref(
+            provider.clone(),
+            &format!("harness-fork-preparation-{}", forged.operation_id),
+        )?;
         let forged_error = parent
-            .publish_fork_report(forged_report, parent_scope.clone())
+            .prepare_fork(&preparer, forged)
             .await
-            .expect_err("forged recursive model boundary was published");
+            .expect_err("forged recursive model boundary reached preparation effects");
         assert!(
-            matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
+            matches!(forged_error, Error::Unauthorized(ref message) if message.contains("attestation")),
             "unexpected forged recursive boundary error: {forged_error:?}"
         );
+        assert!(matches!(
+            self.host.resolve(&forged_private_workspace).await,
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            self.host.resolve(&forged_project_workspace).await,
+            Err(Error::NotFound(_))
+        ));
+        assert!(matches!(
+            self.host.resolve(&forged_journal).await,
+            Err(Error::NotFound(_))
+        ));
 
         let report = parent.prepare_fork(&preparer, request).await?;
         let seed = report.clone().into_seed()?;
