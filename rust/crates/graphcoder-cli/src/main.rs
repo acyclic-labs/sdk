@@ -497,7 +497,7 @@ where
                 match serde_json::from_str::<WireRequest>(&line) {
                     Ok(request) => runtime.dispatch(request).await,
                     Err(error) => WireResponse::error(
-                        "",
+                        request_id_from_malformed_line(&line).as_deref().unwrap_or(""),
                         "invalid_input",
                         format!("invalid request: {error}"),
                     ),
@@ -511,6 +511,15 @@ where
         job.await.map_err(std::io::Error::other)??;
     }
     output.lock().await.flush().await
+}
+
+fn request_id_from_malformed_line(line: &str) -> Option<String> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    let request_id = value.get("request_id")?.as_str()?;
+    if request_id.is_empty() || request_id.len() > 256 {
+        return None;
+    }
+    Some(request_id.to_owned())
 }
 
 async fn write_response<W: AsyncWrite + Unpin>(
@@ -547,6 +556,30 @@ mod tests {
             .write_all(b"\n")
             .await
             .expect("request newline writes");
+        request_writer.shutdown().await.expect("request closes");
+        let mut response = Vec::new();
+        response_reader
+            .read_to_end(&mut response)
+            .await
+            .expect("response reads");
+        server
+            .await
+            .expect("server joins")
+            .expect("server succeeds");
+        serde_json::from_slice(
+            response
+                .split(|byte| *byte == b'\n')
+                .next()
+                .expect("response line"),
+        )
+        .expect("response JSON")
+    }
+
+    async fn exchange_raw(runtime: Arc<Runtime>, request: Vec<u8>) -> Value {
+        let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
+        let (response_writer, mut response_reader) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(serve(runtime, request_reader, response_writer));
+        request_writer.write_all(&request).await.expect("request writes");
         request_writer.shutdown().await.expect("request closes");
         let mut response = Vec::new();
         response_reader
@@ -626,6 +659,9 @@ mod tests {
         )
         .await;
         assert_eq!(started["ok"], true);
+        let mut matches = Vec::new();
+        find_exact_bytes(root.path(), b"write fixture", &mut matches);
+        assert!(!matches.is_empty(), "stage fixture bytes were not durably retained");
         let activity = exchange(
             runtime,
             json!({
@@ -637,5 +673,46 @@ mod tests {
         .await;
         assert_eq!(activity["ok"], false);
         assert_eq!(activity["error"]["code"], "unsupported");
+    }
+
+    #[tokio::test]
+    async fn malformed_fixture_and_wire_lines_fail_closed() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let invalid_fixture = Runtime::open(&runtime_args(root.path().to_owned(), "unknown")).await;
+        assert!(matches!(
+            invalid_fixture,
+            Err(HarnessError::Invalid(message)) if message.contains("unknown model fixture")
+        ));
+
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let malformed = exchange_raw(runtime.clone(), b"not-json\n".to_vec()).await;
+        assert_eq!(malformed["ok"], false);
+        assert_eq!(malformed["error"]["code"], "invalid_input");
+
+        let oversized = exchange_raw(
+            runtime,
+            format!("{}\n", "x".repeat(MAX_LINE_BYTES)).into_bytes(),
+        )
+        .await;
+        assert_eq!(oversized["ok"], false);
+        assert_eq!(oversized["error"]["code"], "invalid_input");
+    }
+
+    fn find_exact_bytes(root: &std::path::Path, expected: &[u8], matches: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false) {
+                find_exact_bytes(&path, expected, matches);
+            } else if std::fs::read(&path).ok().as_deref() == Some(expected) {
+                matches.push(path);
+            }
+        }
     }
 }

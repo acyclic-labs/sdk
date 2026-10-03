@@ -42,6 +42,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #maximumLineBytes: number;
   readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
   readonly #cancelled = new Set<string>();
+  readonly #cancelControls = new Map<string, string>();
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
 
@@ -163,11 +164,18 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     const requestId = (value as { request_id: string }).request_id;
     const pending = this.#pending.get(requestId);
     if (pending === undefined) {
+      const cancelledRequestId = this.#cancelControls.get(requestId);
+      if (cancelledRequestId !== undefined) {
+        this.#cancelControls.delete(requestId);
+        this.#onDiagnostic({ kind: "cancelled_response", requestId: cancelledRequestId });
+        return;
+      }
       if (this.#cancelled.delete(requestId)) {
         this.#onDiagnostic({ kind: "cancelled_response", requestId });
         return;
       }
       this.#onDiagnostic({ kind: "unmatched_response", requestId });
+      this.#finish(new GraphCoderError("transport", `bridge emitted an unmatched response id ${requestId}`));
       return;
     }
     this.#pending.delete(requestId);
@@ -187,6 +195,8 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   }
 
   #writeCancelControl(requestId: string, request: GraphCoderWireRequest): void {
+    this.#cancelControls.set(request.request_id, requestId);
+    while (this.#cancelControls.size > 4_096) this.#cancelControls.delete(this.#cancelControls.keys().next().value!);
     let line: string;
     try { line = `${JSON.stringify(request)}\n`; }
     catch (error) {

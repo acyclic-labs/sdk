@@ -112,6 +112,11 @@ second merge path; the injected transport remains the LocalSwarm/Harness
 owner. Requests are processed concurrently and correlated by `request_id`,
 so a host can keep cancellation and recovery responsive while a turn runs.
 
+The installed `graphcoder-native` command is an explicit launcher for a
+packaged native runtime. Set `GRAPHCODER_RUNTIME` to the installed executable
+and pass `--root` plus an explicit `--model-fixture`; the launcher starts it
+with an empty environment and inherited standard streams.
+
 Node hosts that explicitly own a local runtime executable can use
 `@acyclic-labs/graphcoder/node`'s `JsonLineGraphCoderBridge`. It correlates
 concurrent requests, rejects pending requests on process errors or EOF, bounds

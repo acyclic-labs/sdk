@@ -6,7 +6,8 @@
   "type": "module",
   "files": ["dist", "README.md"],
   "bin": {
-    "graphcoder": "dist/cli.js"
+    "graphcoder": "dist/cli.js",
+    "graphcoder-native": "dist/native-cli.js"
   },
   "exports": {
     ".": {
@@ -32,6 +33,10 @@
     "./node-dispatcher": {
       "types": "./dist/node-dispatcher.d.ts",
       "default": "./dist/node-dispatcher.js"
+    },
+    "./native-cli": {
+      "types": "./dist/native-cli.d.ts",
+      "default": "./dist/native-cli.js"
     }
   },
   "scripts": {

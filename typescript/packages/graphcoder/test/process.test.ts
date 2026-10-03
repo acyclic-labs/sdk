@@ -79,4 +79,16 @@ describe("JSON-lines process bridge", () => {
     const oversized = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(512) + '\\n')"], env: env(), maximumLineBytes: 256 });
     await expect(oversized.request(request("oversized"))).rejects.toMatchObject({ code: "transport" });
   });
+
+  test("rejects every pending call when an otherwise valid response has no matching request", async () => {
+    const diagnostics: GraphCoderProcessDiagnostic[] = [];
+    const bridge = new JsonLineGraphCoderBridge({
+      executable: process.execPath,
+      args: ["-e", "process.stdout.write(JSON.stringify({ request_id: 'wrong', ok: true, result: {} }) + '\\n')"],
+      env: env(),
+      onDiagnostic: event => diagnostics.push(event),
+    });
+    await expect(bridge.request(request("expected"))).rejects.toMatchObject({ code: "transport" });
+    expect(diagnostics).toContainEqual({ kind: "unmatched_response", requestId: "wrong" });
+  });
 });
