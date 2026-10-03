@@ -1,7 +1,7 @@
 //! Durable local Harness composition using public Stream and Filesystem providers.
 use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
 use crate::{
-    AgentId, ConversationId, Error, OperationId, Result,
+    AgentId, ConversationId, Error, OperationId, Result, SessionId,
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
@@ -11,7 +11,8 @@ use crate::{
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
         ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt, ExecutionReceiptKey,
-        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
+        ExecutionReceiptRecord, ExecutionReceiptStore, ExecutionResolutionCapability,
+        NativeExecutionProvider,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -65,6 +66,8 @@ pub struct FilesystemExecutionReceiptStore<A, O> {
     volume: VolumeRef,
     read: ContentGrant,
     write: ContentGrant,
+    session_id: SessionId,
+    resolution_token: [u8; 32],
     maximum_bytes: u64,
 }
 
@@ -78,6 +81,8 @@ where
         stream: StreamClient<LocalStream>,
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
+        session_id: SessionId,
+        resolution: &ExecutionResolutionCapability,
         read: ContentGrant,
         write: ContentGrant,
         maximum_bytes: u64,
@@ -92,8 +97,19 @@ where
         }
         write.require(&volume, VolumeOperation::Write)?;
         read.require(&volume, VolumeOperation::Read)?;
+        let expected_resolution = ExecutionResolutionCapability::issue(session_id, &volume)?;
+        if resolution != &expected_resolution {
+            return Err(Error::Unauthorized(
+                "execution receipt resolver is not bound to this session and volume".into(),
+            ));
+        }
+        let stream_name = format!(
+            "{EXECUTION_RECEIPT_STREAM}/{}/{}",
+            volume.storage_name()?,
+            session_id
+        );
         let stream = stream
-            .stream(EXECUTION_RECEIPT_STREAM)
+            .stream(stream_name)
             .map_err(|error| Error::Storage(error.to_string()))?;
         Ok(Self {
             stream,
@@ -101,6 +117,8 @@ where
             volume,
             read,
             write,
+            session_id,
+            resolution_token: *resolution.token(),
             maximum_bytes: maximum_bytes.min(EXECUTION_RECEIPT_MAX_BYTES),
         })
     }
@@ -182,6 +200,21 @@ where
         Ok(())
     }
 
+    fn validate_result_ref(&self, key: &ExecutionReceiptKey, result: &FileRef) -> Result<()> {
+        result.validate()?;
+        if result.volume() != &self.volume
+            || result.descriptor().media_type() != "application/json"
+            || !result
+                .path()
+                .starts_with(&format!(".system/execution/{}/", key.attempt_id))
+        {
+            return Err(Error::Unauthorized(
+                "execution receipt result is outside its host-owned attempt path".into(),
+            ));
+        }
+        Ok(())
+    }
+
     async fn append_at_tail(&self, tail: u64, event: &ExecutionReceiptEvent) -> Result<bool> {
         let bytes = crate::contract::canonical_json_bytes(event)?;
         match self
@@ -198,8 +231,14 @@ where
     /// Lists claims that remain unresolved after a provider restart.
     pub async fn pending_claims(
         &self,
+        resolution: &ExecutionResolutionCapability,
         resolver: &ContentGrant,
     ) -> Result<Vec<(ExecutionReceiptKey, ExecutionClaimHandle)>> {
+        if !resolution.matches(self.session_id, &self.resolution_token) {
+            return Err(Error::Unauthorized(
+                "execution receipt resolver is not authenticated for this session".into(),
+            ));
+        }
         resolver.require(&self.volume, VolumeOperation::Write)?;
         let (_, events) = self.events().await?;
         let mut pending: Vec<(ExecutionReceiptKey, ExecutionClaimHandle)> = Vec::new();
@@ -232,10 +271,16 @@ where
     pub async fn resolve_unknown(
         &self,
         key: &ExecutionReceiptKey,
+        resolution: &ExecutionResolutionCapability,
         resolver: &ContentGrant,
         handle: &ExecutionClaimHandle,
         reason: impl Into<String>,
     ) -> Result<FileRef> {
+        if !resolution.matches(self.session_id, &self.resolution_token) {
+            return Err(Error::Unauthorized(
+                "execution receipt resolver is not authenticated for this session".into(),
+            ));
+        }
         resolver.require(&self.volume, VolumeOperation::Write)?;
         if !handle.is_operator() {
             return Err(Error::Unauthorized(
@@ -269,6 +314,7 @@ where
                     result,
                     ..
                 } if candidate == key => {
+                    self.validate_result_ref(candidate, result)?;
                     let bytes = self
                         .host
                         .read_content(result, &self.read, self.maximum_bytes)
@@ -494,6 +540,8 @@ struct SessionDescriptor {
     conversation: Authority,
     private_volume: VolumeRef,
     signing_key: [u8; 32],
+    #[serde(default)]
+    session_id: Option<SessionId>,
     model: Model,
     limits: Limits,
 }
@@ -515,11 +563,30 @@ impl SessionDescriptor {
                 VolumeOwner::Agent(agent),
             )?,
             signing_key: *blake3::hash(&OperationId::new().into_bytes()).as_bytes(),
+            session_id: Some(SessionId::new()),
             model,
             limits,
         };
         Ok(descriptor)
     }
+}
+
+fn descriptor_session_id(descriptor: &SessionDescriptor) -> Result<SessionId> {
+    let session_id = if let Some(session_id) = descriptor.session_id {
+        session_id
+    } else {
+        let mut input = Vec::with_capacity(40);
+        input.extend_from_slice(b"acyclic:harness:legacy-session:v1");
+        input.extend_from_slice(&descriptor.signing_key);
+        let bytes: [u8; 16] = blake3::hash(&input).as_bytes()[..16]
+            .try_into()
+            .map_err(|_| Error::Invalid("legacy session identity has invalid length".into()))?;
+        SessionId::from_bytes(bytes)
+    };
+    if session_id.into_bytes() == [0; 16] {
+        return Err(Error::Invalid("session identity cannot be zero".into()));
+    }
+    Ok(session_id)
 }
 
 fn validate_descriptor(
@@ -806,6 +873,7 @@ impl PersistentLocalHarness {
         let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
         validate_descriptor(&descriptor, &model, limits)?;
+        let session_id = descriptor_session_id(&descriptor)?;
         let fs = LocalFs::local(LocalOptions::new(root.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -819,7 +887,7 @@ impl PersistentLocalHarness {
             descriptor.signing_key,
             descriptor.conversation.clone(),
         );
-        let storage = DurableHarnessStorage::from_providers(
+        let storage = DurableHarnessStorage::from_providers_with_session(
             descriptor.agent,
             limits.file_bytes,
             host.clone(),
@@ -827,6 +895,7 @@ impl PersistentLocalHarness {
             descriptor.private_volume,
             descriptor.conversation,
             issuer,
+            session_id,
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
@@ -938,14 +1007,23 @@ impl PersistentLocalHarness {
     ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>>
     {
         let (host, stream, read, write, maximum_bytes) = self.storage.execution_binding();
+        let resolution = self.execution_resolution_capability()?;
         Ok(Arc::new(FilesystemExecutionReceiptStore::new(
             stream,
             host,
             self.storage.volume().clone(),
+            self.storage.session_id(),
+            &resolution,
             read,
             write,
             maximum_bytes,
         )?))
+    }
+
+    /// Returns the host application's separately authenticated authority for
+    /// resolving uncertain process attempts after review.
+    pub fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
+        ExecutionResolutionCapability::issue(self.storage.session_id(), self.storage.volume())
     }
 
     /// Composes the production native provider around this session's
@@ -1139,12 +1217,14 @@ mod tests {
             let store = session.execution_receipt_store()?;
             assert_eq!(store.claim(&key).await?, ExecutionClaim::Pending);
             let (_, _, _, resolver, _) = session.storage().execution_binding();
-            let pending = store.pending_claims(&resolver).await?;
+            let resolution = session.execution_resolution_capability()?;
+            let pending = store.pending_claims(&resolution, &resolver).await?;
             assert_eq!(pending.len(), 1);
             let (_, operator) = pending.into_iter().next().unwrap();
             store
                 .resolve_unknown(
                     &key,
+                    &resolution,
                     &resolver,
                     &operator,
                     "operator resolved after restart",

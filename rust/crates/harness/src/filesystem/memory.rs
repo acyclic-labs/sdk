@@ -841,9 +841,48 @@ where
         issuer: AuthorityIssuer,
         inherited_reads: Capabilities,
     ) -> Result<Self> {
+        let session_id = derive_session_id(&volume)?;
+        Self::from_providers_with_session_and_reads(
+            agent, maximum_file_bytes, host, stream, volume,
+            conversation, issuer, inherited_reads, session_id,
+        ).await
+    }
+
+    /// Composes providers with an explicit durable session identity.
+    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
+    pub async fn from_providers_with_session(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        session_id: SessionId,
+    ) -> Result<Self> {
+        Self::from_providers_with_session_and_reads(
+            agent, maximum_file_bytes, host, stream, volume,
+            conversation, issuer, Capabilities::new(std::iter::empty::<String>()), session_id,
+        ).await
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
+    async fn from_providers_with_session_and_reads(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        inherited_reads: Capabilities,
+        session_id: SessionId,
+    ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
-        let session_id = derive_session_id(&volume)?;
+        if session_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("session identity cannot be zero".into()));
+        }
         let read_capability = volume.capability(VolumeOperation::Read)?;
         let write_capability = volume.capability(VolumeOperation::Write)?;
         let scope = issuer.root_for_agent(
