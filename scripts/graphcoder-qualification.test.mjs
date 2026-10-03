@@ -112,6 +112,31 @@ test("final package suites must identify the installed artifact used by their ev
   }
 });
 
+test("suite execution cannot precede the build of its referenced artifact", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
+  try {
+    const suite = suiteFixture(directory);
+    const artifactPath = join(directory, "built-package.tgz");
+    const bytes = "built package\n";
+    writeFileSync(artifactPath, bytes);
+    suite.artifact_paths = [artifactPath];
+    const receipt = makePendingReceipt();
+    receipt.suites = [suite];
+    receipt.artifacts = [{
+      path: artifactPath,
+      sha256: digest(bytes),
+      source_commit: receipt.source.commit,
+      source_tree: execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
+      built_at: "2026-10-03T00:00:02.000Z",
+      build_id: "build-after-suite",
+      fresh: true,
+    }];
+    assert.throws(() => validateReceipt(matrix, receipt), /started before artifact .* was built/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("artifact provenance is bound to the qualified source instead of a freshness boolean", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-artifact-"));
   try {
