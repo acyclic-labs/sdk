@@ -1136,6 +1136,122 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Default)]
+    struct RunsService {
+        state: Arc<std::sync::Mutex<RunFixtureState>>,
+    }
+
+    #[derive(Default)]
+    struct RunFixtureState {
+        run_id: Vec<u8>,
+        context: Vec<u8>,
+        cancelled: bool,
+    }
+
+    fn run_view(state: &RunFixtureState) -> wire::RunView {
+        wire::RunView {
+            run_id: state.run_id.clone(),
+            input: state.context.clone(),
+            model: "fixture-model".to_owned(),
+            last_sequence: if state.cancelled { 1 } else { 0 },
+            cancellation_requested: state.cancelled,
+            result: state.cancelled.then(|| wire::RunResult {
+                output: Vec::new(),
+                context: None,
+                terminal: wire::RunTerminal::Cancelled.into(),
+                receipt: None,
+            }),
+        }
+    }
+
+    #[tonic::async_trait]
+    impl wire::runs_service_server::RunsService for RunsService {
+        async fn generate(
+            &self,
+            request: Request<wire::GenerateRunRequest>,
+        ) -> Result<Response<wire::GenerateRunResponse>, Status> {
+            let request = request.into_inner();
+            let identity = request
+                .identity
+                .ok_or_else(|| Status::invalid_argument("missing request identity"))?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            state.run_id = identity.request_id;
+            state.context = request.context;
+            state.cancelled = false;
+            Ok(Response::new(wire::GenerateRunResponse {
+                run: Some(run_view(&state)),
+            }))
+        }
+
+        async fn inspect(
+            &self,
+            request: Request<wire::InspectRunRequest>,
+        ) -> Result<Response<wire::RunView>, Status> {
+            let request = request.into_inner();
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id {
+                return Err(Status::not_found("unknown run"));
+            }
+            Ok(Response::new(run_view(&state)))
+        }
+
+        type WatchStream = std::pin::Pin<
+            Box<dyn tokio_stream::Stream<Item = Result<wire::RunEvent, Status>> + Send>,
+        >;
+
+        async fn watch(
+            &self,
+            request: Request<wire::WatchRunRequest>,
+        ) -> Result<Response<Self::WatchStream>, Status> {
+            let request = request.into_inner();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id || request.from_sequence != 0 {
+                return Err(Status::invalid_argument("unexpected run cursor"));
+            }
+            state.cancelled = true;
+            let events = [
+                Ok(wire::RunEvent {
+                    sequence: 0,
+                    event: Some(wire::run_event::Event::Progress(wire::RunProgress {
+                        kind: "cancellation-requested".to_owned(),
+                    })),
+                }),
+                Ok(wire::RunEvent {
+                    sequence: 1,
+                    event: Some(wire::run_event::Event::Terminal(
+                        wire::RunTerminal::Cancelled.into(),
+                    )),
+                }),
+            ];
+            Ok(Response::new(Box::pin(tokio_stream::iter(events))))
+        }
+
+        async fn cancel(
+            &self,
+            request: Request<wire::InspectRunRequest>,
+        ) -> Result<Response<wire::RunView>, Status> {
+            let request = request.into_inner();
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| Status::internal("run fixture lock poisoned"))?;
+            if request.run_id != state.run_id {
+                return Err(Status::not_found("unknown run"));
+            }
+            state.cancelled = true;
+            Ok(Response::new(run_view(&state)))
+        }
+    }
+
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {
             candidates: vec![wire::EvaluationArtifact {
@@ -1580,6 +1696,79 @@ mod tests {
         assert_eq!(view.revision, vec![1; 32]);
         assert_eq!(view.model, "fixture-model");
         assert_eq!(view.lineage, vec![3; 32]);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_run_watch_cancel_and_resume_preserve_terminal_identity()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::runs_service_server::RunsServiceServer::new(
+                    RunsService::default(),
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        let revision = [9; 32];
+        let context = Context {
+            client: client.clone(),
+            revision,
+        };
+        let run = context
+            .generate("bounded watch input", 64)
+            .seed(7)
+            .send()
+            .await?;
+        let mut events = run.watch(0).await?;
+        assert_eq!(
+            events.next().await?.and_then(|event| event.event),
+            Some(wire::run_event::Event::Progress(wire::RunProgress {
+                kind: "cancellation-requested".to_owned(),
+            }))
+        );
+        assert_eq!(
+            events.next().await?.and_then(|event| event.event),
+            Some(wire::run_event::Event::Terminal(
+                wire::RunTerminal::Cancelled.into(),
+            ))
+        );
+        assert!(events.next().await?.is_none());
+
+        let cancelled = run.cancel().await?;
+        assert_eq!(cancelled.run_id, run.id().to_vec());
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(
+            wire::RunTerminal::try_from(
+                cancelled
+                    .result
+                    .as_ref()
+                    .ok_or("missing run result")?
+                    .terminal,
+            )?,
+            wire::RunTerminal::Cancelled
+        );
+        let mut resumed = run.watch(2).await?;
+        assert!(resumed.next().await?.is_none());
 
         let _ = shutdown_tx.send(());
         server.await??;
