@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://acyclic.dev/schemas/graphcoder/qualification-receipt.v1.json",
+  "title": "Harness-first GraphCoder qualification receipt",
+  "type": "object",
+  "required": ["protocol", "matrix", "source", "suites", "cases", "artifacts", "gate"],
+  "properties": {
+    "protocol": {"const": "acyclic.graphcoder.qualification-receipt.v1"},
+    "matrix": {"type":"object","required":["path","sha256"],"properties":{"path":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":false},
+    "source": {"type":"object","required":["commit","worktree","branch","base_commit","clean","merged"],"properties":{"commit":{"type":"string","pattern":"^[0-9a-f]{7,64}$"},"worktree":{"type":"string","minLength":1},"branch":{"type":"string","minLength":1},"base_commit":{"type":"string","pattern":"^[0-9a-f]{40}$"},"clean":{"type":"boolean"},"merged":{"type":"boolean"}},"additionalProperties":true},
+    "suites": {"type":"array","items":{"type":"object","required":["id","descriptor","platform","execution_kind","status","transcript_sha256"],"properties":{"id":{"type":"string","minLength":1},"descriptor":{"type":"string","minLength":1},"platform":{"type":"string","minLength":1},"execution_kind":{"enum":["native","compile","mock","pty","package","wasm"]},"status":{"enum":["passed","failed","skipped","flaky"]},"transcript_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"additionalProperties":true}},
+    "cases": {"type":"array","items":{"type":"object","required":["id","status","evidence"],"properties":{"id":{"type":"string","minLength":1},"status":{"enum":["passed","pending","failed","skipped","flaky","not-run"]},"evidence":{"type":"array","items":{"type":"object","required":["suite","descriptor_sha256","execution_kind"],"properties":{"suite":{"type":"string","minLength":1},"descriptor_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"execution_kind":{"enum":["native","compile","mock","pty","package","wasm"]},"artifact_sha256":{"type":"array","items":{"type":"string","pattern":"^[0-9a-f]{64}$"}}},"additionalProperties":true}}},"additionalProperties":true}},
+    "artifacts": {"type":"array","items":{"type":"object","required":["path","sha256","source_commit","fresh"],"properties":{"path":{"type":"string","minLength":1},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},"source_commit":{"type":"string","pattern":"^[0-9a-f]{7,64}$"},"fresh":{"type":"boolean"}},"additionalProperties":true}},
+    "gate": {"type":"object","required":["final","failed","skipped","flaky","missing"],"properties":{"final":{"type":"boolean"},"failed":{"type":"integer","minimum":0},"skipped":{"type":"integer","minimum":0},"flaky":{"type":"integer","minimum":0},"missing":{"type":"integer","minimum":0}},"additionalProperties":false}
+  },
+  "additionalProperties": false
+}
