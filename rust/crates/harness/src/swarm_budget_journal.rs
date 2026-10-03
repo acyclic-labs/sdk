@@ -11,7 +11,8 @@ use crate::{
     runtime::TaskAdmissionRecord,
     swarm_budget::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
-        SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
+        SwarmBudgetUsage, SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest,
+        SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptCursor,
         VerifiedForkPublication, VerifiedSwarmUsageReceipt,
     },
@@ -186,6 +187,29 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_usage_cursor()
     }
 
+    /// Returns the root's current cumulative ceiling after descendant
+    /// reservations and measured descendant consumption are accounted for.
+    pub fn root_resource_limits(&self) -> Result<SwarmResourceRequest> {
+        self.budget.root_resource_limits()
+    }
+
+    /// Creates the provider guard that root model work must use before it
+    /// consumes another session resource slice.
+    pub fn root_usage_limiter(
+        &self,
+    ) -> Result<crate::swarm_budget::SwarmUsageLimiter> {
+        self.budget.root_usage_limiter()
+    }
+
+    /// Binds a provider measurement source to the canonical root dispatch
+    /// lease and current durable root cursor.
+    pub fn root_usage_receipt_issuer<S: crate::swarm_budget::SwarmUsageSource>(
+        &self,
+        source: S,
+    ) -> Result<crate::swarm_budget::SwarmUsageReceiptIssuer<S>> {
+        self.budget.root_usage_receipt_issuer(source)
+    }
+
     /// Reloads all committed records from the provider's current tail.
     pub async fn refresh(&mut self) -> Result<()> {
         let events = read_events(&self.stream).await?;
@@ -343,6 +367,40 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 Err(_) => Err(Error::Indeterminate(operation_id)),
             },
         }
+    }
+
+    /// Activates a child and constructs its complete provider dispatch
+    /// boundary before invoking model work.
+    ///
+    /// The closure receives the admitted token, a limiter initialized from
+    /// the reservation ceiling, and a measurement issuer bound to the same
+    /// provider dispatch identity. It should call `issue_usage_receipt` and
+    /// persist the returned receipt through this journal before completion.
+    pub async fn dispatch_after_publication_with_usage<S, F, Fut, T>(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        publication: VerifiedForkPublication,
+        source: S,
+        dispatch: F,
+    ) -> Result<T>
+    where
+        S: crate::swarm_budget::SwarmUsageSource,
+        F: FnOnce(SwarmDispatchContext<S>) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        self.dispatch_after_publication(
+            operation_id,
+            owner,
+            dispatch_id,
+            publication,
+            move |token| async move {
+                let context = token.usage_context(source)?;
+                dispatch(context).await
+            },
+        )
+        .await
     }
 
     /// Persists cumulative usage without refunding consumed resources.
