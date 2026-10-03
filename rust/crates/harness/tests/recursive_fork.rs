@@ -2243,13 +2243,14 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     let request = RootWritebackRequest::new(approval, root_scope.clone());
     let root_before_swapped_plan = host.resolve(&root_head.workspace).await?;
     let swapped_plan_result = root_facade
-        .apply_project_merge_for_child_with_notice(
+        .apply_root_writeback_plan_for_child_with_notice(
+            &request,
             host.as_ref(),
             &root_reducer,
             &child_b_authority,
             &child_b_project,
             &root_plan,
-            OperationId::from_bytes([200; 16]),
+            BTreeMap::new(),
             &root_notice,
         )
         .await;
