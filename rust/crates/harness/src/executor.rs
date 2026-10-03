@@ -122,6 +122,15 @@ pub enum ExecutionEvent {
         /// Pinned, private JSON file containing one observed model event.
         event: FileRef,
     },
+    /// A call was refused before admission; no executor effect was dispatched.
+    ToolAdmissionRejected {
+        /// Zero-based executor step.
+        step: u32,
+        /// Immutable rejected model invocation.
+        invocation: FileRef,
+        /// Stable reason without provider exception text or credentials.
+        reason: ToolRejectionKind,
+    },
     /// Tool dispatch is about to begin.
     ToolStarted {
         /// Zero-based executor step.
@@ -151,6 +160,22 @@ pub enum ExecutionEvent {
         /// Bounded classification; raw provider errors never enter the journal.
         reason: ToolFailureKind,
     },
+}
+
+/// Admission refusals distinct from failures of dispatched effects.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolRejectionKind {
+    /// No pinned registered tool exists under this name.
+    UnknownTool,
+    /// Caller lacks the tool capability.
+    Unauthorized,
+    /// Resource-specific authorization failed.
+    ResourceDenied,
+    /// Arguments do not match the pinned schema.
+    InvalidArguments,
+    /// The pinned policy refused execution.
+    PolicyDenied,
 }
 
 /// Stable, non-secret terminal tool failure classes.
@@ -512,12 +537,15 @@ impl StockExecutor {
         } else if started.is_some() {
             let Some(mut continuation) = self
                 .provider
-                .reconcile(ModelAttempt {
-                    operation_id: input.operation_id,
-                    step,
-                    request_digest,
-                    observed: replayed_model.clone(),
-                })
+                .reconcile_admitted(
+                    request.clone(),
+                    ModelAttempt {
+                        operation_id: input.operation_id,
+                        step,
+                        request_digest,
+                        observed: replayed_model.clone(),
+                    },
+                )
                 .await?
             else {
                 return Err(Error::Indeterminate(input.operation_id));
@@ -598,6 +626,65 @@ impl StockExecutor {
         Ok(model_events)
     }
 
+    async fn record_tool_rejection(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        invocation: &ToolInvocation,
+        reason: ToolRejectionKind,
+    ) -> Result<()> {
+        let key = format!("tool:{step}:{}:rejected", invocation.call_id);
+        let reference = stage_json(journal, operation, &key, invocation).await?;
+        journal
+            .append(
+                operation,
+                key,
+                ExecutionEvent::ToolAdmissionRejected {
+                    step,
+                    invocation: reference,
+                    reason,
+                },
+            )
+            .await
+    }
+
+    async fn record_completed_batch(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        completed: &[ModelMessage],
+    ) -> Result<()> {
+        let records = journal.replay(operation).await?;
+        let request_file = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: recorded,
+                    request,
+                    ..
+                } if *recorded == step => Some(request),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
+        let mut request: ModelRequest = load_json(journal, request_file).await?;
+        request.messages.extend_from_slice(completed);
+        let boundary = crate::model_input::CompletedModelBoundary::capture(request, self.limits)?;
+        let key = format!("model:{step}:completed-batch");
+        let reference = stage_json(journal, operation, &key, &boundary).await?;
+        journal
+            .append(
+                operation,
+                key,
+                ExecutionEvent::ToolBatchCompleted {
+                    step,
+                    boundary: reference,
+                },
+            )
+            .await
+    }
+
     async fn record_tool_failure(
         &self,
         journal: &dyn ExecutionJournal,
@@ -655,10 +742,17 @@ impl StockExecutor {
     ) -> Result<()> {
         let records = journal.replay(operation_id).await?;
         invocation.validate()?;
-        let tool = self
-            .tools
-            .get(&invocation.name)
-            .ok_or_else(|| Error::NotFound(format!("tool {}", invocation.name)))?;
+        let Some(tool) = self.tools.get(&invocation.name) else {
+            self.record_tool_rejection(
+                journal,
+                operation_id,
+                step,
+                &invocation,
+                ToolRejectionKind::UnknownTool,
+            )
+            .await?;
+            return Err(Error::NotFound(format!("tool {}", invocation.name)));
+        };
         // Authorization precedes argument validation, and must stay that way. A validation error
         // describes the tool's pinned input schema, so answering one for a tool the caller was
         // never granted would let a model probe the contract of an ungranted tool by naming it
@@ -666,25 +760,47 @@ impl StockExecutor {
         // whatever its arguments look like.
         let capability = format!("tool:call:{}", tool.definition.name);
         if !self.tool_scope.grants().contains(&capability) {
+            self.record_tool_rejection(
+                journal,
+                operation_id,
+                step,
+                &invocation,
+                ToolRejectionKind::Unauthorized,
+            )
+            .await?;
             return Err(Error::Unauthorized(format!("scope lacks {capability}")));
         }
-        tool.executor
-            .authorize(Some(&self.tool_scope), &invocation)?;
+        if let Err(error) = tool.executor.authorize(Some(&self.tool_scope), &invocation) {
+            self.record_tool_rejection(
+                journal,
+                operation_id,
+                step,
+                &invocation,
+                ToolRejectionKind::ResourceDenied,
+            )
+            .await?;
+            return Err(error);
+        }
         // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
         // hand the validation message back as this call's own result so the next step can fix
         // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
         // the replacement agent — fresh context, same model, same schema — repeats it exactly.
         //
-        // Nothing is journaled. The call was never admitted: no `ToolStarted`, no executor
-        // dispatch, no side effect to reconcile. Rejection is a pure function of the pinned schema
-        // and the arguments, both already recorded by the model step that produced the call, so a
-        // replay re-derives the identical message. `ToolFailureKind` is deliberately not used —
-        // every one of its variants describes an *admitted* call that then failed.
+        // Admission refusals are durable, separately from effect dispatch.
+        // The model-visible validation message is derived from its pinned schema.
         if let Err(error) = validate_value(
             &tool.definition.input_schema,
             &invocation.arguments,
             "tool input",
         ) {
+            self.record_tool_rejection(
+                journal,
+                operation_id,
+                step,
+                &invocation,
+                ToolRejectionKind::InvalidArguments,
+            )
+            .await?;
             let message = ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -759,6 +875,14 @@ impl StockExecutor {
                     match decision {
                         ToolPolicyDecision::Allow => {}
                         ToolPolicyDecision::Deny { reason } => {
+                            self.record_tool_rejection(
+                                journal,
+                                operation_id,
+                                step,
+                                &invocation,
+                                ToolRejectionKind::PolicyDenied,
+                            )
+                            .await?;
                             return Err(Error::Unauthorized(reason));
                         }
                         ToolPolicyDecision::RequireApproval { prompt } => {
@@ -1128,7 +1252,13 @@ impl Executor for StockExecutor {
                 if text.len() > step_text_start {
                     prior_messages.push(ModelMessage {
                         role: ModelRole::Assistant,
-                        content: ModelContent::Text(text[step_text_start..].to_owned()),
+                        content: ModelContent::Text(
+                            text.get(step_text_start..)
+                                .ok_or_else(|| {
+                                    Error::Storage("assistant text boundary is invalid".into())
+                                })?
+                                .to_owned(),
+                        ),
                     });
                 }
                 for invocation in calls {
@@ -1151,37 +1281,10 @@ impl Executor for StockExecutor {
                     )
                     .await?;
                 }
-                let records = journal.replay(input.operation_id).await?;
-                let request_file = records
-                    .iter()
-                    .find_map(|record| match &record.event {
-                        ExecutionEvent::ModelInputPrepared {
-                            step: recorded,
-                            request,
-                            ..
-                        } if *recorded == step => Some(request),
-                        _ => None,
-                    })
-                    .ok_or_else(|| {
-                        Error::Storage("completed batch has no pinned request".into())
-                    })?;
-                let mut request: ModelRequest = load_json(journal, request_file).await?;
-                request
-                    .messages
-                    .extend_from_slice(&prior_messages[batch_start..]);
-                let boundary =
-                    crate::model_input::CompletedModelBoundary::capture(request, self.limits)?;
-                let key = format!("model:{step}:completed-batch");
-                let reference = stage_json(journal, input.operation_id, &key, &boundary).await?;
-                journal
-                    .append(
-                        input.operation_id,
-                        key,
-                        ExecutionEvent::ToolBatchCompleted {
-                            step,
-                            boundary: reference,
-                        },
-                    )
+                let completed = prior_messages
+                    .get(batch_start..)
+                    .ok_or_else(|| Error::Storage("completed batch range is invalid".into()))?;
+                self.record_completed_batch(journal, input.operation_id, step, completed)
                     .await?;
             }
             Err(Error::Conflict("executor step limit reached".into()))
@@ -1957,6 +2060,19 @@ mod tests {
         // The turn survives the rejected call and finishes on the corrected one.
         let output = executor.execute(input, &journal).await?;
         assert_eq!(output.text, "done");
+        assert!(
+            journal
+                .replay(OperationId::from_bytes([79; 16]))
+                .await?
+                .iter()
+                .any(|record| matches!(
+                    record.event,
+                    ExecutionEvent::ToolAdmissionRejected {
+                        reason: ToolRejectionKind::InvalidArguments,
+                        ..
+                    }
+                ))
+        );
 
         // The rejected call was never admitted, so only the corrected one reached the executor.
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 1);
@@ -2018,7 +2134,7 @@ mod tests {
         })?;
         let executor = StockExecutor::new(
             Model::new("example", "model", "1", Value::Null)?,
-            model,
+            model.clone(),
             ContextPipeline::default(),
             tools,
         )
@@ -2037,7 +2153,7 @@ mod tests {
             selected_context: None,
             max_steps: 4,
         };
-        let outcome = executor.execute(input, &journal).await;
+        let outcome = executor.execute(input.clone(), &journal).await;
         assert!(
             matches!(&outcome, Err(Error::Unauthorized(message)) if message.contains("example.echo")),
             "expected an unauthorized refusal, got {outcome:?}"
@@ -2048,6 +2164,26 @@ mod tests {
             !rendered.contains("additionalProperties") && !rendered.contains("failed validation"),
             "schema detail leaked through the refusal: {rendered}"
         );
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        let records = journal.replay(input.operation_id).await?;
+        assert!(records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ToolAdmissionRejected {
+                reason: ToolRejectionKind::Unauthorized,
+                ..
+            }
+        )));
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::ToolStarted { .. }))
+        );
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(records, journal.replay(input.operation_id).await?);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
         Ok(())
     }

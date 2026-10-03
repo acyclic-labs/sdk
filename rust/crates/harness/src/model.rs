@@ -321,6 +321,23 @@ pub trait ModelProvider: Send + Sync {
     /// Starts one request and yields ordered model events.
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
 
+    /// Reconciles only after verifying the original complete request.
+    fn reconcile_admitted<'a>(
+        &'a self,
+        request: ModelRequest,
+        attempt: ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async move {
+            self.admit(&request)?;
+            if crate::contract::canonical_json_digest(&request)? != attempt.request_digest {
+                return Err(Error::Conflict(
+                    "reconciliation request digest changed".into(),
+                ));
+            }
+            self.reconcile(attempt).await
+        })
+    }
+
     /// Continues or reconciles an interrupted run without starting another model request.
     fn reconcile<'a>(
         &'a self,

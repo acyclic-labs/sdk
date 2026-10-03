@@ -30,6 +30,47 @@ struct SessionDescriptor {
     limits: Limits,
 }
 
+impl SessionDescriptor {
+    fn fresh(model: Model, limits: Limits) -> Result<Self> {
+        let agent = AgentId::new();
+        let descriptor = Self {
+            version: 1,
+            agent,
+            conversation: Authority {
+                kind: AggregateKind::Conversation,
+                id: ConversationId::new().to_string(),
+            },
+            private_volume: VolumeRef::new(
+                ProviderRef::new("local", "filesystem", "2")?,
+                OperationId::new().to_string(),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(agent),
+            )?,
+            signing_key: *blake3::hash(&OperationId::new().into_bytes()).as_bytes(),
+            model,
+            limits,
+        };
+        Ok(descriptor)
+    }
+}
+
+fn validate_descriptor(
+    descriptor: &SessionDescriptor,
+    model: &Model,
+    limits: Limits,
+) -> Result<()> {
+    if descriptor.version != 1
+        || &descriptor.model != model
+        || crate::contract::canonical_json_digest(&descriptor.limits)?
+            != crate::contract::canonical_json_digest(&limits)?
+    {
+        return Err(Error::Conflict(
+            "local session composition differs from its pinned descriptor".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Ready-to-run, reopenable local agent with pinned composition.
 pub struct PersistentLocalHarness {
     storage: DurableHarnessStorage,
@@ -64,24 +105,7 @@ impl PersistentLocalHarness {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if missing {
-            let agent = AgentId::new();
-            let descriptor = SessionDescriptor {
-                version: 1,
-                agent,
-                conversation: Authority {
-                    kind: AggregateKind::Conversation,
-                    id: ConversationId::new().to_string(),
-                },
-                private_volume: VolumeRef::new(
-                    ProviderRef::new("local", "filesystem", "2")?,
-                    OperationId::new().to_string(),
-                    VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(agent),
-                )?,
-                signing_key: *blake3::hash(&OperationId::new().into_bytes()).as_bytes(),
-                model: model.clone(),
-                limits,
-            };
+            let descriptor = SessionDescriptor::fresh(model.clone(), limits)?;
             match metadata
                 .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
                 .await
@@ -106,15 +130,7 @@ impl PersistentLocalHarness {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        if descriptor.version != 1
-            || descriptor.model != model
-            || crate::contract::canonical_json_digest(&descriptor.limits)?
-                != crate::contract::canonical_json_digest(&limits)?
-        {
-            return Err(Error::Conflict(
-                "local session composition differs from its pinned descriptor".into(),
-            ));
-        }
+        validate_descriptor(&descriptor, &model, limits)?;
         let fs = LocalFs::local(LocalOptions::new(root.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;

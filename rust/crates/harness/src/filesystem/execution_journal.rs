@@ -269,7 +269,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             } => vec![manifest, request],
             ExecutionEvent::ToolBatchCompleted { boundary, .. } => vec![boundary],
             ExecutionEvent::Model { event, .. } => vec![event],
-            ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
+            ExecutionEvent::ToolStarted { invocation, .. }
+            | ExecutionEvent::ToolAdmissionRejected { invocation, .. } => vec![invocation],
             ExecutionEvent::ToolCompleted {
                 result, projection, ..
             } => vec![result, projection],

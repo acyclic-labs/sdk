@@ -36,3 +36,17 @@ Command: cargo test -p acyclic-harness --locked --features filesystem-local
 The journal regression's former four-record assertion was updated to assert the
 fifth input-admission record and verify the persisted request digest. Its
 exactly-once dispatch and private-content assertions remain intact.
+
+## Recovery admission checkpoint
+
+See checkpoint-recovery.json for source and descriptor hashes and exact gates.
+Native library: 198 passed; journal integration: 6 passed; library lint: passed.
+WASM: compilation passed, runtime/serialization parity still pending.
+
+The full native Harness regression at f2fc0f4c passed 215 tests, zero ignored,
+including 1,024 recursive forks and 32 sibling forks. It predates the final
+recovery-admission/refusal changes and is not a final-source qualification claim.
+
+Recovery tests reject identity-only prefix reconciliation, corrupt request
+digests and changed inherited content. Tool refusal replay retains the same
+journal, invokes no executor and sends no additional model request.

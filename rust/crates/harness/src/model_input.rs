@@ -229,10 +229,10 @@ fn validate_exchanges(messages: &[ModelMessage]) -> Result<()> {
                     }
                     pending.insert(call_id, name);
                 }
-                ModelContentPart::ToolResult { call_id, name, .. } => {
-                    if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name) {
-                        return Err(Error::Invalid("inherited tool result is not paired".into()));
-                    }
+                ModelContentPart::ToolResult { call_id, name, .. }
+                    if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name) =>
+                {
+                    return Err(Error::Invalid("inherited tool result is not paired".into()));
                 }
                 _ => {}
             }
@@ -372,11 +372,30 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
         }
         self.provider.generate(request)
     }
-    fn reconcile<'a>(
+    fn reconcile_admitted<'a>(
         &'a self,
+        request: ModelRequest,
         attempt: crate::model::ModelAttempt,
     ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-        self.provider.reconcile(attempt)
+        Box::pin(async move {
+            self.admit(&request)?;
+            if crate::contract::canonical_json_digest(&request)? != attempt.request_digest {
+                return Err(Error::Conflict(
+                    "reconciliation request digest changed".into(),
+                ));
+            }
+            self.provider.reconcile_admitted(request, attempt).await
+        })
+    }
+    fn reconcile<'a>(
+        &'a self,
+        _: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "prefix recovery requires the verified original request".into(),
+            ))
+        })
     }
 }
 
@@ -571,7 +590,34 @@ mod tests {
         assert!(provider.admit(&child).is_ok());
         assert!(provider.generate(child.clone()).next().await.is_none());
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
+        let attempt = crate::model::ModelAttempt {
+            operation_id: crate::OperationId::new(),
+            step: 0,
+            request_digest: crate::contract::canonical_json_digest(&child)?,
+            observed: vec![],
+        };
+        assert!(provider.reconcile(attempt.clone()).await.is_err());
+        assert!(
+            provider
+                .reconcile_admitted(child.clone(), attempt.clone())
+                .await?
+                .is_none()
+        );
+        let mut corrupt_attempt = attempt.clone();
+        corrupt_attempt.request_digest = [0; 32];
+        assert!(
+            provider
+                .reconcile_admitted(child.clone(), corrupt_attempt)
+                .await
+                .is_err()
+        );
         child.messages[0] = text("changed inherited content");
+        assert!(
+            provider
+                .reconcile_admitted(child.clone(), attempt)
+                .await
+                .is_err()
+        );
         assert!(provider.admit(&child).is_err());
         assert!(provider.generate(child).next().await.unwrap().is_err());
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);

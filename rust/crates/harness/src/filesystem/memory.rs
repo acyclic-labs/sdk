@@ -53,6 +53,22 @@ fn new_memory_store(
     )))
 }
 
+fn validate_storage_owner(
+    agent: AgentId,
+    maximum_file_bytes: u64,
+    volume: &VolumeRef,
+) -> Result<()> {
+    if maximum_file_bytes == 0
+        || volume.class() != VolumeClass::AgentPrivate
+        || volume.owner() != &VolumeOwner::Agent(agent)
+    {
+        return Err(Error::Invalid(
+            "storage requires an owner-private volume".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
 pub type MemoryHarnessStorage =
@@ -678,14 +694,7 @@ where
         conversation: Authority,
         issuer: AuthorityIssuer,
     ) -> Result<Self> {
-        if maximum_file_bytes == 0
-            || volume.class() != VolumeClass::AgentPrivate
-            || volume.owner() != &VolumeOwner::Agent(agent)
-        {
-            return Err(Error::Invalid(
-                "storage requires an owner-private volume".into(),
-            ));
-        }
+        validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         let read_capability = volume.capability(VolumeOperation::Read)?;
         let write_capability = volume.capability(VolumeOperation::Write)?;

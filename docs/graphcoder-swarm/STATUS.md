@@ -19,6 +19,8 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Completed tool batches pin one boundary after all results; child context is an explicit suffix stage.
 - Production executor tests preserve inherited inputs across three child levels with real file effects.
 - Assistant text in tool-bearing responses now reaches the next model request.
+- Reconciliation verifies the original admitted request and its digest; guarded providers refuse identity-only recovery.
+- Pre-dispatch refusals are durable, scoped, non-secret observations distinct from dispatched failures.
 
 ## Verification
 - Existing Harness baseline: 176 passed.
@@ -28,6 +30,10 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Completed-batch and recursive input composition: 198 passed.
 - Existing journal E2E: 6 passed; fork-preparer recovery: 1 passed.
 - Existing native durable recursive-workspace E2E: 2 passed.
+- Full native Harness regression at f2fc0f4c: 215 passed, zero ignored.
+- Latest request-bound recovery/refusal changes: 198 library + 6 journal tests passed.
+- Native library lint gate passed; WASM compilation passed (execution not tested).
+- Source-bound checkpoint receipt: checkpoint-recovery.json.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
