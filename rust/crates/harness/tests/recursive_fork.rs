@@ -1671,6 +1671,34 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
+    let notice_write = ContentGrant::verify(
+        &parent_issuer.verifier(),
+        &parent_scope,
+        &root,
+        VolumeOperation::Write,
+    )?;
+    let notice_file = host
+        .put_content(
+            &root,
+            &notice_write,
+            "notices/wide-merge.txt",
+            b"wide merge",
+            "text/plain",
+            "wide-merge.txt",
+            1_024,
+            &IdempotencyKey::new("wide-merge-notice")?,
+        )
+        .await?;
+    let notice = ConversationMessage {
+        id: Uuid::from_bytes([108; 16]),
+        sequence: 1,
+        kind: MessageKind::Merge,
+        content: notice_file,
+        attachments: ReferencedAttachments::Inline { items: Vec::new() },
+        reply_to: None,
+        tool_call_id: None,
+        extensions: BTreeMap::new(),
+    };
     let inspected = controller.prepare_project_merge(&siblings[1]).await?;
     let conflict = controller
         .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
@@ -1736,34 +1764,6 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.generation_ref_id(inspected.target_head())?,
     )?;
     let request = RootWritebackRequest::new(approval, parent_scope.clone());
-    let notice_write = ContentGrant::verify(
-        &parent_issuer.verifier(),
-        &parent_scope,
-        &root,
-        VolumeOperation::Write,
-    )?;
-    let notice_file = host
-        .put_content(
-            &root,
-            &notice_write,
-            "notices/wide-merge.txt",
-            b"wide merge",
-            "text/plain",
-            "wide-merge.txt",
-            1_024,
-            &IdempotencyKey::new("wide-merge-notice")?,
-        )
-        .await?;
-    let notice = ConversationMessage {
-        id: Uuid::from_bytes([108; 16]),
-        sequence: 1,
-        kind: MessageKind::Merge,
-        content: notice_file,
-        attachments: ReferencedAttachments::Inline { items: Vec::new() },
-        reply_to: None,
-        tool_call_id: None,
-        extensions: BTreeMap::new(),
-    };
     let resolved = facade
         .apply_root_writeback_plan_for_child_with_notice(
             &request,
