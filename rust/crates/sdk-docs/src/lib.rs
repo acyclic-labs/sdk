@@ -363,6 +363,9 @@ pub struct BuildOptions {
     /// The authority is kept outside the examples bundle so a producer cannot
     /// edit source bytes and its receipt together.
     pub source_authority: Option<PathBuf>,
+    /// Trusted digest of the external source authority manifest. Supplying a
+    /// manifest without this configured trust-root digest is self-attesting.
+    pub source_authority_sha256: Option<String>,
 }
 
 /// Inputs for the docs-only rustdoc JSON generation command.
@@ -416,6 +419,7 @@ impl BuildOptions {
             source_state: "working-tree".to_owned(),
             examples_bundle: None,
             source_authority: None,
+            source_authority_sha256: None,
         }
     }
 }
@@ -518,6 +522,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
                 &options.repository_root,
                 &source_revision,
                 options.source_authority.as_deref(),
+                options.source_authority_sha256.as_deref(),
             )
         })
         .transpose()?;
@@ -770,18 +775,28 @@ pub fn to_website_json(
             })
         })
         .collect::<Vec<_>>();
+    let scenario_authority_sha256 = bundle
+        .scenario_bundle
+        .as_ref()
+        .and_then(|scenario| scenario.get("source"))
+        .and_then(|source| source.get("source_authority_sha256"))
+        .cloned();
+    let mut projection_source = serde_json::json!({
+        "repository": repository,
+        "revision": bundle.source_revision,
+        "generator": "sdk-docs",
+        "generatorVersion": env!("CARGO_PKG_VERSION"),
+        "bundleBlake3": bundle.bundle_blake3,
+        "sourceState": source_state,
+        "channel": channel,
+    });
+    if let Some(authority_sha256) = scenario_authority_sha256 {
+        projection_source["scenarioAuthoritySha256"] = authority_sha256;
+    }
     let projection = serde_json::json!({
         "$schema": "https://acyclic.dev/schemas/sdk-reference-bundle.v1.json",
         "schemaVersion": "sdk-reference-bundle.v1",
-        "source": {
-            "repository": repository,
-            "revision": bundle.source_revision,
-            "generator": "sdk-docs",
-            "generatorVersion": env!("CARGO_PKG_VERSION"),
-            "bundleBlake3": bundle.bundle_blake3,
-            "sourceState": source_state,
-            "channel": channel,
-        },
+        "source": projection_source,
         "profiles": bundle.profiles,
         "scenarioBundle": bundle.scenario_bundle,
         "families": families,
@@ -799,7 +814,7 @@ fn load_scenario_bundle(
     repository_root: &Path,
     source_revision: &str,
 ) -> Result<serde_json::Value, Error> {
-    load_scenario_bundle_with_authority(bundle_root, repository_root, source_revision, None)
+    load_scenario_bundle_with_authority(bundle_root, repository_root, source_revision, None, None)
 }
 
 fn load_scenario_bundle_with_authority(
@@ -807,6 +822,7 @@ fn load_scenario_bundle_with_authority(
     repository_root: &Path,
     source_revision: &str,
     source_authority: Option<&Path>,
+    source_authority_sha256: Option<&str>,
 ) -> Result<serde_json::Value, Error> {
     let manifest_path = bundle_root.join("sdk-examples-manifest.json");
     let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(&manifest_path)?)?;
@@ -924,7 +940,8 @@ fn load_scenario_bundle_with_authority(
             &source_path,
             &declared_revision,
             &actual_source_sha256,
-        )?;
+            source_authority_sha256,
+            )?;
         source.insert(
             "source_authority_sha256".to_owned(),
             serde_json::Value::String(authority_sha256),
@@ -1070,13 +1087,28 @@ fn verify_source_authority(
     source_path: &str,
     source_revision: &str,
     actual_source_sha256: &str,
+    configured_authority_sha256: Option<&str>,
 ) -> Result<String, Error> {
     let authority_bytes = fs::read(authority_path)?;
     let authority_digest = sha256_digest(&authority_bytes);
+    let configured_authority_sha256 = configured_authority_sha256.ok_or_else(|| {
+        Error::Strict(
+            "SDK examples source authority requires a configured authority sha256 trust root"
+                .to_owned(),
+        )
+    })?;
+    if configured_authority_sha256 != authority_digest {
+        return Err(Error::Strict(format!(
+            "SDK examples source authority digest mismatch: expected {configured_authority_sha256}, got {authority_digest}"
+        )));
+    }
     let authority: serde_json::Value = serde_json::from_slice(&authority_bytes)?;
-    if authority.get("schema").and_then(serde_json::Value::as_str)
-        != Some("acyclic.sdk.examples.source-authority.v1")
-    {
+    let authority_schema = authority.get("schema").and_then(serde_json::Value::as_str);
+    if !matches!(
+        authority_schema,
+        Some("acyclic.sdk.examples.source-authority.v1")
+            | Some("acyclic.sdk.qualification-receipt.v1")
+    ) {
         return Err(Error::Strict(format!(
             "unsupported SDK examples source authority schema in {}",
             authority_path.display()
@@ -1149,7 +1181,7 @@ fn verify_source_authority(
                 .and_then(|source| source.get("file_hashes"))
                 .and_then(serde_json::Value::as_object)
         });
-    if let (Some(source_files), Some(source_hashes)) = (source_files, source_hashes) {
+    if let Some(source_files) = source_files {
         if source_files.is_empty() {
             return Err(Error::Strict(
                 "SDK examples source authority has an empty file list".to_owned(),
@@ -1172,18 +1204,20 @@ fn verify_source_authority(
                     "SDK examples source authority file {relative} is unavailable: {error}"
                 ))
             })?;
-            let expected = source_hashes
-                .get(relative)
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| {
-                    Error::Strict(format!(
-                        "SDK examples source authority has no hash: {relative}"
-                    ))
-                })?;
-            if expected != sha256_digest(&bytes) {
-                return Err(Error::Strict(format!(
-                    "SDK examples immutable source/revision closure mismatch: {relative}"
-                )));
+            if let Some(source_hashes) = source_hashes {
+                let expected = source_hashes
+                    .get(relative)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        Error::Strict(format!(
+                            "SDK examples source authority has no hash: {relative}"
+                        ))
+                    })?;
+                if expected != sha256_digest(&bytes) {
+                    return Err(Error::Strict(format!(
+                        "SDK examples immutable source/revision closure mismatch: {relative}"
+                    )));
+                }
             }
             closure.extend_from_slice(relative.as_bytes());
             closure.push(0);

@@ -19,6 +19,8 @@ function runDocs(
   scratch: string,
   docsManifestRoot: string,
   authorityPath: string,
+  sourceRevision: string,
+  authoritySha256: string,
 ) {
   return spawnSync("cargo", [
     "run", "--manifest-path", join(docsManifestRoot, "Cargo.toml"),
@@ -28,7 +30,8 @@ function runDocs(
     "--website-output", join(outputRoot, "website.json"),
     "--examples-bundle", bundleRoot,
     "--source-authority", authorityPath,
-    "--source-revision", "website-gate-negative-revision",
+    "--source-authority-sha256", authoritySha256,
+    "--source-revision", sourceRevision,
   ], {
     cwd: root,
     encoding: "utf8",
@@ -36,12 +39,30 @@ function runDocs(
   });
 }
 
-async function writeSourceAuthority(repositoryRoot: string, authorityPath: string) {
+async function initializeRepository(repositoryRoot: string): Promise<string> {
+  const init = spawnSync("git", ["init", "--quiet"], { cwd: repositoryRoot, encoding: "utf8" });
+  if (init.status !== 0) throw new Error(`unable to initialize fixture repository: ${init.stderr || init.stdout}`);
+  for (const [key, value] of [["user.email", "acceptance@example.invalid"], ["user.name", "Acceptance Fixture"]]) {
+    const config = spawnSync("git", ["config", key, value], { cwd: repositoryRoot, encoding: "utf8" });
+    if (config.status !== 0) throw new Error(`unable to configure fixture repository: ${config.stderr || config.stdout}`);
+  }
+  const add = spawnSync("git", ["add", "."], { cwd: repositoryRoot, encoding: "utf8" });
+  if (add.status !== 0) throw new Error(`unable to stage fixture repository: ${add.stderr || add.stdout}`);
+  const commit = spawnSync("git", ["commit", "--quiet", "--message", "immutable fixture baseline"], {
+    cwd: repositoryRoot, encoding: "utf8",
+  });
+  if (commit.status !== 0) throw new Error(`unable to commit fixture repository: ${commit.stderr || commit.stdout}`);
+  const revision = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8" });
+  if (revision.status !== 0) throw new Error(`unable to resolve fixture repository revision: ${revision.stderr || revision.stdout}`);
+  return revision.stdout.trim();
+}
+
+async function writeSourceAuthority(repositoryRoot: string, authorityPath: string, sourceRevision: string) {
   const relative = "rust/crates/sdk-examples/src/lib.rs";
   const bytes = await readFile(join(repositoryRoot, relative));
   await writeFile(authorityPath, JSON.stringify({
     schema: "acyclic.sdk.examples.source-authority.v1",
-    source_revision: "website-gate-negative-revision",
+    source_revision: sourceRevision,
     source_path: relative,
     source_sha256: sha256(bytes),
     source_files: [relative],
@@ -67,6 +88,7 @@ async function writeFabricatedBundle(
   declaredSourceHash?: string,
   validArtifact = false,
   boundOutput = false,
+  sourceRevision = "website-gate-negative-revision",
 ) {
   const sourcePath = join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs");
   const sourceBytes = await readFile(sourcePath);
@@ -93,7 +115,7 @@ async function writeFabricatedBundle(
     schema: "acyclic.sdk.examples.bundle.v1",
     generator: "acyclic-sdk-examples@0.2.0",
     source: {
-      revision: "website-gate-negative-revision",
+      revision: sourceRevision,
       path: "rust/crates/sdk-examples/src/lib.rs",
       // Keep source identity valid so this fixture isolates receipt/artifact
       // qualification checks below.
@@ -123,7 +145,7 @@ async function writeFabricatedBundle(
             stderr_path: stderrPath,
             assertion_count: 1,
           } : {}),
-          source_revision: "website-gate-negative-revision",
+          source_revision: sourceRevision,
           source_path: "rust/crates/sdk-examples/src/lib.rs",
           source_sha256: manifestSourceHash,
           artifact: {
@@ -164,10 +186,12 @@ test("website gate rejects fabricated qualified receipt metadata", async () => {
       join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
     );
     await mkdir(outputRoot, { recursive: true });
-    await writeFabricatedBundle(repositoryRoot, bundleRoot);
-    await writeSourceAuthority(repositoryRoot, authorityPath);
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, false, false, sourceRevision);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    const authoritySha256 = sha256(await readFile(authorityPath));
 
-    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, authoritySha256);
     expect(result.status).not.toBe(0);
     expect(`${result.stderr}\n${result.stdout}`)
       .toContain("has unsafe artifact path: C:/does-not-exist/fabricated-package.tgz");
@@ -199,10 +223,12 @@ test("website gate rejects source SHA-256 drift before receipt projection", asyn
       join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
     );
     await mkdir(outputRoot, { recursive: true });
-    await writeFabricatedBundle(repositoryRoot, bundleRoot, "sha256:declared-but-wrong");
-    await writeSourceAuthority(repositoryRoot, authorityPath);
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, "sha256:declared-but-wrong", false, false, sourceRevision);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    const authoritySha256 = sha256(await readFile(authorityPath));
 
-    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, authoritySha256);
     expect(result.status).not.toBe(0);
     expect(`${result.stderr}\n${result.stdout}`).toContain("source sha256 mismatch");
   } finally {
@@ -226,10 +252,12 @@ test("website gate rejects qualified receipts with empty output evidence", async
       join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
     );
     await mkdir(outputRoot, { recursive: true });
-    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true);
-    await writeSourceAuthority(repositoryRoot, authorityPath);
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, false, sourceRevision);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    const authoritySha256 = sha256(await readFile(authorityPath));
 
-    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, authoritySha256);
     expect(result.status).not.toBe(0);
     expect(`${result.stderr}\n${result.stdout}`)
       .toContain("has no stdout path");
@@ -254,16 +282,47 @@ test("website gate accepts a clean authority-bound bundle and emits its authorit
       join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
     );
     await mkdir(outputRoot, { recursive: true });
-    await writeSourceAuthority(repositoryRoot, authorityPath);
-    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true);
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true, sourceRevision);
+    const authoritySha256 = sha256(await readFile(authorityPath));
 
-    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, authoritySha256);
     expect(result.status).toBe(0);
     const website = JSON.parse(await readFile(join(outputRoot, "website.json"), "utf8")) as {
       scenarioBundle: { source: { source_authority_sha256: string } };
     };
     expect(website.scenarioBundle.source.source_authority_sha256)
       .toBe(sha256(await readFile(authorityPath)));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("website gate rejects a caller-mutated authority file under the same revision", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-website-mutable-authority-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    await cp(join(root, "rust/crates/sdk-examples/src/lib.rs"), join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"));
+    await mkdir(outputRoot, { recursive: true });
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    const trustedAuthoritySha256 = sha256(await readFile(authorityPath));
+    const authority = JSON.parse(await readFile(authorityPath, "utf8")) as Record<string, unknown>;
+    authority.caller_mutation = "same revision, changed authority bytes";
+    await writeFile(authorityPath, JSON.stringify(authority, null, 2) + "\n");
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true, sourceRevision);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, trustedAuthoritySha256);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}\n${result.stdout}`).toContain("source authority digest mismatch");
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -282,12 +341,14 @@ test("website gate rejects a forged source closure when source and receipt are e
     await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
     const sourcePath = join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs");
     await cp(join(root, "rust/crates/sdk-examples/src/lib.rs"), sourcePath);
-    await writeSourceAuthority(repositoryRoot, authorityPath);
+    const sourceRevision = await initializeRepository(repositoryRoot);
+    await writeSourceAuthority(repositoryRoot, authorityPath, sourceRevision);
+    const authoritySha256 = sha256(await readFile(authorityPath));
     await writeFile(sourcePath, `${await readFile(sourcePath, "utf8")}\n// forged source closure\n`);
     await mkdir(outputRoot, { recursive: true });
-    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true, sourceRevision);
 
-    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath, sourceRevision, authoritySha256);
     expect(result.status).not.toBe(0);
     expect(`${result.stderr}\n${result.stdout}`).toContain("immutable source/revision closure mismatch");
     let websiteExists = true;
