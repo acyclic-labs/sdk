@@ -644,28 +644,16 @@ impl<S> FilesystemGitFacade<S> {
             ));
         }
         validate_merge_receipt_inputs(child, notice)?;
-        let Some(lineage) = plan.lineage() else {
-            return Err(Error::Unauthorized(
-                "root writeback plan is not bound to this direct child".into(),
-            ));
-        };
-        if lineage.child() != child
-            || lineage.child_project() == &self.volume
-            || lineage.target_project() != &self.volume
-        {
-            return Err(Error::Unauthorized(
-                "root writeback plan is not bound to this direct child".into(),
-            ));
-        }
-        plan.validate_notice_content(notice).await?;
-        plan.apply(
-            &request.scope,
-            request.approval.operation_id,
-            child,
-            notice,
-            selections,
-        )
-        .await
+        // This compatibility entrypoint accepts a trait object supplied by an
+        // application.  A caller can otherwise implement `lineage()` and
+        // `validate_notice_content()` with values that look valid while
+        // routing the mutation to an arbitrary provider.  Keep validation of
+        // the serialized notice above for useful malformed-input errors, but
+        // require the concrete facade-owned provider path for every effect.
+        let _ = (plan, child, selections);
+        Err(Error::Unauthorized(
+            "generic project join plans cannot perform root writeback; use the authenticated Filesystem provider facade".into(),
+        ))
     }
 
     /// Applies an inspected native Filesystem join only with the same exact
