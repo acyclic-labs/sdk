@@ -225,6 +225,9 @@ pub struct LocalForkIntent {
     pub fork_operation: OperationId,
     /// Fresh child turn identity selected for the child task.
     pub child_operation: OperationId,
+    /// Provider call identity used to replay an already selected tool result.
+    #[serde(default)]
+    pub call_id: Option<String>,
     /// Durable child task declaration.
     pub task: String,
     /// Fresh child user input.
@@ -243,6 +246,7 @@ impl LocalForkIntent {
                 .is_some_and(|operation| operation.into_bytes() == [0; 16])
             || self.fork_operation == self.child_operation
             || self.publication_operation == Some(self.child_operation)
+            || self.call_id.as_deref().is_some_and(str::is_empty)
             || self.task.trim().is_empty()
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
@@ -811,6 +815,32 @@ impl LocalModelForkPlans {
                     }
                     intents.insert(key, intent);
                 }
+                StoredEvent::ForkIntentSelected {
+                    intent,
+                    issuer_digest,
+                } => {
+                    let key = (intent.fork_operation, intent.child_operation);
+                    let mut intents = self.intents.lock().await;
+                    if let Some(existing) = intents.get(&key)
+                        && existing != &intent
+                    {
+                        return Err(Error::Conflict(
+                            "durable model fork intent changed during recovery".into(),
+                        ));
+                    }
+                    intents.insert(key, intent);
+                    if let Some(issuer_digest) = issuer_digest {
+                        let mut bindings = self.issuer_bindings.lock().await;
+                        if let Some(existing) = bindings.get(&key)
+                            && existing != &issuer_digest
+                        {
+                            return Err(Error::Conflict(
+                                "durable model fork issuer binding changed during recovery".into(),
+                            ));
+                        }
+                        bindings.insert(key, issuer_digest);
+                    }
+                }
                 StoredEvent::ForkIssuerBinding {
                     operation,
                     child_operation,
@@ -895,18 +925,14 @@ impl LocalModelForkPlans {
             let stream = registry
                 .stream(REGISTRY_STREAM)
                 .map_err(|error| Error::Storage(error.to_string()))?;
-            append_record(&stream, StoredEvent::ForkIntent { intent: intent.clone() }).await?;
-            if let Some(digest) = issuer_digest {
-                append_record(
-                    &stream,
-                    StoredEvent::ForkIssuerBinding {
-                        operation: intent.fork_operation,
-                        child_operation: intent.child_operation,
-                        digest,
-                    },
-                )
-                .await?;
-            }
+            append_record(
+                &stream,
+                StoredEvent::ForkIntentSelected {
+                    intent: intent.clone(),
+                    issuer_digest,
+                },
+            )
+            .await?;
         }
         intents.insert(key, intent);
         if let Some(digest) = issuer_digest {
@@ -1033,6 +1059,22 @@ impl LocalModelForkPlans {
 
     async fn completed(&self, operation: OperationId) -> Option<[u8; 32]> {
         self.completed.lock().await.get(&operation).copied()
+    }
+
+    async fn replay_intent(&self, input: &LocalForkToolInput) -> Option<LocalForkIntent> {
+        self.intents
+            .lock()
+            .await
+            .values()
+            .find(|intent| {
+                intent.child_operation == input.child_operation
+                    && intent.task == input.task
+                    && intent.prompt == input.prompt
+                    && input
+                        .fork_operation
+                        .is_none_or(|operation| operation == intent.fork_operation)
+            })
+            .cloned()
     }
 }
 
@@ -1258,6 +1300,7 @@ impl ToolExecutor for LocalForkToolExecutor {
                 publication_operation: Some(publication_operation),
                 fork_operation,
                 child_operation: input.child_operation,
+                call_id: Some(invocation.call_id),
                 task: input.task,
                 prompt: input.prompt,
             };
@@ -1274,9 +1317,25 @@ impl ToolExecutor for LocalForkToolExecutor {
 
     fn reconcile<'a>(
         &'a self,
-        _invocation: ToolInvocation,
+        invocation: ToolInvocation,
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
-        Box::pin(async { Ok(None) })
+        Box::pin(async move {
+            if invocation.name != "acyclic.fork_child" {
+                return Ok(None);
+            }
+            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
+                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+            let Some(intent) = self.plans.replay_intent(&input).await else {
+                return Ok(None);
+            };
+            Ok(Some(ToolResult {
+                value: json!({
+                    "status": "selected_after_completed_batch",
+                    "fork_operation": intent.fork_operation.to_string(),
+                    "child_operation": intent.child_operation.to_string(),
+                }),
+            }))
+        })
     }
 }
 
@@ -1574,9 +1633,14 @@ struct StoredRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
+#[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
     Session(StoredSession),
+    /// Atomically records the selected child and host issuer binding.
+    ForkIntentSelected {
+        intent: LocalForkIntent,
+        issuer_digest: Option<[u8; 32]>,
+    },
     /// Model-selected child intent retained before completed-batch
     /// publication. The owner allocator resolves it only after publication.
     ForkIntent { intent: LocalForkIntent },
@@ -3426,8 +3490,17 @@ async fn load_records(
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut decoded = Vec::new();
+    let mut expected_sequence = 0_u64;
     while let Some(record) = records.next().await {
         let record = record.map_err(|error| Error::Storage(error.to_string()))?;
+        if record.sequence != expected_sequence {
+            return Err(Error::Conflict(
+                "local swarm registry sequence is not contiguous".into(),
+            ));
+        }
+        expected_sequence = expected_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Storage("local swarm registry sequence overflow".into()))?;
         let value: StoredRecord = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if value.version != REGISTRY_VERSION {
@@ -3488,6 +3561,19 @@ fn apply_record(
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
+        }
+        StoredEvent::ForkIntentSelected {
+            intent,
+            issuer_digest,
+        } => {
+            intent.validate()?;
+            if let Some(digest) = issuer_digest
+                && digest == [0; 32]
+            {
+                return Err(Error::Conflict(
+                    "persisted local fork issuer binding is empty".into(),
+                ));
+            }
         }
         StoredEvent::ForkIssuerBinding { .. } => {}
         StoredEvent::ForkPrepared {
