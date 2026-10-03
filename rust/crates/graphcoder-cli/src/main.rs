@@ -352,13 +352,27 @@ fn approval_authorizer_from_operator(
     })
 }
 
-fn unavailable_approval_authorizer(_: PendingApproval) -> BoxFuture<'static, Result<Scope>> {
-    async {
-        Err(HarnessError::Unsupported(
-            "approval resolution requires a host-owned operator authorizer",
-        ))
-    }
-    .boxed()
+/// Resolves the operator signer from the exact task that owns the pending
+/// ticket. Child sessions have their own durable conversation and issuer, so
+/// a root signer must never be reused for a child approval.
+fn approval_authorizer_from_swarm(swarm: Arc<PersistentLocalSwarm>) -> ApprovalAuthorizer {
+    Arc::new(move |pending: PendingApproval| {
+        let swarm = swarm.clone();
+        async move {
+            let operator = swarm
+                .interaction_operator_authorizer(pending.task)
+                .await?;
+            operator
+                .issue_scope(&InteractionApprovalAuthorization {
+                    interaction_id: pending.interaction,
+                    operation_id: pending.operation,
+                    action_digest: pending.action_digest,
+                    approved: pending.approved,
+                })
+                .await
+        }
+        .boxed()
+    })
 }
 
 async fn recursive_project(
@@ -393,15 +407,16 @@ async fn recursive_project(
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
-        Self::open_with_authorizer(args, Arc::new(unavailable_approval_authorizer)).await
+        Self::open_with_authorizer(args, None).await
     }
 
-    /// Opens the terminal with a host-owned operator callback. The callback is
-    /// passed the exact task and pending interaction identity so the host can
-    /// issue only the corresponding responder grant.
+    /// Opens the terminal with a host-owned operator callback. When no custom
+    /// callback is supplied, the callback is composed from the durable signer
+    /// belonging to the exact pending task. The operator control channel still
+    /// gates the callback before this path can be reached.
     async fn open_with_authorizer(
         args: &Args,
-        approval_authorizer: ApprovalAuthorizer,
+        approval_authorizer: Option<ApprovalAuthorizer>,
     ) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
@@ -444,6 +459,9 @@ impl Runtime {
         } else {
             Arc::new(PersistentLocalSwarm::open(&args.root, config, provider).await?)
         };
+        let approval_authorizer = approval_authorizer.unwrap_or_else(|| {
+            approval_authorizer_from_swarm(swarm.clone())
+        });
         Ok(Self {
             swarm,
             model_fixture: fixture,
