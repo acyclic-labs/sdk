@@ -2192,6 +2192,45 @@ mod tests {
         Ok(())
     }
 
+    /// The direct Windows adapter must classify a parent that exits while a
+    /// hidden descendant still owns the inherited output pipe as uncertain.
+    /// The process-tree adapter owns descendants and has a separate cleanup
+    /// contract, so this fixture targets the direct native path explicitly.
+    #[cfg(all(windows, not(feature = "native-process-tree")))]
+    #[test]
+    fn native_runner_reports_unknown_for_hidden_descendant_held_pipe() -> Result<()> {
+        let marker = std::env::temp_dir().join(format!(
+            "graphcoder-held-pipe-{}.marker",
+            OperationId::new()
+        ));
+        let mut request = spec();
+        request.timeout_ms = Some(10_000);
+        request.executable =
+            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        request.arguments = vec![
+            "/D".into(),
+            "/S".into(),
+            "/C".into(),
+            format!(
+                r#"echo marker>>"{}" & start "" /B powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 3""#,
+                marker.display()
+            ),
+        ];
+        let outcome = NativeExecutionRunner.run(&request)?;
+        assert!(matches!(
+            outcome,
+            RunnerOutcome::Unknown { ref reason }
+                if reason.contains("retained output handles")
+        ));
+        std::thread::sleep(Duration::from_secs(4));
+        let markers = std::fs::read_to_string(&marker).map_err(|error| {
+            Error::Storage(format!("held-pipe marker was not written: {error}"))
+        })?;
+        assert_eq!(markers.lines().count(), 1);
+        std::fs::remove_file(marker).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
     #[test]
     fn native_runner_cancellation_kills_a_running_process() -> Result<()> {
         let mut request = spec();
