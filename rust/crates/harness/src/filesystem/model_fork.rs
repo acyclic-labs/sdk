@@ -48,7 +48,7 @@ where
         let parent = verified.parent.reducer();
         if request.parent != *parent.authority()
             || request.parent != *self.issuer.verifier().audience()
-            || request.parent_revision < parent.revision()
+            || request.parent_revision != parent.revision()
         {
             return Err(Error::Conflict(
                 "model fork request differs from verified parent boundary".into(),

@@ -476,6 +476,28 @@ impl ForkAtBatch {
                 .storage
                 .verified_model_fork_boundary(&admission, self.limits)
                 .await?;
+            let mut future = request.clone();
+            future.parent_revision += 1;
+            for selection in &mut future.selections {
+                if let ResourceRevision::History(reference) = &mut selection.revision {
+                    *reference = StreamRef::new(
+                        self.stream_provider.clone(),
+                        future.parent.stream_path()?.into_bytes(),
+                        Some(future.parent_revision.to_string()),
+                    )?;
+                }
+            }
+            future.validate()?;
+            let future_error = self
+                .storage
+                .attach_model_fork_references(&verified, &mut future)
+                .await
+                .expect_err("future revision cannot be signed");
+            assert!(
+                matches!(future_error, Error::Conflict(_)),
+                "unexpected future revision error: {future_error:?}"
+            );
+            assert!(future.model_boundary.is_none());
             self.storage
                 .attach_model_fork_references(&verified, &mut request)
                 .await?;

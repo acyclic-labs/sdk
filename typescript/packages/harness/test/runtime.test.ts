@@ -2035,13 +2035,13 @@ describe("typed agent runtime", () => {
 
   test("canonical request admission applies aggregate context bounds before provider dispatch", async () => {
     let dispatched = 0;
-    const runtime = Harness.builder(contracts).limits({ file_bytes: 16 }).context({
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 16 }).context({
       async build() { return [{ role: "user" as const, content: "12345678" }, { role: "assistant" as const, content: "87654321" }]; },
     }).model(testModel, {
       async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },
     }).build();
-    await expect(runtime.run("safe")).rejects.toThrow();
+    await expect(runtime.run("safe")).rejects.toThrow("aggregate model request exceeds byte limit");
     expect(dispatched).toBe(0);
   });
 

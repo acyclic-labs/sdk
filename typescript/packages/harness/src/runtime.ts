@@ -2324,7 +2324,6 @@ export class AgentHarness {
           model: { provider: model.identity.provider, name: model.identity.name, revision: model.identity.revision, options: model.identity.options as WasmModelJsonValue },
           messages: messages.map(message => ({ role: message.role, content: wasmModelContent(message.content) })),
           tools: tools.map(tool => ({ name: tool.name, revision: tool.revision, description: tool.description, input_schema: tool.inputSchema, output_schema: tool.outputSchema })),
-          max_output_tokens: undefined,
         } satisfies WasmModelRequestWire, nativeLimits(this.limits));
         if (prepared.requestJson.length === 0 || prepared.manifestJson.length === 0 || prepared.requestDigest.length !== 32) {
           throw new Error("canonical model request admission returned empty evidence");
