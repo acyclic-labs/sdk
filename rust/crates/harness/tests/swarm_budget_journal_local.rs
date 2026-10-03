@@ -159,12 +159,8 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     )
     .await
     .expect("start budget");
-    let mut root_usage = SwarmUsageReceiptIssuer::new(
-        LocalMeasuredUsage,
-        session,
-        root_dispatch,
-    )
-    .expect("root usage issuer");
+    let mut root_usage = SwarmUsageReceiptIssuer::new(LocalMeasuredUsage, session, root_dispatch)
+        .expect("root usage issuer");
     journal
         .report_root_usage_with_receipt(&owner, root_usage.issue().expect("root usage receipt"))
         .await
@@ -300,7 +296,10 @@ async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
     let stream = client
         .stream(format!("harness/v2/swarm-budget/{session}"))
         .expect("budget stream");
-    let tail_before = stream.tail().await.expect("tail before same-operation race");
+    let tail_before = stream
+        .tail()
+        .await
+        .expect("tail before same-operation race");
     let journals = join_all((0..16).map(|_| SwarmBudgetJournal::open(&client, session)))
         .await
         .into_iter()
@@ -322,10 +321,7 @@ async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
         .filter(|result| matches!(result, Ok(receipt) if receipt.replayed))
         .count();
     assert_eq!(
-        stream
-            .tail()
-            .await
-            .expect("tail after same-operation race"),
+        stream.tail().await.expect("tail after same-operation race"),
         tail_before + 1,
         "same idempotency identity must append exactly one durable record"
     );
@@ -366,12 +362,8 @@ async fn local_stream_wrong_dispatch_receipt_is_rejected_before_append_and_reope
     )
     .await
     .expect("start budget");
-    let mut issuer = SwarmUsageReceiptIssuer::new(
-        LocalMeasuredUsage,
-        session,
-        dispatch_id.clone(),
-    )
-    .expect("usage issuer");
+    let mut issuer = SwarmUsageReceiptIssuer::new(LocalMeasuredUsage, session, dispatch_id.clone())
+        .expect("usage issuer");
     journal
         .report_root_usage_with_receipt(&owner, issuer.issue().expect("first receipt"))
         .await
@@ -645,8 +637,14 @@ async fn local_stream_provider_receipts_stop_at_each_hard_dimension_before_appen
     let reopened = SwarmBudgetJournal::open(&client, session)
         .await
         .expect("reopen after rejected receipts");
-    assert_eq!(reopened.usage().expect("usage").consumed, SwarmUsage::default());
-    assert_eq!(reopened.usage().expect("usage").reserved, SwarmUsage::default());
+    assert_eq!(
+        reopened.usage().expect("usage").consumed,
+        SwarmUsage::default()
+    );
+    assert_eq!(
+        reopened.usage().expect("usage").reserved,
+        SwarmUsage::default()
+    );
 }
 
 #[tokio::test]
@@ -693,10 +691,7 @@ async fn local_stream_root_receipt_respects_live_descendant_boundary() {
     .await
     .expect("start budget");
     let mut issuer = SwarmUsageReceiptIssuer::with_limits(
-        LocalMeasuredUsageSequence::new(
-            "root-boundary-provider",
-            [first_usage, second_usage],
-        ),
+        LocalMeasuredUsageSequence::new("root-boundary-provider", [first_usage, second_usage]),
         session,
         dispatch_id,
         SwarmResourceRequest {
@@ -744,7 +739,14 @@ async fn local_stream_root_receipt_respects_live_descendant_boundary() {
         .expect("reopen after rejected root receipt");
     let usage = reopened.usage().expect("usage");
     assert_eq!(usage.consumed, first_usage);
-    assert_eq!(usage.reserved, child_resources);
+    assert_eq!(
+        usage.reserved,
+        SwarmUsage {
+            model_steps: child_resources.model_steps,
+            output_bytes: child_resources.output_bytes,
+            execution_time_ms: child_resources.execution_time_ms,
+        }
+    );
     assert_eq!(
         reopened
             .reservation(child.reservation.operation_id)

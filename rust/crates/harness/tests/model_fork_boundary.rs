@@ -8,8 +8,7 @@ use acyclic_harness::{
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
         Attachment, ContentResidencyVerifier, ConversationMessage, Limits, MessageKind,
-        VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry,
@@ -21,8 +20,8 @@ use acyclic_harness::{
         WorkspaceMutation, workspace_ref,
     },
     fork::{
-        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection,
-        ResourceRevision, StreamHistoryForkVerifier,
+        CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision,
+        StreamHistoryForkVerifier,
     },
     model::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
@@ -35,9 +34,9 @@ use acyclic_harness::{
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
+    StreamExt,
     future::BoxFuture,
     stream::{self, BoxStream},
-    StreamExt,
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -214,20 +213,21 @@ impl ModelBatchPublisher for RecordingPublisher {
 
     fn publish<'a>(&'a self, request: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            let mut admission = self
-                .admission
-                .lock()
-                .map_err(|_| Error::Storage("recursive publication lock is poisoned".into()))?;
-            if let Some(existing) = &*admission {
-                if existing != &request {
-                    return Err(Error::Conflict(
-                        "recursive model publication identity changed".into(),
-                    ));
+            {
+                let mut admission = self
+                    .admission
+                    .lock()
+                    .map_err(|_| Error::Storage("recursive publication lock is poisoned".into()))?;
+                if let Some(existing) = &*admission {
+                    if existing != &request {
+                        return Err(Error::Conflict(
+                            "recursive model publication identity changed".into(),
+                        ));
+                    }
+                } else {
+                    *admission = Some(request);
                 }
-            } else {
-                *admission = Some(request);
             }
-            drop(admission);
             if let Some(ready) = &self.ready {
                 ready.notify_one();
             }
@@ -295,14 +295,12 @@ impl ForkAtBatch {
         let records = storage.journal().replay(operation).await?;
         let result = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
-                call_id,
-                result,
-                ..
+                call_id, result, ..
             } if call_id == "read-inherited" => Some(result.clone()),
             _ => None,
         });
-        let result = result
-            .ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
+        let result =
+            result.ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
         let result: Value = serde_json::from_slice(&storage.journal().load(&result).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(result.get("text").and_then(Value::as_str), Some(expected));
@@ -741,13 +739,14 @@ impl ForkAtBatch {
                 .attestation[0] ^= 1;
             let forged_report = parent.prepare_fork(&preparer, forged).await?;
             let forged_seed = forged_report.clone().into_seed()?;
-            self.assert_child_unbound(&forged_seed, &child_issuer).await?;
+            self.assert_child_unbound(&forged_seed, &child_issuer)
+                .await?;
             let forged_error = parent
                 .publish_fork_report(forged_report, parent_scope.clone())
                 .await
                 .expect_err("forged model boundary was published");
             assert!(
-                matches!(forged_error, Error::Invalid(message) if message.contains("manifest")),
+                matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
                 "unexpected forged model boundary error: {forged_error:?}"
             );
             let report = parent.prepare_fork(&preparer, request).await?;
@@ -798,8 +797,8 @@ impl ForkAtBatch {
                     child_scope.clone(),
                 )
                 .await?;
-            let storage = Arc::new(self
-                .verified_child_storage(
+            let storage = Arc::new(
+                self.verified_child_storage(
                     &parent,
                     &seed,
                     child_issuer.clone(),
@@ -807,7 +806,8 @@ impl ForkAtBatch {
                     &admission,
                     index,
                 )
-                .await?);
+                .await?,
+            );
             let suffix = vec![ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(format!(
@@ -905,12 +905,12 @@ impl ForkAtBatch {
         for result in all_children.await {
             completed_children.push(result?);
         }
-        let boundary_binding =
-            PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
-                .manifest()
-                .binding_digest;
+        let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
+            .manifest()
+            .binding_digest;
         for (index, storage, _, _, _, _, _, operation) in &completed_children {
-            self.assert_model_read(storage, *operation, "root request").await?;
+            self.assert_model_read(storage, *operation, "root request")
+                .await?;
             let child_model = self
                 .children
                 .get(*index as usize)
@@ -1075,7 +1075,7 @@ impl ForkAtBatch {
             .await
             .expect_err("forged recursive model boundary was published");
         assert!(
-            matches!(forged_error, Error::Invalid(message) if message.contains("manifest")),
+            matches!(forged_error, Error::Invalid(ref message) if message.contains("manifest")),
             "unexpected forged recursive boundary error: {forged_error:?}"
         );
 
@@ -1234,18 +1234,14 @@ impl ForkAtBatch {
         );
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert_eq!(
-            projection,
-            Value::String("root request".into())
-        );
+        assert_eq!(projection, Value::String("root request".into()));
         let (captured, serialized, bindings) = self.grandchild.evidence()?;
         assert!(captured.len() >= 2);
         assert_eq!(captured.len(), serialized.len());
         assert_eq!(captured.len(), bindings.len());
-        let boundary_binding =
-            PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
-                .manifest()
-                .binding_digest;
+        let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
+            .manifest()
+            .binding_digest;
         for ((request, bytes), binding) in captured.iter().zip(&serialized).zip(&bindings) {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
