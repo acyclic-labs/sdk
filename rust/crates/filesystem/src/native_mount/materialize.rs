@@ -526,6 +526,32 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    let root = HostRoot::open(&options.destination)
+        .map_err(|_| OperationFailure::before_work(MaterializeError::InvalidDestination))?;
+    restore_checkout_host_path_with_root(
+        checkout,
+        relative,
+        replacement,
+        options,
+        Arc::new(root),
+        budget,
+        cancellation,
+    )
+    .await
+}
+
+/// Restores one path through a caller-retained root capability.  The
+/// capability is carried through preparation and publication so an ancestor
+/// replacement cannot redirect the final rename to a different tree.
+pub async fn restore_checkout_host_path_with_root<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+    host_root: Arc<HostRoot>,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
     validate_host_relative(relative).map_err(OperationFailure::before_work)?;
     validate_bounds(options).map_err(OperationFailure::before_work)?;
     if cancellation.is_cancelled() {
@@ -538,7 +564,8 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
     let (destination, stage_root, _restore_lock) = tokio::task::spawn_blocking({
         let destination_root = destination_root.clone();
         let relative = relative.clone();
-        move || prepare_restore(&destination_root, &relative, replacement)
+        let host_root = Arc::clone(&host_root);
+        move || prepare_restore(&destination_root, &relative, replacement, &host_root)
     })
     .await
     .map_err(|error| OperationFailure::before_work(MaterializeError::Engine(error.to_string())))?
@@ -562,9 +589,10 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
         Ok(receipt) => receipt,
         Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
             let work = *failure.work;
+            let host_root = Arc::clone(&host_root);
             tokio::task::spawn_blocking(move || {
                 let parent =
-                    held_parent(&destination_root, &relative).map_err(materialize_io_error)?;
+                    held_parent_from_root(&host_root, &relative).map_err(materialize_io_error)?;
                 let name = relative
                     .file_name()
                     .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
@@ -594,6 +622,7 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             &staged,
             &stage_root,
             replacement,
+            &host_root,
         )
     })
     .await
@@ -618,9 +647,10 @@ fn prepare_restore(
     destination_root: &Path,
     relative: &Path,
     replacement: HostPathReplacement,
+    host_root: &HostRoot,
 ) -> Result<(PathBuf, PathBuf, File), MaterializeError> {
     let destination = destination_root.join(relative);
-    let destination_parent = held_parent(destination_root, relative)?;
+    let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let restore_lock = acquire_restore_lock(relative, &destination, true)?;
     cleanup_removed_restore(&destination_parent, relative, &destination)?;
@@ -660,13 +690,21 @@ fn publish_restore(
     staged: &Path,
     stage_root: &Path,
     replacement: HostPathReplacement,
+    host_root: &HostRoot,
 ) -> Result<(), MaterializeError> {
-    let destination_parent = held_parent(destination_root, relative)?;
+    let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     let stage_parent = held_parent(stage_root, relative)?;
     let staged_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
     match destination_parent.symlink_metadata(Path::new(destination_name)) {
         Ok(_) => match replacement {
+            #[cfg(unix)]
+            HostPathReplacement::Atomic => stage_parent.rename_to(
+                Path::new(staged_name),
+                &destination_parent,
+                Path::new(destination_name),
+            )?,
+            #[cfg(not(unix))]
             HostPathReplacement::Atomic => crate::exchange_native_entries(destination, staged)
                 .map_err(|error| MaterializeError::Engine(error.to_string()))?,
             HostPathReplacement::LiveMount => replace_live_mount(
@@ -713,6 +751,14 @@ fn validate_host_relative(relative: &Path) -> Result<(), MaterializeError> {
 
 fn held_parent(root: &Path, relative: &Path) -> Result<HostDirectory, MaterializeError> {
     let root = HostRoot::open(root).map_err(|_| MaterializeError::InvalidDestination)?;
+    root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")))
+        .map_err(|_| MaterializeError::InvalidDestination)
+}
+
+fn held_parent_from_root(
+    root: &HostRoot,
+    relative: &Path,
+) -> Result<HostDirectory, MaterializeError> {
     root.create_dir_all_held(relative.parent().unwrap_or_else(|| Path::new("")))
         .map_err(|_| MaterializeError::InvalidDestination)
 }

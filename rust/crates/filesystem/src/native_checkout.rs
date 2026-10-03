@@ -4,9 +4,10 @@
 //! This module deliberately composes [`Source`] and the native materializer.
 //! It does not copy a checkout into an adapter-owned store and it does not
 //! infer an operating-system path from a [`VolumeRef`]. The source binding and
-//! generation precondition must be retained by the caller and checked again
-//! immediately before an approved host mutation.
+//! generation precondition is supplied as an immutable target while the
+//! source root capability and identity remain owned by this handle.
 
+use crate::native_host::HostRoot;
 use crate::native_mount::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeOptions,
 };
@@ -45,6 +46,12 @@ pub enum HostCheckoutError {
     /// The materialization destination was not the exact attached checkout.
     #[error("materialization destination is not the attached checkout root")]
     DestinationMismatch,
+    /// The requested paths are not a deterministic, non-overlapping set.
+    #[error("restore paths must be sorted and non-overlapping")]
+    InvalidPaths,
+    /// The held checkout root could not be opened or retained.
+    #[error("failed to retain the attached checkout root: {0}")]
+    Host(#[from] std::io::Error),
 }
 
 /// Exact result of a bounded sequence of host-path replacements.
@@ -60,13 +67,14 @@ pub struct HostCheckoutRestore {
 ///
 /// `HostCheckout` is the narrow host boundary for local writeback. The
 /// attached source remains the authority for root identity and current source
-/// generation. Callers should persist [`SourceBinding`] (or the containing
-/// approval record) before invoking [`Self::restore_paths`], and should call
+/// generation, and the held root capability remains inside this handle.
+/// Durable approval records should retain the expected generation and call
 /// [`Self::revalidate_with_key`] after host changes to acknowledge the source
 /// watcher interval.
 pub struct HostCheckout<A, O> {
     workspace: Workspace<A, O>,
     source: Source<A, O>,
+    root: std::sync::Arc<HostRoot>,
 }
 
 impl<A, O> Clone for HostCheckout<A, O> {
@@ -74,6 +82,7 @@ impl<A, O> Clone for HostCheckout<A, O> {
         Self {
             workspace: self.workspace.clone(),
             source: self.source.clone(),
+            root: std::sync::Arc::clone(&self.root),
         }
     }
 }
@@ -101,7 +110,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
             .source()
             .cloned()
             .ok_or(HostCheckoutError::NoSource)?;
-        Ok(Self { workspace, source })
+        let binding = source.binding().await;
+        let root = HostRoot::open(&binding.source_root)?;
+        if root.identity() != binding.root_identity {
+            return Err(HostCheckoutError::Source(SourceError::BindingMismatch));
+        }
+        Ok(Self {
+            workspace,
+            source,
+            root: std::sync::Arc::new(root),
+        })
     }
 
     /// The provider-owned workspace handle backing this bridge.
@@ -149,23 +167,24 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
 
     /// Verifies the approval precondition and the destination root immediately
     /// before a host mutation.
-    pub async fn prepare_publish(&self, expected: &SourceBinding) -> Result<(), HostCheckoutError> {
+    pub async fn prepare_publish(
+        &self,
+        expected_generation: GenerationId,
+    ) -> Result<SourceBinding, HostCheckoutError> {
+        let expected = self.source.binding().await;
         let actual = self.source.binding().await;
-        if actual.workspace_id != expected.workspace_id
-            || actual.root_identity != expected.root_identity
-            || actual.source_root != expected.source_root
-        {
-            return Err(HostCheckoutError::Source(SourceError::BindingMismatch));
-        }
-        if actual.generation_id != expected.generation_id {
+        if actual.generation_id != expected_generation {
             return Err(HostCheckoutError::StaleSource {
-                expected: expected.generation_id,
+                expected: expected_generation,
                 actual: actual.generation_id,
             });
         }
+        if self.root.identity() != expected.root_identity {
+            return Err(HostCheckoutError::Source(SourceError::BindingMismatch));
+        }
         self.source.verify_root(&expected.source_root).await?;
         match self.source.state().await {
-            SourceState::Clean | SourceState::Sealed => Ok(()),
+            SourceState::Clean | SourceState::Sealed => Ok(expected),
             state => Err(HostCheckoutError::Source(SourceError::Engine(format!(
                 "source is not publishable in state {state:?}"
             )))),
@@ -196,28 +215,77 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
     pub async fn restore_paths(
         &self,
         generation: &Generation<A, O>,
-        expected: &SourceBinding,
+        expected_generation: GenerationId,
         paths: &[PathBuf],
         replacement: HostPathReplacement,
         options: &MaterializeOptions,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> Result<HostCheckoutRestore, HostCheckoutError> {
-        if options.destination != expected.source_root {
+        let binding = self.prepare_publish(expected_generation).await?;
+        if options.destination != binding.source_root {
             return Err(HostCheckoutError::DestinationMismatch);
         }
-        self.prepare_publish(expected).await?;
+        if paths
+            .windows(2)
+            .any(|pair| pair[0] >= pair[1] || pair[1].starts_with(&pair[0]))
+        {
+            return Err(HostCheckoutError::InvalidPaths);
+        }
+        if paths.is_empty() {
+            return Ok(HostCheckoutRestore {
+                outcomes: Vec::new(),
+                work: WorkCounters::default(),
+            });
+        }
         let mut work = WorkCounters::default();
         let mut outcomes = Vec::with_capacity(paths.len());
         for path in paths {
             let remaining = budget.remaining(work)?;
+            let (already_present, check_work) = self
+                .source
+                .host_paths_match_generation(
+                    generation.id(),
+                    std::slice::from_ref(path),
+                    1,
+                    options.maximum_extent_spans,
+                    remaining,
+                    cancellation,
+                )
+                .await?;
+            work = work.checked_add(check_work)?;
+            if already_present {
+                outcomes.push(HostPathRestore::Restored);
+                continue;
+            }
+            let remaining = budget.remaining(work)?;
+            let check_work = self
+                .source
+                .verify_paths(
+                    expected_generation,
+                    std::slice::from_ref(path),
+                    1,
+                    options.maximum_extent_spans,
+                    remaining,
+                    cancellation,
+                )
+                .await?;
+            work = work.checked_add(check_work)?;
+            let remaining = budget.remaining(work)?;
             let receipt = generation
-                .restore_host_path(path, replacement, options, remaining, cancellation)
+                .restore_host_path_with_root(
+                    path,
+                    replacement,
+                    options,
+                    std::sync::Arc::clone(&self.root),
+                    remaining,
+                    cancellation,
+                )
                 .await?;
             work = work.checked_add(receipt.work)?;
             outcomes.push(receipt.value);
         }
-        self.source.verify_root(&expected.source_root).await?;
+        self.source.verify_root(&binding.source_root).await?;
         Ok(HostCheckoutRestore { outcomes, work })
     }
 }

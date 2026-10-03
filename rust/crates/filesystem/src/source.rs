@@ -12,7 +12,7 @@ use crate::{
     AppendOutcome, AsyncAuthorityStore, AsyncObjectStore, CancellationToken, CaptureOptions,
     CapturePolicy, Checkout, CheckoutCommitOutcome, CreateAuthorityOutcome, Fs, Generation,
     IdempotencyKey, NativeWatch, NativeWatchOptions, ReplayLimit, WatchBatch,
-    WatchInvalidationReason, WorkBudget, Workspace,
+    WatchInvalidationReason, WorkBudget, WorkCounters, Workspace,
 };
 use bytes::Bytes;
 use std::path::{Path, PathBuf};
@@ -204,6 +204,101 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
             return Err(SourceError::BindingMismatch);
         }
         Ok(())
+    }
+
+    /// Proves that a bounded host path set still has the exact contents of an
+    /// authenticated generation.  The capture engine opens the retained root
+    /// capability and rechecks every path and handle before reporting a
+    /// match; this is therefore a conditional precondition, rather than a
+    /// pathname existence check.
+    pub async fn host_paths_match_generation(
+        &self,
+        generation: crate::GenerationId,
+        paths: &[PathBuf],
+        maximum_paths: u32,
+        maximum_extent_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<(bool, WorkCounters), SourceError> {
+        if paths.is_empty()
+            || maximum_paths == 0
+            || paths.len() > usize::try_from(maximum_paths).unwrap_or(usize::MAX)
+            || maximum_extent_spans == 0
+        {
+            return Err(SourceError::InvalidOptions);
+        }
+        let mut session = self.inner.lock().await;
+        if !matches!(session.state, SourceState::Clean | SourceState::Sealed) {
+            return Err(SourceError::Engine(format!(
+                "source is not available for an authenticated path check in state {:?}",
+                session.state
+            )));
+        }
+        let source_root = session.capture.source_root.clone();
+        let root_identity = session.watcher.root_identity();
+        let namespace_paths = paths
+            .iter()
+            .map(|path| {
+                crate::native_capture::host_path_to_namespace(
+                    path,
+                    session.workspace.profile(),
+                    session.workspace.limits(),
+                )
+                .map_err(engine)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut checkout = session
+            .workspace
+            .checkout(
+                GenerationSelector::Exact(generation),
+                CheckoutMode::tracking_transaction(),
+            )
+            .await
+            .map_err(engine)?;
+        let receipt = crate::native_capture::capture_paths(
+            &mut checkout,
+            &namespace_paths,
+            &CaptureOptions {
+                source_root,
+                expected_root_identity: root_identity,
+                maximum_paths,
+                maximum_extent_spans,
+            },
+            budget,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| engine(failure.error))?;
+        Ok((receipt.value.changed_paths == 0, receipt.work))
+    }
+
+    /// Rejects a host path set unless it is still exactly the attached
+    /// source generation.  This is used immediately before a conditional
+    /// restore and is intentionally backed by the canonical capture engine.
+    pub async fn verify_paths(
+        &self,
+        generation: crate::GenerationId,
+        paths: &[PathBuf],
+        maximum_paths: u32,
+        maximum_extent_spans: u32,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkCounters, SourceError> {
+        let (matches, work) = self
+            .host_paths_match_generation(
+                generation,
+                paths,
+                maximum_paths,
+                maximum_extent_spans,
+                budget,
+                cancellation,
+            )
+            .await?;
+        if matches {
+            Ok(work)
+        } else {
+            Err(SourceError::Concurrent)
+        }
     }
 
     /// Re-establishes a clean source baseline after the core materializer has

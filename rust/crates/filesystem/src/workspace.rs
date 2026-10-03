@@ -4942,6 +4942,49 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         merge_workspace_work(checkout.work, receipt, budget)
     }
 
+    /// Restores one path through a caller-retained host-root capability.
+    ///
+    /// This is the authenticated host-adapter variant of
+    /// [`Self::restore_host_path`].  The capability is retained through the
+    /// final publication rename, preventing an ancestor pathname replacement
+    /// from redirecting the write between preparation and exchange.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path_with_root(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        host_root: std::sync::Arc<crate::native_host::HostRoot>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        let checkout = self
+            .workspace
+            .engine_checkout_measured(
+                GenerationSelector::Exact(self.id),
+                CheckoutMode::read_only_pinned(),
+                budget,
+                cancellation,
+            )
+            .await?;
+        let mut value = checkout.value;
+        let receipt = crate::restore_checkout_host_path_with_root(
+            &mut value,
+            relative,
+            replacement,
+            options,
+            host_root,
+            checkout
+                .work
+                .remaining(budget)
+                .map_err(WorkspaceError::from)?,
+            cancellation,
+        )
+        .await
+        .map_err(|failure| WorkspaceError::engine(failure.error))?;
+        merge_workspace_work(checkout.work, receipt, budget)
+    }
+
     /// Restores a bounded sequence of paths through one pinned checkout.
     #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
     pub async fn restore_host_paths(
