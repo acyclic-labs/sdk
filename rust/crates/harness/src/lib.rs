@@ -13,6 +13,7 @@ pub mod agent_loop;
 pub mod batch_publication;
 pub mod bundle;
 pub mod communication;
+pub mod communication_tools;
 pub mod context;
 mod contract;
 pub mod conversation;
