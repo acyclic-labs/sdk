@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-harness-wasm-typescript-pass-2026-10-03.json](checkpoint-harness-wasm-typescript-pass-2026-10-03.json) records the repaired TypeScript gate at `aa927b74`: source and test types pass, and all 239 runtime tests pass against the fresh WASM artifact. The transport fixtures derive their protocol identity from the same artifact as the validators; strict peer checks remain intact. Earlier failures below retain their historical scope.
+
 [checkpoint-wasm-build-2026-10-03.json](checkpoint-wasm-build-2026-10-03.json) records the fresh policy ABI build from `9fa97138`. Against that artifact, [checkpoint-harness-wasm-typescript-2026-10-03.json](checkpoint-harness-wasm-typescript-2026-10-03.json) records source `bf5b14ed`: source types passed, test types failed, and runtime tests passed 223/239. Sixteen transport cases reject an unsupported event wire version. [checkpoint-graphcoder-typescript-2026-10-03.json](checkpoint-graphcoder-typescript-2026-10-03.json) records 49 passing transport and terminal tests. These do not prove full process cleanup or installed native/PTY qualification.
 
 Process cleanup remains an unchecked gate covering owned children and readers, all exit paths, and durable uncertainty. Pending patches are under independent review; detached readers and unbounded reap paths prevent acceptance. Simplification must reuse the owning library's admission, journal, and lifecycle contracts rather than introduce parallel state.
