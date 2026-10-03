@@ -53,6 +53,10 @@ const runtimeFingerprint = value => {
   return value;
 };
 const wasmSmoke = {
+  actors: module => {
+    module.validate_remote_web_endpoint("https://actors.example.test");
+    return [typeof module.validate_actors_invoke === "function", typeof module.validate_remote_web_response_chunk === "function"];
+  },
   filesystem: module => typeof module.openMemoryFs === "function",
   harness: module => module.decodeAggregateKind(1),
   inference: module => typeof module.validate_customer_wire === "function",
@@ -64,14 +68,20 @@ const wasmSmoke = {
     }
     return [module.validatePath("/check-generated"), module.validateSequence("0")];
   },
+  workers: module => {
+    module.validate_remote_web_endpoint("https://workers.example.test");
+    return [typeof module.validate_workers_invoke_version === "function", typeof module.validate_workers_invoke_deployment === "function"];
+  },
 };
 const wasmPackages = [
+  ["actors", "build-remote-web-wasm.mjs", "acyclic_remote_web_wasm"],
   ["filesystem", "build-filesystem-wasm.mjs", "acyclic_fs_wasm"],
   ["harness", "build-harness-wasm.mjs", "acyclic_harness_wasm"],
   ["inference", "build-inference-wasm.mjs", "acyclic_inference_wasm"],
   ["machines", "build-machines-wasm.mjs", "acyclic_machines_wasm"],
   ["objects", "build-objects-wasm.mjs", "acyclic_objects_wasm"],
   ["stream", "build-stream-wasm.mjs", "acyclic_stream_wasm"],
+  ["workers", "build-remote-web-wasm.mjs", "acyclic_remote_web_wasm"],
 ];
 let authorityCargoEnv = { ...process.env };
 const checkWasmPackage = async ([packageName, buildScript, basename]) => {

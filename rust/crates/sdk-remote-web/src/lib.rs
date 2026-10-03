@@ -35,6 +35,23 @@ pub fn validate_remote_web_endpoint(endpoint: &str) -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Validates the HTTPS endpoint required by native gRPC transports.
+#[wasm_bindgen]
+pub fn validate_remote_web_grpc_endpoint(endpoint: &str) -> Result<(), JsValue> {
+    let parsed = Url::parse(endpoint).map_err(|_| invalid("invalid gRPC endpoint"))?;
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(invalid(
+            "gRPC endpoint must be HTTPS without credentials, query, or fragment",
+        ));
+    }
+    Ok(())
+}
+
 /// Validates one bearer credential according to the shared Rust policy.
 #[wasm_bindgen]
 pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
@@ -67,6 +84,15 @@ pub fn validate_remote_web_response_chunk(
 pub fn validate_remote_web_response_limit(maximum: u64) -> Result<(), JsValue> {
     if maximum == 0 {
         return Err(invalid("response bound must be positive"));
+    }
+    Ok(())
+}
+
+/// Validates the configured native gRPC message bound.
+#[wasm_bindgen]
+pub fn validate_remote_web_message_limit(maximum: u64) -> Result<(), JsValue> {
+    if maximum == 0 {
+        return Err(invalid("message bound must be positive"));
     }
     Ok(())
 }

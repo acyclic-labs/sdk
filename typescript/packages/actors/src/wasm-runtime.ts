@@ -4,6 +4,8 @@ import initRemoteWasm, {
   validate_remote_web_credential,
   validate_remote_web_content_length,
   validate_remote_web_endpoint,
+  validate_remote_web_grpc_endpoint,
+  validate_remote_web_message_limit,
   validate_remote_web_response_chunk,
   validate_remote_web_response_limit,
 } from "../generated/wasm/acyclic_remote_web_wasm.js";
@@ -40,6 +42,12 @@ export function validateActorsEndpoint(endpoint: string): void {
   catch (error) { throw new TypeError(errorMessage(error)); }
 }
 
+export function validateActorsGrpcEndpoint(endpoint: string): void {
+  assertInitialized();
+  try { validate_remote_web_grpc_endpoint(endpoint); }
+  catch (error) { throw new TypeError(errorMessage(error)); }
+}
+
 export function validateActorsCredential(token: string): void {
   assertInitialized();
   try { validate_remote_web_credential(token); }
@@ -56,6 +64,13 @@ export function validateActorsResponseLimit(maximum: number): void {
   assertInitialized();
   if (!Number.isSafeInteger(maximum)) throw new RangeError("maximumResponseBytes must be a safe integer");
   try { validate_remote_web_response_limit(BigInt(maximum)); }
+  catch (error) { throw new RangeError(errorMessage(error)); }
+}
+
+export function validateActorsMessageLimit(maximum: number): void {
+  assertInitialized();
+  if (!Number.isSafeInteger(maximum)) throw new RangeError("maximumMessageBytes must be a safe integer");
+  try { validate_remote_web_message_limit(BigInt(maximum)); }
   catch (error) { throw new RangeError(errorMessage(error)); }
 }
 
