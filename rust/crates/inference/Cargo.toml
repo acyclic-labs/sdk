@@ -38,7 +38,9 @@ tonic-prost-build.workspace = true
 [dev-dependencies]
 prost-reflect.workspace = true
 prost-types.workspace = true
+rcgen = "0.14.10"
 tokio.workspace = true
+tokio-stream.workspace = true
 
 [lints]
 workspace = true

@@ -1425,9 +1425,10 @@ fn decode_usage_receipt(
 mod tests {
     use super::*;
     use futures::stream;
+    use rcgen::generate_simple_self_signed;
     use tokio::net::TcpListener;
     use tokio_stream::wrappers::TcpListenerStream;
-    use tonic::transport::Server;
+    use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
     use tonic::{Code, Request, Response, Status};
     use wire::machines_service_server::{MachinesService, MachinesServiceServer};
 
@@ -1687,6 +1688,62 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(ProviderError::Invalid(_))));
+    }
+
+    #[tokio::test]
+    async fn default_remote_transport_completes_authenticated_mtls_grpc_handshake()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000021")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000022")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000023")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server_key_pem = private_key_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(
+                            server_certificate_pem.clone(),
+                            server_key_pem,
+                        ))
+                        .client_ca_root(Certificate::from_pem(server_certificate_pem)),
+                )?
+                .add_service(MachinesServiceServer::new(service))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let machines = Machines::connect(
+            &endpoint,
+            Tls {
+                ca: certificate_pem.as_bytes(),
+                certificate: certificate_pem.as_bytes(),
+                private_key: private_key_pem.as_bytes(),
+            },
+        )
+        .await?;
+        assert_eq!(machines.assurance(), ProviderAssurance::CustomerHosted);
+        assert_eq!(machines.operation_for(key).await?, operation);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
     }
 
     #[tokio::test]

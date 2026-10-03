@@ -1059,6 +1059,33 @@ fn text_item(kind: wire::ItemKind, text: String) -> wire::Item {
 mod tests {
     use super::*;
     use prost::Message;
+    use rcgen::generate_simple_self_signed;
+    use tokio::net::TcpListener;
+    use tokio_stream::wrappers::TcpListenerStream;
+    use tonic::transport::{Identity, Server, ServerTlsConfig};
+    use tonic::{Request, Response, Status};
+
+    #[derive(Default)]
+    struct ModelsService;
+
+    #[tonic::async_trait]
+    impl wire::models_service_server::ModelsService for ModelsService {
+        async fn list(
+            &self,
+            _request: Request<wire::ListModelsRequest>,
+        ) -> Result<Response<wire::ListModelsResponse>, Status> {
+            Ok(Response::new(wire::ListModelsResponse {
+                models: vec![wire::ModelCapability {
+                    model: "fixture-model".to_owned(),
+                    execution_profile: vec![1; 32],
+                    maximum_context: 1,
+                    maximum_output: 1,
+                    features: vec!["generate".to_owned()],
+                    ..Default::default()
+                }],
+            }))
+        }
+    }
 
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {
@@ -1432,6 +1459,40 @@ mod tests {
             Inference::connect("https://localhost", "secret", &oversized).await,
             Err(Error::Invalid(INVALID_CA_CERTIFICATE_LENGTH))
         ));
+    }
+
+    #[tokio::test]
+    async fn default_remote_transport_completes_authenticated_tls_grpc_handshake()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::models_service_server::ModelsServiceServer::new(
+                    ModelsService,
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        assert_eq!(client.models().await?.len(), 1);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
     }
 
     #[test]

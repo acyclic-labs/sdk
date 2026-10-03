@@ -42,6 +42,7 @@ uuid.workspace = true
 [dev-dependencies]
 tokio-stream.workspace = true
 tokio = { workspace = true, features = ["macros", "rt"] }
+rcgen = "0.14.10"
 
 [lints]
 workspace = true

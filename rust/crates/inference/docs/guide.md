@@ -21,16 +21,24 @@ cargo test --locked -p acyclic-inference
 cargo test --locked -p acyclic-inference --features http-codec --test http_codec
 ```
 
-The default feature is `host`; `http-codec` is independent and can be enabled
-without the host transport. For a local workspace consumer, use a path
-dependency so the source revision is explicit:
+The command block is the maintainer qualification matrix. The final command
+checks the optional adapter feature; it is not a caller requirement. The
+supported caller profile enables the native host client by default, so a
+consumer uses one dependency declaration:
 
 ```toml
 [dependencies]
-acyclic-inference = { path = "../inference", version = "=0.2.0", default-features = false, features = ["http-codec"] }
+acyclic-inference = "0.2"
 ```
 
-The TOML block is a dependency declaration for a caller and is not an executable Rust fence. The source-owned `examples/inference-capability-discovery.rs` is compile-checked with the package, but its execution requires `INFERENCE_ENDPOINT`, `INFERENCE_API_KEY`, and `INFERENCE_CA_PEM` for a real authenticated customer service; local qualification intentionally does not invoke it.
+The TOML block is a dependency declaration for a caller and is not an
+executable Rust fence. The source-owned
+`examples/inference-capability-discovery.rs` is compile-checked with the
+package, but its execution requires `INFERENCE_ENDPOINT`,
+`INFERENCE_API_KEY`, and `INFERENCE_CA_PEM` for a real authenticated customer
+service; local qualification intentionally does not invoke it. A caller can
+use `Inference::connect` and the typed client methods without selecting a
+transport feature.
 
 The package declaration is owned by `rust/crates/inference/Cargo.toml` and
 pins version `0.2.0`; the workspace requires Rust `1.98`. Its default build

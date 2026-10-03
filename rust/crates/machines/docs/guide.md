@@ -21,14 +21,22 @@ cargo test --locked -p acyclic-machines
 cargo test --locked -p acyclic-machines --no-default-features
 ```
 
-For a local workspace consumer, bind the package and version explicitly:
+The command block is the maintainer qualification matrix. The
+`--no-default-features` command is a developer-only portability check. The
+supported caller profile enables the native gRPC client by default, so a
+consumer uses one dependency declaration:
 
 ```toml
 [dependencies]
-acyclic-machines = { path = "../machines", version = "=0.2.0", default-features = false }
+acyclic-machines = "0.2"
 ```
 
-The TOML block is a dependency declaration for a caller and is not an executable Rust fence. The source-owned `examples/machines-recovery-cancellation.rs` is the executable recovery scenario for this package; it uses only `SimulatedMachines` and asserts process-local assurance.
+The TOML block is a dependency declaration for a caller and is not an
+executable Rust fence. The source-owned
+`examples/machines-recovery-cancellation.rs` is the executable recovery
+scenario for this package; it uses only `SimulatedMachines` and asserts
+process-local assurance. A remote caller can use `Machines::connect` or
+`Machines::from_env` without selecting a transport feature.
 
 The package declaration is owned by `rust/crates/machines/Cargo.toml` and
 pins version `0.2.0` with Rust `1.92` as its minimum toolchain. Its default
