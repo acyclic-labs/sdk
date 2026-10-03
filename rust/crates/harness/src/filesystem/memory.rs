@@ -1560,6 +1560,16 @@ where
             .ok_or_else(|| Error::Storage("conversation projection is missing".into()))
     }
 
+    /// Opens the existing authoritative conversation aggregate with its
+    /// owner-bound verifier. Fork publishers use this path so a child issuer
+    /// can never be mistaken for the parent's conversation authority.
+    pub async fn conversation_aggregate(
+        &self,
+        limits: Limits,
+    ) -> Result<StreamAggregate<P>> {
+        self.open_conversation(limits).await
+    }
+
     /// Reads a bounded page of authoritative conversation events after a
     /// revision cursor. Message and activity adapters use this cursor without
     /// hydrating child workspaces or starting model workers.
