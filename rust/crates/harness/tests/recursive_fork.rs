@@ -2169,6 +2169,42 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             &grandchild_project,
         )
         .await?;
+    let root_before_grandchild_writeback = host.resolve(&root_head.workspace).await?;
+    let grandchild_root_approval = RootWritebackApproval::issue(
+        &root_issuer.verifier(),
+        &root_scope,
+        root_project.clone(),
+        OperationId::from_bytes([201; 16]),
+        host.generation_ref_id(grandchild_plan.source_head())?,
+        root_before_grandchild_writeback.generation.clone(),
+    )?;
+    let grandchild_root_error = root_facade
+        .apply_root_writeback_plan_for_child_with_notice(
+            &RootWritebackRequest::new(grandchild_root_approval, root_scope.clone()),
+            host.as_ref(),
+            &root_reducer,
+            &grandchild_authority,
+            &grandchild_project,
+            &grandchild_plan,
+            BTreeMap::new(),
+            &child_notice,
+        )
+        .await
+        .err()
+        .ok_or_else(|| {
+            acyclic_harness::Error::Invalid(
+                "root accepted a grandchild writeback before direct-parent routing".into(),
+            )
+        })?;
+    assert!(matches!(
+        grandchild_root_error,
+        acyclic_harness::Error::Unauthorized(_)
+    ));
+    assert_eq!(
+        host.resolve(&root_head.workspace).await?.generation,
+        root_before_grandchild_writeback.generation,
+        "grandchild writeback rejection must precede root mutation"
+    );
     let grandchild_outcome = child_facade
         .apply_project_merge_for_child_with_notice(
             host.as_ref(),
