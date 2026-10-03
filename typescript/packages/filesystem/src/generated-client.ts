@@ -59,7 +59,7 @@ export const FILESYSTEM_OPERATIONS = {
   "acyclic.filesystem.v2.FilesystemService/Cancel": { rpc: "acyclic.filesystem.v2.FilesystemService/Cancel", capabilities: ["filesystem.operation"], errors: ["INVALID_ARGUMENT", "NOT_FOUND", "FAILED_PRECONDITION", "CANCELLED", "RESOURCE_EXHAUSTED", "UNAVAILABLE", "UNIMPLEMENTED", "DATA_LOSS"], validations: ["operation_id.16_bytes", "operation.idempotency_key.16_bytes", "response.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3", sourceModelSha256: "b7f8e7fd2fdf9ea16e97931831280f7338eef9467cb59e7a60f0ea59e13eb5b3", modeledOperations: 30, httpProjection: false } as const;
+export const FILESYSTEM_SOURCE = { family: "filesystem", rustCrate: "acyclic-filesystem", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor", descriptorSha256: "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1", sourceContentSha256: "6269874bac16ebd834e30aa11367612a93ae624b0329d24835fd6152e31b7158", sourceModelSha256: "6269874bac16ebd834e30aa11367612a93ae624b0329d24835fd6152e31b7158", modeledOperations: 30, httpProjection: false } as const;
 
 export const FILESYSTEM_METHODS = {
 
