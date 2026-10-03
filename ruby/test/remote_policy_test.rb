@@ -12,17 +12,8 @@ class RemotePolicyTest < Minitest::Test
     })
 
     assert_equal :grpc, client.transport
-    assert_equal :native, client.runtime
     assert_equal :ok, client.call("append", { path: "events" })
     assert_equal [["append", { path: "events" }, :grpc]], calls
-  end
-
-  def test_auto_runtime_resolver_can_select_embedded_browser_policy
-    assert_equal :native, Acyclic::Remote::Policy.resolve_runtime
-    assert_equal :browser, Acyclic::Remote::Policy.resolve_runtime(:browser)
-    assert_equal :http_json, Acyclic::Remote::Policy.select(
-      family: "stream", runtime: :browser, streaming: true
-    )
   end
 
   def test_streaming_http_override_is_supported_but_unary_only_override_is_rejected

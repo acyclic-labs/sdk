@@ -12,24 +12,10 @@ void main() {
       },
     );
     expect(client.transport, RemoteTransport.grpc);
-    expect(client.runtime, ClientRuntime.native);
     expect(await client.call('append', {'path': 'events'}), 'ok');
     expect(calls, [
       ['append', {'path': 'events'}, RemoteTransport.grpc],
     ]);
-  });
-
-  test('automatic runtime resolver selects the current embedded platform', () {
-    expect(RemotePolicy.resolveRuntime(), ClientRuntime.native);
-    expect(RemotePolicy.resolveRuntime(ClientRuntime.browser), ClientRuntime.browser);
-    expect(
-      RemotePolicy.select(
-        family: 'stream',
-        runtime: ClientRuntime.browser,
-        streaming: true,
-      ),
-      RemoteTransport.httpJson,
-    );
   });
 
   test('streaming HTTP override is supported but unary-only override is rejected', () {

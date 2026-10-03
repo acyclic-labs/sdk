@@ -48,12 +48,6 @@ descriptor and `inference_descriptor.bin` remains the archived runtime
 handshake fixture. The overlay supplies Rust API comments to generated source;
 it does not change wire fields, options, or handshake bytes.
 
-The workspace metadata permits publication, but these source checks do not
-prove that a matching registry artifact or hosted endpoint exists. A release
-receipt must bind the final source revision, package version, lockfile, feature
-set, and artifact digest before changing the dependency to a registry
-instruction.
-
 ## Capability, error, and service policy
 
 `Inference::models` is the capability discovery surface. It returns the

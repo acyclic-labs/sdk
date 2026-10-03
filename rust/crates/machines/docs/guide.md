@@ -47,12 +47,6 @@ descriptor, and `src/generated/acyclic-machines-v1.bin` remains the archived
 runtime handshake fixture. The documentation overlay does not alter wire
 fields, options, or handshake bytes.
 
-The source metadata permits publication, but these checks do not prove a
-registry artifact, managed provider, or gRPC endpoint. A release receipt must
-record the final source revision, package version, lockfile, feature set, and
-artifact digest. Keep the provider's `ProviderAssurance` value alongside any
-runtime qualification result.
-
 ## Capability, error, and operation policy
 
 `ImageQualification.capabilities` is the provider's exact capability result;

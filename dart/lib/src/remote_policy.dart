@@ -4,10 +4,7 @@ import 'generated_remote_policy.dart' as generated;
 
 enum RemoteTransport { grpc, grpcWeb, httpJson }
 
-enum ClientRuntime { auto, native, browser }
-
-const _isBrowserRuntime = bool.fromEnvironment('dart.library.js_interop') ||
-    bool.fromEnvironment('dart.library.html');
+enum ClientRuntime { native, browser }
 
 class RemotePolicy {
   static Map<ClientRuntime, Map<String, List<(RemoteTransport, bool)>>> get options => {
@@ -38,24 +35,19 @@ class RemotePolicy {
 
   static RemoteTransport select({
     required String family,
-    ClientRuntime runtime = ClientRuntime.auto,
+    ClientRuntime runtime = ClientRuntime.native,
     bool streaming = false,
     RemoteTransport? override,
   }) {
     final selected = generated.GeneratedRemotePolicy.select(
       family: family,
-      runtime: resolveRuntime(runtime) == ClientRuntime.native
+      runtime: runtime == ClientRuntime.native
           ? generated.GeneratedClientRuntime.native
           : generated.GeneratedClientRuntime.browser,
       streaming: streaming,
       transportOverride: override == null ? null : _generatedTransport(override),
     );
     return _transport(selected);
-  }
-
-  static ClientRuntime resolveRuntime([ClientRuntime runtime = ClientRuntime.auto]) {
-    if (runtime != ClientRuntime.auto) return runtime;
-    return _isBrowserRuntime ? ClientRuntime.browser : ClientRuntime.native;
   }
 
   static String validateBearer(String token) {
@@ -73,12 +65,12 @@ class RemoteClient {
   RemoteClient({
     required this.family,
     required RemoteInvoker invoker,
-    ClientRuntime runtime = ClientRuntime.auto,
+    ClientRuntime runtime = ClientRuntime.native,
     bool streaming = false,
     RemoteTransport? transport,
     String? bearer,
   })  : _invoker = invoker,
-        runtime = RemotePolicy.resolveRuntime(runtime),
+        runtime = runtime,
         transport = RemotePolicy.select(
           family: family,
           runtime: runtime,

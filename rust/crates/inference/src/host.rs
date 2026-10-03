@@ -1087,6 +1087,55 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ContextsService;
+
+    #[tonic::async_trait]
+    impl wire::contexts_service_server::ContextsService for ContextsService {
+        async fn create(
+            &self,
+            request: Request<wire::CreateContextRequest>,
+        ) -> Result<Response<wire::MutationReceipt>, Status> {
+            assert_eq!(request.into_inner().model, "fixture-model");
+            Ok(Response::new(wire::MutationReceipt {
+                revision: vec![1; 32],
+                command_digest: vec![2; 32],
+                sequence: 1,
+                retained: true,
+            }))
+        }
+
+        async fn inspect(
+            &self,
+            request: Request<wire::InspectContextRequest>,
+        ) -> Result<Response<wire::ContextView>, Status> {
+            assert_eq!(request.into_inner().revision, vec![1; 32]);
+            Ok(Response::new(wire::ContextView {
+                revision: vec![1; 32],
+                lineage: vec![3; 32],
+                execution_profile: vec![4; 32],
+                content_digest: vec![5; 32],
+                model: "fixture-model".to_owned(),
+                provenance: Some(wire::ContextProvenance {
+                    origin: Some(wire::context_provenance::Origin::Created(wire::Empty {})),
+                }),
+                ..Default::default()
+            }))
+        }
+
+        async fn mutate(
+            &self,
+            _request: Request<wire::MutateContextRequest>,
+        ) -> Result<Response<wire::MutationReceipt>, Status> {
+            Ok(Response::new(wire::MutationReceipt {
+                revision: vec![6; 32],
+                command_digest: vec![7; 32],
+                sequence: 2,
+                retained: false,
+            }))
+        }
+    }
+
     fn evaluation_spec() -> wire::EvaluationSpec {
         wire::EvaluationSpec {
             candidates: vec![wire::EvaluationArtifact {
@@ -1489,6 +1538,48 @@ mod tests {
         let client =
             Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
         assert_eq!(client.models().await?.len(), 1);
+
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_context_create_and_inspect_preserve_server_identities()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let certified = generate_simple_self_signed(["localhost".to_owned()])?;
+        let certificate_pem = certified.cert.pem();
+        let private_key_pem = certified.signing_key.serialize_pem();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server_certificate_pem = certificate_pem.clone();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .tls_config(
+                    ServerTlsConfig::new()
+                        .identity(Identity::from_pem(server_certificate_pem, private_key_pem)),
+                )?
+                .add_service(wire::contexts_service_server::ContextsServiceServer::new(
+                    ContextsService,
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+
+        let client =
+            Inference::connect(&endpoint, "fixture-token", certificate_pem.as_bytes()).await?;
+        let context = client
+            .context("fixture-model")
+            .instructions("bounded fixture input")
+            .create()
+            .await?;
+        let view = context.inspect().await?;
+        assert_eq!(view.revision, vec![1; 32]);
+        assert_eq!(view.model, "fixture-model");
+        assert_eq!(view.lineage, vec![3; 32]);
 
         let _ = shutdown_tx.send(());
         server.await??;

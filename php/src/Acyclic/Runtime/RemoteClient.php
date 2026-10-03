@@ -10,18 +10,16 @@ use Closure;
 final class RemoteClient
 {
     private readonly string $transport;
-    private readonly string $runtime;
 
     public function __construct(
         private readonly string $family,
         callable $invoker,
-        string $runtime = 'auto',
+        string $runtime = 'native',
         bool $streaming = false,
         ?string $transport = null,
         ?string $bearer = null,
     ) {
-        $this->runtime = RemotePolicy::resolveRuntime($runtime);
-        $this->transport = RemotePolicy::select($family, $streaming, $this->runtime, $transport);
+        $this->transport = RemotePolicy::select($family, $streaming, $runtime, $transport);
         if ($bearer !== null) {
             RemotePolicy::validateBearer($bearer);
         }
@@ -33,11 +31,6 @@ final class RemoteClient
     public function transport(): string
     {
         return $this->transport;
-    }
-
-    public function runtime(): string
-    {
-        return $this->runtime;
     }
 
     public function call(string $operation, mixed $request): mixed
