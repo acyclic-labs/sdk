@@ -29,7 +29,7 @@ use acyclic_harness::model::{FileProjectionPolicy, ModelContent, ModelContentPar
 use acyclic_harness::projection::{ModelContextSelection, select_model_context};
 use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
 use acyclic_harness::store::StreamAggregate;
-use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Result};
+use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
 use acyclic_stream::{MemoryStream, StreamClient};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1579,6 +1579,8 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             operation_id: OperationId::from_bytes(identity(1_000 + u16::from(index))),
             parent: parent_authority.clone(),
             parent_revision,
+            attached_agents: Vec::new(),
+            model_boundary: None,
             child: child_authority,
             child_agent,
             resources: vec![
