@@ -341,6 +341,57 @@
         "Invalid volume belongs to another Filesystem provider"
       ],
       "contract_scope": "actual production provider ownership check; recursive positive scenario still unqualified; fixture provider mismatch diagnosed and isolated fix pending"
+    },
+    {
+      "suite": "production local model swarm",
+      "source": "d87db363",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -j 2 -- --nocapture",
+      "artifact_sha256": "5d4ce22d2021e90793f6ce7bd5df0bb45d3dfa8576abd2c18afd03ceff7d7ad7",
+      "suite_sha256": "a590912d60a258b4aa1b4b270dcd6334e19a17be241071ff30ff22d112c7defa",
+      "failures": [
+        "Invalid tool result projection was rejected"
+      ],
+      "contract_scope": "actual production provider identity fixed; model tool projection blocks recursive positive runtime"
+    },
+    {
+      "suite": "native model fork boundary",
+      "source": "d87db363",
+      "passed": 1,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test model_fork_boundary -j 2 -- --nocapture",
+      "artifact_sha256": "9a38e063ea6e957a1584dc6c077fdbe5f637ce02903c52eab557f20a5123be24",
+      "suite_sha256": "9e3fc86ead0a01554fd376d999e3702c5da0fd59f480085afe8f78758732f726",
+      "failures": [
+        "Conflict fork child volume is already allocated"
+      ],
+      "contract_scope": "stale completed boundary refusal passed; recursive positive/forged publication fixture remains failing"
+    },
+    {
+      "suite": "durable swarm budget journal",
+      "source": "d87db363",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test swarm_budget_journal_local -j 2 -- --nocapture",
+      "artifact_sha256": "eac063884bfe757dde2375430e44b82813a817f6a45d0b208d3bca4f22967fe6",
+      "suite_sha256": "0912b4a8a0b3068bceeefdadcb2ba1f06cd90efe8f1f03a97cc967a332b107e9",
+      "failures": [],
+      "contract_scope": "real local Stream atomic reservation, duplicate operation replay, restart owner fence, sixteen receipt issuer CAS, per-dimension no-append bounds; production provider wiring remains separate"
+    },
+    {
+      "suite": "fork and budget new fixture compilation",
+      "source": "7167c163",
+      "exit_code": 1,
+      "failures": [
+        "forged error partial move",
+        "publication guard across await is not Send",
+        "reservation usage/request type mismatch"
+      ],
+      "contract_scope": "compile-only failures repaired in d87db363; subsequent executions listed separately"
     }
   ],
   "input_digests": {
