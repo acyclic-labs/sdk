@@ -1,0 +1,57 @@
+{
+  "schema": "acyclic.sdk.generation.manifest.v1",
+  "operation": "generate",
+  "status": "generated",
+  "source": {
+    "revision": "0123456789012345678901234567890123456789",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "dirty": false
+  },
+  "authoritative_source": {
+    "revision": "0123456789012345678901234567890123456789",
+    "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "dirty": false
+  },
+  "generator": {
+    "name": "acyclic-sdk-generation",
+    "version": "0.1.0"
+  },
+  "tools": [
+    {
+      "id": "sdk-docs",
+      "status": "failed",
+      "required": true,
+      "command": ["cargo", "run", "--manifest-path", "missing/Cargo.toml"],
+      "request": "requests/sdk-docs.json",
+      "stdout_sha256": null,
+      "stderr_sha256": null,
+      "exit_code": null,
+      "message": "tool is not present in this checkout"
+    },
+    {
+      "id": "sdk-python",
+      "status": "pending",
+      "required": false,
+      "command": [],
+      "request": "requests/sdk-python.json",
+      "stdout_sha256": null,
+      "stderr_sha256": null,
+      "exit_code": null,
+      "message": "tool is not present in this checkout"
+    },
+    {
+      "id": "sdk-contract-wire",
+      "status": "passed",
+      "required": true,
+      "command": [],
+      "request": "requests/sdk-contract-wire.json",
+      "stdout_sha256": null,
+      "stderr_sha256": null,
+      "exit_code": 0,
+      "message": null
+    }
+  ],
+  "artifacts": [],
+  "artifact_digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "languages": []
+}
