@@ -443,6 +443,47 @@
         "Storage authority does not exist"
       ],
       "contract_scope": "diagnostic failure only; concurrent host execution source changes during compile prevent final source-bound qualification; tool projection and operation binding no longer the observed refusal"
+    },
+    {
+      "suite": "production plugin root conflict and abort",
+      "source": "60455301",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-plugin root_git_conflicted_merge_can_abort_through_the_public_tool -j 2 -- --nocapture",
+      "artifact_sha256": "68f469449fcedb854b4cfa814eaaf7d3eed37e87dd48a5ab4e5b140b32cc9008",
+      "suite_sha256": "7739a3903f4920959b175084091decc81f46a1a8a05f2a1fef0eda5752610bf2",
+      "failures": [
+        "Git join source changed while preparing the provider plan before expected materialized conflict"
+      ],
+      "contract_scope": "native real public plugin tool scenario compiled and executed; abort remained unexercised due earlier source generation failure"
+    },
+    {
+      "suite": "qualification descriptors and driver contracts",
+      "source": "379435cd",
+      "passed": 29,
+      "failed": 0,
+      "skipped": 0,
+      "command": "node --test scripts/graphcoder-qualification.test.mjs scripts/graphcoder-qualification-suite.test.mjs scripts/graphcoder-mock-stage-config.test.mjs scripts/graphcoder-production-pty.test.mjs scripts/graphcoder-scenario.test.mjs scripts/graphcoder-native-stage-config.test.mjs",
+      "suite_digests": {
+        "scripts/graphcoder-qualification.test.mjs": "885726a60d22c02d6954d7e4b93ad5f9d4051c488c444079d0228ae4cbaf6f95",
+        "scripts/graphcoder-qualification-suite.test.mjs": "63ec7a0c5617db8252dcbe60491c0f4d1b4de82ed6aea84496fb7f651d5b759c",
+        "scripts/graphcoder-mock-stage-config.test.mjs": "e15a57fcf9d2ffb7afacda29fb4d957c0a7fb529aec4eaa7d57eb8376ae67acb",
+        "scripts/graphcoder-production-pty.test.mjs": "016523541f151dac862d03b0406ad769c47029a6e37664b1df9c10280d5e1447",
+        "scripts/graphcoder-scenario.test.mjs": "1bdb38edd3ab2974d08335d9bc7c44512035c2686e8f75374cf0fb1e3e9ee94e",
+        "scripts/graphcoder-native-stage-config.test.mjs": "3692ff81ce1c035e80f8b2f6635a95d4e4fe66171fa35f87f4109bad856f4a8f"
+      },
+      "contract_scope": "actual Node source tests for descriptor freshness/consumed-artifact provenance, driver framing/environment, locked matrix; does not prove live installed native or PTY execution"
+    },
+    {
+      "suite": "opaque host capability binding surface",
+      "source": "379435cd",
+      "passed": 2,
+      "failed": 0,
+      "assertions": 6,
+      "command": "bun test typescript/packages/harness/test/opaque-host-capabilities.test.ts",
+      "suite_sha256": "fe5e3a8fdd8f0558bf109529bc982cf93d47fba52ab86072e0ef5771544152c5",
+      "contract_scope": "negative public declaration/export surface scans only; does not prove credential-free arbitrary model options or fresh native/WASM serialization"
     }
   ],
   "input_digests": {
