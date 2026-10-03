@@ -15,6 +15,7 @@
       "default": "./dist/index.js"
     },
     "./grpc": { "node": { "types": "./dist/grpc.d.ts", "default": "./dist/grpc.js" } },
+    "./native": { "node": { "types": "./dist/native.d.ts", "default": "./dist/native.js" } },
     "./proto": { "types": "./generated/proto/machines/v1/machines_pb.d.ts", "default": "./generated/proto/machines/v1/machines_pb.js" }
   },
   "types": "./dist/index.d.ts",
