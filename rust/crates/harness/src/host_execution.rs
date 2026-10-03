@@ -11,6 +11,8 @@ use crate::{
     core::{EffectGuarantee, EffectStatus},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -18,12 +20,11 @@ use std::{
     collections::BTreeMap,
     io::Read,
     path::Path,
-    process::{Command, Stdio},
+    process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
-        Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -370,7 +371,8 @@ impl ExecutionReceipt {
                 "successful execution receipt has a nonzero status".into(),
             )),
             Self::Failed {
-                status_code: Some(0), ..
+                status_code: Some(0),
+                ..
             } => Err(Error::Invalid(
                 "failed execution receipt has a successful status".into(),
             )),
@@ -420,6 +422,20 @@ pub struct ExecutionReceiptRecord {
 }
 
 impl ExecutionReceiptRecord {
+    /// Validates the record independently of a dispatch lookup.
+    pub fn validate(&self) -> Result<()> {
+        if self.key.provider.is_empty() || self.key.effect_kind.is_empty() {
+            return Err(Error::Invalid("execution receipt key is incomplete".into()));
+        }
+        self.result.validate()?;
+        if self.result.descriptor().media_type() != "application/json" {
+            return Err(Error::Invalid(
+                "execution result must be JSON content".into(),
+            ));
+        }
+        self.receipt.validate()
+    }
+
     /// Validates the typed record against a dispatch before replay.
     pub fn validate_for(&self, dispatch: &EffectDispatch) -> Result<()> {
         if self.key.operation_id.into_bytes() != dispatch.effect_id.into_bytes()
@@ -434,11 +450,7 @@ impl ExecutionReceiptRecord {
                 "execution receipt identity does not match dispatch".into(),
             ));
         }
-        self.result.validate()?;
-        if self.result.descriptor().media_type() != "application/json" {
-            return Err(Error::Invalid("execution result must be JSON content".into()));
-        }
-        self.receipt.validate()
+        self.validate()
     }
 }
 
@@ -453,6 +465,21 @@ pub trait ExecutionReceiptStore: Send + Sync {
         &'a self,
         key: &'a ExecutionReceiptKey,
     ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>>;
+
+    /// Finds a previously admitted attempt during restart reconciliation.
+    /// Implementations must return only a record whose key is authenticated
+    /// by the host journal. The default is fail-closed.
+    fn load_attempt<'a>(
+        &'a self,
+        _attempt_id: EffectAttemptId,
+    ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+        async {
+            Err(Error::Unsupported(
+                "host receipt attempt reconciliation is unavailable".into(),
+            ))
+        }
+        .boxed()
+    }
 
     /// Persists a receipt before exposing its observation to Harness.
     fn publish<'a>(
@@ -583,16 +610,14 @@ impl ExecutionRunner for NativeExecutionRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         request.environment.apply(&mut command);
-        let mut child = command.spawn().map_err(|error| {
+        let mut child = ManagedChild::spawn(&mut command).map_err(|error| {
             Error::Storage(format!("failed to start approved process: {error}"))
         })?;
         let stdout = child
-            .stdout
-            .take()
+            .take_stdout()
             .ok_or_else(|| Error::Storage("approved process stdout pipe missing".into()))?;
         let stderr = child
-            .stderr
-            .take()
+            .take_stderr()
             .ok_or_else(|| Error::Storage("approved process stderr pipe missing".into()))?;
         let overflow = Arc::new(AtomicBool::new(false));
         let remaining = Arc::new(std::sync::atomic::AtomicUsize::new(
@@ -603,14 +628,12 @@ impl ExecutionRunner for NativeExecutionRunner {
         let termination;
         loop {
             if overflow.load(Ordering::Acquire) {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.terminate();
                 termination = Termination::Overflow;
                 break;
             }
             if cancellation.is_cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.terminate();
                 termination = Termination::Cancelled;
                 break;
             }
@@ -636,8 +659,7 @@ impl ExecutionRunner for NativeExecutionRunner {
                 });
             }
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                let _ = child.kill();
-                let _ = child.wait();
+                let _ = child.terminate();
                 termination = Termination::TimedOut;
                 break;
             }
@@ -659,6 +681,61 @@ impl ExecutionRunner for NativeExecutionRunner {
             Termination::TimedOut => Ok(RunnerOutcome::TimedOut { stdout, stderr }),
             Termination::Cancelled => Ok(RunnerOutcome::Cancelled { stdout, stderr }),
             Termination::Overflow => unreachable!("overflow is returned above"),
+        }
+    }
+}
+
+/// Child handle used by the native adapter. The optional process-tree feature
+/// gives timeout and cancellation ownership of inherited descendants; the
+/// direct fallback preserves compilation for WASM and minimal hosts.
+enum ManagedChild {
+    Direct(Child),
+    #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+    Tree(ProcessTree),
+}
+
+impl ManagedChild {
+    fn spawn(command: &mut Command) -> std::io::Result<Self> {
+        #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+        {
+            return spawn_process_tree(command).map(Self::Tree);
+        }
+        #[allow(unreachable_code)]
+        command.spawn().map(Self::Direct)
+    }
+
+    fn take_stdout(&mut self) -> Option<ChildStdout> {
+        match self {
+            Self::Direct(child) => child.stdout.take(),
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(tree) => tree.take_stdout(),
+        }
+    }
+
+    fn take_stderr(&mut self) -> Option<ChildStderr> {
+        match self {
+            Self::Direct(child) => child.stderr.take(),
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(tree) => tree.take_stderr(),
+        }
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        match self {
+            Self::Direct(child) => child.try_wait(),
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(tree) => tree.try_wait(),
+        }
+    }
+
+    fn terminate(&mut self) -> std::io::Result<()> {
+        match self {
+            Self::Direct(child) => {
+                let _ = child.kill();
+                child.wait().map(|_| ())
+            }
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(tree) => tree.terminate(),
         }
     }
 }
@@ -777,7 +854,12 @@ pub struct NativeExecutionProvider {
 }
 
 impl NativeExecutionProvider {
-    /// Binds owner-authorized content access and a host execution runner.
+    /// Compatibility constructor for in-crate legacy tests.
+    ///
+    /// Production composition must use [`Self::new_with_receipt_store`],
+    /// because this path resolves receipts through an agent-private content
+    /// publisher and cannot establish a host-only system journal boundary.
+    #[cfg(test)]
     pub fn new(
         resolver: Arc<dyn ContentResidencyVerifier>,
         publisher: Arc<dyn ContentPublisher>,
@@ -820,7 +902,8 @@ impl NativeExecutionProvider {
         })
     }
 
-    /// Uses the default native process runner.
+    /// Compatibility constructor for in-crate legacy tests.
+    #[cfg(test)]
     pub fn native(
         resolver: Arc<dyn ContentResidencyVerifier>,
         publisher: Arc<dyn ContentPublisher>,
@@ -882,7 +965,11 @@ impl NativeExecutionProvider {
         Ok(cancellation)
     }
 
-    fn release_attempt(&self, operation_id: OperationId, attempt_id: EffectAttemptId) -> Result<()> {
+    fn release_attempt(
+        &self,
+        operation_id: OperationId,
+        attempt_id: EffectAttemptId,
+    ) -> Result<()> {
         let mut active = self
             .active
             .lock()
@@ -936,7 +1023,7 @@ impl NativeExecutionProvider {
         };
         let (reference, bytes) = resolved;
         reference.descriptor().verify(&bytes)?;
-        let receipt = serde_json::from_slice(&bytes).map_err(|error| {
+        let receipt: ExecutionReceipt = serde_json::from_slice(&bytes).map_err(|error| {
             Error::Invalid(format!("persisted execution receipt is invalid: {error}"))
         })?;
         receipt.validate()?;
@@ -971,7 +1058,7 @@ impl NativeExecutionProvider {
         if reason.is_empty() {
             reason = "host execution outcome is unknown".into();
         }
-        if reason.chars().count() > MAX_FAILURE_BYTES {
+        if reason.len() > MAX_FAILURE_BYTES {
             let mut end = MAX_FAILURE_BYTES.min(reason.len());
             while end > 0 && !reason.is_char_boundary(end) {
                 end -= 1;
@@ -979,6 +1066,32 @@ impl NativeExecutionProvider {
             reason.truncate(end);
         }
         ExecutionReceipt::Unknown { reason }
+    }
+
+    fn enforce_output_limit(request: &ExecutionSpec, outcome: RunnerOutcome) -> RunnerOutcome {
+        let output_len = |stdout: &[u8], stderr: &[u8]| {
+            stdout.len().saturating_add(stderr.len()) > request.max_output_bytes as usize
+        };
+        match outcome {
+            RunnerOutcome::Exited {
+                status_code: _,
+                stdout,
+                stderr,
+            } if output_len(&stdout, &stderr) => RunnerOutcome::Unknown {
+                reason: "execution runner exceeded the approved output limit".into(),
+            },
+            RunnerOutcome::TimedOut { stdout, stderr } if output_len(&stdout, &stderr) => {
+                RunnerOutcome::Unknown {
+                    reason: "execution runner exceeded the approved output limit".into(),
+                }
+            }
+            RunnerOutcome::Cancelled { stdout, stderr } if output_len(&stdout, &stderr) => {
+                RunnerOutcome::Unknown {
+                    reason: "execution runner exceeded the approved output limit".into(),
+                }
+            }
+            outcome => outcome,
+        }
     }
 
     #[allow(
@@ -1047,7 +1160,10 @@ impl NativeExecutionProvider {
         // Reserve before looking up the receipt so two concurrent dispatches
         // cannot both observe a miss and run the same host command.
         let cancellation = self.reserve_attempt(approval.operation_id, request.attempt_id)?;
-        match self.persisted_receipt(&request, approval.operation_id).await {
+        match self
+            .persisted_receipt(&request, approval.operation_id)
+            .await
+        {
             Ok(Some((result, receipt))) => {
                 self.release_attempt(approval.operation_id, request.attempt_id)?;
                 return Ok(EffectObservation {
@@ -1072,7 +1188,6 @@ impl NativeExecutionProvider {
                 runner.run_with_cancellation(&execution_request, &cancellation)
             })
             .await;
-            self.release_attempt(approval.operation_id, request.attempt_id)?;
             match outcome {
                 Err(error) => Self::bounded_unknown(format!(
                     "approved process task failed before its outcome was durable: {error}"
@@ -1080,43 +1195,52 @@ impl NativeExecutionProvider {
                 Ok(Err(error)) => Self::bounded_unknown(format!(
                     "approved process runner failed before its outcome was durable: {error}"
                 )),
-                Ok(Ok(RunnerOutcome::Exited {
-                    status_code: Some(0),
-                    stdout,
-                    stderr,
-                })) => ExecutionReceipt::Succeeded {
-                    status_code: 0,
-                    stdout,
-                    stderr,
+                Ok(Ok(outcome)) => match Self::enforce_output_limit(&approval.request, outcome) {
+                    RunnerOutcome::Exited {
+                        status_code: Some(0),
+                        stdout,
+                        stderr,
+                    } => ExecutionReceipt::Succeeded {
+                        status_code: 0,
+                        stdout,
+                        stderr,
+                    },
+                    RunnerOutcome::Exited {
+                        status_code,
+                        stdout,
+                        stderr,
+                    } => ExecutionReceipt::Failed {
+                        status_code,
+                        stdout,
+                        stderr,
+                    },
+                    RunnerOutcome::TimedOut { stdout, stderr } => {
+                        ExecutionReceipt::TimedOut { stdout, stderr }
+                    }
+                    RunnerOutcome::Cancelled { stdout, stderr } => {
+                        ExecutionReceipt::Cancelled { stdout, stderr }
+                    }
+                    RunnerOutcome::Unknown { reason } => Self::bounded_unknown(reason),
                 },
-                Ok(Ok(RunnerOutcome::Exited {
-                    status_code,
-                    stdout,
-                    stderr,
-                })) => ExecutionReceipt::Failed {
-                    status_code,
-                    stdout,
-                    stderr,
-                },
-                Ok(Ok(RunnerOutcome::TimedOut { stdout, stderr })) => {
-                    ExecutionReceipt::TimedOut { stdout, stderr }
-                }
-                Ok(Ok(RunnerOutcome::Cancelled { stdout, stderr })) => {
-                    ExecutionReceipt::Cancelled { stdout, stderr }
-                }
-                Ok(Ok(RunnerOutcome::Unknown { reason })) => Self::bounded_unknown(reason),
             }
         } else {
-            self.release_attempt(approval.operation_id, request.attempt_id)?;
             ExecutionReceipt::Denied {
                 reason: approval
                     .denial_reason
                     .unwrap_or_else(|| "owner denied execution".into()),
             }
         };
-        receipt.validate()?;
-        let receipt_bytes =
-            serde_json::to_vec(&receipt).map_err(|error| Error::Invalid(error.to_string()))?;
+        if let Err(error) = receipt.validate() {
+            self.release_attempt(approval.operation_id, request.attempt_id)?;
+            return Err(error);
+        }
+        let receipt_bytes = match serde_json::to_vec(&receipt) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.release_attempt(approval.operation_id, request.attempt_id)?;
+                return Err(Error::Invalid(error.to_string()));
+            }
+        };
         let key = ExecutionReceiptKey {
             operation_id: approval.operation_id,
             effect_id: request.effect_id,
@@ -1127,7 +1251,13 @@ impl NativeExecutionProvider {
             request_digest: request.request_digest,
         };
         let result = if let Some(store) = &self.receipt_store {
-            store.publish(&key, &receipt).await?
+            match store.publish(&key, &receipt).await {
+                Ok(result) => result,
+                Err(error) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Err(error);
+                }
+            }
         } else {
             let publisher = self.publisher.as_ref().ok_or_else(|| {
                 Error::Unsupported("host execution receipt store is not configured".into())
@@ -1136,7 +1266,7 @@ impl NativeExecutionProvider {
                 ".harness/execution/{}/attempt-{}.json",
                 approval.operation_id, request.attempt_id
             );
-            publisher
+            match publisher
                 .stage(
                     approval.operation_id,
                     &path,
@@ -1144,8 +1274,19 @@ impl NativeExecutionProvider {
                     "application/json",
                     "execution-result.json",
                 )
-                .await?
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Err(error);
+                }
+            }
         };
+        // Keep the reservation until the receipt publication has returned.
+        // A second dispatch must never race the first attempt between process
+        // completion and durable result publication.
+        self.release_attempt(approval.operation_id, request.attempt_id)?;
         let status = Self::status_for_receipt(receipt, result);
         Ok(EffectObservation {
             provider: request.provider,
@@ -1181,9 +1322,26 @@ impl EffectProvider for NativeExecutionProvider {
 
     fn reconcile<'a>(
         &'a self,
-        _attempt_id: EffectAttemptId,
+        attempt_id: EffectAttemptId,
     ) -> BoxFuture<'a, Result<Option<EffectObservation>>> {
-        async { Ok(None) }.boxed()
+        async move {
+            let Some(store) = &self.receipt_store else {
+                return Ok(None);
+            };
+            let Some(record) = store.load_attempt(attempt_id).await? else {
+                return Ok(None);
+            };
+            record.validate()?;
+            Ok(Some(EffectObservation {
+                provider: record.key.provider.clone(),
+                effect_id: record.key.effect_id,
+                attempt_id: record.key.attempt_id,
+                request_digest: record.key.request_digest,
+                guarantee: record.key.guarantee,
+                status: Self::status_for_receipt(record.receipt, record.result),
+            }))
+        }
+        .boxed()
     }
 }
 
@@ -1233,7 +1391,7 @@ mod tests {
             volume: &'a VolumeRef,
             _granted_prefix: &'a str,
             path: &'a str,
-            _expected_generation: Option<&'a crate::conversation::GenerationRef>,
+            _expected_generation: Option<&'a crate::resources::GenerationRef>,
         ) -> crate::conversation::ContentFuture<'a, Result<(FileRef, Vec<u8>)>> {
             Box::pin(async move {
                 let bytes = self
@@ -1336,6 +1494,21 @@ mod tests {
                 Ok(result)
             })
         }
+
+        fn load_attempt<'a>(
+            &'a self,
+            attempt_id: EffectAttemptId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            Box::pin(async move {
+                Ok(self
+                    .records
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .iter()
+                    .find(|record| record.key.attempt_id == attempt_id)
+                    .cloned())
+            })
+        }
     }
 
     #[derive(Default)]
@@ -1363,7 +1536,12 @@ mod tests {
             _context: ExecutionApprovalContext<'a>,
             _: &'a ExecutionApproval,
         ) -> futures::future::BoxFuture<'a, Result<()>> {
-            async { Err(Error::Unauthorized("durable owner approval is absent".into())) }.boxed()
+            async {
+                Err(Error::Unauthorized(
+                    "durable owner approval is absent".into(),
+                ))
+            }
+            .boxed()
         }
     }
 
@@ -1401,13 +1579,13 @@ mod tests {
     }
 
     struct BlockingRunner {
-        started: std::sync::mpsc::Sender<()>,
+        started: Arc<AtomicBool>,
         release: Arc<AtomicBool>,
     }
 
     impl ExecutionRunner for BlockingRunner {
         fn run(&self, _request: &ExecutionSpec) -> Result<RunnerOutcome> {
-            let _ = self.started.send(());
+            self.started.store(true, Ordering::Release);
             while !self.release.load(Ordering::Acquire) {
                 thread::sleep(Duration::from_millis(1));
             }
@@ -1479,7 +1657,8 @@ mod tests {
         changed.request.arguments.push("changed".into());
         assert!(matches!(changed.validate(), Err(Error::Conflict(_))));
         let mut changed_environment = approval.clone();
-        if let ExecutionEnvironment::Explicit { variables } = &mut changed_environment.request.environment
+        if let ExecutionEnvironment::Explicit { variables } =
+            &mut changed_environment.request.environment
         {
             variables.insert("GRAPH_CODER_APPROVAL_KEY".into(), "changed".into());
         }
@@ -1489,7 +1668,10 @@ mod tests {
         ));
         let mut changed_timeout = approval.clone();
         changed_timeout.request.timeout_ms = Some(1);
-        assert!(matches!(changed_timeout.validate(), Err(Error::Conflict(_))));
+        assert!(matches!(
+            changed_timeout.validate(),
+            Err(Error::Conflict(_))
+        ));
         let mut changed_output = approval.clone();
         changed_output.request.max_output_bytes = 1;
         assert!(matches!(changed_output.validate(), Err(Error::Conflict(_))));
@@ -1509,7 +1691,9 @@ mod tests {
     fn timeout_and_unknown_reasons_are_bounded_without_unicode_corruption() -> Result<()> {
         let mut request = spec();
         request.timeout_ms = Some(u64::MAX);
-        assert!(matches!(request.validate(), Err(Error::Invalid(message)) if message.contains("timeout")));
+        assert!(
+            matches!(request.validate(), Err(Error::Invalid(message)) if message.contains("timeout"))
+        );
 
         let receipt = NativeExecutionProvider::bounded_unknown("🦀".repeat(MAX_FAILURE_BYTES));
         receipt.validate()?;
@@ -1530,9 +1714,7 @@ mod tests {
         if cfg!(windows) {
             request.arguments = vec![
                 "/C".into(),
-                format!(
-                    "if defined {sentinel} (exit /b 7) else (echo graphcoder-approved)"
-                ),
+                format!("if defined {sentinel} (exit /b 7) else (echo graphcoder-approved)"),
             ];
         } else {
             request.arguments = vec![
@@ -1657,11 +1839,13 @@ mod tests {
         }
         let cancellation = ExecutionCancellation::new();
         let signal = cancellation.clone();
-        let handle = thread::spawn(move || {
-            NativeExecutionRunner.run_with_cancellation(&request, &signal)
-        });
+        let handle =
+            thread::spawn(move || NativeExecutionRunner.run_with_cancellation(&request, &signal));
         cancellation.cancel();
-        assert!(matches!(handle.join().expect("runner thread panicked")?, RunnerOutcome::Cancelled { .. }));
+        assert!(matches!(
+            handle.join().expect("runner thread panicked")?,
+            RunnerOutcome::Cancelled { .. }
+        ));
         Ok(())
     }
 
@@ -1925,6 +2109,13 @@ mod tests {
             EffectStatus::Succeeded { .. }
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            provider
+                .reconcile(dispatch.attempt_id)
+                .await?
+                .map(|observation| observation.status),
+            Some(EffectStatus::Succeeded { .. })
+        ));
 
         let replay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let restarted = NativeExecutionProvider::new_with_receipt_store(
@@ -1993,8 +2184,13 @@ mod tests {
             }
             tokio::task::yield_now().await;
         }
-        assert!(cancelled, "dispatch never exposed its active cancellation token");
-        let observation = task.await.map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(
+            cancelled,
+            "dispatch never exposed its active cancellation token"
+        );
+        let observation = task
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
         assert!(matches!(
             observation.status,
             EffectStatus::FailedWithReceipt { ref message, .. } if message.contains("cancelled")
@@ -2008,13 +2204,13 @@ mod tests {
         let operation = OperationId::from_bytes([61; 16]);
         let approval = ExecutionApproval::approve(operation, spec())?;
         let (content, request_file) = content_fixture(&approval)?;
-        let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let started = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(false));
         let provider = Arc::new(NativeExecutionProvider::new(
             content.clone(),
             content.clone(),
             Arc::new(BlockingRunner {
-                started: started_sender,
+                started: Arc::clone(&started),
                 release: Arc::clone(&release),
             }),
             approval_verifier(),
@@ -2042,10 +2238,18 @@ mod tests {
             let provider = Arc::clone(&provider);
             async move { provider.dispatch(first).await }
         });
-        started_receiver
-            .recv_timeout(Duration::from_secs(2))
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(matches!(provider.dispatch(second).await, Err(Error::Conflict(message)) if message.contains("active attempt")));
+        for _ in 0..2_000 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        if !started.load(Ordering::Acquire) {
+            return Err(Error::Storage("blocking runner did not start".into()));
+        }
+        assert!(
+            matches!(provider.dispatch(second).await, Err(Error::Conflict(message)) if message.contains("active attempt"))
+        );
         release.store(true, Ordering::Release);
         task.await
             .map_err(|error| Error::Storage(error.to_string()))??;
@@ -2188,17 +2392,13 @@ mod local_provider_tests {
     async fn durable_local_receipt_is_reconciled_without_redispatch() -> Result<()> {
         let root = std::env::temp_dir().join(format!("harness-execution-{}", OperationId::new()));
         let model = Model::new("mock", "execution", "1", serde_json::Value::Null)?;
-        let session = PersistentLocalHarness::open(
-            &root,
-            model,
-            Arc::new(NoopModel),
-            Limits::default(),
-        )
-        .await?;
+        let session =
+            PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
+                .await?;
         let operation = OperationId::from_bytes([41; 16]);
         let approval = ExecutionApproval::approve(operation, local_spec())?;
-        let approval_bytes = serde_json::to_vec(&approval)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let approval_bytes =
+            serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
         let request_file = session
             .storage()
             .stage(
@@ -2242,7 +2442,10 @@ mod local_provider_tests {
             guarantee: EffectGuarantee::AtMostOnce,
             request_digest,
         };
-        assert!(matches!(provider.dispatch(dispatch.clone()).await, Err(Error::Storage(_))));
+        assert!(matches!(
+            provider.dispatch(dispatch.clone()).await,
+            Err(Error::Storage(_))
+        ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
 
         let second_calls = Arc::new(AtomicUsize::new(0));
