@@ -44,5 +44,16 @@ The intended loop is:
 5. Run `receipt-check --final` only after every row is passed and every required
    execution kind is present.
 
+For the GraphCoder application lane, the installed artifact must be driven
+through the public terminal entrypoint and the same command sequence must be
+run through both headless and Windows PTY transports. The PTY descriptor must
+identify the exact packaged GraphCoder artifact and the transcript must retain
+the lifecycle, approval, lazy file/diff, and cancellation markers. The bridge
+used by that run must be the durable local Harness runtime; the deterministic
+fixture remains a separate mock lane and cannot satisfy native or PTY rows.
+The runtime bridge is injected through `HarnessGraphCoderTransport`, so this
+qualification runner does not create a second session store or orchestration
+path in GraphCoder.
+
 Any failure, skip, flaky result, missing case, missing evidence, stale artifact,
 or compile-only substitution keeps the receipt non-final.
