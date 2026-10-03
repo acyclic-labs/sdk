@@ -1,0 +1,18 @@
+[package]
+name = "acyclic-sdk-contract-options"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+description = "Rust-owned custom protobuf option metadata for SDK contract generation"
+
+[dependencies]
+prost = "0.14.4"
+prost-types = "0.14.4"
+
+[dev-dependencies]
+protoc-bin-vendored = "3.2.0"
+acyclic-sdk-contract-validation = { path = "../sdk-contract-validation" }
+
+[workspace]
