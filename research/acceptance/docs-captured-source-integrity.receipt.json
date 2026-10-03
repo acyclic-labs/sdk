@@ -1,0 +1,46 @@
+{
+  "schema": "acyclic.sdk.root-verification.v1",
+  "status": "passed",
+  "checked_at_utc": "2026-10-03T19:37:59.1886770Z",
+  "source_kind": "captured-snapshot",
+  "origin_revision": "c523d27df5c9a51f6fe81bfa1e26a3757bfa2f78",
+  "snapshot_root": "Q:/sdk/work/rust-docs-capture-c52327-normalized",
+  "capture_manifest": "Q:/sdk/work/rust-docs-capture-c52327-normalized/source-capture-current.json",
+  "capture_manifest_sha256": "b7189f4165a41d1c22fb33a6b63a134fd6237a9eaf1f42da151bad5397ae18bb",
+  "declared_closure_sha256": "53e576883585b17e1db9ba67d6b119bf05536bb5ab983bf464343700c2ed3808",
+  "checked_source_files": 769,
+  "mismatched_source_files": 0,
+  "bundle": "Q:/sdk/work/rust-generation-output-c52327-normalized/sdk-docs-bundle.json",
+  "bundle_sha256": "843d0244ef5a4d790af78eb2792fa3efce5ca110b89211584f605d7073b66924",
+  "website_projection": "Q:/sdk/work/rust-generation-output-c52327-normalized/sdk-docs-website.json",
+  "website_projection_sha256": "fc09d1a635e403459b3dcee48b113dcacad2ce1eee3393e93ce9632c149ee0e4",
+  "observed_bundle": {
+    "profile_package_counts": [
+      10,
+      6,
+      1,
+      7
+    ],
+    "diagnostics": 0,
+    "complete_profiles": [
+      "host-default",
+      "host-capabilities",
+      "native-bindings",
+      "wasm-bindings"
+    ],
+    "website_channel": "branch-preview",
+    "crates": 19,
+    "source_state": "captured-snapshot"
+  },
+  "qualifies": [
+    "all declared capture files match their per-file hashes",
+    "inspected bundle profile completeness and diagnostics metadata"
+  ],
+  "excludes": [
+    "clean Git revision bytes",
+    "latest live worktree source",
+    "independent reexecution of all rustdoc graphs",
+    "current package-backed snippet execution",
+    "rendered website qualification"
+  ]
+}
