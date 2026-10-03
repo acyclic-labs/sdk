@@ -13,6 +13,7 @@ use crate::{
     },
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     model::{Model, ModelProvider},
+    tool::ToolRegistry,
     resources::ProviderRef,
     store::StreamAggregate,
 };
@@ -380,6 +381,49 @@ pub struct PersistentLocalHarness {
     storage: DurableHarnessStorage,
     bundle: crate::Harness,
 }
+
+/// Optional owner supplied tools shared by every session in one local swarm.
+///
+/// The registry is copied into each immutable Harness composition. Executors
+/// retain their authenticated host and wait sources; model input only sees
+/// the version pinned definitions selected by the registry.
+#[derive(Clone, Default)]
+pub struct LocalHarnessTools {
+    tools: ToolRegistry,
+}
+
+impl LocalHarnessTools {
+    /// Creates an empty extension set.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            tools: ToolRegistry::new(),
+        }
+    }
+
+    /// Retains one explicitly assembled tool registry.
+    #[must_use]
+    pub fn from_registry(tools: ToolRegistry) -> Self {
+        Self { tools }
+    }
+
+    pub(crate) fn install_into(
+        &self,
+        mut builder: crate::bundle::HarnessBuilder,
+    ) -> Result<crate::bundle::HarnessBuilder> {
+        for definition in self.tools.definitions()? {
+            let tool = self
+                .tools
+                .get_version(&definition.name, &definition.revision)
+                .cloned()
+                .ok_or_else(|| Error::Storage("local tool registry lost selected revision".into()))?;
+            builder = builder.tool(tool)?;
+            builder = builder.grant(format!("tool:call:{}", definition.name));
+        }
+        Ok(builder)
+    }
+}
+
 impl PersistentLocalHarness {
     /// Composes a durable harness from provider and identity descriptors that
     /// the application has already persisted.
@@ -394,6 +438,34 @@ impl PersistentLocalHarness {
         conversation: Authority,
         issuer: AuthorityIssuer,
     ) -> Result<Self> {
+        Self::from_providers_with_tools(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            agent,
+            volume,
+            conversation,
+            issuer,
+            LocalHarnessTools::new(),
+        )
+        .await
+    }
+
+    /// Composes a durable local agent with owner supplied model tools.
+    pub async fn from_providers_with_tools(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        agent: AgentId,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        extension: LocalHarnessTools,
+    ) -> Result<Self> {
         limits.validate()?;
         let storage = DurableHarnessStorage::from_providers(
             agent,
@@ -407,7 +479,7 @@ impl PersistentLocalHarness {
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
-        let bundle = storage
+        let builder = storage
             .builder()
             .model(model, provider)
             .tools(tools)
@@ -415,8 +487,8 @@ impl PersistentLocalHarness {
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
-            .limits(limits)
-            .build()?;
+            .limits(limits);
+        let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
 
@@ -434,6 +506,33 @@ impl PersistentLocalHarness {
         parent: &StreamAggregate<LocalStream>,
         seed: &ForkSeed,
     ) -> Result<Self> {
+        Self::from_published_fork_with_tools(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+            LocalHarnessTools::new(),
+        )
+        .await
+    }
+
+    /// Composes a child from a published fork while retaining owner supplied
+    /// model tools from the parent swarm.
+    pub async fn from_published_fork_with_tools(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+        extension: LocalHarnessTools,
+    ) -> Result<Self> {
         limits.validate()?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
@@ -446,7 +545,7 @@ impl PersistentLocalHarness {
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
-        let bundle = storage
+        let builder = storage
             .builder()
             .model(model, provider)
             .tools(tools)
@@ -454,8 +553,8 @@ impl PersistentLocalHarness {
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
-            .limits(limits)
-            .build()?;
+            .limits(limits);
+        let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
 
@@ -465,6 +564,17 @@ impl PersistentLocalHarness {
         model: Model,
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
+    ) -> Result<Self> {
+        Self::open_with_tools(root, model, provider, limits, LocalHarnessTools::new()).await
+    }
+
+    /// Reopens a local session with the same owner supplied tool registry.
+    pub async fn open_with_tools(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
     ) -> Result<Self> {
         limits.validate()?;
         let root = root.as_ref();
@@ -538,7 +648,7 @@ impl PersistentLocalHarness {
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
-        let bundle = storage
+        let builder = storage
             .builder()
             .model(model, provider)
             .tools(tools)
@@ -546,8 +656,8 @@ impl PersistentLocalHarness {
             .grant("tool:call:acyclic.read_file")
             .grant("tool:call:acyclic.stage_file")
             .grant("tool:call:acyclic.list_files")
-            .limits(limits)
-            .build()?;
+            .limits(limits);
+        let bundle = extension.install_into(builder)?.build()?;
         Ok(Self { storage, bundle })
     }
     /// Runs or recovers an exact prompt with a caller-retained operation identity.
