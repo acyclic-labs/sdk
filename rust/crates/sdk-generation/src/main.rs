@@ -6,7 +6,7 @@
 //! artifact hashes in a manifest. Missing tools and missing qualification
 //! evidence remain "pending"; they are never represented as successful output.
 
-use acyclic_sdk_contract_wire::explicit_http_family_views;
+use acyclic_sdk_contract_wire::{FAMILY_VIEWS, explicit_http_family_views};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -23,6 +23,17 @@ const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
 const EVIDENCE_SCHEMA: &str = "acyclic.sdk.qualification.evidence.v1";
 const INVENTORY_SCHEMA: &str = "acyclic.sdk.language-inventory.v1";
 const OPENAPI_STAGE_RECEIPT_SCHEMA: &str = "acyclic.sdk.openapi.stage-receipt.v1";
+const REQUIRED_TOOL_IDS: &[&str] = &[
+    "sdk-product-artifacts",
+    "sdk-contract-wire",
+    "sdk-contract-validation",
+    "sdk-openapi-prototype",
+    "sdk-examples",
+    "sdk-docs-rustdoc",
+    "sdk-docs",
+    "sdk-typescript",
+];
+const OPTIONAL_TOOL_IDS: &[&str] = &["sdk-python"];
 
 // These values are qualification metadata for the remote HTTP projection. The
 // orchestration stage does not pretend to be the OpenAPI Generator CLI: the
@@ -418,12 +429,14 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
     if manifest.schema != GENERATION_SCHEMA {
         return Err(CliError::new("unsupported generation manifest schema"));
     }
+    verify_generator_identity(&manifest.generator)?;
     if manifest.status != "generated" {
         return Err(CliError::pending(format!(
             "generation manifest is {}, so drift checking is unavailable",
             manifest.status
         )));
     }
+    verify_required_tools(&manifest.tools, source_root, output)?;
     let expected_artifact_digest = artifact_digest(&manifest.artifacts);
     if manifest.artifact_digest.as_deref() != Some(expected_artifact_digest.as_str()) {
         return Err(CliError::new(
@@ -471,6 +484,7 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
             "authoritative source changed during drift check; retry from a frozen checkout",
         ));
     }
+    verify_required_tools(&fresh_tools, source_root, &check_root)?;
     for result in &fresh_tools {
         if result.status == "failed" {
             return Err(CliError::new(format!(
@@ -516,12 +530,14 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
     if manifest.schema != GENERATION_SCHEMA {
         return Err(CliError::new("unsupported generation manifest schema"));
     }
+    verify_generator_identity(&manifest.generator)?;
     if manifest.status != "generated" {
         return Err(CliError::pending(format!(
             "generation manifest is {}, so drift checking is unavailable",
             manifest.status
         )));
     }
+    verify_required_tools(&manifest.tools, source_root, output)?;
 
     let expected_artifact_digest = artifact_digest(&manifest.artifacts);
     if manifest.artifact_digest.as_deref() != Some(expected_artifact_digest.as_str()) {
@@ -645,6 +661,16 @@ fn source_identity(root: &Path) -> Result<SourceIdentity, CliError> {
     source_identity_with_filter(root, |_| true)
 }
 
+fn verify_generator_identity(generator: &GeneratorIdentity) -> Result<(), CliError> {
+    if generator.name != "acyclic-sdk-generation" || generator.version != env!("CARGO_PKG_VERSION")
+    {
+        return Err(CliError::new(
+            "generation manifest was produced by an unexpected generator identity",
+        ));
+    }
+    Ok(())
+}
+
 fn authoritative_source_identity(root: &Path) -> Result<SourceIdentity, CliError> {
     source_identity_with_filter(root, |path| !is_generated_output_path(path))
 }
@@ -762,7 +788,15 @@ fn is_generated_output_path(path: &str) -> bool {
     path == "generated"
         || path.starts_with("generated/")
         || path.starts_with("rust/crates/sdk-contract-wire/generated/")
-        || path.contains("/src/generated/")
+        || path.starts_with("python/src/acyclic_sdk/generated/")
+        || path.starts_with("typescript/packages/actors/generated/")
+        || path.starts_with("typescript/packages/workers/generated/")
+        || path.starts_with("typescript/packages/stream/generated/")
+        || path.starts_with("typescript/packages/objects/generated/")
+        || path.starts_with("typescript/packages/filesystem/generated/")
+        || path.starts_with("typescript/packages/harness/generated/")
+        || path.starts_with("typescript/packages/machines/generated/")
+        || path.starts_with("typescript/packages/inference/generated/")
         || matches!(
             path.as_str(),
             "rust/crates/actors/src/generated/acyclic.actors.v1.rs"
@@ -779,6 +813,24 @@ fn is_generated_output_path(path: &str) -> bool {
                 | "rust/crates/inference/inference_model_descriptor.bin"
                 | "rust/crates/inference/inference_descriptor.bin"
                 | "rust/crates/inference-contract/inference_model_descriptor.bin"
+                | "rust/crates/inference-contract/inference_model_descriptor_docs.bin"
+                | "rust/crates/inference-contract/inference_descriptor.bin"
+                | "rust/crates/inference/inference_model_descriptor_docs.bin"
+                | "rust/crates/inference-wasm/inference_reflection_descriptor.bin"
+                | "ruby/lib/acyclic_sdk/generated_remote_policy.rb"
+                | "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php"
+                | "dart/lib/src/generated_remote_policy.dart"
+                | "dart/lib/src/generated.dart"
+                | "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java"
+                | "dotnet/GeneratedRemotePolicy.cs"
+                | "typescript/packages/actors/src/generated-client.ts"
+                | "typescript/packages/workers/src/generated-client.ts"
+                | "typescript/packages/stream/src/generated-client.ts"
+                | "typescript/packages/objects/src/generated-client.ts"
+                | "typescript/packages/filesystem/src/generated-client.ts"
+                | "typescript/packages/harness/src/generated-client.ts"
+                | "typescript/packages/machines/src/generated-client.ts"
+                | "typescript/packages/inference/src/generated-client.ts"
         )
 }
 
@@ -2806,6 +2858,7 @@ fn evidence_expectations(
             manifest.status
         )));
     }
+    verify_required_tools(&manifest.tools, source_root, output)?;
     if manifest.source.dirty || manifest.source.revision == "uncommitted" {
         return Err(CliError::new(
             "qualification requires a clean, committed generation source identity",
@@ -2838,6 +2891,85 @@ fn evidence_expectations(
         artifact_digest: expected_artifact_digest,
         artifacts: manifest.artifacts,
     }))
+}
+
+fn verify_required_tools(
+    tools: &[ToolResult],
+    source_root: &Path,
+    output: &Path,
+) -> Result<(), CliError> {
+    let source_binding = source_root.to_string_lossy().replace('\\', "/");
+    let output_binding = output.to_string_lossy().replace('\\', "/");
+    let expected = REQUIRED_TOOL_IDS.iter().copied().collect::<BTreeSet<_>>();
+    let optional = OPTIONAL_TOOL_IDS.iter().copied().collect::<BTreeSet<_>>();
+    let mut seen = BTreeSet::new();
+    let mut invalid = BTreeSet::new();
+    for tool in tools {
+        if !seen.insert(tool.id.as_str())
+            || (!expected.contains(tool.id.as_str()) && !optional.contains(tool.id.as_str()))
+        {
+            invalid.insert(tool.id.as_str());
+            continue;
+        }
+        if optional.contains(tool.id.as_str()) {
+            if tool.required {
+                invalid.insert(tool.id.as_str());
+            }
+            continue;
+        }
+        if !tool.required {
+            invalid.insert(tool.id.as_str());
+            continue;
+        }
+        let hashes_valid = tool.stdout_sha256.as_deref().is_some_and(is_sha256)
+            && tool.stderr_sha256.as_deref().is_some_and(is_sha256);
+        let command_text = tool
+            .command
+            .iter()
+            .map(|part| part.replace('\\', "/"))
+            .collect::<Vec<_>>();
+        let source_bound = command_text.iter().any(|part| part == &source_binding);
+        let output_bound = command_text.iter().any(|part| part == &output_binding);
+        let retained_logs_bound = [
+            ("stdout", tool.stdout_sha256.as_deref()),
+            ("stderr", tool.stderr_sha256.as_deref()),
+        ]
+        .into_iter()
+        .all(|(stream, expected)| {
+            let Some(expected) = expected else {
+                return false;
+            };
+            let path = output.join("logs").join(format!("{}.{}", tool.id, stream));
+            let Ok(metadata) = fs::symlink_metadata(&path) else {
+                return false;
+            };
+            metadata.file_type().is_file()
+                && fs::read(path)
+                    .ok()
+                    .is_some_and(|bytes| hash_bytes(&bytes) == expected)
+        });
+        if tool.status != "passed"
+            || tool.exit_code != Some(0)
+            || !hashes_valid
+            || !source_bound
+            || !output_bound
+            || !retained_logs_bound
+        {
+            invalid.insert(tool.id.as_str());
+        }
+    }
+    for id in REQUIRED_TOOL_IDS {
+        if !seen.contains(id) {
+            invalid.insert(id);
+        }
+    }
+    if invalid.is_empty() {
+        return Ok(());
+    }
+    Err(CliError::new(format!(
+        "generated manifest has required stages without valid passed, hashed, source-bound results: {}",
+        invalid.into_iter().collect::<Vec<_>>().join(", ")
+    )))
 }
 
 fn is_commit_revision(value: &str) -> bool {
@@ -3103,12 +3235,23 @@ fn verify_authority_manifest(source_root: &Path, output: &Path) -> Result<(), Cl
             "Rust authority manifest has no family entries",
         ));
     }
+    let required_families = FAMILY_VIEWS
+        .iter()
+        .map(|family| family.name)
+        .collect::<BTreeSet<_>>();
+    let mut seen_families = BTreeSet::new();
     let mut seen_descriptors = BTreeSet::new();
     for family in families {
         let source = family
             .get("source")
             .and_then(Value::as_str)
             .ok_or_else(|| CliError::new("Rust authority family has no source path"))?;
+        let family_name = source.split('/').next().unwrap_or_default();
+        if required_families.contains(family_name) && !seen_families.insert(family_name) {
+            return Err(CliError::new(format!(
+                "duplicate Rust authority family: {family_name}"
+            )));
+        }
         let descriptor = family
             .get("descriptor")
             .and_then(Value::as_str)
@@ -3181,6 +3324,16 @@ fn verify_authority_manifest(source_root: &Path, output: &Path) -> Result<(), Cl
                 "duplicate Rust authority descriptor: {descriptor}"
             )));
         }
+    }
+    let missing_families = required_families
+        .difference(&seen_families)
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing_families.is_empty() {
+        return Err(CliError::new(format!(
+            "Rust authority manifest is missing registry families: {}",
+            missing_families.join(", ")
+        )));
     }
     Ok(())
 }
@@ -3707,6 +3860,66 @@ mod tests {
     }
 
     #[test]
+    fn generated_manifest_cannot_relabel_a_failed_required_stage() {
+        let tools = vec![ToolResult {
+            id: "sdk-docs".into(),
+            status: "failed".into(),
+            required: true,
+            command: vec!["Q:/source".into(), "Q:/output".into()],
+            request: "requests/sdk-docs.json".into(),
+            stdout_sha256: Some(hash_bytes(b"")),
+            stderr_sha256: Some(hash_bytes(b"")),
+            exit_code: Some(1),
+            message: Some("closure mismatch".into()),
+        }];
+        let error = verify_required_tools(&tools, Path::new("Q:/source"), Path::new("Q:/output"))
+            .expect_err("a required failed stage must not be relabeled generated");
+        assert!(error.message.contains("sdk-docs"));
+    }
+
+    #[test]
+    fn generated_manifest_requires_hashed_source_bound_tool_results() {
+        let tools = vec![ToolResult {
+            id: "sdk-docs".into(),
+            status: "passed".into(),
+            required: true,
+            command: vec!["Q:/source".into(), "Q:/output".into()],
+            request: "requests/sdk-docs.json".into(),
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: Some(0),
+            message: None,
+        }];
+        assert!(
+            verify_required_tools(&tools, Path::new("Q:/source"), Path::new("Q:/output")).is_err()
+        );
+    }
+
+    #[test]
+    fn generated_manifest_tool_hashes_bind_retained_log_bytes() {
+        let root = test_directory("tool-log-binding");
+        fs::create_dir_all(root.join("logs")).expect("create tool logs");
+        fs::write(root.join("logs/sdk-docs.stdout"), b"actual stdout").expect("write stdout log");
+        fs::write(root.join("logs/sdk-docs.stderr"), b"actual stderr").expect("write stderr log");
+        let tools = vec![ToolResult {
+            id: "sdk-docs".into(),
+            status: "passed".into(),
+            required: true,
+            command: vec![
+                root.to_string_lossy().into_owned(),
+                root.to_string_lossy().into_owned(),
+            ],
+            request: "requests/sdk-docs.json".into(),
+            stdout_sha256: Some(hash_bytes(b"forged stdout")),
+            stderr_sha256: Some(hash_bytes(b"forged stderr")),
+            exit_code: Some(0),
+            message: None,
+        }];
+        assert!(verify_required_tools(&tools, &root, &root).is_err());
+        cleanup(&root);
+    }
+
+    #[test]
     fn drift_is_a_distinct_non_generating_operation() {
         assert_eq!(operation_name(Operation::Drift), "drift");
         assert_ne!(
@@ -4163,6 +4376,20 @@ mod tests {
             "generated-package-v1",
         )
         .expect("write package generated copy");
+        for path in [
+            "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
+            "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+            "dart/lib/src/generated_remote_policy.dart",
+            "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+            "dotnet/GeneratedRemotePolicy.cs",
+            "typescript/packages/actors/src/generated-client.ts",
+            "python/src/acyclic_sdk/generated/actors/v1/actors_pb2.py",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().expect("facade parent"))
+                .expect("create generated facade parent");
+            fs::write(path, "generated facade").expect("write generated facade");
+        }
         let after = authoritative_source_identity(&root).expect("rehash authoritative source");
         let complete_after = source_identity(&root).expect("hash complete source");
         assert_eq!(before.revision, after.revision);
@@ -4481,10 +4708,8 @@ mod tests {
         let source_root = root.join("source");
         let output = root.join("output");
         let source_path = source_root.join("model.rs");
-        let proto_path = output.join("wire/actors/v1/actors.proto");
         let descriptor_path = output.join("wire/actors/v1/actors.fds.bin");
         fs::create_dir_all(source_path.parent().expect("source parent")).expect("source directory");
-        fs::create_dir_all(proto_path.parent().expect("wire parent")).expect("wire directory");
         fs::write(&source_path, b"model").expect("write source");
         fs::create_dir_all(output.join("wire/validation/v1")).expect("options directory");
         fs::write(
@@ -4492,30 +4717,12 @@ mod tests {
             b"syntax = \"proto3\";",
         )
         .expect("write options proto");
-        fs::write(&proto_path, b"syntax = \"proto3\";").expect("write proto");
         let length_delimited = |field: u8, value: &[u8]| {
             let mut encoded = vec![(field << 3) | 2, value.len() as u8];
             encoded.extend_from_slice(value);
             encoded
         };
-        let method = Vec::new();
-        let service = length_delimited(2, &method);
-        let file = [
-            length_delimited(1, b"actors/v1/actors.proto"),
-            length_delimited(6, &service),
-        ]
-        .concat();
-        let descriptor = length_delimited(1, &file);
-        fs::write(&descriptor_path, &descriptor).expect("write descriptor");
         let source_hash = hash_bytes(b"model")
-            .strip_prefix("sha256:")
-            .unwrap()
-            .to_owned();
-        let proto_hash = hash_bytes(b"syntax = \"proto3\";")
-            .strip_prefix("sha256:")
-            .unwrap()
-            .to_owned();
-        let descriptor_hash = hash_bytes(&descriptor)
             .strip_prefix("sha256:")
             .unwrap()
             .to_owned();
@@ -4524,20 +4731,38 @@ mod tests {
         canonical.push(0);
         canonical.extend_from_slice(b"model");
         canonical.push(0);
+        let mut family_entries = Vec::new();
+        for family in FAMILY_VIEWS {
+            let source = format!("{}/v1/{}.proto", family.name, family.name);
+            let descriptor = format!("{}/v1/{}.fds.bin", family.name, family.name);
+            let proto = output.join("wire").join(&source);
+            let descriptor_path = output.join("wire").join(&descriptor);
+            fs::create_dir_all(proto.parent().expect("family proto parent"))
+                .expect("create family wire directory");
+            fs::write(&proto, b"syntax = \"proto3\";").expect("write family proto");
+            let file = [
+                length_delimited(1, source.as_bytes()),
+                length_delimited(6, &length_delimited(2, &[])),
+            ]
+            .concat();
+            let descriptor_bytes = length_delimited(1, &file);
+            fs::write(&descriptor_path, &descriptor_bytes).expect("write family descriptor");
+            family_entries.push(json!({
+                "source": source,
+                "source_sha256": hash_bytes(b"syntax = \"proto3\";").strip_prefix("sha256:").unwrap(),
+                "descriptor": descriptor,
+                "descriptor_sha256": hash_bytes(&descriptor_bytes).strip_prefix("sha256:").unwrap(),
+                "rpc_shapes": ["unary"],
+                "descriptor_role": "canonical_schema"
+            }));
+        }
         let manifest = json!({
             "schema": "acyclic.sdk.rust-authority.v1",
             "authority": "rust",
             "source_revision": hash_bytes(&canonical).strip_prefix("sha256:").unwrap(),
             "source_files": ["model.rs"],
             "source_file_hashes": {"model.rs": source_hash},
-            "families": [{
-                "source": "actors/v1/actors.proto",
-                "source_sha256": proto_hash,
-                "descriptor": "actors/v1/actors.fds.bin",
-                "descriptor_sha256": descriptor_hash,
-                "rpc_shapes": ["unary"],
-                "descriptor_role": "canonical_schema"
-            }]
+            "families": family_entries
         });
         fs::write(
             output.join("wire/rust-authority.json"),

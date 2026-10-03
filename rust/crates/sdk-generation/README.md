@@ -11,12 +11,16 @@ generator, and avoids editing the root manifest or lockfile as a side effect.
 
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- generate --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- check --source-root . --output target/sdk-generation
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- drift --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- inventory --source-root . --output target/sdk-generation
     cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- qualify --source-root . --output target/sdk-generation
 
 inventory can report pending work. generate and check fail closed when a
 delegated stage fails or remains pending; check also fails on source or
-artifact drift. qualify exits with status 2 while any language is missing
+artifact drift. drift is the fast, non-generating artifact gate: it verifies
+the clean source identities, retained tool stdout/stderr bytes, authority
+manifest, revision bindings, and every generated artifact without invoking
+downstream tools. It exits 2 when the manifest is failed or pending. qualify exits with status 2 while any language is missing
 complete evidence and exits 0 only when every inventoried language has
 qualified remote, embedded, documentation, snippet, and installation evidence.
 
