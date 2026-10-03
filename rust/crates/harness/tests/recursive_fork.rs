@@ -2254,7 +2254,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         )
         .await;
     assert!(
-        swapped_plan_result.is_err(),
+        matches!(swapped_plan_result, Err(Error::Unauthorized(_))),
         "a valid plan cannot be applied with a sibling authority/project"
     );
     let root_after_swapped_plan = host.resolve(&root_head.workspace).await?;
