@@ -5,7 +5,6 @@ use crate::{
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Canonical model-input encoding version.
@@ -673,7 +672,7 @@ mod tests {
         Ok(ModelRequest {
             model: Model::new("mock", "swarm", "1", json!({}))?,
             messages: vec![
-                text("  λ 🦀\r\n"),
+                text("  Î» ðŸ¦€\r\n"),
                 text("task"),
                 ModelMessage {
                     role: ModelRole::Assistant,
@@ -722,7 +721,7 @@ mod tests {
         let boundary = CompletedModelBoundary::capture(request()?, limits)?;
         let suffix = vec![text("notification; explicit task; fresh scratch")];
         let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
-        let own = vec![text("authoritative child input λ\n"), text("child result")];
+        let own = vec![text("authoritative child input Î»\n"), text("child result")];
         let mut completed = boundary.request.clone();
         completed.messages.extend(suffix);
         completed.messages.extend(own.iter().cloned());
@@ -787,7 +786,7 @@ mod tests {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
         let prefix = FrozenModelPrefix::capture(&parent, 4)?;
         let mut changed = request()?;
-        changed.messages[0] = text(" λ 🦀\r\n");
+        changed.messages[0] = text(" Î» ðŸ¦€\r\n");
         assert!(
             prefix
                 .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
@@ -1247,7 +1246,7 @@ mod tests {
             .stage(
                 operation,
                 "input.txt",
-                "Whitespace:  λ 🦀\r\n".as_bytes(),
+                "Whitespace:  Î» ðŸ¦€\r\n".as_bytes(),
                 "text/plain",
                 "input.txt",
             )

@@ -593,6 +593,7 @@ where
                 .iter()
                 .chain(seed.reference_grants.iter().map(|grant| &grant.file))
                 .chain(seed.attachment_manifests.iter())
+                .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
             {
                 if file.volume().provider() == &self.host.provider {
                     unique_files.insert(file.read_capability()?, file);

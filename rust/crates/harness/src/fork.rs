@@ -249,6 +249,11 @@ impl CompositeForkVerifier {
         for manifest in &seed.attachment_manifests {
             required.insert(provider_key(manifest.volume().provider()));
         }
+        if let Some(boundary) = &seed.model_boundary {
+            for file in &boundary.files {
+                required.insert(provider_key(file.volume().provider()));
+            }
+        }
         for capture in &seed.resources {
             required.insert(provider_key(capture.source.provider()));
             required.insert(provider_key(capture.revision.provider()));
@@ -301,6 +306,7 @@ impl CompositeForkVerifier {
             .inherited_context
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
         {
             if !verified_files.insert(file.read_capability()?) {
                 continue;
@@ -567,6 +573,7 @@ impl ForkSeedVerifier for ContentForkVerifier {
                 .inherited_context
                 .iter()
                 .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+            .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
                 .chain(seed.attachment_manifests.iter())
             {
                 if file.volume().provider() == &self.provider
@@ -2187,6 +2194,28 @@ mod tests {
             futures::executor::block_on(missing.verify(&missing_seed)),
             Err(Error::NotFound(_))
         ));
+        // Child-owned model refs need no inherited grant, but must still be
+        // resolved by the exact provider before admitting the fork.
+        let mut model_only = seed.clone();
+        model_only.model_boundary = Some(ModelBoundaryReferences {
+            publication: OperationId::from_bytes([91; 16]),
+            publication_digest: [92; 32],
+            boundary_digest: [93; 32],
+            attestation: [94; 32],
+            files: vec![FileRef::new(
+                seed.child_private_volume.clone(),
+                "model-only.txt",
+                "one",
+                FileDescriptor::from_bytes(b"model-only", "text/plain")?,
+                "model-only.txt",
+            )?],
+        });
+        model_only.validate()?;
+        assert!(matches!(
+            futures::executor::block_on(missing.verify(&model_only)),
+            Err(Error::NotFound(_))
+        ));
+        futures::executor::block_on(complete.verify(&model_only))?;
         let objects = ProviderRef::new("test", "objects", "2")?;
         let object_volume = VolumeRef::new(
             objects.clone(),
