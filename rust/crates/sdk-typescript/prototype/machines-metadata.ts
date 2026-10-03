@@ -27,7 +27,7 @@ export interface RustOwnedMethodMetadata {
 export interface RustOwnedTransportOption { readonly kind: "grpc" | "grpc-web" | "http"; readonly streaming: boolean; readonly bearerAuth: boolean; }
 export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
 
-export const MACHINES_REMOTE_POLICY: RustOwnedRemotePolicy = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [] } };
+export const MACHINES_REMOTE_POLICY: RustOwnedRemotePolicy = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: false }], browser: [] } };
 export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
 
 export const MACHINES_OPERATIONS = {
@@ -52,7 +52,7 @@ export const MACHINES_OPERATIONS = {
   "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "5d9af7b0a94ad04402007c0eb72a9d7078a8c8ba5d90c6652334b8a7f15c35e3", sourceModelSha256: "5d9af7b0a94ad04402007c0eb72a9d7078a8c8ba5d90c6652334b8a7f15c35e3", modeledOperations: 19, httpProjection: false } as const;
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "49b150a8cb40e95e101b9908d4512fb63491d3790e4d381550ceee98ac0adbb5", sourceModelSha256: "49b150a8cb40e95e101b9908d4512fb63491d3790e4d381550ceee98ac0adbb5", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_METHODS = {
 
