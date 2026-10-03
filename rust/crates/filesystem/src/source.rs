@@ -72,6 +72,24 @@ pub enum SourceState {
     Sealed,
 }
 
+/// Durable identity of the native directory attached to one workspace.
+///
+/// The path is retained for host-adapter routing, while `root_identity` is
+/// the authority used to reject replacement or symlinked roots.  The
+/// generation is the last source state authenticated by the attached
+/// watcher; callers must compare it before approving a host write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceBinding {
+    /// Path supplied when the native source was attached.
+    pub source_root: PathBuf,
+    /// Stable identity of the held native root directory.
+    pub root_identity: crate::NativeRootIdentity,
+    /// Workspace that owns the source authority.
+    pub workspace_id: crate::WorkspaceId,
+    /// Last authenticated source generation.
+    pub generation_id: crate::GenerationId,
+}
+
 /// Terminal source reconciliation result.
 pub enum ReconcileOutcome<A, O> {
     /// Source changes, if any, are durably represented by this generation.
@@ -156,6 +174,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     /// Returns the current fail-closed semantic state.
     pub async fn state(&self) -> SourceState {
         self.inner.lock().await.state
+    }
+
+    /// Returns the durable host-root binding and last authenticated source
+    /// generation. This is a read-only snapshot suitable for a host adapter's
+    /// precondition record.
+    pub async fn binding(&self) -> SourceBinding {
+        let session = self.inner.lock().await;
+        SourceBinding {
+            source_root: session.capture.source_root.clone(),
+            root_identity: session.watcher.root_identity(),
+            workspace_id: session.workspace.id(),
+            generation_id: session.checkout.generation_id(),
+        }
+    }
+
+    /// Verifies that `path` still names the exact attached native root.
+    ///
+    /// Comparing both the retained path and stable root identity prevents a
+    /// caller from redirecting an approved write through a replacement or
+    /// symlinked directory.
+    pub async fn verify_root(&self, path: impl AsRef<Path>) -> Result<(), SourceError> {
+        let session = self.inner.lock().await;
+        if path.as_ref() != session.capture.source_root.as_path() {
+            return Err(SourceError::BindingMismatch);
+        }
+        let identity = crate::NativeRootIdentity::of_root_path(path.as_ref()).map_err(engine)?;
+        if identity != session.watcher.root_identity() {
+            return Err(SourceError::BindingMismatch);
+        }
+        Ok(())
     }
 
     /// Re-establishes a clean source baseline after the core materializer has
