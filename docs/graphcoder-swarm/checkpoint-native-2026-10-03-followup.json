@@ -61,5 +61,17 @@
       "path": "target/debug/deps/root_writeback_acceptance-8586d7e6ad4f9bf5.exe",
       "sha256": "bd23b964b9c15fbd25e168daa505ad8a6c1e5d9d5602b59c7314b5def054c295"
     }
-  ]
+  ],
+  "budget_scheduler_followup": {
+    "source": "2ff44ad3",
+    "handle": 59858,
+    "command": "cargo test -p acyclic-harness --features filesystem-local --test swarm_budget_scheduler_contracts_v2 -j2 -- --nocapture",
+    "exit_code": 1,
+    "passed": 0,
+    "failed": 2,
+    "reason": "NotFound session lease before production admission",
+    "suite_sha256": "1620d12cecb7edcc64ecdec62222bbcc45747b4ae67f8a03c94183b92ef2a514",
+    "artifact": "target/debug/deps/swarm_budget_scheduler_contracts_v2-96d156c989595c4a.exe",
+    "artifact_sha256": "c8895e913d8863a3e3f9b4c24eeecb21441e7761cff5fbd7d27c396457f4cd71"
+  }
 }
