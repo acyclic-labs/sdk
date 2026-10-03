@@ -27,8 +27,8 @@ provenance runner. The real-backend command sequence is locked in
 The installed transport fault driver now supplies bounded package evidence for
 malformed framing, unmatched response identities, and cancelled late
 responses. Those cases remain checkpoint evidence only: they do not promote
-FAULT-01/FAULT-02 or the native terminal rows because the required source-bound
-native runtime, PTY, and final artifact receipt are still pending.
+the durable fault rows or the native terminal rows because the required
+source-bound native runtime, PTY, and final artifact receipt are still pending.
 
 The official installed-Harness run remains a required failure: its TypeScript
 consumer and native/WASM event equivalence passed, while the isolated Rust
