@@ -62,7 +62,7 @@ export class HarnessLimitError extends TypeError {
 export function asHarnessLimitError(error: unknown): HarnessLimitError | undefined {
   if (error instanceof HarnessLimitError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  if (/\b(limit|exceed|too many|too large|maximum|oversized)\b|no (?:history|attachments) were omitted|model context count|aggregate model request|model output token bound|model (?:content|text|file|tool projection)/i.test(message)) {
+  if (/(?:\blimits?\b|\bexceed(?:s|ed|ing)?\b|\btoo many\b|\btoo large\b|\bmaximum\b|\boversized\b)|no (?:history|attachments) were omitted|model context count|aggregate model request|model output token bound|model (?:content|text|file|tool projection)/i.test(message)) {
     return new HarnessLimitError(message);
   }
   return undefined;
@@ -147,7 +147,12 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
   if (typeof provider.generate !== "function" || typeof provider.reconcile !== "function") {
     throw new TypeError("model provider requires generate and reconcile");
   }
-  return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider });
+  const pinnedProvider = provider.modelOptions === undefined ? provider : Object.freeze({
+    modelOptions: Object.freeze({ schema: freezeSchema(structuredClone(provider.modelOptions.schema)) }),
+    generate: provider.generate.bind(provider),
+    reconcile: provider.reconcile.bind(provider),
+  });
+  return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider: pinnedProvider });
 }
 function validateModelBinding(contracts: NativeContracts, identity: Model, provider: ModelProvider): void {
   const policy = provider.modelOptions;
@@ -2571,8 +2576,11 @@ export class AgentHarness {
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") {
       if (outcome.kind === "failed") {
-        const limit = asHarnessLimitError(outcome.error);
-        if (limit) throw limit;
+        // Only deterministic limit failures raised inside the local task are
+        // typed here.  A provider may use words such as "exceeds" in an
+        // opaque remote error; converting that error would hide its owner and
+        // incorrectly make a remote failure resumable.
+        if (outcome.error.cause instanceof HarnessLimitError) throw outcome.error.cause;
       }
       throw new TaskRunError(task.id(), outcome);
     }

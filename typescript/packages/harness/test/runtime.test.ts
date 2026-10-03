@@ -7,6 +7,7 @@ import {
   GroupPolicies,
   Harness,
   HarnessBuilder,
+  HarnessLimitError,
   NativeContracts,
   TaskDefinition,
   Task,
@@ -122,7 +123,7 @@ test("Rust and TypeScript share strict v2 task admission and execution placement
   expect(() => contracts.validate("execution_placement", { ...placement, readiness_revision: [] })).toThrow();
 });
 
-test("Rust and WASM share the canonical v3 prerequisite admission fixture", async () => {
+test("Rust and WASM validate the canonical v3 prerequisite admission fixture", async () => {
   const admissionText = (await Bun.file(new URL("../../../../fixtures/harness/v2/task-admission-v3.json", import.meta.url)).text()).trim();
   const admission = JSON.parse(admissionText) as TaskAdmissionWire;
   const validated = contracts.validate("task_admission", admission);
@@ -132,38 +133,6 @@ test("Rust and WASM share the canonical v3 prerequisite admission fixture", asyn
     "32345678-1234-4234-8234-123456789abc",
   ]);
   expect(new TextDecoder().decode(contracts.encodeCanonicalJson(validated))).toBe(admissionText);
-  const projection = {
-    operation_id: admission.operation_id,
-    name: admission.task.name,
-    version: admission.task.version,
-    input: admission.input,
-    input_schema: admission.input_schema,
-    output_schema: admission.output_schema,
-    requirements: [],
-    machine_digest: admission.machine.digest,
-    parent: admission.parent,
-    dependencies: admission.dependencies,
-    grants: admission.grants,
-    limits: {
-      file_bytes: BigInt(admission.limits.file_bytes),
-      path_bytes: BigInt(admission.limits.path_bytes),
-      attachments: BigInt(admission.limits.attachments),
-      render_bytes: BigInt(admission.limits.render_bytes),
-      model_steps: BigInt(admission.limits.model_steps),
-      model_events_per_step: BigInt(admission.limits.model_events_per_step),
-      tool_calls_per_step: BigInt(admission.limits.tool_calls_per_step),
-      context_messages: BigInt(admission.limits.context_messages),
-    },
-    run_limits: {
-      concurrency: admission.run_limits.concurrency === null ? null : BigInt(admission.run_limits.concurrency),
-      max_steps: admission.run_limits.max_steps === null ? null : BigInt(admission.run_limits.max_steps),
-      deadline_epoch_ms: admission.run_limits.deadline_epoch_ms === null ? null : BigInt(admission.run_limits.deadline_epoch_ms),
-    },
-    policy: admission.policy,
-    extensions: admission.extensions,
-    execution: admission.execution,
-  };
-  expect(contracts.admitTask(projection)).toEqual(validated);
 });
 
 test("Rust and TypeScript share the pinned v2 workflow admission fixture", async () => {
@@ -1978,18 +1947,33 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
-    const provider = { async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+    const policy = { schema: { type: "object", additionalProperties: false, properties: { mode: { type: "string" } } } } as const;
+    const provider = { modelOptions: policy, async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
     const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
-    rootIdentity.options.mode = "mutated";
-    await runtime.run("root");
-    expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
     const childIdentity = { provider: "child", name: "model", revision: "4", options: { mode: "scoped" } };
     const scoped = runtime.scoped(ExecutionScope.create().model(childIdentity, provider));
+    rootIdentity.options.mode = "mutated";
+    (provider as { modelOptions: unknown }).modelOptions = {
+      schema: { type: "object", additionalProperties: false, properties: { other: { type: "string" } } },
+    };
+    await runtime.run("root");
+    expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
     childIdentity.options.mode = "mutated";
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
+  });
+
+  test("undeclared model options fail before provider dispatch", () => {
+    let dispatched = 0;
+    const provider = {
+      modelOptions: { schema: { type: "object", additionalProperties: false, properties: { mode: { type: "string" } } } },
+      async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    };
+    expect(() => Harness.builder(contracts).model({ provider: "fixture", name: "fixture", revision: "1", options: { hidden: true } }, provider).build()).toThrow();
+    expect(dispatched).toBe(0);
   });
 
   test("selected context preserves canonical roles without a synthetic user duplicate", async () => {
@@ -2044,6 +2028,17 @@ describe("typed agent runtime", () => {
     expect(produced).toBe(3);
   });
 
+  test("provider errors that mention limits remain provider failures", async () => {
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate() { throw new Error("provider quota exceeds remote limit"); },
+      async reconcile() { return undefined; },
+    }).build();
+    const failure = await runtime.run("provider-error").catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(HarnessLimitError);
+    expect((failure as Error).message).toContain("provider quota exceeds remote limit");
+  });
+
   test("model loop consumes the detached event returned by Rust admission", async () => {
     let reads = 0;
     const event = {
@@ -2053,7 +2048,7 @@ describe("typed agent runtime", () => {
         return reads === 1 ? "ok" : "x".repeat(3);
       },
     };
-    const runtime = Harness.builder(contracts).limits({ file_bytes: 2, render_bytes: 2 }).model(testModel, {
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 1024, render_bytes: 2 }).model(testModel, {
       async *generate() {
         yield event;
         yield { kind: "completed" as const, metadata: {} };

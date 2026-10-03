@@ -364,12 +364,12 @@ test("a completed model run resumes publication without dispatching twice", asyn
     async *generate() {
       dispatches++;
       yield { kind: "content" as const, delta: "answer" };
-      yield { kind: "completed" as const, metadata: { oversized: "x".repeat(256) } };
+      yield { kind: "completed" as const, metadata: { oversized: "x".repeat(1024) } };
     },
     async reconcile() { return undefined; },
   };
-  const narrow = Harness.builder(contracts).limits({ file_bytes: 128, render_bytes: 128 }).model(testModel, model).build();
-  const wider = Harness.builder(contracts).limits({ file_bytes: 1_024, render_bytes: 1_024 }).model(testModel, model).build();
+  const narrow = Harness.builder(contracts).limits({ file_bytes: 512, render_bytes: 512 }).model(testModel, model).build();
+  const wider = Harness.builder(contracts).limits({ file_bytes: 4_096, render_bytes: 4_096 }).model(testModel, model).build();
   const operation = "08080808-0808-0808-0808-080808080808" as OperationId;
   const content = await host.stage("turns/eight/user.txt", new TextEncoder().encode("question"), "text/plain", "user.txt");
   await expect(host.runConversation(narrow, operation, content)).rejects.toThrow("exceeds harness limits");
