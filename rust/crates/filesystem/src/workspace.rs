@@ -1047,6 +1047,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             .await
     }
 
+    /// Opens a transaction pinned to an exact live generation.
+    ///
+    /// Unlike [`Workspace::begin_transaction_at`], this method never enables
+    /// rebase when the live head has advanced.  The transaction therefore
+    /// remains fenced to the recorded compare-and-swap generation and its
+    /// commit reports a conflict instead of silently applying against a
+    /// newer head.
+    pub async fn begin_transaction_if_current(
+        &self,
+        generation: &Generation<A, O>,
+        idempotency_key: IdempotencyKey,
+    ) -> Result<Transaction<A, O>, WorkspaceError> {
+        if generation.workspace.id != self.id {
+            return Err(WorkspaceError::ForeignGeneration);
+        }
+        self.begin_pinned_transaction_measured(
+            generation,
+            idempotency_key,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+    }
+
     pub(crate) async fn begin_pinned_transaction_measured(
         &self,
         generation: &Generation<A, O>,

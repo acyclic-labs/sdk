@@ -530,16 +530,25 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             }
             GitFilesystemAction::Join {
                 source_workspace,
+                target_tree,
                 rebase,
                 tracked_paths,
                 ..
             } => {
+                let expected_generation = self
+                    .expected_workspace_generation(Some(*target_tree))
+                    .await?;
                 let source = self.workspace(*source_workspace).await?;
                 let mut builder = source.join_into(&self.current);
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
                 let plan = builder.plan().await.map_err(display)?;
+                if plan.target_head().id() != expected_generation {
+                    return Err(Self::error(
+                        "Git join target changed while preparing the provider plan",
+                    ));
+                }
                 let options = ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes(operation_id.into_bytes()),
@@ -621,8 +630,12 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 source,
                 paths,
                 tracked_paths,
+                expected_workspace_tree,
                 ..
             } => {
+                let expected_generation = self
+                    .expected_workspace_generation(*expected_workspace_tree)
+                    .await?;
                 let base_workspace = match base {
                     Some(base) => {
                         let base = self.exact(*base, "apply commit").await?;
@@ -661,14 +674,13 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     }
                     _ => None,
                 };
-                let current = self.current.head().await.map_err(display)?;
                 let outcome = self
                     .current
                     .apply_paths_from_with_permit(
                         base.as_ref(),
                         source.as_ref(),
                         &paths.iter().cloned().collect::<Vec<_>>(),
-                        current.id(),
+                        expected_generation,
                         IdempotencyKey::from_bytes(operation_id.into_bytes()),
                         self.permit,
                     )
@@ -783,11 +795,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 tracked_paths,
             } => {
                 let reference = self.exact(*tree, "clean").await?;
-                if reference.workspace_id != self.current.id() {
-                    return Err(Self::error(
-                        "Git clean generation is not the live workspace",
-                    ));
-                }
+                self.validate_workspace_tree(*tree).await?;
                 let generation = self
                     .current
                     .generation(reference.generation)
@@ -813,7 +821,10 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 }
                 let mut transaction = self
                     .current
-                    .begin_transaction(IdempotencyKey::from_bytes(operation_id.into_bytes()))
+                    .begin_transaction_if_current(
+                        &generation,
+                        IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                    )
                     .await
                     .map_err(display)?;
                 for path in &candidates {
@@ -846,10 +857,17 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 patch,
                 expected_workspace_tree,
             } => {
-                self.expected_workspace_generation(*expected_workspace_tree)
+                let expected_generation = self
+                    .expected_workspace_generation(*expected_workspace_tree)
                     .await?;
-                let generation = match apply_git_patch_with_permit(
+                let expected = self
+                    .current
+                    .generation(expected_generation)
+                    .await
+                    .map_err(display)?;
+                let generation = match apply_git_patch_with_permit_if_current(
                     &self.current,
+                    &expected,
                     patch,
                     IdempotencyKey::from_bytes(operation_id.into_bytes()),
                     self.permit,

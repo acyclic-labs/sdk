@@ -1153,6 +1153,9 @@ pub enum GitFilesystemAction {
         paths: BTreeSet<String>,
         /// Complete set of paths that may remain tracked after application.
         tracked_paths: BTreeSet<String>,
+        /// Exact live workspace generation required by the application.
+        #[serde(default)]
+        expected_workspace_tree: Option<GitTreeRef>,
     },
     /// Attribute a path across explicit commit history.
     Blame {
@@ -1604,7 +1607,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "ApplyCommit",
-        r#"{ readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[] } }"#,
+        r#"{ readonly ApplyCommit: { readonly commit: GitCommitIdentity; readonly reverse: boolean; readonly base: GitTreeRef | undefined; readonly source: GitTreeRef | undefined; readonly paths: readonly string[]; readonly tracked_paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }"#,
     ),
     (
         "Blame",
@@ -2066,21 +2069,29 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let digest = blake3::hash(&operation_bytes);
         let mut operation_id = [0_u8; 16];
         operation_id.copy_from_slice(&digest.as_bytes()[..16]);
+        let action = GitFilesystemAction::RestoreGeneration {
+            tree: target_tree,
+            paths: None,
+            expected_workspace_tree: Some(workspace_tree),
+        };
         let result = executor
-            .execute(
-                OperationId::from_bytes(operation_id),
-                &GitFilesystemAction::RestoreGeneration {
-                    tree: target_tree,
-                    paths: None,
-                    expected_workspace_tree: Some(workspace_tree),
-                },
-            )
+            .execute(OperationId::from_bytes(operation_id), &action)
             .await
             .map_err(GitCompatRunError::Executor)?;
         executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
+        validate_action_result::<S::Error>(&action, &result).map_err(GitCompatRunError::Compat)?;
+        if !matches!(
+            &result,
+            GitFilesystemResult::Applied {
+                tree: Some(tree),
+                ..
+            } if *tree == target_tree
+        ) {
+            return Err(GitCompatRunError::Compat(GitCompatError::InvalidState));
+        }
         self.abort_transition(pending.id).await?;
         Ok(GitCommandOutput::Filesystem(result))
     }
@@ -2782,9 +2793,15 @@ fn action_workspace_id(action: &GitFilesystemAction) -> Option<WorkspaceId> {
             expected_workspace_tree,
             ..
         } => expected_workspace_tree.map(|tree| tree.workspace_id()),
-        GitFilesystemAction::ApplyCommit { base, source, .. } => {
-            (*base).or(*source).map(|tree| tree.workspace_id())
-        }
+        GitFilesystemAction::ApplyCommit {
+            expected_workspace_tree,
+            base,
+            source,
+            ..
+        } => expected_workspace_tree
+            .or(*base)
+            .or(*source)
+            .map(|tree| tree.workspace_id()),
         GitFilesystemAction::SwitchWorkspace { workspace_id } => Some(*workspace_id),
         GitFilesystemAction::Blame { .. }
         | GitFilesystemAction::Archive { .. }
@@ -2830,7 +2847,12 @@ fn action_expected_workspace_tree(action: &GitFilesystemAction) -> Option<GitTre
             expected_workspace_tree,
             ..
         } => *expected_workspace_tree,
-        GitFilesystemAction::ApplyCommit { base, source, .. } => (*base).or(*source),
+        GitFilesystemAction::ApplyCommit {
+            expected_workspace_tree,
+            base,
+            source,
+            ..
+        } => (*expected_workspace_tree).or(*base).or(*source),
         GitFilesystemAction::ForkBranch { source_tree, .. } => Some(*source_tree),
         GitFilesystemAction::SwitchWorkspace { .. }
         | GitFilesystemAction::Blame { .. }
@@ -3481,6 +3503,7 @@ fn execute_command(
                     source,
                     paths,
                     tracked_paths,
+                    expected_workspace_tree: Some(workspace),
                 },
                 GitPendingMutation::ApplyCommit {
                     commit,
@@ -3520,6 +3543,7 @@ fn execute_command(
                     source,
                     paths,
                     tracked_paths,
+                    expected_workspace_tree: Some(workspace),
                 },
                 GitPendingMutation::ApplyCommit {
                     commit,
@@ -5178,6 +5202,61 @@ pub async fn apply_git_patch_with_permit<A: AsyncAuthorityStore, O: AsyncObjectS
             String::new()
         } else {
             let bytes = head
+                .read(&format!("/{path}"), MAXIMUM_PATCH_FILE_BYTES)
+                .await?;
+            String::from_utf8(bytes.to_vec()).map_err(|_| GitPatchError::NonText)?
+        };
+        let replacement = apply_unified_hunks(path, &original, &patch.hunks)?;
+        if patch.new_path.is_none() {
+            if !replacement.is_empty() {
+                return Err(GitPatchError::Invalid(
+                    "deleted-file patch leaves content".to_owned(),
+                ));
+            }
+            transaction.remove(&format!("/{path}")).await?;
+            continue;
+        }
+        if let Some((parent, _)) = path.rsplit_once('/') {
+            transaction.create_dir_all(&format!("/{parent}")).await?;
+        }
+        transaction
+            .write_text(&format!("/{path}"), &replacement)
+            .await?;
+    }
+    transaction
+        .commit_with_permit(permit)
+        .await
+        .map_err(Into::into)
+}
+
+/// Applies a bounded patch only when `expected` is still the live workspace
+/// generation.  The transaction is opened with rebase disabled so a writer
+/// that advances the head between validation and commit is reported as a
+/// conflict rather than receiving an implicit rebase.
+pub async fn apply_git_patch_with_permit_if_current<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    workspace: &Workspace<A, O>,
+    expected: &Generation<A, O>,
+    patch: &[u8],
+    idempotency_key: IdempotencyKey,
+    permit: crate::PublicationPermit,
+) -> Result<TransactionCommit<A, O>, GitPatchError> {
+    if let Some(generation) = workspace.operation_generation(idempotency_key).await? {
+        return Ok(TransactionCommit::AlreadyCommitted(generation));
+    }
+    let patches = parse_unified_patch(patch)?;
+    let mut transaction = workspace
+        .begin_transaction_if_current(expected, idempotency_key)
+        .await?;
+    for patch in patches {
+        let path = patch
+            .new_path
+            .as_ref()
+            .or(patch.old_path.as_ref())
+            .ok_or_else(|| GitPatchError::Invalid("patch has no path".to_owned()))?;
+        let original = if patch.old_path.is_none() {
+            String::new()
+        } else {
+            let bytes = expected
                 .read(&format!("/{path}"), MAXIMUM_PATCH_FILE_BYTES)
                 .await?;
             String::from_utf8(bytes.to_vec()).map_err(|_| GitPatchError::NonText)?
@@ -6983,6 +7062,7 @@ mod tests {
                 source: Some(tree(2)),
                 paths: BTreeSet::new(),
                 tracked_paths: BTreeSet::new(),
+                expected_workspace_tree: Some(tree(3)),
             },
             GitFilesystemAction::Blame {
                 path: "path".to_owned(),
