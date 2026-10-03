@@ -1,7 +1,7 @@
 //! Private immutable body storage for the logical Objects recovery engine.
 use futures::future::BoxFuture;
 use std::sync::Arc;
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
@@ -20,7 +20,7 @@ pub(crate) enum StoredBody {
         parts: Arc<[StoredBody]>,
         length: usize,
     },
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     Local {
         root: Arc<PathBuf>,
         digest: [u8; 32],
@@ -38,12 +38,12 @@ impl StoredBody {
         match self {
             Self::Memory(body) => body.len(),
             Self::Composite { length, .. } => *length,
-            #[cfg(feature = "local")]
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             Self::Local { length, .. } => *length,
         }
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) fn local_references(&self, output: &mut BTreeSet<LocalBodyReference>) {
         match self {
             Self::Memory(_) => {}
@@ -68,7 +68,7 @@ impl StoredBody {
     }
 
     /// This body with every local leaf found in `relocations` moved, if any leaf moves.
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     pub(crate) fn relocated(&self, relocations: &LocalBodyRelocations) -> Option<Self> {
         match self {
             Self::Memory(_) => None,
@@ -134,7 +134,7 @@ impl StoredBody {
                     }
                     Ok(output.into())
                 }
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 Self::Local {
                     root,
                     digest,
@@ -150,7 +150,7 @@ impl StoredBody {
     }
 }
 
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) enum LocalBodyLocation {
     /// A body record inside one immutable, content-addressed segment file.
@@ -161,10 +161,10 @@ pub(crate) enum LocalBodyLocation {
 
 /// Physical moves of local bodies, keyed by current location and digest: an empty body
 /// shares its journal offset with the inline body that follows it.
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) type LocalBodyRelocations = BTreeMap<(LocalBodyLocation, [u8; 32]), LocalBodyLocation>;
 
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(crate) struct LocalBodyReference {
     pub(crate) digest: [u8; 32],

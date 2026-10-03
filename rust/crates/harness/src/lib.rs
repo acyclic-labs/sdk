@@ -22,7 +22,7 @@ pub mod effect_host;
 pub mod effects;
 pub mod executor;
 pub mod extension;
-#[cfg(feature = "filesystem")]
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]

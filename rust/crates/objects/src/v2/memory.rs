@@ -13,7 +13,7 @@ use wire::ErrorCode::{
     AlreadyExists, IdempotencyMismatch, InvalidArgument, NotFound, NotModified, PreconditionFailed,
     QuotaExceeded, Unavailable,
 };
-#[cfg(feature = "local")]
+#[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(super) mod persistence;
 
 /// Allocation and cardinality limits for the in-process reference provider.
@@ -39,9 +39,9 @@ pub struct MemoryObjects {
     state: Arc<Mutex<State>>,
     options: MemoryOptions,
     token_key: Arc<Mutex<Option<[u8; 32]>>>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     journal: Option<Arc<persistence::Journal>>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     defer_local: bool,
 }
 #[derive(Clone, Default)]
@@ -72,14 +72,14 @@ struct Upload {
 struct Receipt {
     digest: [u8; 32],
     response: Vec<u8>,
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     kind: u32,
 }
 
 impl MemoryObjects {
     fn lock_state(&self) -> Result<std::sync::MutexGuard<'_, State>, Error> {
         let state = self.state.lock().map_err(|_| Error::from(Unavailable))?;
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             journal.check()?;
         }
@@ -114,9 +114,9 @@ impl MemoryObjects {
                     ..MemoryOptions::default()
                 },
                 token_key: Arc::new(Mutex::new(None)),
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 journal: None,
-                #[cfg(feature = "local")]
+                #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                 defer_local: false,
             },
             bucket,
@@ -163,9 +163,9 @@ impl MemoryObjects {
             state: Arc::default(),
             options,
             token_key: Arc::new(Mutex::new(Some(token_key))),
-            #[cfg(feature = "local")]
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             journal: None,
-            #[cfg(feature = "local")]
+            #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
             defer_local: false,
         })
     }
@@ -191,7 +191,7 @@ impl MemoryObjects {
         identity: &Option<wire::MutationIdentity>,
         action: impl FnOnce(&mut State) -> Result<R, Error>,
     ) -> Result<R, Error> {
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             journal.check()?;
         }
@@ -212,7 +212,7 @@ impl MemoryObjects {
                 Receipt {
                     digest,
                     response: response.encode_to_vec(),
-                    #[cfg(feature = "local")]
+                    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
                     kind: persistence::response_kind::<R>()?,
                 },
             );
@@ -246,7 +246,7 @@ impl MemoryObjects {
         if count > self.options.maximum_entries || bytes > self.options.maximum_bytes {
             return Err(QuotaExceeded.into());
         }
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if let Some(journal) = &self.journal {
             if self.defer_local {
                 journal.validate_bodies(&next)?;
@@ -258,7 +258,7 @@ impl MemoryObjects {
         Ok(response)
     }
 
-    #[cfg(feature = "local")]
+    #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
     fn put_durable_batch_locked(
         &self,
         state: &mut State,
@@ -560,7 +560,7 @@ impl NativeBatchObjects for MemoryObjects {
         let Ok(mut state) = self.lock_state() else {
             return vec![Err(Unavailable.into()); requests.len()];
         };
-        #[cfg(feature = "local")]
+        #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
         if self.journal.is_some() {
             return self.put_durable_batch_locked(&mut state, requests);
         }
