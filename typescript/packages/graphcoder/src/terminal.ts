@@ -164,10 +164,19 @@ export class GraphCoderTerminal {
   async interactive(): Promise<void> {
     const input = this.#io.input ?? stdin;
     const output = this.#io.output ?? stdout;
-    const readline: Interface = createInterface({ input, output, terminal: true });
+    const readline: Interface = createInterface({
+      input,
+      output,
+      terminal: Boolean((input as NodeJS.ReadStream).isTTY && (output as NodeJS.WriteStream).isTTY),
+    });
     try {
       for (;;) {
-        const line = await readline.question("graphcoder> ");
+        let line: string;
+        try { line = await readline.question("graphcoder> "); }
+        catch (error) {
+          if (error instanceof Error && "code" in error && error.code === "ERR_USE_AFTER_CLOSE") return;
+          throw error;
+        }
         if (line.trim() === "quit" || line.trim() === "exit") { await this.command(line); return; }
         try { await this.command(line); }
         catch (error) { writeLine(this.#io, { ok: false, error: error instanceof Error ? error.message : String(error) }); }
