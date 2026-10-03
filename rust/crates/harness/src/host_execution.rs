@@ -1204,6 +1204,65 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn provider_cancellation_is_nonblocking_and_persisted_as_a_receipt() -> Result<()> {
+        let operation = OperationId::from_bytes([31; 16]);
+        let mut request = spec();
+        request.timeout_ms = Some(10_000);
+        if cfg!(windows) {
+            request.executable = format!(
+                r"{}\System32\ping.exe",
+                std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+            );
+            request.arguments = vec!["-n".into(), "30".into(), "127.0.0.1".into()];
+        } else {
+            request.arguments = vec!["-c".into(), "sleep 5".into()];
+        }
+        let approval = ExecutionApproval::approve(operation, request)?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let provider = Arc::new(NativeExecutionProvider::new(
+            content.clone(),
+            content.clone(),
+            Arc::new(NativeExecutionRunner),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([32; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            async move { provider.dispatch(dispatch).await }
+        });
+        let mut cancelled = false;
+        for _ in 0..100 {
+            if provider.cancel(operation) {
+                cancelled = true;
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(cancelled, "dispatch never exposed its active cancellation token");
+        let observation = task.await.map_err(|error| Error::Storage(error.to_string()))??;
+        assert!(matches!(
+            observation.status,
+            EffectStatus::FailedWithReceipt { ref message, .. } if message.contains("cancelled")
+        ));
+        assert_eq!(content.staged.lock().unwrap().len(), 1);
+        Ok(())
+    }
+
     #[test]
     fn operation_identity_is_stable_for_effect_adaptation() {
         let operation = OperationId::from_bytes([9; 16]);
