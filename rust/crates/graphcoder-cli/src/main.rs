@@ -11,26 +11,20 @@
 
 use futures::StreamExt;
 use acyclic_harness::{
-    conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
+    conversation::Limits,
     filesystem::{
-        FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
-        LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings, LocalSwarmConfig,
-        PersistentLocalSwarm,
+        LocalSessionPhase, PersistentLocalSwarm,
     },
-    core::Scope,
-    interaction::InteractionResponse,
-    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
-    resources::ProviderRef,
-    Error as HarnessError, InteractionId, OperationId, Result as HarnessResult, TaskId,
+    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
+        ModelProvider, ModelRequest},
+    registry::ComponentIdentity,
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
-use acyclic_fs::{LocalFs, LocalOptions};
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use clap::Parser;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
-    collections::BTreeMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -74,6 +68,7 @@ struct Args {
 struct EchoModel {
     fixture: String,
     calls: Arc<AtomicUsize>,
+    option_policy: ModelOptionPolicy,
 }
 
 impl ModelProvider for EchoModel {
@@ -232,6 +227,10 @@ impl ModelProvider for EchoModel {
     ) -> BoxFuture<'a, acyclic_harness::Result<Option<Vec<ModelEvent>>>> {
         async { Ok(None) }.boxed()
     }
+
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        Some(&self.option_policy)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -288,138 +287,11 @@ impl WireResponse {
 struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
-    /// Host-only approval authority. The terminal receives a callback for the
-    /// exact pending invocation and never creates an issuer or scope itself.
-    approval_authorizer: ApprovalAuthorizer,
     operator_token: Option<String>,
-    operator_choices: Arc<Mutex<BTreeMap<String, OperatorChoice>>>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct OperatorChoice {
-    operation: OperationId,
-    action_digest: [u8; 32],
-    approved: bool,
-}
-
-/// The immutable identity presented to the host approval boundary.
-///
-/// Supplying the interaction ID alone lets an authorizer accidentally grant a
-/// different operation when a stale terminal request races with a new ticket.
-/// The durable ticket's operation and action digest stay attached to the
-/// callback so a host can issue the smallest responder grant for the exact
-/// invocation that the operator selected.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PendingApproval {
-    task: TaskId,
-    interaction: InteractionId,
-    operation: OperationId,
-    action_digest: [u8; 32],
-    approved: bool,
-}
-
-/// Host-owned operator authorization for one exact pending interaction.
-///
-/// A production host supplies this callback when it composes the runtime. The
-/// default terminal entrypoint remains fail-closed because it has no authority
-/// from which it could mint a responder scope.
-type ApprovalAuthorizer = Arc<
-    dyn Fn(PendingApproval) -> BoxFuture<'static, HarnessResult<Scope>> + Send + Sync,
->;
-
-/// Adapts the durable host signer to the terminal's exact pending-ticket
-/// callback. The signer is supplied by the host composition after it has
-/// authenticated the operator choice; this adapter performs no minting.
-fn approval_authorizer_from_operator(
-    operator: InteractionOperatorAuthorizer<
-        acyclic_stream::LocalStream,
-        acyclic_fs::LocalAuthorityBackend,
-        acyclic_fs::LocalObjectBackend,
-    >,
-) -> ApprovalAuthorizer {
-    let operator = Arc::new(operator);
-    Arc::new(move |pending: PendingApproval| {
-        let operator = operator.clone();
-        async move {
-            operator
-                .issue_scope(&InteractionApprovalAuthorization {
-                    interaction_id: pending.interaction,
-                    operation_id: pending.operation,
-                    action_digest: pending.action_digest,
-                    approved: pending.approved,
-                })
-                .await
-        }
-        .boxed()
-    })
-}
-
-/// Resolves the operator signer from the exact task that owns the pending
-/// ticket. Child sessions have their own durable conversation and issuer, so
-/// a root signer must never be reused for a child approval.
-fn approval_authorizer_from_swarm(swarm: Arc<PersistentLocalSwarm>) -> ApprovalAuthorizer {
-    Arc::new(move |pending: PendingApproval| {
-        let swarm = swarm.clone();
-        async move {
-            let operator = swarm
-                .interaction_operator_authorizer(pending.task)
-                .await?;
-            operator
-                .issue_scope(&InteractionApprovalAuthorization {
-                    interaction_id: pending.interaction,
-                    operation_id: pending.operation,
-                    action_digest: pending.action_digest,
-                    approved: pending.approved,
-                })
-                .await
-        }
-        .boxed()
-    })
-}
-
-async fn recursive_project(
-    root: &std::path::Path,
-) -> HarnessResult<(
-    Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-    StreamClient<LocalStream>,
-    VolumeRef,
-)> {
-    let provider = ProviderRef::new("local", "filesystem", "2")?;
-    let host = Arc::new(
-        FilesystemHost::new(
-            LocalFs::local(LocalOptions::new(root.join("filesystem"))).await
-                .map_err(|error| HarnessError::Storage(error.to_string()))?,
-            provider.clone(),
-        )?,
-    );
-    let stream = StreamClient::new(Arc::new(
-        LocalStream::open(root.join("conversation"), LocalStreamLimits::default())
-            .await
-            .map_err(|error| HarnessError::Storage(error.to_string()))?,
-    ));
-    let project = VolumeRef::new(
-        provider,
-        "graphcoder-recursive-project",
-        VolumeClass::Project,
-        VolumeOwner::Project("graphcoder-recursive-fixture".into()),
-    )?;
-    host.create_volume(&project).await?;
-    Ok((host, stream, project))
 }
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
-        Self::open_with_authorizer(args, None).await
-    }
-
-    /// Opens the terminal with a host-owned operator callback. When no custom
-    /// callback is supplied, the callback is composed from the durable signer
-    /// belonging to the exact pending task. The operator control channel still
-    /// gates the callback before this path can be reached.
-    async fn open_with_authorizer(
-        args: &Args,
-        approval_authorizer: Option<ApprovalAuthorizer>,
-    ) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
             value => {
@@ -434,42 +306,37 @@ impl Runtime {
             "1",
             json!({ "fixture": fixture }),
         )?;
-        let config = LocalSwarmConfig::new(model.clone(), Limits::default())?;
+        let option_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "graphcoder.mock.options".into(),
+                version: "1".into(),
+                digest: [0x67; 32],
+            },
+            json!({
+                "type": "object",
+                "required": ["fixture"],
+                "properties": {
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive"]}
+                },
+                "additionalProperties": false,
+            }),
+        )?;
         let provider = Arc::new(EchoModel {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
+            option_policy,
         });
-        let swarm = if fixture == "recursive" {
-            let (host, stream, project) = recursive_project(&args.root).await?;
-            let resolver = Arc::new(
-                LocalFilesystemForkResolver::new(
-                    host,
-                    stream,
-                    ProviderRef::new("local", "stream", "2")?,
-                    project,
-                )?
-                .with_host_secret([0x5a; 32])?,
-            );
-            PersistentLocalSwarm::open_shared_with_model_and_bindings(
-                &args.root,
-                model,
-                provider,
-                Limits::default(),
-                LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
-            )
-            .await?
-        } else {
-            Arc::new(PersistentLocalSwarm::open(&args.root, config, provider).await?)
-        };
-        let approval_authorizer = approval_authorizer.unwrap_or_else(|| {
-            approval_authorizer_from_swarm(swarm.clone())
-        });
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            &args.root,
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
         Ok(Self {
             swarm,
             model_fixture: fixture,
-            approval_authorizer,
             operator_token: args.operator_token.clone(),
-            operator_choices: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -753,37 +620,10 @@ impl Runtime {
             .get("approved")
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
-        let approval = self
-            .swarm
-            .list_approvals(task)
+        self.swarm
+            .record_operator_approval(task, id, approved)
             .await
-            .map_err(DispatchError::from_harness)?
-            .into_iter()
-            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
-            .ok_or_else(|| {
-                DispatchError::from_harness(HarnessError::NotFound(format!(
-                    "local swarm approval {id}"
-                )))
-            })?;
-        if approval.resolution.is_some() {
-            return Err(DispatchError {
-                code: "stale",
-                message: "approval is no longer pending operator choice".into(),
-            });
-        }
-        let binding = approval.ticket.approval.ok_or_else(|| {
-            DispatchError::from_harness(HarnessError::Invalid(
-                "approval ticket has no exact operation binding".into(),
-            ))
-        })?;
-        self.operator_choices.lock().await.insert(
-            approval_key(task, id),
-            OperatorChoice {
-                operation: binding.operation_id,
-                action_digest: binding.action_digest,
-                approved,
-            },
-        );
+            .map_err(DispatchError::from_harness)?;
         Ok(json!({
             "session_id": task.to_string(),
             "approval_id": id.to_string(),
@@ -800,67 +640,10 @@ impl Runtime {
             .get("approved")
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
-        let pending = self
-            .swarm
-            .list_approvals(task)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .into_iter()
-            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
-            .ok_or_else(|| {
-                DispatchError::from_harness(HarnessError::NotFound(format!(
-                    "local swarm approval {id}"
-                )))
-            })?;
-        let binding = pending.ticket.approval.ok_or_else(|| {
-            DispatchError::from_harness(HarnessError::Invalid(
-                "approval ticket has no exact operation binding".into(),
-            ))
-        })?;
-        let choice = self
-            .operator_choices
-            .lock()
-            .await
-            .get(&approval_key(task, id))
-            .cloned()
-            .ok_or_else(|| DispatchError {
-                code: "denied",
-                message: "approval requires an authenticated operator choice".into(),
-            })?;
-        if choice.approved != approved
-            || choice.operation != binding.operation_id
-            || choice.action_digest != binding.action_digest
-        {
-            return Err(DispatchError {
-                code: "denied",
-                message: "operator choice does not match the pending approval".into(),
-            });
-        }
-        let responder = (self.approval_authorizer)(PendingApproval {
-            task,
-            interaction: id,
-            operation: binding.operation_id,
-            action_digest: binding.action_digest,
-            approved,
-        })
-            .await
-            .map_err(DispatchError::from_harness)?;
         self.swarm
-            .resolve_approval(
-                task,
-                id,
-                InteractionResponse::Approval {
-                    approved,
-                    reason: None,
-                },
-                &responder,
-            )
+            .resolve_recorded_operator_approval(task, id, approved)
             .await
             .map_err(DispatchError::from_harness)?;
-        self.operator_choices
-            .lock()
-            .await
-            .remove(&approval_key(task, id));
         let approval = self
             .swarm
             .list_approvals(task)
@@ -1063,10 +846,6 @@ fn generation_token<T: Serialize>(generation: &T) -> String {
     let mut token = [0_u8; 16];
     token.copy_from_slice(&digest.as_bytes()[..16]);
     u128::from_le_bytes(token).to_string()
-}
-
-fn approval_key(task: TaskId, id: InteractionId) -> String {
-    format!("{task}:{id}")
 }
 
 fn page_result(task: TaskId, items: Vec<Value>, next: Option<String>) -> Value {
@@ -1748,42 +1527,4 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn approval_authorizer_receives_the_exact_pending_invocation() {
-        let expected_task = TaskId::from_bytes([0x71; 16]);
-        let expected_id = InteractionId::from_bytes([0x72; 16]);
-        let expected_operation = OperationId::from_bytes([0x73; 16]);
-        let expected_digest = [0x74; 32];
-        let expected_approved = true;
-        let seen = Arc::new(Mutex::new(None));
-        let callback_seen = seen.clone();
-        let authorizer: ApprovalAuthorizer = Arc::new(move |pending| {
-            let callback_seen = callback_seen.clone();
-            async move {
-                *callback_seen.lock().await = Some(pending);
-                Err(HarnessError::Unsupported("test host authorizer".into()))
-            }
-            .boxed()
-        });
-
-        let result = authorizer(PendingApproval {
-            task: expected_task,
-            interaction: expected_id,
-            operation: expected_operation,
-            action_digest: expected_digest,
-            approved: expected_approved,
-        })
-        .await;
-        assert!(matches!(result, Err(HarnessError::Unsupported(message)) if message == "test host authorizer"));
-        assert_eq!(
-            *seen.lock().await,
-            Some(PendingApproval {
-                task: expected_task,
-                interaction: expected_id,
-                operation: expected_operation,
-                action_digest: expected_digest,
-                approved: expected_approved,
-            })
-        );
-    }
 }

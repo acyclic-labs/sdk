@@ -7,11 +7,12 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost, InteractionOperatorAuthorizer,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
+    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
-    AgentId, Capabilities, Error, OperationId, Result, TaskId,
+    AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -21,7 +22,7 @@ use crate::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
-    interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
+    interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -41,6 +42,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::{self, OpenOptions},
+    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
 };
@@ -1766,6 +1769,13 @@ struct StoredCompletionRef {
     digest: [u8; 32],
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LocalOperatorChoice {
+    operation: OperationId,
+    action_digest: [u8; 32],
+    approved: bool,
+}
+
 /// Persisted declaration of the exact inherited model prefix and child suffix.
 /// The declaration is reconstructed as an `InheritedModelContext` only after
 /// the parent publication and child seed have been recovered.
@@ -1983,6 +1993,10 @@ pub struct PersistentLocalSwarm {
     /// authority; these narrow gates prevent duplicate retries without
     /// deadlocking a child turn that recursively activates a grandchild.
     task_gates: Mutex<BTreeMap<TaskId, Arc<Mutex<()>>>>,
+    /// Host-only operator choices awaiting resolution. The choice is retained
+    /// with the exact ticket binding so a public resolve request cannot swap
+    /// an operation or action digest between the private decision and commit.
+    operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
 }
 
 impl PersistentLocalSwarm {
@@ -2135,6 +2149,7 @@ impl PersistentLocalSwarm {
             completion_refs: Mutex::new(completion_refs),
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
+            operator_choices: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -2223,6 +2238,44 @@ impl PersistentLocalSwarm {
         .await
     }
 
+    /// Opens the shared local composition with owner-authenticated recursive
+    /// filesystem support. The caller supplies only the model/provider
+    /// boundary; provider caches, project ownership, the durable fork
+    /// resolver, and its persisted issuer secret stay in Harness.
+    pub async fn open_shared_with_model_and_recursive_filesystem(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+    ) -> Result<Arc<Self>> {
+        let root = root.as_ref().to_path_buf();
+        let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
+        let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
+            .await?;
+        let stream_provider = ProviderRef::new("local", "stream", "2")?;
+        let stream = shared_local_stream(root.join("conversation")).await?;
+        let project = VolumeRef::new(
+            filesystem_provider,
+            "graphcoder-recursive-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("graphcoder-recursive-fixture".into()),
+        )?;
+        host.create_volume(&project).await?;
+        let host_secret = local_fork_secret(&root)?;
+        let resolver = Arc::new(
+            LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
+                .with_host_secret(host_secret)?,
+        );
+        Self::open_shared_with_model_and_bindings(
+            root,
+            model,
+            provider,
+            limits,
+            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+        )
+        .await
+    }
+
     /// Returns the stable root task without opening any child session.
     pub async fn root_task(&self) -> Result<TaskId> {
         self.records
@@ -2244,6 +2297,105 @@ impl PersistentLocalSwarm {
     {
         let harness = self.open_session(task).await?;
         harness.storage().interaction_operator_authorizer()
+    }
+
+    /// Records one authenticated operator decision against the current ticket.
+    /// The terminal control boundary calls this after authenticating its
+    /// process-local credential; the durable ticket remains the authority for
+    /// operation and action binding.
+    pub async fn record_operator_approval(
+        &self,
+        task: TaskId,
+        id: InteractionId,
+        approved: bool,
+    ) -> Result<()> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if approval.resolution.is_some() {
+            return Err(Error::Conflict(
+                "approval is no longer pending operator choice".into(),
+            ));
+        }
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("approval ticket has no exact operation binding".into())
+        })?;
+        self.operator_choices.lock().await.insert(
+            operator_choice_key(task, id),
+            LocalOperatorChoice {
+                operation: binding.operation_id,
+                action_digest: binding.action_digest,
+                approved,
+            },
+        );
+        Ok(())
+    }
+
+    /// Resolves a decision recorded by the host operator boundary. The signer
+    /// is selected from the exact task and revalidates the immutable ticket
+    /// before the existing storage resolver commits the interaction.
+    pub async fn resolve_recorded_operator_approval(
+        &self,
+        task: TaskId,
+        id: InteractionId,
+        approved: bool,
+    ) -> Result<InteractionOutcome> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("approval ticket has no exact operation binding".into())
+        })?;
+        let choice = self
+            .operator_choices
+            .lock()
+            .await
+            .get(&operator_choice_key(task, id))
+            .cloned()
+            .ok_or_else(|| {
+                Error::Unauthorized(
+                    "approval requires an authenticated operator choice".into(),
+                )
+            })?;
+        if choice.approved != approved
+            || choice.operation != binding.operation_id
+            || choice.action_digest != binding.action_digest
+        {
+            return Err(Error::Unauthorized(
+                "operator choice does not match the pending approval".into(),
+            ));
+        }
+        let operator = self.interaction_operator_authorizer(task).await?;
+        let responder = operator
+            .issue_scope(&InteractionApprovalAuthorization {
+                interaction_id: id,
+                operation_id: binding.operation_id,
+                action_digest: binding.action_digest,
+                approved,
+            })
+            .await?;
+        let outcome = self
+            .resolve_approval(
+                task,
+                id,
+                InteractionResponse::Approval {
+                    approved,
+                    reason: None,
+                },
+                &responder,
+            )
+            .await?;
+        self.operator_choices
+            .lock()
+            .await
+            .remove(&operator_choice_key(task, id));
+        Ok(outcome)
     }
 
     /// Lists canonical session descriptors without starting workers or
@@ -3861,6 +4013,45 @@ impl PersistentLocalSwarm {
 
 fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
     root.join("tasks").join(task.to_string())
+}
+
+fn operator_choice_key(task: TaskId, id: InteractionId) -> String {
+    format!("{task}:{id}")
+}
+
+fn local_fork_secret(root: &Path) -> Result<[u8; 32]> {
+    let path = root.join(".system").join("local-fork-issuer.secret");
+    if let Ok(bytes) = fs::read(&path) {
+        return bytes.try_into().map_err(|_| {
+            Error::Conflict("persisted local fork issuer secret has the wrong length".into())
+        });
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| Error::Storage(error.to_string()))?;
+    }
+    let mut entropy = blake3::Hasher::new();
+    entropy.update(b"acyclic.local-swarm.issuer-secret.v1\0");
+    entropy.update(root.to_string_lossy().as_bytes());
+    entropy.update(&OperationId::new().into_bytes());
+    let secret = *entropy.finalize().as_bytes();
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            file.write_all(&secret)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            Ok(secret)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let bytes = fs::read(&path).map_err(|read_error| Error::Storage(read_error.to_string()))?;
+            bytes.try_into().map_err(|_| {
+                Error::Conflict("persisted local fork issuer secret has the wrong length".into())
+            })
+        }
+        Err(error) => Err(Error::Storage(error.to_string())),
+    }
 }
 
 fn normalized_path(path: &Path) -> PathBuf {

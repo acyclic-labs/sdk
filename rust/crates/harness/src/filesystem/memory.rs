@@ -16,7 +16,7 @@ use crate::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, Event, SchemaRegistry, Scope,
     },
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
-    interaction::{Interaction, InteractionOutcome, InteractionResponse},
+    interaction::{InteractionOutcome, InteractionResponse},
     model::{Model, ModelProvider},
     projection::select_model_context,
     resources::{GenerationRef, ProviderRef},
@@ -1815,6 +1815,7 @@ fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
 mod tests {
     use super::*;
     use crate::{
+        interaction::Interaction,
         Outcome,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
         runtime::{TaskDefinition, TaskRegistry},
