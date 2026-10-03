@@ -3025,6 +3025,7 @@ fn verify_release_qualification(
                     .all(|character| !character.is_control() && character != '\\')
         })
         .ok_or_else(|| Error::Strict("release qualification has no valid Git tag".to_owned()))?;
+    validate_release_tag_version(tag, version)?;
     let revision = manifest
         .get("revision")
         .and_then(serde_json::Value::as_str)
@@ -3088,6 +3089,47 @@ fn verify_release_qualification(
         revision: revision.to_owned(),
         qualified: true,
     })
+}
+
+fn validate_release_tag_version(tag: &str, version: &str) -> Result<(), Error> {
+    let scope = ["acyclic-v", "cargo-v", "npm-v"]
+        .into_iter()
+        .find(|prefix| tag.starts_with(prefix))
+        .ok_or_else(|| {
+            Error::Strict(format!(
+                "release qualification tag has no supported release identity scope: {tag}"
+            ))
+        })?;
+    let tagged_version = &tag[scope.len()..];
+    if !valid_release_version(version) {
+        return Err(Error::Strict(format!(
+            "release qualification version is not a supported release version: {version}"
+        )));
+    }
+    if tagged_version != version {
+        return Err(Error::Strict(format!(
+            "release qualification tag/version mismatch: tag {tag} names {tagged_version}, manifest names {version}"
+        )));
+    }
+    Ok(())
+}
+
+fn valid_release_version(version: &str) -> bool {
+    let split = version
+        .find(|character| character == '-' || character == '+')
+        .unwrap_or(version.len());
+    let core = &version[..split];
+    let suffix = &version[split..];
+    let core_valid = core.split('.').count() == 3
+        && core
+            .split('.')
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()));
+    let suffix_valid = suffix.is_empty()
+        || (suffix.len() > 1
+            && suffix[1..]
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'.' || byte == b'-'));
+    core_valid && suffix_valid
 }
 
 fn git_worktree_dirty(root: &Path) -> bool {
@@ -3770,6 +3812,30 @@ mod tests {
     }
 
     #[test]
+    fn release_tag_scopes_bind_the_exact_version() {
+        for (tag, version) in [
+            ("acyclic-v0.1.5", "0.1.5"),
+            ("cargo-v0.1.5", "0.1.5"),
+            ("npm-v0.1.5-rc.1", "0.1.5-rc.1"),
+        ] {
+            validate_release_tag_version(tag, version)
+                .unwrap_or_else(|error| panic!("{tag} should be accepted: {error}"));
+        }
+        for (tag, version) in [
+            ("cargo-v0.1.5", "0.1.6"),
+            ("npm-v0.1.5", "0.1.5+build.2"),
+            ("v0.1.5", "0.1.5"),
+        ] {
+            let error = validate_release_tag_version(tag, version)
+                .expect_err("mismatched or unscoped release identity must fail closed");
+            assert!(
+                error.to_string().contains("release qualification"),
+                "unexpected error for {tag}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn release_qualification_requires_explicit_qualification() {
         let path = std::env::temp_dir().join(format!(
             "sdk-docs-release-qualification-{}-{}.json",
@@ -3787,6 +3853,27 @@ mod tests {
         let error = verify_release_qualification(&path, Path::new("."), "unknown", false)
             .expect_err("unqualified release manifest must fail closed");
         assert!(error.to_string().contains("qualified=true"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn release_qualification_rejects_mismatched_tag_version() {
+        let path = std::env::temp_dir().join(format!(
+            "sdk-docs-release-qualification-{}-{}.json",
+            std::process::id(),
+            "version-mismatch"
+        ));
+        let manifest = serde_json::json!({
+            "schema": "acyclic.sdk.docs.release-qualification.v1",
+            "version": "0.1.6",
+            "tag": "cargo-v0.1.5",
+            "revision": "0000000000000000000000000000000000000000",
+            "qualified": true
+        });
+        fs::write(&path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        let error = verify_release_qualification(&path, Path::new("."), "unknown", false)
+            .expect_err("a release manifest must bind its version to its tag scope");
+        assert!(error.to_string().contains("tag/version mismatch"));
         fs::remove_file(path).unwrap();
     }
 
