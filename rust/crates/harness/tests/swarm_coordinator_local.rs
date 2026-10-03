@@ -173,6 +173,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
                     limits,
                     SwarmOwnerFence::new("owner", 0).expect("owner fence"),
                     request,
+                    state_ref().expect("admission reference"),
                     reservation,
                 )
                 .await
