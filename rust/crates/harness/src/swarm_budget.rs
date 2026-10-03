@@ -967,25 +967,14 @@ where
         self.provider.admit(request)
     }
 
-    fn generate_prepared<'a>(
+    fn generate<'a>(
         &'a self,
         prepared: crate::model_input::PreparedModelInput,
     ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
         if let Err(error) = self.meter.admit_model_step() {
             return Box::pin(futures::stream::once(async move { Err(error) }));
         }
-        let stream = self.provider.generate_prepared(prepared);
-        Self::wrap_stream(stream, self.meter.clone())
-    }
-
-    fn generate<'a>(
-        &'a self,
-        request: crate::model::ModelRequest,
-    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
-        if let Err(error) = self.meter.admit_model_step() {
-            return Box::pin(futures::stream::once(async move { Err(error) }));
-        }
-        let stream = self.provider.generate(request);
+        let stream = self.provider.generate(prepared);
         Self::wrap_stream(stream, self.meter.clone())
     }
 

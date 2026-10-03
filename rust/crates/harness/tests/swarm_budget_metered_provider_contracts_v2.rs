@@ -1,5 +1,7 @@
 use acyclic_harness::{
-    model::{Model, ModelContent, ModelEvent, ModelMessage, ModelProvider, ModelRequest, ModelRole},
+    model::{Model, ModelContent, ModelEvent, ModelMessage, ModelProvider, ModelRole},
+    model_input::PreparedModelInput,
+    conversation::Limits,
     swarm_budget::{
         MeteredModelProvider, SwarmBudget, SwarmBudgetLimits, SwarmOwnerFence, SwarmUsage,
         SwarmUsageSource,
@@ -41,7 +43,7 @@ impl SwarmUsageSource for MeasuredSource {
 struct StreamingModel;
 
 impl ModelProvider for StreamingModel {
-    fn generate<'a>(&'a self, _: ModelRequest) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, _: PreparedModelInput) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
         Box::pin(stream::iter([
             Ok(ModelEvent::Content { delta: "measured answer".into() }),
             Ok(ModelEvent::Completed { metadata: Value::Null }),
@@ -95,7 +97,8 @@ async fn metered_provider_charges_real_stream_and_rejects_next_step_at_ceiling()
         budget.root_usage_context(source)?,
     );
 
-    let events = metered.generate(request()).collect::<Vec<_>>().await;
+    let prepared = PreparedModelInput::prepare(request(), Limits::default())?;
+    let events = metered.generate(prepared).collect::<Vec<_>>().await;
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(Result::is_ok));
     let usage = meter.usage()?;
@@ -104,7 +107,8 @@ async fn metered_provider_charges_real_stream_and_rejects_next_step_at_ceiling()
     assert!(usage.execution_time_ms <= limits().max_execution_time_ms);
     let _receipt = meter.issue_usage_receipt()?;
 
-    let exhausted = metered.generate(request()).next().await;
+    let prepared = PreparedModelInput::prepare(request(), Limits::default())?;
+    let exhausted = metered.generate(prepared).next().await;
     assert!(matches!(exhausted, Some(Err(Error::Conflict(_)))));
     Ok(())
 }
@@ -121,7 +125,8 @@ async fn metered_provider_rejects_host_receipt_behind_measured_counters() -> Res
         budget.root_usage_context(source)?,
     );
 
-    let _ = metered.generate(request()).collect::<Vec<_>>().await;
+    let prepared = PreparedModelInput::prepare(request(), Limits::default())?;
+    let _ = metered.generate(prepared).collect::<Vec<_>>().await;
     assert!(matches!(meter.issue_usage_receipt(), Err(Error::Conflict(_))));
     Ok(())
 }
