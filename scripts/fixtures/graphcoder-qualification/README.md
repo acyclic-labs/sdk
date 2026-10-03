@@ -15,6 +15,7 @@ and install it there, then run:
 node scripts/fixtures/graphcoder-qualification/consumer.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/host.mjs --log <request-log>
 node scripts/fixtures/graphcoder-qualification/negative-conformance.mjs --root <installed-consumer> --host scripts/fixtures/graphcoder-qualification/negative-host.mjs --epoch-host scripts/fixtures/graphcoder-qualification/epoch-host.mjs
 node scripts/fixtures/graphcoder-qualification/harness-model-consumer.mjs --root <installed-consumer-with-harness>
+node scripts/fixtures/graphcoder-qualification/native-consumer.mjs --root <installed-consumer> --executable <graphcoder-runtime>
 ```
 
 The fixture IDs are stable qualification references:
@@ -30,6 +31,11 @@ The fixture IDs are stable qualification references:
 | `NEG-APPROVAL-01` | Session identity on approval responses, mandatory session scope for direct approval calls, and operation/generation/session identity on writeback receipts. |
 | `NEG-BYTES-01` | Invalid octets and a process response line over an explicitly configured 256-byte limit. |
 | `NEG-IDENTITY-01` | Snapshot, page, and diff response identities are checked against the request. |
+| `PKG-NATIVE-CLI-01` | Installed Node bridge consumes the native JSON-lines runtime over piped stdio and validates the listing envelope. |
+| `NEG-NATIVE-LIST-01` | Repeated native session listings are stable and do not start visible work or mutate the listing projection. |
+| `NEG-NATIVE-BOUNDS-01` | Native list limits, cursors, and parameter shapes reject invalid bounds with typed errors. |
+| `NEG-NATIVE-METHOD-01` | Native unknown, unsupported, malformed prompt/session, empty-ID, and oversized-ID requests retain typed error codes. |
+| `NEG-NATIVE-CORRELATION-01` | A malformed JSON-lines request must return a correlated error envelope instead of leaving a client request pending. |
 | `PKG-HARNESS-CONTRACT-01` | Installed `@acyclic-labs/harness/proto` and `/protocol` subpaths expose their generated descriptors and public message schemas. |
 | `PKG-HARNESS-MODEL-01` | Installed `@acyclic-labs/harness` model dispatch retains provider/name/revision/options, including a full-width integer, in one frozen canonical request; request and manifest digests agree with the canonical bytes and differ when model identity changes. |
 | `NEG-MODEL-PAIR-01` | An unpaired context tool call is rejected before a model provider callback runs. |
@@ -41,8 +47,9 @@ line limit exercised by `NEG-BYTES-01` is the test's configured
 `maximumLineBytes: 256`, while the path boundary is 4096 ASCII bytes. These
 fixtures do not prove durable cancellation of a real worker, storage policy,
 model behavior, production swarm orchestration, N-API/Cargo bindings, or all
-possible native field combinations. `harness-model-consumer.mjs` uses a local
-assertion provider only to observe the installed Harness boundary; it does not
+possible native field combinations. `native-consumer.mjs` requires a separately
+built native runtime; it remains source-only until that installed binary is
+available. `harness-model-consumer.mjs` uses a local assertion provider only to observe the installed Harness boundary; it does not
 qualify any production model provider. The installed Harness artifact must
 include the generated native `prepareModelRequest` export; a missing export is
 a qualification failure rather than a skipped model scenario.
