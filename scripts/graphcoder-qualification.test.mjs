@@ -106,6 +106,7 @@ test("the loaded receipt schema rejects unknown nested contract fields", () => {
       const invalid = structuredClone(receipt);
       mutate(invalid);
       assert.equal(validateReceiptSchema(invalid), false, `${label} unknown field was accepted`);
+      assert.throws(() => validate(invalid), /receipt schema validation failed/, `${label} unknown field bypassed production validation`);
     }
   } finally {
     rmSync(directory, { recursive: true, force: true });

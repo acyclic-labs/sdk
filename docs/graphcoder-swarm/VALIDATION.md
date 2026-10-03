@@ -6,8 +6,9 @@ scenario, and the execution kinds that must be represented by final evidence.
 Keep IDs stable when implementation details change. Add a new row when a new
 contract is introduced instead of silently changing an existing row's meaning.
 
-The validator is intentionally dependency-free and can run before the full SDK
-toolchain is installed:
+The validator loads the checked-in receipt schema through the repository's Ajv
+development dependency, so install the workspace dependencies before running
+it:
 
 ```text
 node scripts/graphcoder-qualification.mjs matrix-check
