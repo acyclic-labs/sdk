@@ -991,7 +991,8 @@ pub struct ExecutionApprovalContext<'a> {
     pub effect_kind: &'a str,
     /// Pinned delivery guarantee.
     pub guarantee: EffectGuarantee,
-    /// Digest of the exact immutable approval request content.
+    /// Digest of the exact immutable dispatch request content, including its
+    /// staged `FileRef` identity and descriptor.
     pub request_digest: [u8; 32],
     /// Digest of the exact host volume and logical path being dispatched.
     pub request_locator_digest: [u8; 32],
@@ -2924,7 +2925,6 @@ mod local_provider_tests {
                 "printf graphcoder-approved >> marker.txt".into(),
             ];
         }
-        let request_digest = request.digest()?;
         let request_file;
         let dispatch;
         {
@@ -3130,7 +3130,8 @@ mod local_provider_tests {
                         request_digest: forged_digest,
                     })
                     .await,
-                Err(Error::Unauthorized(_))
+                Err(Error::Unauthorized(message))
+                    if message.contains("owner interaction does not authorize")
             ));
         }
         let first_marker =

@@ -26,7 +26,9 @@ pub enum InteractionKind {
 pub struct ApprovalBinding {
     /// Operation to which the decision applies.
     pub operation_id: OperationId,
-    /// Digest of the exact approved arguments and action.
+    /// Digest of the exact approved arguments and action. Host execution
+    /// approvals use the effect request digest, which includes the immutable
+    /// staged `FileRef` identity and descriptor.
     pub action_digest: [u8; 32],
 }
 
@@ -468,7 +470,8 @@ pub enum Interaction {
         prompt: String,
         /// Operation awaiting approval.
         operation_id: OperationId,
-        /// Digest of the exact action being approved.
+        /// Digest of the exact action being approved. For host execution this
+        /// is the effect request digest over the immutable staged `FileRef`.
         action_digest: [u8; 32],
     },
 }
