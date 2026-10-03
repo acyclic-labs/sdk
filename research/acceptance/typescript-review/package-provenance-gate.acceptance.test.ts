@@ -25,9 +25,9 @@ test("installed package lanes have no ambient cache or newest artifact fallback"
   const php = functionBody(main, "run_php", ["run_dart", "run_typescript"]);
 
   expect(ruby).not.toContain("newest_artifact");
-  expect(ruby).not.toMatch(/Q:\\\\sdk\\\\ruby-cache/i);
-  expect(php).not.toMatch(/Q:\\\\sdk\\\\php-cache/i);
-  expect(main).not.toMatch(/Q:\\\\sdk\\\\(?:ruby|php)-cache/i);
+  expect(ruby).not.toMatch(/Q:\\sdk\\ruby-cache/i);
+  expect(php).not.toMatch(/Q:\\sdk\\php-cache/i);
+  expect(main).not.toMatch(/Q:\\sdk\\(?:ruby|php)-cache/i);
 
   expect(ruby).toContain('env::var_os("RUBY_ARTIFACT")');
   expect(php).toContain('env::var_os("PHP_PACKAGE_ROOT")');
@@ -64,4 +64,19 @@ test("source closure review keeps the resolved local package graph and build rec
   expect(closure).toContain("digest.update(recipe)");
   expect(build).toContain("source_closure::digest_files");
   expect(build).toContain("cargo:rustc-env=SDK_EXAMPLES_SOURCE_SHA256");
+});
+
+test("producer and importer use one canonical Cargo recipe helper", async () => {
+  const [examples, examplesCargo, docs] = await Promise.all([
+    source("rust/crates/sdk-examples/src/source_closure.rs"),
+    source("rust/crates/sdk-examples/Cargo.toml"),
+    source("rust/crates/sdk-docs/src/lib.rs"),
+  ]);
+
+  // A second recipe implementation can silently diverge on dependency kind,
+  // feature, target, or path normalization while retaining the same framing.
+  expect(examplesCargo).toContain('sdk-source-identity = { path = "../sdk-source-identity" }');
+  expect(examples).toContain("sdk_source_identity::normalized_build_recipe");
+  expect(examples).not.toMatch(/fn normalized_build_recipe\s*\(/);
+  expect(docs).toContain("sdk_source_identity::normalized_build_recipe");
 });
