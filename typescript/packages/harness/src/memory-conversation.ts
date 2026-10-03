@@ -429,10 +429,15 @@ export class MemoryConversation {
         attachments: list, reply_to: null, tool_call_id: null, extensions: {},
       }, limits);
     }
-    if (preparation.disposition === "completed" && completed !== undefined && completedReady) {
+    if (completed !== undefined && completedReady) {
       return structuredClone(completed);
     }
-    if (preparation.disposition === "indeterminate") {
+    // A completed output is an owner-authenticated publication boundary. If
+    // the first attempt failed while publishing files, resume publication
+    // from that retained output even when an older/native planner reports an
+    // indeterminate disposition. The operation already has a durable model
+    // result, so dispatch reconciliation is not involved here.
+    if (completed === undefined && preparation.disposition === "indeterminate") {
       throw new IndeterminateModelTurnError(operationId);
     }
     state = this.conversation();
