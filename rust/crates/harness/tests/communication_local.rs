@@ -6,8 +6,8 @@ use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOption
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
     communication::{
-        DurableCommunication, MessageRequest, MessageTarget, WaitCompletion, WaitRequest,
-        WaitTarget,
+        DurableCommunication, MessageRequest, MessageTarget, StreamWaitStore, WaitCompletion,
+        WaitRequest, WaitTarget,
     },
     conversation::{FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
@@ -284,6 +284,7 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
     let fixture = Fixture::open(directory.path()).await?;
     let host = fixture.host().await?;
+    let wait_store = Arc::new(StreamWaitStore::new(fixture.stream.clone()));
     let parent = TaskId::from_bytes([11; 16]);
     assert!(
         matches!(host.admit(fixture.admission(OperationId::from_bytes(parent.into_bytes()), None)?).await?, Admission::Accepted(id) if id == parent)
@@ -292,40 +293,40 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| Error::Invalid(e.to_string()))?
         .as_millis() as u64;
+    let timeout_request = WaitRequest {
+        operation_id: OperationId::from_bytes([12; 16]),
+        waiter: parent,
+        target: WaitTarget::Messages {
+            task_id: parent,
+            after: 0,
+            limit: 8,
+        },
+        timeout_epoch_ms: Some(now + 50),
+        cancellation_id: None,
+    };
     let timed = DurableCommunication::new(host.clone())
-        .wait(
-            WaitRequest {
-                operation_id: OperationId::from_bytes([12; 16]),
-                waiter: parent,
-                target: WaitTarget::Messages {
-                    task_id: parent,
-                    after: 0,
-                    limit: 8,
-                },
-                timeout_epoch_ms: Some(now + 50),
-                cancellation_id: None,
-            },
-            None,
-        )
+        .with_wait_store(wait_store.clone())
+        .wait(timeout_request.clone(), None)
         .await?;
     assert!(matches!(timed, WaitCompletion::TimedOut));
     let (sender, receiver) = tokio::sync::watch::channel(false);
+    let cancel_request = WaitRequest {
+        operation_id: OperationId::from_bytes([13; 16]),
+        waiter: parent,
+        target: WaitTarget::Messages {
+            task_id: parent,
+            after: 0,
+            limit: 8,
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: None,
+    };
+    let task_wait_store = wait_store.clone();
+    let task_cancel_request = cancel_request.clone();
     let waiting = tokio::spawn(async move {
         DurableCommunication::new(host)
-            .wait(
-                WaitRequest {
-                    operation_id: OperationId::from_bytes([13; 16]),
-                    waiter: parent,
-                    target: WaitTarget::Messages {
-                        task_id: parent,
-                        after: 0,
-                        limit: 8,
-                    },
-                    timeout_epoch_ms: None,
-                    cancellation_id: None,
-                },
-                Some(receiver),
-            )
+            .with_wait_store(task_wait_store)
+            .wait(task_cancel_request, Some(receiver))
             .await
     });
     sender
@@ -335,5 +336,17 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
         waiting.await.map_err(|e| Error::Storage(e.to_string()))??,
         WaitCompletion::Cancelled
     ));
+    drop(wait_store);
+    drop(fixture);
+    let reopened_fixture = Fixture::open(directory.path()).await?;
+    let reopened_store = StreamWaitStore::new(reopened_fixture.stream.clone());
+    assert_eq!(
+        reopened_store.open(timeout_request).await?,
+        Some(WaitCompletion::TimedOut)
+    );
+    assert_eq!(
+        reopened_store.open(cancel_request).await?,
+        Some(WaitCompletion::Cancelled)
+    );
     Ok(())
 }

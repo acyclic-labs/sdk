@@ -8,8 +8,8 @@
 use crate::{
     Error, Outcome, Result, TaskId,
     communication::{
-        DurableCommunication, MessageRequest, MessageTarget, WaitCompletion, WaitRequest,
-        WaitTarget,
+        DurableCommunication, DurableWaitStore, MessageRequest, MessageTarget, WaitCompletion,
+        WaitRequest, WaitTarget,
     },
     conversation::FileRef,
     runtime::ToolContext,
@@ -21,7 +21,11 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
+use tokio::sync::watch;
 
 /// Stable model-visible name for explicit parent/child messages.
 pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
@@ -29,6 +33,81 @@ pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
 pub const WAIT_TOOL_NAME: &str = "swarm.wait";
 /// Revision of both model-facing communication contracts.
 pub const TOOL_REVISION: &str = "1";
+
+/// Runtime-owned cancellation source for authenticated wait calls.
+///
+/// Implementations return a receiver for the admitted task's cancellation
+/// scope. This is runtime provenance and never enters model-visible content.
+pub trait WaitCancellationSource: Send + Sync {
+    /// Returns a live cancellation receiver for one admitted task.
+    fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>>;
+}
+
+/// Local authenticated cancellation registry for task execution hosts.
+///
+/// A runtime registers a task when it admits the task, passes this source to
+/// the communication tool registry, and calls [`Self::cancel`] from the same
+/// owner authority that controls the task. The registry is deliberately a
+/// live cancellation bridge; durable cancellation declarations remain owned
+/// by the task journal and should recreate the cancelled state on resume.
+#[derive(Default)]
+pub struct LocalTaskCancellationSource {
+    scopes: Mutex<BTreeMap<TaskId, watch::Sender<bool>>>,
+}
+
+impl LocalTaskCancellationSource {
+    /// Registers or resets one admitted task's live cancellation scope.
+    pub fn register(&self, task_id: TaskId) -> Result<()> {
+        self.register_state(task_id, false)
+    }
+
+    /// Registers one admitted task with an owner-retained cancellation state.
+    ///
+    /// A resumed task should pass the journal's cancellation declaration here
+    /// before any model tool call is admitted.
+    pub fn register_state(&self, task_id: TaskId, cancelled: bool) -> Result<()> {
+        if task_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("cancellation task identity is nil".into()));
+        }
+        let (sender, _) = watch::channel(cancelled);
+        self.scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
+            .insert(task_id, sender);
+        Ok(())
+    }
+
+    /// Requests cancellation for one registered task.
+    pub fn cancel(&self, task_id: TaskId) -> Result<()> {
+        let scopes = self
+            .scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?;
+        let sender = scopes
+            .get(&task_id)
+            .ok_or_else(|| Error::NotFound("cancellation task scope".into()))?;
+        sender.send_replace(true);
+        Ok(())
+    }
+
+    /// Removes one task's live scope after its task loop exits.
+    pub fn remove(&self, task_id: TaskId) -> Result<()> {
+        self.scopes
+            .lock()
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
+            .remove(&task_id);
+        Ok(())
+    }
+}
+
+impl WaitCancellationSource for LocalTaskCancellationSource {
+    fn receiver(&self, task_id: TaskId) -> Option<watch::Receiver<bool>> {
+        self.scopes
+            .lock()
+            .ok()
+            .and_then(|scopes| scopes.get(&task_id).map(|sender| sender.subscribe()))
+    }
+}
 
 /// Message target selected by the model.  The durable layer verifies the
 /// selected relationship against immutable admissions before publishing.
@@ -176,11 +255,35 @@ pub enum WaitToolOutput {
 
 /// Returns the two model-facing communication tools bound to one durable host.
 pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Result<ToolRegistry> {
+    communication_tools_with_wait_store_and_cancellation(host, None, None)
+}
+
+/// Returns the communication tools with owner-retained wait persistence.
+///
+/// The wait store is deliberately supplied separately from the task host so a
+/// coordinator can bind its existing journal without exposing that journal to
+/// model content or creating a second orchestration engine.
+pub fn communication_tools_with_wait_store(
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+) -> Result<ToolRegistry> {
+    communication_tools_with_wait_store_and_cancellation(host, waits, None)
+}
+
+/// Returns communication tools with owner-retained wait persistence and the
+/// task's authenticated cancellation source.
+pub fn communication_tools_with_wait_store_and_cancellation(
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+    cancellation: Option<Arc<dyn WaitCancellationSource>>,
+) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         definition: message_definition(),
         executor: Arc::new(CommunicationExecutor {
             host: host.clone(),
+            waits: waits.clone(),
+            cancellation: cancellation.clone(),
             kind: CommunicationToolKind::Message,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -189,6 +292,8 @@ pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Re
         definition: wait_definition(),
         executor: Arc::new(CommunicationExecutor {
             host,
+            waits,
+            cancellation,
             kind: CommunicationToolKind::Wait,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -230,6 +335,8 @@ enum CommunicationToolKind {
 
 struct CommunicationExecutor {
     host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+    cancellation: Option<Arc<dyn WaitCancellationSource>>,
     kind: CommunicationToolKind,
 }
 
@@ -287,9 +394,16 @@ impl CommunicationExecutor {
                     timeout_epoch_ms,
                     cancellation_id: None,
                 };
-                let completion = DurableCommunication::new(self.host.clone())
-                    .wait(request, None)
-                    .await?;
+                let communication = DurableCommunication::new(self.host.clone());
+                let communication = match &self.waits {
+                    Some(waits) => communication.with_wait_store(waits.clone()),
+                    None => communication,
+                };
+                let cancellation = self
+                    .cancellation
+                    .as_ref()
+                    .and_then(|source| source.receiver(waiter));
+                let completion = communication.wait(request, cancellation).await?;
                 Ok(ToolResult {
                     value: serde_json::to_value(wait_output(completion))
                         .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -558,6 +672,26 @@ mod tests {
         assert_eq!(value["kind"], "tasks");
         assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
         assert_eq!(value["outcomes"][1]["status"], "indeterminate");
+        Ok(())
+    }
+
+    #[test]
+    fn local_cancellation_source_is_task_scoped() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let owner = task(8);
+        let sibling = task(9);
+        let resumed = task(11);
+        source.register(owner)?;
+        source.register(sibling)?;
+        source.register_state(resumed, true)?;
+        assert!(!*source.receiver(owner).expect("owner scope").borrow());
+        assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        assert!(*source.receiver(resumed).expect("resumed scope").borrow());
+        source.cancel(owner)?;
+        assert!(*source.receiver(owner).expect("owner scope").borrow());
+        assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        assert!(*source.receiver(resumed).expect("resumed scope").borrow());
+        assert!(matches!(source.cancel(task(10)), Err(Error::NotFound(_))));
         Ok(())
     }
 }

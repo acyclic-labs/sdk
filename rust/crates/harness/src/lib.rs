@@ -12,6 +12,8 @@
 pub mod agent_loop;
 pub mod batch_publication;
 pub mod bundle;
+pub mod communication;
+pub mod communication_tools;
 pub mod context;
 mod contract;
 pub mod conversation;
@@ -30,6 +32,7 @@ pub mod fork;
 pub mod grpc;
 mod handles;
 pub mod interaction;
+pub mod host_execution;
 pub mod live;
 #[cfg(feature = "machines")]
 pub mod machines;
