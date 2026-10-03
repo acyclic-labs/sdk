@@ -45,7 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { INFERENCE_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import {
   EvaluationsService,
   file_inference_v1_inference,
@@ -454,4 +454,49 @@ export class InferenceTransportError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
 
+/** The transport kinds exposed by the Rust-qualified Inference policy. */
+export type InferenceTransportKind = "grpc" | "http";
+
+/** Endpoint and credential settings for the generated remote facade. */
+export interface InferenceEnvironment {
+  readonly endpoint: string;
+  readonly token: string;
+  readonly transport?: InferenceTransportKind;
+  readonly fetcher?: typeof fetch;
+  readonly maximumEventBytes?: number;
+}
+
+/**
+ * Construct the Rust-qualified remote Inference facade.
+ *
+ * The published adapter is HTTP JSON/NDJSON in both runtimes. An explicit
+ * unavailable override fails before endpoint parsing or a request is sent.
+ */
+export function fromEnv(environment: InferenceEnvironment): InferenceClient {
+  const runtime = isNativeRuntime() ? "native" : "browser";
+  const options = INFERENCE_REMOTE_POLICY.transport[runtime];
+  const selected = environment.transport === undefined
+    ? options[0]
+    : options.find(option => option.kind === environment.transport);
+  if (selected === undefined) {
+    throw new TypeError(`Inference transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
+  }
+  if (selected.kind !== "http") {
+    throw new TypeError("Inference gRPC transport is unavailable in the installed TypeScript facade");
+  }
+  validateRustOwnedCredentialPolicy(environment.token);
+  return new InferenceClient(new HttpInferenceTransport(
+    environment.endpoint,
+    () => ({ authorization: `Bearer ${environment.token}` }),
+    environment.fetcher ?? globalThis.fetch.bind(globalThis),
+    environment.maximumEventBytes,
+  ));
+}
+
+function isNativeRuntime(): boolean {
+  const value = globalThis as typeof globalThis & { process?: { versions?: { node?: string; bun?: string } } };
+  return typeof value.process?.versions?.node === "string" || typeof value.process?.versions?.bun === "string";
+}
+
 export * from "./handles.js";
+export * from "./generated-client.js";
