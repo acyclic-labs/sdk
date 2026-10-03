@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.rust-source.completion-audit.v1",
-  "checked_at": "2026-10-03",
+  "checked_at": "2026-10-04",
   "status": "incomplete",
   "branch": "codex/rust-sdk-docs-source",
   "requirements": [
@@ -21,7 +21,7 @@
     },
     {
       "id": "clean-generation",
-      "evidence": "Frozen eb43d666 full run produced 169 artifacts but sdk-docs failed producer closure hash. Shared sdk-source-identity dependency now present in examples runtime/build source; successful rerun required.",
+      "evidence": "Root inspected failed frozen64484b output: product/wire/rustdoc reject unresolved Cargo.lock under --locked; Python lacks wire outputs. Examples declares Rust .tgz package containing PE executable prefix4D5A900003000000, SHA8c3bf97dc0ff96496ff32707613736384f25728e1d835772369ffedfa21532b4, same bytes as compile artifact. No qualification manifest emitted; coherent lock/package repair and actual successful reproducibility remain required.",
       "state": "failed"
     },
     {
