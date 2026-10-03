@@ -140,9 +140,12 @@ impl TransportSelectionRequest {
     pub const fn for_runtime(runtime: ClientRuntime) -> Self {
         Self {
             runtime,
+            // Authentication is supplied by the selected family's qualified adapter.  A
+            // caller that specifically requires a bearer credential opts in below; native
+            // Machines uses mTLS and must not be rejected for lacking bearer auth.
             requirements: TransportRequirements {
                 streaming: false,
-                bearer_auth: true,
+                bearer_auth: false,
             },
             installed: TransportAvailability::ALL,
             endpoint: TransportAvailability::ALL,
@@ -243,6 +246,11 @@ const GRPC_UNARY: TransportOption = TransportOption {
     streaming: false,
     bearer_auth: true,
 };
+const MACHINES_GRPC: TransportOption = TransportOption {
+    kind: TransportKind::Grpc,
+    streaming: true,
+    bearer_auth: false,
+};
 const GRPC_WEB: TransportOption = TransportOption {
     kind: TransportKind::GrpcWeb,
     streaming: true,
@@ -269,7 +277,7 @@ const STREAM_NATIVE: &[TransportOption] = &[GRPC, HTTP_JSON];
 const STREAM_BROWSER: &[TransportOption] = &[HTTP_JSON];
 const INFERENCE_NATIVE: &[TransportOption] = &[GRPC, HTTP_JSON];
 const INFERENCE_BROWSER: &[TransportOption] = &[HTTP_JSON];
-const MACHINES_NATIVE: &[TransportOption] = &[GRPC];
+const MACHINES_NATIVE: &[TransportOption] = &[MACHINES_GRPC];
 const FILESYSTEM_NATIVE: &[TransportOption] = &[GRPC];
 const FILESYSTEM_BROWSER: &[TransportOption] = &[GRPC_WEB];
 const HARNESS_NATIVE: &[TransportOption] = &[GRPC];
@@ -371,6 +379,27 @@ mod tests {
         assert_eq!(
             select_transport_by_name("inference", grpc).unwrap().kind,
             TransportKind::HttpJson
+        );
+    }
+
+    #[test]
+    fn machines_native_defaults_to_mtls_without_bearer_requirement() {
+        let native = TransportSelectionRequest::for_runtime(ClientRuntime::Native);
+        assert_eq!(
+            select_transport_by_name("machines", native).unwrap().kind,
+            TransportKind::Grpc
+        );
+
+        let bearer_required = TransportSelectionRequest {
+            requirements: TransportRequirements {
+                bearer_auth: true,
+                ..native.requirements
+            },
+            ..native
+        };
+        assert_eq!(
+            select_transport_by_name("machines", bearer_required),
+            Err(TransportSelectionError::NoCompatibleTransport)
         );
     }
 
