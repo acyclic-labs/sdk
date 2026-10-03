@@ -615,7 +615,12 @@ pub fn consume_http_response_bytes(total: u64, chunk: u64, maximum: u64) -> Resu
 pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue, JsValue> {
     let response =
         wire::ReadResponse::decode(input).map_err(|_| js_error(StreamError::InvalidArgument))?;
-    let record = wire_codec::record(response.record.ok_or(StreamError::Unavailable)?)
+    let record = wire_codec::record(
+        response
+            .record
+            .ok_or(StreamError::Unavailable)
+            .map_err(js_error)?,
+    )
         .and_then(|record| {
             (record.sequence == expected)
                 .then_some(record)
@@ -632,13 +637,13 @@ pub fn project_grpc_read_response(input: &[u8], expected: u64) -> Result<JsValue
     Reflect::set(
         result.as_ref(),
         &JsValue::from_str("value"),
-        &Uint8Array::from(record.value.as_slice()),
+        &Uint8Array::from(record.value.as_ref()),
     )
     .map_err(|_| js_error(StreamError::Unavailable))?;
     Reflect::set(
         result.as_ref(),
         &JsValue::from_str("commitId"),
-        &Uint8Array::from(record.commit_id.as_bytes().as_slice()),
+        &Uint8Array::from(record.commit_id.as_bytes().as_ref()),
     )
     .map_err(|_| js_error(StreamError::Unavailable))?;
     Reflect::set(
