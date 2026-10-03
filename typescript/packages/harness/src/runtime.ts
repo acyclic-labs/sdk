@@ -541,7 +541,7 @@ interface PolicyApproval { readonly prompt: string; readonly policy: PolicyIdent
 type EffectivePolicyDecision = PolicyDecision | Readonly<{ kind: "require-approvals"; approvals: readonly PolicyApproval[] }>;
 
 export class ExecutionScope {
-  readonly modelBinding?: BoundModel;
+  readonly modelBinding: BoundModel | undefined;
   readonly grants: readonly string[];
   readonly #concurrency: number | undefined;
   readonly #maxSteps: number | undefined;
