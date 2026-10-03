@@ -1,0 +1,110 @@
+{
+  "schema": "acyclic.sdk.ruby-php-dart.installed-runtime-availability.v1",
+  "generated_at_utc": "2026-10-03T23:20:39Z",
+  "status": "qualified-with-retained-native-shutdown-failure",
+  "source_binding": {
+    "rust_emitter": {
+      "path": "rust/crates/sdk-contract-wire/src/facades.rs",
+      "sha256": "C09E78D12BD3472E758D0D945E61EFE744126A0E4504C6036713B25E9DEDBE93",
+      "generated_policy_binding": "E66898B83BDD457BD6B86BA0EA616B0F250D4F7996FAC1DDD8DEC534E27FA51E"
+    },
+    "generated_snapshots": {
+      "ruby": {
+        "path": "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
+        "sha256": "AA84D62716159117FF772F4DD2862EF61E92B32F475B8EA4269D5D704A74284A"
+      },
+      "php": {
+        "path": "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+        "sha256": "734B41B505FE19FACA77ACF47DC1A6EDB81C7ED032045680D7B25FFF2DFA30EC"
+      },
+      "dart": {
+        "path": "dart/lib/src/generated_remote_policy.dart",
+        "sha256": "F9ECBB15C7FDD70ABF0B07DFDDD57829418AB99466EFD27F7BBFA5FF2C51A61D"
+      }
+    },
+    "php_provenance": {
+      "path": "php/src/provenance.json",
+      "sha256": "9D119E5E58C365FC6241D680C60CD2570895C11A464A1296EC57826631E35210",
+      "bytes": 30841,
+      "nul_count": 0
+    },
+    "package_source_commits": [
+      "10e7be26c",
+      "896bccf6b",
+      "e87d903e8"
+    ]
+  },
+  "canonical_vectors": {
+    "fixture": "php/tests/fixtures/rust-family-goldens.json",
+    "fixture_sha256": "B5FCD6D8FF1B2DA992DEE2808420F36808E2088D08E4B6F70899EEBB2C72EAAE",
+    "families": 9,
+    "authority_manifest_bound": true
+  },
+  "installed_runtimes": {
+    "ruby": {
+      "runtime": "Q:/sdk/ruby-cache/ruby/rubyinstaller-3.2.11-1-x64/bin/ruby.exe",
+      "runtime_sha256": "522bec55ce15ae724222207930222c4fd85b9688fec155093067872872e9b7bb",
+      "grpc": "1.82.0",
+      "google_protobuf": "4.36.2",
+      "endpoint_token_selection": {
+        "status": "passed",
+        "endpoint": "https://api.example",
+        "transport": "http_json",
+        "bearer_validation": "passed"
+      },
+      "mtls_credentials": "constructed: GRPC::Core::ChannelCredentials"
+    },
+    "php": {
+      "runtime": "Q:/sdk/php-cache/php-8.2.34/php.exe",
+      "runtime_sha256": "2f372d8bcd4dd20ac60b223cadeb1c5ddb5994725dd244108cd67e25ed5bab96",
+      "grpc_extension": {
+        "path": "Q:/sdk/php-cache/php-grpc-native-1.82.0/php_grpc.dll",
+        "sha256": "021efdad8860e5d47c8c0e042c91d6c8545948b6c8fd7358d67cfd180ff9cdc0",
+        "version": "1.82.0"
+      },
+      "protobuf_extension": {
+        "path": "Q:/sdk/php-cache/php-protobuf-native/php_protobuf.dll",
+        "sha256": "a6b466ec202afc304e0f091cc2f881126a2b26401142847310d08cee51caa909",
+        "version": "5.36.2"
+      },
+      "endpoint_token_selection": {
+        "status": "passed",
+        "endpoint": "https://api.example",
+        "transport": "http_json",
+        "bearer_validation": "passed"
+      },
+      "mtls_credentials": "constructed: Grpc\\ChannelCredentials",
+      "all_family_constructor_probe": {
+        "families": 9,
+        "service_clients": 12,
+        "constructors_completed": 12,
+        "process_status": "failed",
+        "exit_code": -1073741819,
+        "ntstatus": "0xC0000005",
+        "failure": "official PECL gRPC/protobuf process shutdown access violation"
+      }
+    },
+    "dart": {
+      "runtime": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/dart/.toolchain/dart-sdk/bin/dart.exe",
+      "runtime_sha256": "cc74095cd723739b6f9f0cd155ffa29d55da679fe7a188a0022c9048cf36e16c",
+      "grpc": "5.1.0",
+      "protobuf": "6.1.0",
+      "endpoint_token_selection": {
+        "status": "passed",
+        "endpoint": "https://api.example",
+        "transport": "http_json",
+        "bearer_validation": "passed"
+      },
+      "mtls_credentials": "constructed: ChannelCredentials.secure",
+      "mtls_scope": "credential construction only; no live certificate handshake fixture"
+    }
+  },
+  "tests": {
+    "ruby_remote_policy": "6 runs, 16 assertions, 0 failures",
+    "php_remote_policy": "passed",
+    "dart_remote_policy": "5 tests passed",
+    "php_service_client_syntax": "14 service clients, 0 failures",
+    "dart_analyzer": "exit 0"
+  },
+  "failure_policy": "The PHP native shutdown access violation remains failed despite all constructors completing; constructor output is not promoted to a whole-process pass."
+}
