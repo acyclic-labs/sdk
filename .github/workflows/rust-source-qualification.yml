@@ -5,6 +5,13 @@ on:
     paths:
       - '.github/workflows/rust-source-qualification.yml'
       - '.github/actions/rust-toolchain/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'rust/crates/**/Cargo.toml'
+      - 'rust/crates/**/build.rs'
+      - 'scripts/**'
+      - 'research/acceptance/**'
       - 'rust/crates/sdk-generation/**'
       - 'rust/crates/sdk-contract-wire/**'
       - 'rust/crates/sdk-contract-validation/**'
