@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Canonical model-input encoding version.
-pub const MODEL_INPUT_VERSION: u32 = 2;
+pub const MODEL_INPUT_VERSION: u32 = 3;
 
 /// An ordered message's exact content identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -36,6 +36,11 @@ pub struct ModelInputManifest {
     pub request_digest: [u8; 32],
     /// Ordered message identities.
     pub messages: Vec<InputMessageManifest>,
+    /// Authenticated rejection evidence for malformed tool calls in the
+    /// request. This is journal metadata and is intentionally excluded from
+    /// the provider request bytes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
 }
 
 /// Admitted input without retrieval, truncation, or compaction.
@@ -86,6 +91,7 @@ impl PreparedModelInput {
             binding_digest: binding_digest(&request)?,
             request_digest: *blake3::hash(&bytes).as_bytes(),
             messages,
+            rejection_evidence: Vec::new(),
         };
         Ok(Self {
             request,
@@ -107,6 +113,16 @@ impl PreparedModelInput {
     #[must_use]
     pub fn manifest(&self) -> &ModelInputManifest {
         &self.manifest
+    }
+    /// Attaches authenticated rejection evidence to the durable manifest.
+    /// Evidence is checked against the exact request before it can be staged.
+    pub fn with_rejection_evidence(
+        mut self,
+        rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
+    ) -> Result<Self> {
+        validate_rejection_evidence(&self.request, &rejection_evidence)?;
+        self.manifest.rejection_evidence = rejection_evidence;
+        Ok(self)
     }
     /// Dispatches the admitted values without reconstruction.
     #[must_use]
@@ -577,6 +593,14 @@ impl crate::context::ContextStage for InheritedModelContext {
             messages.extend(self.suffix.iter().cloned());
             messages.append(&mut context.messages);
             context.messages = messages;
+            if !context.rejection_evidence.is_empty()
+                && context.rejection_evidence != self.boundary.rejection_evidence
+            {
+                return Err(Error::Conflict(
+                    "recursive context changed inherited rejection evidence".into(),
+                ));
+            }
+            context.rejection_evidence = self.boundary.rejection_evidence.clone();
             Ok(context)
         })
     }
@@ -867,6 +891,18 @@ mod tests {
             }),
         };
         PreparedModelInput::prepare(malformed.clone(), Limits::default())?;
+        let prepared = PreparedModelInput::prepare(malformed.clone(), Limits::default())?
+            .with_rejection_evidence(vec![feedback.clone()])?;
+        assert_eq!(
+            prepared.bytes(),
+            crate::contract::canonical_json_bytes(prepared.request())?
+        );
+        let restored: ModelInputManifest = serde_json::from_slice(
+            &serde_json::to_vec(prepared.manifest())
+                .map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(restored.rejection_evidence, vec![feedback.clone()]);
         assert!(CompletedModelBoundary::capture(malformed.clone(), Limits::default()).is_err());
         let boundary = CompletedModelBoundary::capture_with_rejections(
             malformed.clone(),

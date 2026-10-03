@@ -459,6 +459,11 @@ pub struct Context {
     pub messages: Vec<ModelMessage>,
     /// Stage-owned, namespaced version-pinned metadata files.
     pub metadata: BTreeMap<String, FileRef>,
+    /// Authenticated rejection evidence inherited from a completed model
+    /// boundary. This is durable transport metadata; it is never rendered
+    /// into model-visible content.
+    #[serde(default)]
+    pub rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
 }
 
 /// Inputs visible to every context stage.
@@ -531,6 +536,7 @@ impl ContextPipeline {
                 .chain(input.prior_messages.iter().cloned())
                 .collect(),
             metadata: BTreeMap::new(),
+            rejection_evidence: Vec::new(),
         };
         for stage in &self.0 {
             context = stage.apply(input, context).await?;
@@ -625,6 +631,7 @@ mod tests {
                             content: ModelContent::Text("secret".into())
                         }],
                         metadata: BTreeMap::new(),
+                        rejection_evidence: Vec::new(),
                     },
                     None,
                     Bytes::from_static(b"inline-rejected")
@@ -639,6 +646,7 @@ mod tests {
                 message(ModelRole::User, "three")?,
             ],
             metadata: BTreeMap::new(),
+            rejection_evidence: Vec::new(),
         };
         provider
             .append(0, original.clone(), None, Bytes::from_static(b"context-1"))

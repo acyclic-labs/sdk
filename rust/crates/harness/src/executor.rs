@@ -663,9 +663,13 @@ impl StockExecutor {
                     "persisted model input component bindings changed".into(),
                 ));
             }
-            if manifest.version != crate::model_input::MODEL_INPUT_VERSION
-                || manifest != *prepared.manifest()
-            {
+            if manifest.version != crate::model_input::MODEL_INPUT_VERSION {
+                return Err(Error::Conflict(
+                    "persisted model input manifest no longer matches its request".into(),
+                ));
+            }
+            let prepared = prepared.with_rejection_evidence(manifest.rejection_evidence.clone())?;
+            if manifest != *prepared.manifest() {
                 return Err(Error::Conflict(
                     "persisted model input manifest no longer matches its request".into(),
                 ));
@@ -718,7 +722,8 @@ impl StockExecutor {
                     max_output_tokens: None,
                 },
                 self.limits,
-            )?;
+)?
+            .with_rejection_evidence(context.rejection_evidence.clone())?;
             prepared.validate_complete_exchange()?;
             self.provider.admit(prepared.request())?;
             let manifest_key = format!("model:{step}:input");
@@ -924,20 +929,22 @@ impl StockExecutor {
         completed: &[ModelMessage],
     ) -> Result<()> {
         let records = journal.replay(operation).await?;
-        let request_file = records
+        let (request_file, manifest_file) = records
             .iter()
             .find_map(|record| match &record.event {
                 ExecutionEvent::ModelInputPrepared {
                     step: recorded,
+                    manifest,
                     request,
-                    ..
-                } if *recorded == step => Some(request),
+                } if *recorded == step => Some((request, manifest)),
                 _ => None,
             })
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
         let mut request: ModelRequest = load_json(journal, request_file).await?;
         request.messages.extend_from_slice(completed);
-        let mut rejections = Vec::new();
+        let manifest: crate::model_input::ModelInputManifest =
+            load_json(journal, manifest_file).await?;
+        let mut rejections = manifest.rejection_evidence;
         for record in &records {
             let ExecutionEvent::ToolAdmissionRejected {
                 step: rejected_step,

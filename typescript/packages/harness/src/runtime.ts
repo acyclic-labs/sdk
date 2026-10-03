@@ -1805,7 +1805,10 @@ export class AgentHarness {
    * every replay.  The returned value is detached from the host object and
    * contains only schema-admitted values.
    */
-  validateRunOutput(output: RunOutput, recomputeProjections = true): RunOutput {
+  validateRunOutput(output: RunOutput): RunOutput {
+    return this.#validateRunOutput(output, true);
+  }
+  #validateRunOutput(output: RunOutput, recomputeProjections: boolean): RunOutput {
     if (output === null || typeof output !== "object"
       || typeof output.text !== "string" || !Array.isArray(output.receipts)
       || typeof output.taskId !== "string" || !output.taskId) {
@@ -2505,7 +2508,7 @@ export class AgentHarness {
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
-    return this.validateRunOutput({ ...outcome.value, taskId: task.id(), receipts }, false);
+    return runtime.#validateRunOutput({ ...outcome.value, taskId: task.id(), receipts }, false);
   }
   attach(id: RuntimeTaskId): Promise<Task<unknown>>;
   attach<Input, Output>(definition: TaskDefinition<Input, Output>, id: RuntimeTaskId): Promise<Task<Output>>;
