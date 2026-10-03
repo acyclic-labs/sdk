@@ -1282,8 +1282,8 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "Official OAG feature table reports JSON/XML-oriented output and no protobuf support.",
-        "qualification": "unqualified"
+        "notes": "Rust-derived Actors OpenAPI projection has an installed Perl HTTP consumer; OAG remains JSON/HTTP-only and does not provide protobuf support.",
+        "qualification": "prototype"
       },
       "embedded": {
         "level": "none",
@@ -1296,22 +1296,27 @@
         "version": "7.25.0",
         "source": "https://openapi-generator.tech/docs/generators/perl/",
         "license": "Apache-2.0",
-        "pin": "ef964b04480889ef86b56cfae84ade8ad4c91c41"
+        "pin": "OpenAPI Generator 7.25.0 jar SHA-256 41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE"
       },
       "package": {
         "ecosystem": "CPAN",
-        "artifact": "Acyclic-SDK",
-        "installable": false,
-        "notes": "HTTP package only."
+        "artifact": "acyclic-actors-perl-0.1.0.zip",
+        "installable": true,
+        "notes": "Actors HTTP package installs into an isolated local-lib-contained CPAN tree; receipt: research/additional-languages/openapi-targets/perl-manifest.json."
       },
       "evidence": [
         {
           "url": "https://openapi-generator.tech/docs/generators/perl/",
           "claim": "Perl generator documents JSON/XML support and protobuf unsupported."
+        },
+        {
+          "url": "research/additional-languages/openapi-targets/perl-manifest.json",
+          "claim": "Rust-derived Actors package installed and passed bounded bytes, uint64, bearer and HTTP error vectors."
         }
       ],
       "outstanding": [
-        "Add only after CPAN install and Rust JSON vector tests pass."
+        "Extend the prototype to Workers, Stream, Objects and Inference projections before making broader target claims.",
+        "Audit the individual CPAN dependency licenses before any redistribution claim."
       ]
     },
     {

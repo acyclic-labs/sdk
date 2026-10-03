@@ -1,0 +1,61 @@
+{
+  "receipt_version": 1,
+  "recorded_at": "2026-10-03",
+  "target": "perl",
+  "qualification": "Rust-owned Actors OpenAPI HTTP projection prototype",
+  "source": {
+    "contract": "Rust sdk-openapi-prototype Actors document",
+    "projection_sha256": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
+    "fixture_sha256": "BE04340BE8C3EE8AB02452009B50229F11766227746BC3E895925661DC2CB576",
+    "consumer_sha256": "BE5C0DDB08762B263CBE8949D40138B933C88A9EF83EDB5ACFE3F2AAEC6816D7",
+    "generator_script": "research/additional-languages/openapi-targets/qualify-perl.ps1",
+    "runtime_adaptation": "research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1",
+    "adaptation_sha256": "5A0DDEB0D3C8BCE69E5DD99BF7B324862DE0F17258DDAB1DFDABF975ACFD2486"
+  },
+  "generator": {
+    "name": "OpenAPI Generator perl client",
+    "version": "7.25.0",
+    "source": "https://openapi-generator.tech/docs/generators/perl/",
+    "license": "Apache-2.0",
+    "jar_sha256": "41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE"
+  },
+  "runtime": {
+    "name": "Strawberry Perl",
+    "version": "5.38.0",
+    "license_scope": "Perl distribution licensing applies; no single license is asserted for the CPAN dependency closure",
+    "dependency_installer": "cpanm local-lib-contained",
+    "dependency_install": "69 distributions installed into ignored target/perl/local-lib"
+  },
+  "package": {
+    "name": "acyclic-actors-perl-0.1.0.zip",
+    "sha256": "04E7C883002D4F851AF1D2AACED5E2E7D41EBD609B11F9B3B74E3735A25433F4",
+    "manifest_sha256": "BA737D35B89FD166DE51A409014AF56D92B5DE6A413C7232837C0D0505586F27",
+    "install": "Generated Perl lib plus cpanfile installed into an isolated local-lib-contained directory",
+    "publication": "local-only"
+  },
+  "tests": {
+    "fixture": "research/additional-languages/openapi-targets/perl-fixture.py",
+    "consumer": "research/additional-languages/openapi-targets/perl-consumer.pl",
+    "status": "passed",
+    "vectors": [
+      "Generated invokeActor request preserves actorId, method, URL and bytes/base64 AQID",
+      "Generated response preserves status 200 and bytes/base64 AQID",
+      "Rust contract uint64 boundary is retained as textual 18446744073709551615 in the Perl model check",
+      "Bearer authentication reaches the fixture",
+      "Unauthenticated HTTP 401 raises a generated API error"
+    ],
+    "scope": "Actors invokeActor only; this is not full Perl SDK qualification"
+  },
+  "license_scope": {
+    "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
+    "perl_runtime": "Strawberry Perl licensing applies to the installed runtime",
+    "cpan_dependencies": "Each CPAN distribution retains its own license; dependency closure was installed for local qualification only",
+    "transport": "LWP::UserAgent and its dependency licenses remain separate runtime obligations"
+  },
+  "limits": [
+    "HTTP/JSON projection only; no protobuf/gRPC, streaming, native or embedded behavior is qualified",
+    "Actors invokeActor is the only remote operation exercised",
+    "The generated client does not supply the Rust endpoint-pool recovery policy",
+    "No registry publication or redistributable dependency bundle is claimed"
+  ]
+}
