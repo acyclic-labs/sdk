@@ -222,7 +222,7 @@ export class GraphCoderUi {
 
   constructor(readonly transport: GraphCoderTransport) {}
 
-  state(): GraphCoderUiState { return this.#state; }
+  state(): GraphCoderUiState { return snapshotState(this.#state); }
 
   async dispatch(command: GraphCoderUiCommand): Promise<GraphCoderUiState> {
     const run = this.#queue.then(() => this.#dispatchOne(command), () => this.#dispatchOne(command));
@@ -336,6 +336,17 @@ export class GraphCoderUi {
 }
 
 function assertNever(value: never): never { throw new GraphCoderError("invalid_input", `unknown command ${(value as { kind?: string }).kind ?? ""}`); }
+
+function snapshotState(state: GraphCoderUiState): GraphCoderUiState {
+  return Object.freeze({
+    ...state,
+    sessions: Object.freeze([...state.sessions]),
+    activity: Object.freeze([...state.activity]),
+    messages: Object.freeze([...state.messages]),
+    approvals: Object.freeze([...state.approvals]),
+    changes: Object.freeze([...state.changes]),
+  });
+}
 
 export function sessionId(value: string): SessionId { return checkedId(value, "session id") as SessionId; }
 export function agentId(value: string): AgentId { return checkedId(value, "agent id") as AgentId; }
