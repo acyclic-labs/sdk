@@ -259,6 +259,13 @@ export interface WasmModelWire {
     options: WasmModelJsonValue;
 }
 
+export interface WasmModelOptionPolicyWire {
+    name: string;
+    version: string;
+    digest: readonly number[];
+    schema: WasmModelJsonSchema;
+}
+
 export interface WasmBatchAdmissionInput {
     group_id: string;
     batch_id: string;
@@ -702,7 +709,7 @@ export function prepareConversationTurn(conversation: any, operation_id: string,
  * Content authority must first be checked by the caller's bound content resolver;
  * this export performs no retrieval and grants no filesystem permissions.
  */
-export function prepareModelRequest(request: WasmModelRequestWire, limits: WasmModelLimitsInput): any;
+export function prepareModelRequest(request: WasmModelRequestWire, limits: WasmModelLimitsInput, policy: WasmModelOptionPolicyWire | null): any;
 
 /**
  * Runs the canonical Rust conversation projection over bytes captured by the

@@ -65,14 +65,14 @@ test("generated WASM model admission enforces the aggregate request byte limit",
   const request = modelRequest();
   const bytes = encodeCanonicalJson(request);
   expect(bytes.byteLength).toBeGreaterThan(1);
-  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength - 1, bytes.byteLength - 1))).toThrow("aggregate model request exceeds byte limit");
-  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength, bytes.byteLength))).not.toThrow();
+  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength - 1, bytes.byteLength - 1), null)).toThrow("aggregate model request exceeds byte limit");
+  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength, bytes.byteLength), null)).not.toThrow();
 });
 
 test("generated WASM model admission requires complete tool-call/result pairings", () => {
   const request = modelRequest();
   const incomplete = { ...request, messages: request.messages.slice(0, 2) };
-  expect(() => prepareModelRequest(incomplete, modelLimits())).toThrow("unfinished tool calls");
+  expect(() => prepareModelRequest(incomplete, modelLimits(), null)).toThrow("unfinished tool calls");
 
   const mismatched = {
     ...request,
@@ -82,12 +82,12 @@ test("generated WASM model admission requires complete tool-call/result pairings
       } }
       : message),
   };
-  expect(() => prepareModelRequest(mismatched, modelLimits())).toThrow("tool result is not paired");
+  expect(() => prepareModelRequest(mismatched, modelLimits(), null)).toThrow("tool result is not paired");
 });
 
 test("generated WASM model admission captures canonical request bytes and manifest identity", () => {
   const request = modelRequest();
-  const prepared = prepareModelRequest(request, modelLimits()) as {
+  const prepared = prepareModelRequest(request, modelLimits(), null) as {
     request_json: string;
     manifest_json: string;
     request_digest: readonly number[];

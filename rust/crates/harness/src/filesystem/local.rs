@@ -1740,7 +1740,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
-        fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {

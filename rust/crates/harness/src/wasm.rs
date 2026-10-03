@@ -246,6 +246,18 @@ struct WasmModelWire {
     options: serde_json::Value,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+#[tsify(from_wasm_abi)]
+struct WasmModelOptionPolicyWire {
+    name: String,
+    version: String,
+    #[tsify(type = "readonly number[]")]
+    digest: Vec<u8>,
+    #[tsify(type = "WasmModelJsonSchema")]
+    schema: serde_json::Value,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, Tsify)]
 #[serde(rename_all = "snake_case")]
 #[tsify(from_wasm_abi, into_wasm_abi)]
@@ -2531,11 +2543,34 @@ pub fn validate_model_messages(
 pub fn prepare_model_request(
     #[wasm_bindgen(unchecked_param_type = "WasmModelRequestWire")] request: JsValue,
     #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelOptionPolicyWire | null")] policy: JsValue,
 ) -> Result<JsValue, JsValue> {
     let request: crate::model::ModelRequest = from_js(request)?;
     let limits: Limits = from_js(limits)?;
-    let prepared =
-        crate::model_input::PreparedModelInput::prepare(request, limits).map_err(js_error)?;
+    let policy: Option<WasmModelOptionPolicyWire> = from_js(policy)?;
+    let policy = policy
+        .map(|wire| {
+            let digest: [u8; 32] = wire
+                .digest
+                .try_into()
+                .map_err(|_| JsValue::from_str("model option policy digest must contain 32 bytes"))?;
+            crate::model::ModelOptionPolicy::new(
+                crate::registry::ComponentIdentity {
+                    name: wire.name,
+                    version: wire.version,
+                    digest,
+                },
+                wire.schema,
+            )
+            .map_err(js_error)
+        })
+        .transpose()?;
+    let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
+        request,
+        limits,
+        policy.as_ref(),
+    )
+    .map_err(js_error)?;
     prepared.validate_complete_exchange().map_err(js_error)?;
     let request_json = std::str::from_utf8(prepared.bytes())
         .map_err(|error| JsValue::from_str(&error.to_string()))?;

@@ -878,7 +878,7 @@ impl StockExecutor {
                 }
                 Err(error) => return Err(error),
             }
-            let mut stream = self.provider.generate_prepared(prepared);
+            let mut stream = self.provider.generate(prepared);
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event?;
@@ -2074,8 +2074,9 @@ mod tests {
     impl ModelProvider for SlippingModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            prepared: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -2134,8 +2135,9 @@ mod tests {
     impl ModelProvider for FakeModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            prepared: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -2180,8 +2182,9 @@ mod tests {
     impl ModelProvider for ProjectionModel {
         fn generate<'a>(
             &'a self,
-            request: ModelRequest,
+            prepared: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let request = prepared.request().clone();
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             if let Ok(mut requests) = self.requests.lock() {
                 requests.push(request);
@@ -2230,7 +2233,7 @@ mod tests {
     impl ModelProvider for ReplayModel {
         fn generate<'a>(
             &'a self,
-            _: ModelRequest,
+            _: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(vec![
@@ -2277,7 +2280,7 @@ mod tests {
     impl ModelProvider for RecoverableModel {
         fn generate<'a>(
             &'a self,
-            _: ModelRequest,
+            _: crate::model_input::PreparedModelInput,
         ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
             self.generate_calls.fetch_add(1, Ordering::SeqCst);
             Box::pin(stream::iter(vec![

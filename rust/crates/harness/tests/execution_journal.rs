@@ -209,7 +209,8 @@ impl ToolProjection for NoopTool {
 struct CapturingModel(Mutex<Vec<ModelRequest>>);
 
 impl ModelProvider for CapturingModel {
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        let request = prepared.request().clone();
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -225,7 +226,7 @@ impl ModelProvider for CapturingModel {
 }
 
 impl ModelProvider for TextModel {
-    fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::iter(vec![
             Ok(ModelEvent::Content {

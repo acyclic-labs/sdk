@@ -116,7 +116,8 @@ impl ModelProvider for RecoveryProvider {
         Ok(())
     }
 
-    fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
         self.requests.lock().expect("request lock").push(request);
         if self.fail_first.load(Ordering::SeqCst) && call == 0 {

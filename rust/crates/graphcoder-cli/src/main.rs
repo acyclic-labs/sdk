@@ -74,8 +74,9 @@ struct EchoModel {
 impl ModelProvider for EchoModel {
     fn generate<'a>(
         &'a self,
-        request: ModelRequest,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
     ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
+        let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
         if self.fixture == "stage" && call > 0 {
             let result = request.messages.iter().rev().find_map(|message| match &message.content {
