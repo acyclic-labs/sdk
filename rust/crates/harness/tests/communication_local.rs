@@ -260,7 +260,7 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         recipient: child,
         message_id: OperationId::from_bytes([3; 16]),
         target: MessageTarget::Child,
-        payload: body,
+        payload: body.clone(),
     };
     let communication = DurableCommunication::new(host.clone());
     communication.send(request.clone()).await?;
