@@ -58,17 +58,23 @@ pub struct ProjectConflictSelection {
 /// Unforgeable direct-child binding retained by a provider-created join plan.
 /// The constructor is crate-private so a generic model-facing plan cannot
 /// claim parent lineage from project names or generation references alone.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct ProjectJoinLineage {
     child: Authority,
     child_project: VolumeRef,
+    target_project: VolumeRef,
 }
 
 impl ProjectJoinLineage {
-    pub(crate) fn new(child: Authority, child_project: VolumeRef) -> Self {
+    pub(crate) fn new(
+        child: Authority,
+        child_project: VolumeRef,
+        target_project: VolumeRef,
+    ) -> Self {
         Self {
             child,
             child_project,
+            target_project,
         }
     }
 
@@ -82,6 +88,12 @@ impl ProjectJoinLineage {
     #[must_use]
     pub const fn child_project(&self) -> &VolumeRef {
         &self.child_project
+    }
+
+    /// Parent project captured by the provider when the plan was inspected.
+    #[must_use]
+    pub const fn target_project(&self) -> &VolumeRef {
+        &self.target_project
     }
 }
 

@@ -2156,6 +2156,8 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
+        validate_action_result::<S::Error>(&pending.action, &result)
+            .map_err(GitCompatRunError::Compat)?;
         let output = self.complete_transition_result(pending.id, &result).await?;
         Ok(if matches!(output, GitCommandOutput::NoOp) {
             GitCommandOutput::Filesystem(result)
@@ -2331,7 +2333,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Commits a prepared transition after its filesystem action succeeds.
-    pub async fn complete_transition(
+    pub(crate) async fn complete_transition(
         &self,
         transition: GitTransitionId,
         resulting_tree: Option<GitTreeRef>,
@@ -2350,7 +2352,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ///
     /// Capture and branch transitions require their full result so recovery can
     /// publish compatibility state without reconstructing filesystem facts.
-    pub async fn complete_transition_result(
+    pub(crate) async fn complete_transition_result(
         &self,
         transition: GitTransitionId,
         result: &GitFilesystemResult,
@@ -2719,6 +2721,16 @@ fn validate_completion_result<E: std::error::Error + 'static>(
             } if tree.workspace_id() == expected_workspace => {}
             GitFilesystemResult::Forked { workspace_id } if *workspace_id == expected_workspace => {
             }
+            GitFilesystemResult::Data { .. }
+                if matches!(
+                    &pending.action,
+                    GitFilesystemAction::Diff { .. }
+                        | GitFilesystemAction::Blame { .. }
+                        | GitFilesystemAction::Grep { .. }
+                        | GitFilesystemAction::Archive { .. }
+                        | GitFilesystemAction::CheckIgnore { .. }
+                        | GitFilesystemAction::Clean { dry_run: true, .. }
+                ) => {}
             _ => return Err(GitCompatError::WorkspaceMismatch),
         }
     }

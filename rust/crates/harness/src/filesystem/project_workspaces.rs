@@ -162,7 +162,11 @@ where
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
-                lineage: ProjectJoinLineage::new(child.clone(), child_project.clone()),
+                lineage: ProjectJoinLineage::new(
+                    child.clone(),
+                    child_project.clone(),
+                    self.project.clone(),
+                ),
                 child: child.clone(),
                 source,
                 target,
