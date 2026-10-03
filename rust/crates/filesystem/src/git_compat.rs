@@ -4229,7 +4229,12 @@ fn bisect_result(
 }
 
 fn commit_generation_ref(commit: &GitCommit, _fallback: WorkspaceId) -> GitTreeRef {
-    commit.tree
+    // A compatibility commit may retain a filtered capture tree in `tree`
+    // while `workspace_tree` identifies the complete live workspace that was
+    // captured.  Branch joins operate on the source workspace and must pin
+    // that physical tree; using the filtered tree either rejects the join as
+    // foreign or silently drops ignored paths from the provider merge.
+    commit.workspace_tree
 }
 
 fn walk_commits(

@@ -499,8 +499,22 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             .map_err(display)?;
                         let paths = changed
                             .iter()
-                            .map(|change| change.path.to_string())
-                            .collect::<Vec<_>>();
+                            .map(|change| {
+                                if change.path.is_root() {
+                                    return Ok("/".to_owned());
+                                }
+                                let mut path = String::new();
+                                for component in change.path.components() {
+                                    path.push('/');
+                                    path.push_str(component.unicode_text().ok_or_else(|| {
+                                        Self::error(
+                                            "Git restore cannot represent a non-Unicode path",
+                                        )
+                                    })?.as_ref());
+                                }
+                                Ok(path)
+                            })
+                            .collect::<Result<Vec<_>, PluginGitError>>()?;
                         match self
                             .current
                             .restore_paths_from_with_permit(
@@ -618,22 +632,41 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     .expected_workspace_generation(Some(*target_tree))
                     .await?;
                 let source = self.workspace(*source_workspace).await?;
-                if let Some(source_tree) = source_tree {
+                let source_head = if let Some(source_tree) = source_tree {
                     let source_reference = self.exact(*source_tree, "git join source").await?;
+                    let current_source = source.head().await.map_err(display)?;
                     if source_reference.workspace_id != *source_workspace
-                        || source.head().await.map_err(display)?.id != source_reference.generation
+                        || current_source.id() != source_reference.generation
                     {
                         return Err(Self::error(
                             "Git join source changed while preparing the provider plan",
                         ));
                     }
-                }
+                    source
+                        .generation(source_reference.generation)
+                        .await
+                        .map_err(display)?
+                } else {
+                    // An unborn compatibility branch has no commit tree to
+                    // persist, but its SDK workspace still has an exact fork
+                    // generation. Pin that generation so a concurrent source
+                    // writer cannot be folded into this join implicitly.
+                    source.head().await.map_err(display)?
+                };
                 let mut builder = source.join_into(&self.current);
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
-                let plan = builder.plan().await.map_err(display)?;
-                if plan.target_head().id() != expected_generation {
+                let target_head = self
+                    .current
+                    .generation(expected_generation)
+                    .await
+                    .map_err(display)?;
+                let plan = builder
+                    .plan_pinned(source_head, target_head)
+                    .await
+                    .map_err(display)?;
+                if plan.target_head() != expected_generation {
                     return Err(Self::error(
                         "Git join target changed while preparing the provider plan",
                     ));
