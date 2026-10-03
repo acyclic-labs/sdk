@@ -179,6 +179,13 @@ impl AuthorityIssuer {
         }
     }
 
+    /// Returns host-managed key material to crate-owned durable compositions.
+    /// This never crosses the model or wire boundary.
+    #[must_use]
+    pub(crate) const fn signing_key(&self) -> &[u8; 32] {
+        &self.key
+    }
+
     /// Issues one explicit root grant.
     #[must_use]
     pub fn root(&self, id: impl Into<String>, capabilities: Capabilities) -> Scope {

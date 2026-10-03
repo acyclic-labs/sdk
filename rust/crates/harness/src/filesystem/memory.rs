@@ -596,6 +596,12 @@ where
         Ok(InteractionOperatorAuthorizer::new(host, self.issuer.clone()))
     }
 
+    /// Returns host-managed signing material to crate-owned durable
+    /// composition. It is never included in model input or wire values.
+    pub(crate) fn signing_key(&self) -> [u8; 32] {
+        *self.issuer.signing_key()
+    }
+
     /// Builds the local ref-only file tools against this exact owner volume.
     /// Callers composing a custom builder can use this registry unchanged.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {

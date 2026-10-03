@@ -1529,6 +1529,12 @@ impl PersistentLocalHarness {
         &self.storage
     }
 
+    /// Returns host-managed session signing material to crate-owned durable
+    /// compositions. It is never exposed to model providers or wire callers.
+    pub(crate) fn signing_key(&self) -> [u8; 32] {
+        self.storage.signing_key()
+    }
+
     /// Reads the current authoritative conversation projection for host
     /// adapters without starting a model worker.
     pub async fn conversation_state(

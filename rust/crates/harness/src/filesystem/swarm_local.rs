@@ -42,8 +42,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::{self, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
 };
@@ -2261,7 +2259,18 @@ impl PersistentLocalSwarm {
             VolumeOwner::Project("local-swarm".into()),
         )?;
         host.create_volume(&project).await?;
-        let host_secret = local_fork_secret(&root)?;
+        let mut config = LocalSwarmConfig::new(model.clone(), limits)?;
+        config.project = Some(project.clone());
+        let base = Self::open_shared_with_bindings(
+            root.clone(),
+            config,
+            provider.clone(),
+            LocalSwarmBindings::default(),
+        )
+        .await?;
+        let root_task = base.root_task().await?;
+        let host_secret = base.open_session(root_task).await?.signing_key();
+        drop(base);
         let resolver = Arc::new(
             LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
                 .with_host_secret(host_secret)?,
@@ -4017,48 +4026,6 @@ fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
 
 fn operator_choice_key(task: TaskId, id: InteractionId) -> String {
     format!("{task}:{id}")
-}
-
-fn local_fork_secret(root: &Path) -> Result<[u8; 32]> {
-    let path = root.join(".system").join("local-fork-issuer.secret");
-    if let Ok(bytes) = fs::read(&path) {
-        return bytes.try_into().map_err(|_| {
-            Error::Conflict("persisted local fork issuer secret has the wrong length".into())
-        });
-    }
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| Error::Storage(error.to_string()))?;
-    }
-    let mut entropy = blake3::Hasher::new();
-    entropy.update(b"acyclic.local-swarm.issuer-secret.v1\0");
-    entropy.update(root.to_string_lossy().as_bytes());
-    entropy.update(&OperationId::new().into_bytes());
-    let secret = *entropy.finalize().as_bytes();
-    let temporary = path.with_extension(format!("secret-{}", OperationId::new()));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        file.write_all(&secret)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        file.sync_all()
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        match fs::rename(&temporary, &path) {
-            Ok(()) => Ok(secret),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let bytes = fs::read(&path)
-                    .map_err(|read_error| Error::Storage(read_error.to_string()))?;
-                bytes.try_into().map_err(|_| {
-                    Error::Conflict("persisted local fork issuer secret has the wrong length".into())
-                })
-            }
-            Err(error) => Err(Error::Storage(error.to_string())),
-        }
-    })();
-    let _ = fs::remove_file(&temporary);
-    result
 }
 
 fn normalized_path(path: &Path) -> PathBuf {
