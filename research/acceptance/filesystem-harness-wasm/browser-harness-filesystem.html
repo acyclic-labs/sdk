@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Installed WASM Filesystem and Harness acceptance</title>
+<pre id="result" data-status="running" data-waiting="packaged WASM APIs">running</pre>
+<script type="importmap">
+{
+  "imports": {
+    "@acyclic-labs/filesystem/memory": "/typescript/packages/filesystem/dist/memory.js",
+    "@acyclic-labs/harness": "/typescript/packages/harness/dist/index.js"
+  }
+}
+</script>
+<script type="module" src="./browser-harness-filesystem.js"></script>
