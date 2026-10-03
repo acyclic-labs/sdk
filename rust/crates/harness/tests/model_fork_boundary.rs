@@ -732,6 +732,23 @@ impl ForkAtBatch {
             assert_ne!(references.attestation, [0; 32]);
             let mut forged = request.clone();
             forged.operation_id = OperationId::from_bytes([45 + index; 16]);
+            // Keep this publication-admission negative independent from the
+            // preparer's allocation idempotency. A forged request must have
+            // fresh child destinations so preparing it cannot claim the
+            // destinations reserved by the valid request below; publication
+            // still rejects the tampered parent attestation.
+            forged.preparation.child_private_volume = VolumeRef::new(
+                private.provider().clone(),
+                format!("forged-private-{index}"),
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(child_agent),
+            )?;
+            forged.preparation.child_project_volume = VolumeRef::new(
+                project.provider().clone(),
+                format!("forged-project-{index}"),
+                VolumeClass::Project,
+                project.owner().clone(),
+            )?;
             forged
                 .model_boundary
                 .as_mut()
@@ -1061,6 +1078,21 @@ impl ForkAtBatch {
         // be rejected at publication admission before the child is visible.
         let mut forged = request.clone();
         forged.operation_id = OperationId::from_bytes([145; 16]);
+        // Use distinct destinations so this negative reaches publication
+        // admission instead of colliding with the valid preparation's
+        // allocation claims.
+        forged.preparation.child_private_volume = VolumeRef::new(
+            private.provider().clone(),
+            "forged-grandchild-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(grandchild_agent),
+        )?;
+        forged.preparation.child_project_volume = VolumeRef::new(
+            project.provider().clone(),
+            "forged-grandchild-project",
+            VolumeClass::Project,
+            project.owner().clone(),
+        )?;
         forged
             .model_boundary
             .as_mut()
