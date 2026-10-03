@@ -34,6 +34,15 @@ The disposable server was the same Rust-owned boundary used by the repository fi
 
 The consumer additionally verified that browser `fromEnv({ transport: "grpc" })` fails closed, and that an abort signal supplied to `get` reaches the HTTP fetch operation. The repository fixture independently verifies bounded response cancellation after a GET header. No retry or endpoint recovery was claimed: the browser policy exposes one HTTP endpoint, and recovery is not part of this browser transport contract. HTTPS URLs are accepted by the Rust endpoint validator, but private-CA TLS qualification requires a browser trust configuration; the local evidence here uses loopback HTTP as the allowed browser fixture transport.
 
+The extended disposable consumer ran the same packaged entrypoint and Rust memory fixture with a 135,000-byte upload and download, then retried the same mutation identity with different bytes, used a wrong bearer token, and forwarded a caller abort:
+
+```text
+node C:\Users\varun\AppData\Local\Temp\objects-browser-installed-consumer-full.mjs
+{"fromEnv":"browser-http","rustFixture":true,"uploadBytes":135000,"downloadBytes":135000,"idempotencyConflict":true,"authentication":true,"callerCancellation":true}
+```
+
+The temporary consumer was removed after the run. The conflict and authentication assertions used the Rust fixture's encoded `ErrorDetail` responses, so these are installed browser-package observations rather than constructor-only checks.
+
 ## Source and package identities
 
 SHA-256 hashes captured before report authoring:
