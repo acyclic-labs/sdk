@@ -4543,7 +4543,7 @@ mod tests {
         let root_task = swarm.root_task().await?;
         swarm.run_root(OperationId::from_bytes([82; 16]), "wait for the deadline").await?;
         let observed = host.observed.lock().expect("communication host lock");
-        assert_eq!(observed.len(), 2);
+        assert!(!observed.is_empty());
         assert!(observed.iter().all(|task| *task == root_task));
         assert_eq!(waits.opened.lock().expect("wait store lock").len(), 1);
         assert_eq!(

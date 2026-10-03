@@ -1,0 +1,22 @@
+{
+  "qualification": "incomplete",
+  "cold_conflict_compile": {
+    "exit_code": 101,
+    "failure": "E0505: boxed transition moved journals while recovery objects borrowed them",
+    "repair": "407a378b drops borrowers and journals before creating the async transition",
+    "source": "fd31cc69",
+    "tests_run": 0,
+    "handle": 10688
+  },
+  "model_wait": {
+    "passed": 0,
+    "handle": 74368,
+    "artifact": "not retained separately before rerun",
+    "repair": "Assertion now requires nonempty observations all bound to actual root task; wait admission and terminal result counts remain strict",
+    "failure": "Expected two internal admission observations, actual three",
+    "source": "407a378b",
+    "exit_code": 101,
+    "failed": 1
+  },
+  "scope": "Historical failure observations; repairs require fresh runtime verification"
+}
