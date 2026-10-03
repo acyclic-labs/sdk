@@ -2492,6 +2492,30 @@ pub fn validate_model_messages(
     Ok(())
 }
 
+/// Canonical model-request admission shared by native and TypeScript execution.
+/// Content authority must first be checked by the caller's bound content resolver;
+/// this export performs no retrieval and grants no filesystem permissions.
+#[wasm_bindgen(js_name = prepareModelRequest)]
+pub fn prepare_model_request(
+    #[wasm_bindgen(unchecked_param_type = "WasmModelRequestWire")] request: JsValue,
+    #[wasm_bindgen(unchecked_param_type = "WasmModelLimitsInput")] limits: JsValue,
+) -> Result<JsValue, JsValue> {
+    let request: crate::model::ModelRequest = from_js(request)?;
+    let limits: Limits = from_js(limits)?;
+    let prepared =
+        crate::model_input::PreparedModelInput::prepare(request, limits).map_err(js_error)?;
+    prepared.validate_complete_exchange().map_err(js_error)?;
+    let request_json = std::str::from_utf8(prepared.bytes())
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    let manifest_json = serde_json::to_string(prepared.manifest())
+        .map_err(|error| JsValue::from_str(&error.to_string()))?;
+    to_js(&serde_json::json!({
+        "request_json": request_json,
+        "manifest_json": manifest_json,
+        "request_digest": prepared.manifest().request_digest,
+    }))
+}
+
 /// Validates one human-authored model input using the native content rules.
 #[wasm_bindgen(
     js_name = validateUserInput,
