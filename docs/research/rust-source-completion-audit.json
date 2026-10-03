@@ -1,0 +1,78 @@
+{
+  "schema": "acyclic.rust-source.completion-audit.v1",
+  "checked_at": "2026-10-03",
+  "status": "incomplete",
+  "branch": "codex/rust-sdk-docs-source",
+  "requirements": [
+    {
+      "id": "isolation",
+      "evidence": "Original checkout HEAD 31b9ff52d63c91f2b9bf87e16b78ad682d26546f and no tracked changes; isolated SDK and website branches inspected. No merge/publish/deploy performed.",
+      "state": "verified"
+    },
+    {
+      "id": "rust-contract-authority",
+      "evidence": "Rust contract-wire model, transport policies, JVM/CSharp/Ruby/PHP/Dart emitters inspected. Full current artifact parity remains pending concurrent emitter changes.",
+      "state": "partial"
+    },
+    {
+      "id": "wire-compatibility",
+      "evidence": "Scoped negative compatibility gates exist; fresh full current-source suite and archived handshake checks remain required.",
+      "state": "partial"
+    },
+    {
+      "id": "clean-generation",
+      "evidence": "Frozen eb43d666 full run produced 169 artifacts but sdk-docs failed producer closure hash. Shared sdk-source-identity dependency now present in examples runtime/build source; successful rerun required.",
+      "state": "failed"
+    },
+    {
+      "id": "drift-detection",
+      "evidence": "Root executed actual drift CLI acceptance: 5 tests, 28 assertions, exit 0, 10.56 seconds. Failed stage, missing receipts and incorrect source/output receipts rejected. Genuine generated positive and missing-stage/hash-tamper negatives pending.",
+      "state": "partial"
+    },
+    {
+      "id": "language-packages",
+      "evidence": "Multiple local installed-package receipts exist. Complete inventoried language, family and supported-platform qualification remains required; narrow fixtures cannot qualify full targets.",
+      "state": "partial"
+    },
+    {
+      "id": "embedded-and-platform-defaults",
+      "evidence": "Native Stream 36e967c5 and Machines 7897607c implemented; mTLS policy 161d0e15. Installed runtime service tests and seamless automatic platform package selection across targets pending.",
+      "state": "partial"
+    },
+    {
+      "id": "snippets",
+      "evidence": "Rust-owned scenarios and package mapping present. Producer source identity repair pending coherent output; all published language snippets must execute against matching artifacts.",
+      "state": "partial"
+    },
+    {
+      "id": "docs-source-coverage",
+      "evidence": "Rust-owned Harness integration/runtime guides consumed and website index c46fcd2 uses Rust descriptions. Remaining authored modules/source completeness and fresh full preview bundle pending.",
+      "state": "partial"
+    },
+    {
+      "id": "released-versions",
+      "evidence": "Root independently verified clean exact cargo tags 0.1.2-0.1.5 with matching docs/projection hashes. Oldest release backfills and complete catalog runtime ingestion pending.",
+      "state": "partial"
+    },
+    {
+      "id": "website-presentation",
+      "evidence": "Source/SSR/link checks pass in scoped owner reports. Fresh desktop/mobile interactive proof pending existing browser error state; no blocked-action bypass performed.",
+      "state": "unverified"
+    },
+    {
+      "id": "typescript-removal",
+      "evidence": "Generated facades and thin adapters replacing shared code. Current source contains remaining shared TypeScript changes and migration backlog; complete removal audit pending.",
+      "state": "partial"
+    },
+    {
+      "id": "fast-ci",
+      "evidence": "New full qualification release/manual gated; existing planner root regression 16/16 passed. Genuine fast source drift gate awaits successful generation artifact.",
+      "state": "verified-scoped"
+    },
+    {
+      "id": "public-disclaimer-removal",
+      "evidence": "Website status panels removed; root current-source audit identified remaining Inference/Objects README caveats, assigned docs owner. Historical archives remain immutable.",
+      "state": "in-progress"
+    }
+  ]
+}
