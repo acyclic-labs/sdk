@@ -879,6 +879,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             // compare-and-swap stale. The recovery API must durably retain
             // that known provider result and return the same typed result on
             // a retry with the same operation identity.
+            let terminal_plan = reopened_facade
+                .prepare_project_merge_for_child(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                )
+                .await?;
             let concurrent_target = host
                 .resolve(&workspace_ref(
                     provider.clone(),
@@ -901,8 +909,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 &grant_scope,
                 project.clone(),
                 terminal_operation,
-                host.generation_ref_id(plan.source_head())?,
-                host.generation_ref_id(plan.target_head())?,
+                host.generation_ref_id(terminal_plan.source_head())?,
+                host.generation_ref_id(terminal_plan.target_head())?,
             )?;
             let terminal_journal = FilesystemExecutionJournal::new(
                 stream.clone(),
@@ -917,14 +925,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 terminal_approval,
                 grant_scope.clone(),
             );
-            let terminal_outcome = parent_facade
+            let terminal_outcome = reopened_facade
                 .apply_root_writeback_plan_for_child_with_recovery_outcome(
                     &terminal_request,
                     host.as_ref(),
                     aggregate.reducer(),
                     child_authority.clone(),
                     &child_project,
-                    &plan,
+                    &terminal_plan,
                     std::collections::BTreeMap::new(),
                     merge_message.clone(),
                     &terminal_recovery,
@@ -943,14 +951,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 Some(acyclic_harness::filesystem::ProjectMergeTerminal::StaleTarget { .. })
             ));
             assert!(terminal_entry.receipt.is_none());
-            let retried_outcome = parent_facade
+            let retried_outcome = reopened_facade
                 .apply_root_writeback_plan_for_child_with_recovery_outcome(
                     &terminal_request,
                     host.as_ref(),
                     aggregate.reducer(),
                     child_authority.clone(),
                     &child_project,
-                    &plan,
+                    &terminal_plan,
                     std::collections::BTreeMap::new(),
                     merge_message.clone(),
                     &terminal_recovery,
