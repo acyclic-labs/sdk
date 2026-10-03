@@ -3362,12 +3362,14 @@ impl PersistentLocalSwarm {
             ));
         }
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        let parent_session = self.session(request.parent).await?;
         // Validate every immutable execution binding before the registry can
         // admit a child or the filesystem resolver can allocate its private
         // workspace. Activation repeats this check immediately before model
         // dispatch, but publication must not create effects for a stale owner
         // admission or a provider policy that has drifted after restart.
-        self.verify_admitted_task(request.parent, parent.parent).await?;
+        self.verify_admitted_task(request.parent, parent_session.parent)
+            .await?;
         self.verify_model_provider_binding()?;
         // Admission and completion share one per-child terminal fence.
         // Narrowing the lock to this child permits a model turn to select a
