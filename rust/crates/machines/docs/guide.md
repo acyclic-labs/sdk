@@ -142,7 +142,7 @@ operation inspection; it is not proof that the mutation failed. Event pages
 use a bounded sequence cursor, and usage receipts cover a half-open Unix
 millisecond interval with provider-specific assurance for lineage bytes.
 
-## Legacy topic coverage and availability boundary
+## Legacy topic coverage
 
 The website ledger preserves an overview plus these authored topics:
 `durability-recovery`, `elastic-capacity`, `forks-checkpoints`, `images`,

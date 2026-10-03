@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/guide.md")]
 
 /// Generated customer protobuf contract shared by host and WebAssembly.
 #[allow(missing_docs, unused_qualifications, clippy::all, clippy::pedantic)]

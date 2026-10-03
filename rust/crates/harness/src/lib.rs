@@ -8,6 +8,9 @@
     )
 )]
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/quickstart.md")]
+#![doc = include_str!("../docs/topics.md")]
+#![doc = include_str!("../docs/service-availability.md")]
 
 pub mod agent_loop;
 pub mod bundle;

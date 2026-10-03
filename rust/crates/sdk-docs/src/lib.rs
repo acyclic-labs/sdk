@@ -118,9 +118,15 @@ pub struct ReexportTarget {
 pub struct PublicItem {
     /// Rust declaration name as written by the source or rustdoc JSON.
     pub name: String,
+    /// Compiler-resolved module path, when rustdoc provided the parent path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub module_path: Option<String>,
     /// `struct`, `enum`, `trait`, `fn`, `type`, `const`, `static`, `mod`, or
     /// `macro`.
     pub kind: String,
+    /// Compiler-resolved semantic signature or type shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature: Option<serde_json::Value>,
     /// Repository-relative source location, if known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_path: Option<String>,
@@ -204,7 +210,8 @@ pub struct AnalysisProfile {
 pub struct ProfilePackage {
     /// Cargo package name.
     pub package: String,
-    /// Rust target triple used for this package.
+    /// Rust target triple used for this package, or `host` to resolve the
+    /// pinned toolchain's native host triple at generation time.
     pub target: String,
     /// Cargo features enabled for this package. `default` is explicit when
     /// the package's manifest default features are part of the graph.
@@ -563,7 +570,7 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         &mut diagnostics,
         &source_revision,
         expected_toolchain.as_deref(),
-    );
+    )?;
     if options.require_rustdoc_json && profiles.iter().any(|status| !status.complete) {
         return Err(Error::Strict(
             "one or more required rustdoc feature/target profiles have missing or unresolved packages".to_owned(),
@@ -609,6 +616,29 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
     })
 }
 
+fn resolve_profile_target(target: &str, toolchain: Option<&str>) -> Result<String, Error> {
+    if target != "host" {
+        return Ok(target.to_owned());
+    }
+    let mut command = Command::new("rustc");
+    if let Some(toolchain) = toolchain {
+        command.arg(format!("+{toolchain}"));
+    }
+    let output = command.args(["-vV"]).output().map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Strict(format!(
+            "rustc -vV failed while resolving the host target: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("host:").map(str::trim))
+        .filter(|host| !host.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| Error::Strict("rustc -vV did not report a host target".to_owned()))
+}
+
 /// Generate pinned, docs-only rustdoc JSON artifacts and source-binding
 /// receipts for every package in every declared profile.
 pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, Error> {
@@ -630,6 +660,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
             let package_name = &package.package;
             let crate_dir = find_package_dir(&options.repository_root, package_name)?;
             let source_blake3 = source_content_hash(&crate_dir, &options.repository_root)?;
+            let target = resolve_profile_target(&package.target, Some(&options.toolchain))?;
             let mut command = Command::new("cargo");
             command.arg(format!("+{}", options.toolchain)).args([
                 "rustdoc",
@@ -637,7 +668,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
                 "--package",
                 package_name,
                 "--target",
-                &package.target,
+                &target,
                 "--lib",
             ]);
             let features = normalized_features(&package.features);
@@ -661,7 +692,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
                     String::from_utf8_lossy(&output.stderr).trim()
                 )));
             }
-            let generated_root = target_dir.join(&package.target).join("doc");
+            let generated_root = target_dir.join(&target).join("doc");
             let generated_json =
                 find_rustdoc_json(&generated_root, package_name).ok_or_else(|| {
                     Error::Strict(format!(
@@ -680,7 +711,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
                 source_blake3: source_blake3.clone(),
                 source_revision: source_revision.clone(),
                 toolchain: options.toolchain.clone(),
-                target: package.target.clone(),
+                target: target.clone(),
                 features: features.clone(),
                 profile_blake3: profile_blake3.clone(),
                 profile: profile.name.clone(),
@@ -694,7 +725,7 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
             artifacts.push(GeneratedArtifact {
                 profile: profile.name.clone(),
                 package_name: package_name.clone(),
-                target: package.target.clone(),
+                target,
                 features,
                 profile_blake3: profile_blake3.clone(),
                 source_blake3,
@@ -762,6 +793,8 @@ pub fn to_website_json(
                     let mut projection = serde_json::json!({
                         "kind": item.kind,
                         "name": item.name,
+                        "modulePath": item.module_path,
+                        "signature": item.signature,
                         "summary": item.docs.as_deref().and_then(|docs| docs.lines().next()).filter(|summary| !summary.trim().is_empty()).unwrap_or("No declaration summary was provided."),
                         "sourcePath": item.source_path,
                         "sourceLine": item.source_line,
@@ -899,6 +932,8 @@ fn reexport_target_projection(
             "index": index,
             "kind": item.kind,
             "name": item.name,
+            "modulePath": item.module_path,
+            "signature": item.signature,
             "summary": item.docs.as_deref().and_then(|docs| docs.lines().next()).filter(|summary| !summary.trim().is_empty()).unwrap_or("No declaration summary was provided."),
             "sourcePath": item.source_path,
             "sourceLine": item.source_line,
@@ -2272,10 +2307,23 @@ fn reference_guide(package_name: &str, crate_path: &str, items: &[PublicItem]) -
             (Some(path), None) => format!("[`{path}`](/{path})"),
             _ => "generated source".to_owned(),
         };
+        let module = item
+            .module_path
+            .as_deref()
+            .map(|path| format!("\nModule path: `{path}`\n"))
+            .unwrap_or_default();
+        let signature = item
+            .signature
+            .as_ref()
+            .and_then(|signature| serde_json::to_string(signature).ok())
+            .map(|signature| format!("\nCompiler signature: `{signature}`\n"))
+            .unwrap_or_default();
         let _ = writeln!(
             contents,
-            "### `{}` {{#{anchor}}}\n\n{}\n\nSource: {}\n",
+            "### `{}` {{#{anchor}}}\n{}{}\n{}\n\nSource: {}\n",
             item.name,
+            module,
+            signature,
             summary.trim(),
             location
         );
@@ -2486,14 +2534,14 @@ fn evaluate_profiles(
     diagnostics: &mut Vec<Diagnostic>,
     source_revision: &str,
     expected_toolchain: Option<&str>,
-) -> Vec<ProfileStatus> {
+) -> Result<Vec<ProfileStatus>, Error> {
     let by_package = crates
         .iter()
         .map(|crate_bundle| (crate_bundle.package_name.as_str(), crate_bundle))
         .collect::<HashMap<_, _>>();
     let mut statuses = profiles
         .iter()
-        .map(|profile| {
+        .map(|profile| -> Result<ProfileStatus, Error> {
             let mut missing_packages = Vec::new();
             let mut unresolved_packages = Vec::new();
             let profile_digest = profile_blake3(profile);
@@ -2513,9 +2561,10 @@ fn evaluate_profiles(
                         });
                     }
                     Some(crate_bundle) => {
+                        let resolved_target = resolve_profile_target(&package.target, expected_toolchain)?;
                         let graph = crate_bundle.graphs.iter().find(|graph| {
                             graph.profile_blake3 == profile_digest
-                                && graph.target == package.target
+                                && graph.target == resolved_target
                                 && graph.features == normalized_features(&package.features)
                                 && graph.rustdoc.source_revision == source_revision
                                 && expected_toolchain
@@ -2546,17 +2595,17 @@ fn evaluate_profiles(
                 }
             }
             let complete = missing_packages.is_empty() && unresolved_packages.is_empty();
-            ProfileStatus {
+            Ok(ProfileStatus {
                 profile: profile.clone(),
                 complete,
                 profile_blake3: profile_digest,
                 missing_packages,
                 unresolved_packages,
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, Error>>()?;
     statuses.sort_by(|left, right| left.profile.name.cmp(&right.profile.name));
-    statuses
+    Ok(statuses)
 }
 
 /// Extract the compiler-resolved public graph from rustdoc JSON. The JSON
@@ -2590,7 +2639,7 @@ fn rustdoc_public_items(
         return Vec::new();
     };
     let mut seen = HashSet::new();
-    let mut pending = vec![(root_id.to_string(), false)];
+    let mut pending = vec![(root_id.to_string(), false, None::<String>)];
     // Some wasm-bindgen wrapper crates expose their public adapter structs in
     // the rustdoc index without linking them from the synthetic crate module.
     // The compiler graph is still authoritative: walk those index entries
@@ -2612,11 +2661,11 @@ fn rustdoc_public_items(
                 .keys()
                 .filter(|id| id.as_str() != root_id.to_string())
                 .cloned()
-                .map(|id| (id, false)),
+                .map(|id| (id, false, None)),
         );
     }
     let mut items = Vec::new();
-    while let Some((id, inherited_public)) = pending.pop() {
+    while let Some((id, inherited_public, parent_path)) = pending.pop() {
         if !seen.insert(id.clone()) {
             continue;
         }
@@ -2637,16 +2686,31 @@ fn rustdoc_public_items(
         let Some(inner) = item.get("inner").and_then(serde_json::Value::as_object) else {
             continue;
         };
+        let item_name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                inner
+                    .get("use")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|use_item| use_item.get("name"))
+                    .and_then(serde_json::Value::as_str)
+            });
+        let module_path = item_name.map(|name| match parent_path.as_deref() {
+            Some(parent) if !parent.is_empty() => format!("{parent}::{name}"),
+            _ => name.to_owned(),
+        });
+        let child_path = module_path.as_deref().or(parent_path.as_deref());
         if let Some(module) = inner.get("module").and_then(serde_json::Value::as_object) {
             if let Some(children) = module.get("items").and_then(serde_json::Value::as_array) {
-                enqueue_rustdoc_ids(children, &mut pending, false);
+                enqueue_rustdoc_ids(children, &mut pending, false, child_path);
             }
         }
         if let Some(use_item) = inner.get("use").and_then(serde_json::Value::as_object) {
             if let Some(target_id) = use_item.get("id").and_then(serde_json::Value::as_u64) {
                 let target = target_id.to_string();
                 if index.contains_key(&target) {
-                    pending.push((target, false));
+                    pending.push((target, false, parent_path.clone()));
                 }
             }
         }
@@ -2658,7 +2722,7 @@ fn rustdoc_public_items(
                 for fields in kind.values() {
                     if let Some(fields) = fields.get("fields").and_then(serde_json::Value::as_array)
                     {
-                        enqueue_rustdoc_ids(fields, &mut pending, true);
+                        enqueue_rustdoc_ids(fields, &mut pending, true, child_path);
                     }
                 }
             }
@@ -2666,7 +2730,7 @@ fn rustdoc_public_items(
                 .get("impls")
                 .and_then(serde_json::Value::as_array)
             {
-                enqueue_rustdoc_ids(impls, &mut pending, false);
+                enqueue_rustdoc_ids(impls, &mut pending, false, child_path);
             }
         }
         if let Some(enum_item) = inner.get("enum").and_then(serde_json::Value::as_object) {
@@ -2674,10 +2738,10 @@ fn rustdoc_public_items(
                 .get("variants")
                 .and_then(serde_json::Value::as_array)
             {
-                enqueue_rustdoc_ids(variants, &mut pending, true);
+                enqueue_rustdoc_ids(variants, &mut pending, true, child_path);
             }
             if let Some(impls) = enum_item.get("impls").and_then(serde_json::Value::as_array) {
-                enqueue_rustdoc_ids(impls, &mut pending, false);
+                enqueue_rustdoc_ids(impls, &mut pending, false, child_path);
             }
         }
         if let Some(union_item) = inner.get("union").and_then(serde_json::Value::as_object) {
@@ -2685,13 +2749,13 @@ fn rustdoc_public_items(
                 .get("fields")
                 .and_then(serde_json::Value::as_array)
             {
-                enqueue_rustdoc_ids(fields, &mut pending, true);
+                enqueue_rustdoc_ids(fields, &mut pending, true, child_path);
             }
             if let Some(impls) = union_item
                 .get("impls")
                 .and_then(serde_json::Value::as_array)
             {
-                enqueue_rustdoc_ids(impls, &mut pending, false);
+                enqueue_rustdoc_ids(impls, &mut pending, false, child_path);
             }
         }
         if let Some(trait_item) = inner.get("trait").and_then(serde_json::Value::as_object) {
@@ -2699,12 +2763,12 @@ fn rustdoc_public_items(
                 .get("items")
                 .and_then(serde_json::Value::as_array)
             {
-                enqueue_rustdoc_ids(trait_items, &mut pending, true);
+                enqueue_rustdoc_ids(trait_items, &mut pending, true, child_path);
             }
         }
         if let Some(impl_item) = inner.get("impl").and_then(serde_json::Value::as_object) {
             if let Some(impl_items) = impl_item.get("items").and_then(serde_json::Value::as_array) {
-                enqueue_rustdoc_ids(impl_items, &mut pending, false);
+                enqueue_rustdoc_ids(impl_items, &mut pending, false, child_path);
             }
         }
         if (visibility != Some("public") && !inherited_public) || id == root_id.to_string() {
@@ -2719,16 +2783,7 @@ fn rustdoc_public_items(
         // alias as a graph item instead of dropping the umbrella crate's
         // complete public surface merely because the external target is not
         // repeated in this crate's index.
-        let name = item
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .or_else(|| {
-                inner
-                    .get("use")
-                    .and_then(serde_json::Value::as_object)
-                    .and_then(|use_item| use_item.get("name"))
-                    .and_then(serde_json::Value::as_str)
-            });
+        let name = item_name;
         let Some(name) = name else {
             continue;
         };
@@ -2780,7 +2835,9 @@ fn rustdoc_public_items(
             .is_some_and(|path| path.split('/').any(|part| part == "generated"));
         items.push(PublicItem {
             name: name.to_owned(),
+            module_path,
             kind: kind.replace('_', "-"),
+            signature: rustdoc_signature(inner),
             source_path,
             source_line,
             docs,
@@ -2821,16 +2878,42 @@ fn external_reexport_target(
     })
 }
 
+fn rustdoc_signature(
+    inner: &serde_json::Map<String, serde_json::Value>,
+) -> Option<serde_json::Value> {
+    let (kind, value) = inner.iter().next()?;
+    let signature = match kind.as_str() {
+        "function" | "assoc_const" | "assoc_type" | "macro" => value.clone(),
+        "struct" | "enum" | "union" | "trait" | "type" => {
+            let object = value.as_object()?;
+            let mut selected = serde_json::Map::new();
+            for key in ["kind", "generics", "bounds", "is_auto", "is_unsafe"] {
+                if let Some(value) = object.get(key) {
+                    selected.insert(key.to_owned(), value.clone());
+                }
+            }
+            serde_json::Value::Object(selected)
+        }
+        _ => return None,
+    };
+    Some(signature)
+}
+
 fn enqueue_rustdoc_ids(
     values: &[serde_json::Value],
-    pending: &mut Vec<(String, bool)>,
+    pending: &mut Vec<(String, bool, Option<String>)>,
     inherited_public: bool,
+    module_path: Option<&str>,
 ) {
-    pending.extend(
-        values
-            .iter()
-            .filter_map(|value| value.as_u64().map(|id| (id.to_string(), inherited_public))),
-    );
+    pending.extend(values.iter().filter_map(|value| {
+        value.as_u64().map(|id| {
+            (
+                id.to_string(),
+                inherited_public,
+                module_path.map(str::to_owned),
+            )
+        })
+    }));
 }
 
 fn merge_compiler_public_items(graphs: &[RustdocGraph]) -> Vec<PublicItem> {
@@ -2911,7 +2994,9 @@ fn scan_rust_file(
             if !hidden {
                 items.push(PublicItem {
                     name,
+                    module_path: None,
                     kind,
+                    signature: None,
                     source_path: Some(path.to_owned()),
                     source_line: Some(line_number),
                     docs: (!docs.is_empty()).then(|| docs.join("\n")),
@@ -3390,6 +3475,13 @@ mod tests {
         assert!(items
             .iter()
             .any(|item| item.name == "NativeThing" && item.conditional));
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.name == "NativeThing")
+                .and_then(|item| item.module_path.as_deref()),
+            Some("demo::NativeThing")
+        );
     }
 
     #[test]
@@ -3502,7 +3594,9 @@ mod tests {
             navigation: "filesystem".to_owned(),
             public_items: vec![PublicItem {
                 name: "Filesystem".to_owned(),
+                module_path: None,
                 kind: "trait".to_owned(),
+                signature: None,
                 source_path: Some("rust/crates/filesystem/src/lib.rs".to_owned()),
                 source_line: Some(12),
                 docs: Some("Filesystem access.".to_owned()),
@@ -3612,13 +3706,28 @@ mod tests {
         assert!(items
             .iter()
             .any(|item| item.name == "connect" && item.kind == "function"));
+        let connect = items.iter().find(|item| item.name == "connect").unwrap();
+        assert_eq!(
+            connect.module_path.as_deref(),
+            Some("demo::Provider::connect")
+        );
+        assert!(connect.signature.is_some());
+        assert_eq!(
+            items
+                .iter()
+                .find(|item| item.name == "request_id")
+                .and_then(|item| item.module_path.as_deref()),
+            Some("demo::Request::request_id")
+        );
     }
 
     #[test]
     fn compiler_graph_merge_deduplicates_same_declaration_across_profiles() {
         let item = PublicItem {
             name: "StreamProvider".to_owned(),
+            module_path: None,
             kind: "trait".to_owned(),
+            signature: None,
             source_path: Some("rust/crates/stream/src/lib.rs".to_owned()),
             source_line: Some(526),
             docs: Some("A stream provider.".to_owned()),
@@ -3654,6 +3763,17 @@ mod tests {
                 .filter(|item| item.name == "StreamProvider")
                 .count(),
             2
+        );
+    }
+
+    #[test]
+    fn host_profile_target_resolves_from_rustc() {
+        let host = resolve_profile_target("host", None).expect("rustc host target");
+        assert!(!host.is_empty());
+        assert_ne!(host, "host");
+        assert_eq!(
+            resolve_profile_target("wasm32-unknown-unknown", None).unwrap(),
+            "wasm32-unknown-unknown"
         );
     }
 
@@ -3701,7 +3821,8 @@ mod tests {
             &mut diagnostics,
             "unknown",
             None,
-        );
+        )
+        .expect("profile evaluation");
         assert_eq!(statuses.len(), 1);
         assert!(!statuses[0].complete);
         assert_eq!(statuses[0].unresolved_packages, vec!["demo-wasm"]);

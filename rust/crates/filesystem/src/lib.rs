@@ -9,6 +9,9 @@
     )
 )]
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/quickstart.md")]
+#![doc = include_str!("../docs/topics.md")]
+#![doc = include_str!("../docs/service-availability.md")]
 
 /// Generated public gRPC schema and client/server bindings.
 #[allow(missing_docs, clippy::all, clippy::pedantic, clippy::too_many_lines)]

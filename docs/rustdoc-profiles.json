@@ -4,33 +4,33 @@
     {
       "name": "host-default",
       "packages": [
-        { "package": "acyclic-actors", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
-        { "package": "acyclic-fs", "target": "x86_64-pc-windows-msvc", "features": ["default", "acyclic-objects/grpc", "acyclic-stream/grpc"] },
-        { "package": "acyclic-harness", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": true },
-        { "package": "acyclic-inference", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
-        { "package": "acyclic-inference-contract", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
-        { "package": "acyclic-machines", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
-        { "package": "acyclic-native-runtime", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false },
-        { "package": "acyclic-objects", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
-        { "package": "acyclic-stream", "target": "x86_64-pc-windows-msvc", "features": ["default"] },
-        { "package": "acyclic-workers", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false }
+        { "package": "acyclic-actors", "target": "host", "features": [], "default_features": false },
+        { "package": "acyclic-fs", "target": "host", "features": ["default", "acyclic-objects/grpc", "acyclic-stream/grpc"] },
+        { "package": "acyclic-harness", "target": "host", "features": [], "default_features": true },
+        { "package": "acyclic-inference", "target": "host", "features": ["default"] },
+        { "package": "acyclic-inference-contract", "target": "host", "features": [], "default_features": false },
+        { "package": "acyclic-machines", "target": "host", "features": ["default"] },
+        { "package": "acyclic-native-runtime", "target": "host", "features": [], "default_features": false },
+        { "package": "acyclic-objects", "target": "host", "features": ["default"] },
+        { "package": "acyclic-stream", "target": "host", "features": ["default"] },
+        { "package": "acyclic-workers", "target": "host", "features": [], "default_features": false }
       ]
     },
     {
       "name": "native-bindings",
       "packages": [
-        { "package": "acyclic-fs-napi", "target": "x86_64-pc-windows-msvc", "features": [], "default_features": false }
+        { "package": "acyclic-fs-napi", "target": "host", "features": [], "default_features": false }
       ]
     },
     {
       "name": "host-capabilities",
       "packages": [
-        { "package": "acyclic-fs", "target": "x86_64-pc-windows-msvc", "features": ["distributed", "s3-http", "acyclic-objects/grpc", "acyclic-stream/grpc"], "default_features": false },
-        { "package": "acyclic-harness", "target": "x86_64-pc-windows-msvc", "features": ["filesystem", "filesystem-local", "grpc", "machines", "objects"], "default_features": false },
-        { "package": "acyclic-inference", "target": "x86_64-pc-windows-msvc", "features": ["host", "http-codec"], "default_features": false },
-        { "package": "acyclic-machines", "target": "x86_64-pc-windows-msvc", "features": ["grpc"], "default_features": false },
-        { "package": "acyclic-objects", "target": "x86_64-pc-windows-msvc", "features": ["grpc", "http", "json", "local"], "default_features": false },
-        { "package": "acyclic-stream", "target": "x86_64-pc-windows-msvc", "features": ["grpc", "http", "local"], "default_features": false }
+        { "package": "acyclic-fs", "target": "host", "features": ["distributed", "s3-http", "acyclic-objects/grpc", "acyclic-stream/grpc"], "default_features": false },
+        { "package": "acyclic-harness", "target": "host", "features": ["filesystem", "filesystem-local", "grpc", "machines", "objects"], "default_features": false },
+        { "package": "acyclic-inference", "target": "host", "features": ["host", "http-codec"], "default_features": false },
+        { "package": "acyclic-machines", "target": "host", "features": ["grpc"], "default_features": false },
+        { "package": "acyclic-objects", "target": "host", "features": ["grpc", "http", "json", "local"], "default_features": false },
+        { "package": "acyclic-stream", "target": "host", "features": ["grpc", "http", "local"], "default_features": false }
       ]
     },
     {

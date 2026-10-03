@@ -1,4 +1,5 @@
 #![doc = include_str!("../README.md")]
+#![doc = include_str!("../docs/guide.md")]
 mod body;
 pub mod v2;
 /// Canonical logical Objects v2 public contracts and providers.

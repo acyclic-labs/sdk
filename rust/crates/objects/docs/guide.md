@@ -66,8 +66,8 @@ crate exposes no public object-version pointer.
 
 ## Durability and native local storage
 
-Enable `local` on a native target to use `LocalObjects::open`. Its private
-checksummed journal records logical state changes and exact retry receipts;
+On a native target, the default storage profile exposes `LocalObjects::open`.
+Its private checksummed journal records logical state changes and exact retry receipts;
 immutable body segments retain current bodies and staged multipart parts. A
 v1 store is rejected without conversion or overwrite. Reopen repairs only an
 incomplete final record; an uncertain append makes later operations unavailable

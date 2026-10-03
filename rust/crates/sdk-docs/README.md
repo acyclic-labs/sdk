@@ -21,7 +21,11 @@ cargo run --manifest-path rust/crates/sdk-docs/Cargo.toml -- \
 
 When `docs/rustdoc-profiles.json` exists it is loaded automatically. Pass
 `--profile-manifest FILE` to select another manifest. Each profile lists every
-package with its actual target and feature set. Strict mode requires the exact
+package with its target selector and feature set. The `host` selector resolves
+to the pinned toolchain's `rustc -vV` host triple during generation; explicit
+targets such as `wasm32-unknown-unknown` remain exact. Receipts record the
+resolved target, so a graph generated on one host cannot qualify a different
+host profile. Strict mode requires the exact
 source-bound graph for every crate entry; source scanning, a graph from a
 different target, and a stale receipt cannot qualify a profile.
 Set `default_features` explicitly for packages whose Cargo defaults are not
