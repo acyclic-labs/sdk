@@ -33,7 +33,7 @@ owns the complete loop. For the stock loop, bind `model`, `context`, `tools`,
 and an owner-controlled `journal`, then provide the authenticated `Bindings`
 required by the selected providers.
 
-The native default profile enables the durable local Filesystem and Stream providers, so this example runs without a consumer feature flag. Wasm builds use the portable profile with `--no-default-features --features wasm`; native local storage is selected by the target profile.
+The native and wasm profiles select target-compatible providers automatically, so this example and `cargo build --target wasm32-unknown-unknown` run without consumer feature flags.
 
 Run the complete custom-loop example with:
 

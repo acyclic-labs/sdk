@@ -19,7 +19,7 @@ tonic, or another framing. The `grpc` feature provides the thin
 `HarnessGrpcService` adapter; it validates wire envelopes and delegates policy
 and persistence to the application implementation.
 
-Native examples use the default profile directly, for example `cargo run --example custom_executor`. For `wasm32`, select the portable profile with `--no-default-features --features wasm`; this keeps native local storage dependencies out of the browser target.
+Native examples use the default profile directly, for example `cargo run --example custom_executor`. A wasm consumer uses the same dependency declaration with `cargo build --target wasm32-unknown-unknown`; target selection keeps native local storage dependencies out of the browser build.
 
 An adapter feature does not create a provider or grant authority. Enabling
 `filesystem` supplies integration types but still requires an owner-authenticated
