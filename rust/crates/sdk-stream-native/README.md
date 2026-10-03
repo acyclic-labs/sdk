@@ -13,3 +13,9 @@ stream be dropped from Rust.
 The `npm/` fixtures describe the six platform companion packages expected by a later package
 publisher. The native `.node` file is produced by the N-API build for the matching target and is
 loaded by each fixture's `index.js`.
+
+The checked-in runtime qualification currently builds and loads the Windows x64 module. It
+exercises append, read, follow cancellation, private-CA TLS, endpoint rotation, and the
+canonical capability bounds against a local Rust gRPC service. The other five platform
+directories are package metadata and loader-shape fixtures; they are not binary-qualified by
+that test.

@@ -16,15 +16,19 @@ crate-type = ["cdylib", "rlib"]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
 bytes.workspace = true
 futures.workspace = true
-napi.workspace = true
+napi = { workspace = true, features = ["tokio_rt"] }
 napi-derive.workspace = true
+prost.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
 napi-build = "2.3.1"
 
 [dev-dependencies]
+rcgen = "0.14.10"
+tokio-stream.workspace = true
 tokio.workspace = true
+tonic.workspace = true
 
 [lints]
 workspace = true
