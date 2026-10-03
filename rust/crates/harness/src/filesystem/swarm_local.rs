@@ -1460,7 +1460,7 @@ impl ToolExecutor for LocalForkToolExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
+            let input: LocalForkToolInput = LocalForkToolInput::deserialize(&invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
             let publication_operation = context.publication_operation();
             let fork_operation = child_fork_operation(publication_operation, input.child_operation);
@@ -1509,7 +1509,7 @@ impl ToolExecutor for LocalForkToolExecutor {
                 return Ok(None);
             }
             invocation.validate()?;
-            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
+            let input: LocalForkToolInput = LocalForkToolInput::deserialize(&invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
             let Some(intent) = self
                 .plans
@@ -5189,6 +5189,107 @@ mod tests {
         )?;
         assert_eq!(sessions[&child].phase, LocalSessionPhase::Completed);
         assert_eq!(outcomes[&child].text, "done");
+        Ok(())
+    }
+
+    #[test]
+    fn failed_child_is_terminal_against_cancel_and_completion() -> Result<()> {
+        let parent = TaskId::new();
+        let child = TaskId::new();
+        let operation = OperationId::new();
+        let mut sessions = BTreeMap::from([(
+            child,
+            LocalSwarmSession {
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "child".into(),
+                operation: Some(operation),
+                phase: LocalSessionPhase::Activating,
+            },
+        )]);
+        let mut requests = BTreeMap::from([(
+            child,
+            LocalForkRequest {
+                parent,
+                parent_operation: OperationId::new(),
+                parent_step: 0,
+                fork_operation: Some(OperationId::new()),
+                child_operation: operation,
+                child_authority: None,
+                child_agent: None,
+                task: "child".into(),
+                prompt: "prompt".into(),
+            },
+        )]);
+        let mut seeds = BTreeMap::new();
+        let mut reports = BTreeMap::new();
+        let mut publications = BTreeMap::new();
+        let mut declarations = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
+        let mut completion_refs = BTreeMap::new();
+        let record = |event| StoredRecord {
+            version: REGISTRY_VERSION,
+            event,
+        };
+
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            record(StoredEvent::ForkFailed {
+                child,
+                reason: "provider stopped".into(),
+            }),
+        )?;
+        assert!(matches!(
+            &sessions[&child].phase,
+            LocalSessionPhase::Failed(reason) if reason == "provider stopped"
+        ));
+        assert!(apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            record(StoredEvent::ForkCancelled { child }),
+        )
+        .is_err());
+        assert!(apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            record(StoredEvent::ForkCompleted {
+                child,
+                operation,
+                output: Some(TurnOutput {
+                    text: "late completion".into(),
+                    attachments: Vec::new(),
+                    metadata: Value::Null,
+                    steps: 1,
+                }),
+                output_ref: None,
+                output_digest: None,
+            }),
+        )
+        .is_err());
+        assert!(matches!(
+            &sessions[&child].phase,
+            LocalSessionPhase::Failed(reason) if reason == "provider stopped"
+        ));
         Ok(())
     }
 

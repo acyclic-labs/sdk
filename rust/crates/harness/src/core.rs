@@ -5096,4 +5096,64 @@ mod tests {
         assert_eq!(restored.context_selections(), reducer.context_selections());
         Ok(())
     }
+
+    #[test]
+    fn historical_conversation_revision_does_not_follow_current_tail() -> Result<()> {
+        use crate::conversation::{ConversationMessage, MessageKind};
+
+        let agent = crate::AgentId::from_bytes([12; 16]);
+        let mut reducer = Reducer::new(
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "conversation-history".into(),
+            },
+            issuer().verifier(),
+            schemas(),
+        );
+        reducer.apply(command(
+            operation(120),
+            0,
+            Action::BindConversation { agent },
+        ))?;
+        let first = ConversationMessage {
+            id: uuid::Uuid::from_bytes([12; 16]),
+            sequence: 1,
+            kind: MessageKind::User,
+            content: request_file(b"first")?,
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        reducer.apply(command(
+            operation(121),
+            1,
+            Action::AppendConversationMessage {
+                message: Box::new(first.clone()),
+            },
+        ))?;
+        let captured_revision = reducer.revision();
+        let second = ConversationMessage {
+            id: uuid::Uuid::from_bytes([13; 16]),
+            sequence: 2,
+            kind: MessageKind::Assistant,
+            content: request_file(b"second")?,
+            attachments: Vec::new().into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        reducer.apply(command(
+            operation(122),
+            captured_revision,
+            Action::AppendConversationMessage {
+                message: Box::new(second),
+            },
+        ))?;
+
+        let historical = reducer.conversation_at_revision(captured_revision)?;
+        assert_eq!(historical.messages, vec![first]);
+        assert_eq!(reducer.conversation().map(|state| state.messages.len()), Some(2));
+        Ok(())
+    }
 }
