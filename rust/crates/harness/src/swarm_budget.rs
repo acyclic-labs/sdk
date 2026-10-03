@@ -177,7 +177,7 @@ impl SwarmUsage {
 pub struct SwarmUsageReceipt {
     /// Operation whose provider measured the usage.
     pub operation_id: OperationId,
-    /// Stable dispatch identity returned by the activation commit.
+    /// Stable child dispatch or root lease identity bound by the host.
     pub dispatch_id: IdempotencyKey,
     /// Strictly increasing cumulative report sequence.
     pub sequence: u64,
