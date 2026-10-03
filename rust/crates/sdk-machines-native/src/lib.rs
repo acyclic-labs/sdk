@@ -20,10 +20,12 @@ pub struct NativeMachinesOptions {
     /// HTTPS endpoint of the Machines service.
     pub endpoint: String,
     /// PEM-encoded service CA certificate.
+    #[napi(js_name = "caCertificate")]
     pub ca_certificate: String,
     /// PEM-encoded client certificate.
     pub certificate: String,
     /// PEM-encoded client private key.
+    #[napi(js_name = "privateKey")]
     pub private_key: String,
 }
 
@@ -403,5 +405,16 @@ mod tests {
         let value: ImageQualification = serde_json::from_str(&json).expect("result JSON");
         assert_eq!(value.image, image);
         assert!(!value.capabilities.is_empty());
+    }
+
+    #[tokio::test]
+    async fn connection_rejects_non_https_before_network_io() {
+        let options = NativeMachinesOptions {
+            endpoint: "http://127.0.0.1:1".into(),
+            ca_certificate: "fixture".into(),
+            certificate: "fixture".into(),
+            private_key: "fixture".into(),
+        };
+        assert!(MachinesNativeClient::connect(options).await.is_err());
     }
 }
