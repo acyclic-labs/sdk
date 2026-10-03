@@ -19,6 +19,29 @@ import { isValidComponentLabel } from "./component-label-contract.js";
 
 /** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
 export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
+
+const hostCredentialOption = /^(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|credential(?:s)?|secret|password|private[_-]?key|client[_-]?secret)$/i;
+
+/** Model options are provider request hints; credentials belong to the host/provider binding. */
+export function assertPublicModelOptions(value: unknown): void {
+  const seen = new Set<object>();
+  const visit = (candidate: unknown): void => {
+    if (candidate === null || typeof candidate !== "object") return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    if (Array.isArray(candidate)) {
+      for (const child of candidate) visit(child);
+      return;
+    }
+    for (const [key, child] of Object.entries(candidate)) {
+      if (hostCredentialOption.test(key)) {
+        throw new TypeError("model options cannot contain credentials; configure provider credentials on the host");
+      }
+      visit(child);
+    }
+  };
+  visit(value);
+}
 export type ModelRole = WasmModelRole;
 
 type PublicModelContentPart<Part extends WasmModelContentPart, Arguments, Result> =

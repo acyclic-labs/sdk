@@ -1,5 +1,5 @@
 import type { ModelAttempt, ModelEvent, ModelProvider, ModelRequest } from "./runtime.js";
-import type { ModelContentPart } from "./model.js";
+import { assertPublicModelOptions, type ModelContentPart } from "./model.js";
 import type { FileRef } from "./conversation.js";
 import { projectModelFile } from "./projection.js";
 import { NativeContracts } from "./native-contracts.js";
@@ -60,6 +60,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
   }
 
   async *generate(request: ModelRequest): AsyncIterable<ModelEvent> {
+    assertPublicModelOptions(request.model.options);
     const contracts = await NativeContracts.create();
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();

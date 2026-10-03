@@ -1,4 +1,4 @@
-import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { assertPublicModelOptions, validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
@@ -62,7 +62,7 @@ export class HarnessLimitError extends TypeError {
 export function asHarnessLimitError(error: unknown): HarnessLimitError | undefined {
   if (error instanceof HarnessLimitError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  if (/\b(limit|exceed|too many|too large|maximum|oversized)\b|no (?:history|attachments) were omitted/i.test(message)) {
+  if (/\b(limit|exceed|too many|too large|maximum|oversized)\b|no (?:history|attachments) were omitted|model context count|aggregate model request|model output token bound|model (?:content|text|file|tool projection)/i.test(message)) {
     return new HarnessLimitError(message);
   }
   return undefined;
@@ -1655,7 +1655,12 @@ export class HarnessBuilder {
     if (value.limits) this.limits(value.limits);
     return this;
   }
-  model(identity: Model, provider: ModelProvider): this { this.contracts.encodeCanonicalJson(identity.options); this.#model = bindModel(identity, provider); return this; }
+  model(identity: Model, provider: ModelProvider): this {
+    assertPublicModelOptions(identity.options);
+    this.contracts.encodeCanonicalJson(identity.options);
+    this.#model = bindModel(identity, provider);
+    return this;
+  }
   agentLoop(value: AgentLoop): this { this.#loop = value; return this; }
   context(value: ContextBuilder): this { this.#context = value; return this; }
   interactions(value: InteractionHandler): this { this.#interactions = value; return this; }
@@ -2479,14 +2484,26 @@ export class AgentHarness {
         // The caller owns final reference resolution and authorization. Once
         // those bytes are present in `messages`, Rust is the only request
         // serializer and digest authority before this provider dispatch.
-        const prepared = this.contracts.prepareModelRequest({
+        const wireRequest = {
           model: { provider: model.identity.provider, name: model.identity.name, revision: model.identity.revision, options: model.identity.options as WasmModelJsonValue },
           messages: messages.map(message => ({ role: message.role, content: wasmModelContent(message.content) })),
           tools: tools.map(tool => ({ name: tool.name, revision: tool.revision, description: tool.description, input_schema: tool.inputSchema, output_schema: tool.outputSchema, model_output_schema: tool.modelOutputSchema ?? tool.outputSchema })),
           max_output_tokens: null,
-        } satisfies WasmModelRequestWire, nativeLimits(this.limits));
+        } satisfies WasmModelRequestWire;
+        let prepared: ReturnType<NativeContracts["prepareModelRequest"]>;
+        try {
+          prepared = this.contracts.prepareModelRequest(wireRequest, nativeLimits(this.limits));
+        } catch (error) {
+          throw asHarnessLimitError(error) ?? error;
+        }
         if (prepared.requestJson.length === 0 || prepared.manifestJson.length === 0 || prepared.requestDigest.length !== 32) {
           throw new Error("canonical model request admission returned empty evidence");
+        }
+        const expectedRequestBytes = this.contracts.encodeCanonicalJson(wireRequest);
+        const actualRequestBytes = new TextEncoder().encode(prepared.requestJson);
+        if (actualRequestBytes.length !== expectedRequestBytes.length
+          || actualRequestBytes.some((byte, index) => byte !== expectedRequestBytes[index])) {
+          throw new Error("canonical model request evidence differs from the admitted provider request");
         }
         const providerRequest: ModelRequest = {
           model: deepFreeze(structuredClone(model.identity)),
@@ -2537,7 +2554,13 @@ export class AgentHarness {
     const runtime = new AgentHarness(tasks, this.#tools, this.components, this.scope, this.running, this.#selectedTools, this.#toolSources, this.contracts, harnessConstruction);
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
-    if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
+    if (outcome.kind !== "succeeded") {
+      if (outcome.kind === "failed") {
+        const limit = asHarnessLimitError(outcome.error);
+        if (limit) throw limit;
+      }
+      throw new TaskRunError(task.id(), outcome);
+    }
     return runtime.#validateRunOutput({ ...outcome.value, taskId: task.id(), receipts }, false);
   }
   attach(id: RuntimeTaskId): Promise<Task<unknown>>;
