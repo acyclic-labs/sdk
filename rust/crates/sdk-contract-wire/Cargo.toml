@@ -1,0 +1,21 @@
+[package]
+name = "acyclic-sdk-contract-wire"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+publish = false
+description = "Rust-owned wire contract metadata prototype for the Acyclic SDK"
+
+[dependencies]
+acyclic-sdk-contract-options = { path = "../sdk-contract-options" }
+prost = "0.14.4"
+prost-build = "0.14.4"
+prost-types = "0.14.4"
+protoc-gen-prost = "0.5.0"
+protoc-gen-tonic = "0.5.0"
+tonic-prost-build = "0.14.6"
+sha2 = "0.10.9"
+
+[dev-dependencies]
+acyclic-sdk-contract-validation = { path = "../sdk-contract-validation" }

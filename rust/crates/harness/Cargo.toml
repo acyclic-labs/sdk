@@ -54,8 +54,10 @@ tempfile = "3.27.0"
 tokio.workspace = true
 
 [build-dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+prost.workspace = true
+prost-types.workspace = true
 prost-build.workspace = true
-protoc-bin-vendored.workspace = true
 tonic-prost-build = { workspace = true, optional = true }
 
 [lints]

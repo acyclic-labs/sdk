@@ -61,6 +61,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
  "acyclic-objects",
+ "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "async-trait",
  "axum",
@@ -154,6 +155,7 @@ dependencies = [
  "acyclic-fs",
  "acyclic-machines",
  "acyclic-objects",
+ "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "blake3",
  "bytes",
@@ -163,7 +165,7 @@ dependencies = [
  "jsonschema",
  "prost",
  "prost-build",
- "protoc-bin-vendored",
+ "prost-types",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
@@ -253,6 +255,8 @@ dependencies = [
  "hex",
  "hyper-util",
  "prost",
+ "prost-build",
+ "prost-types",
  "rustix",
  "serde",
  "serde_json",
@@ -262,6 +266,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "tonic-prost-build",
  "tower",
  "uuid",
 ]
@@ -343,6 +348,7 @@ dependencies = [
  "tokio-stream",
  "tonic",
  "tonic-prost",
+ "url",
 ]
 
 [[package]]
@@ -388,10 +394,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-sdk-contract-options"
+version = "0.1.0"
+dependencies = [
+ "acyclic-sdk-contract-validation",
+ "prost",
+ "prost-types",
+ "protoc-bin-vendored",
+]
+
+[[package]]
+name = "acyclic-sdk-contract-validation"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "prost",
+ "prost-types",
+]
+
+[[package]]
+name = "acyclic-sdk-contract-wire"
+version = "0.1.0"
+dependencies = [
+ "acyclic-sdk-contract-options",
+ "acyclic-sdk-contract-validation",
+ "prost",
+ "prost-build",
+ "prost-types",
+ "protoc-gen-prost",
+ "protoc-gen-tonic",
+ "sha2 0.10.9",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "acyclic-stream"
 version = "0.2.0"
 dependencies = [
  "acyclic-native-runtime",
+ "acyclic-sdk-contract-wire",
  "async-trait",
  "bytes",
  "fs2",

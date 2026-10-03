@@ -16,6 +16,12 @@ categories = ["api-bindings"]
 default = ["grpc"]
 grpc = ["dep:hyper-util", "dep:rustix", "dep:tonic", "dep:tonic-prost", "dep:tower", "tokio/fs", "tokio/macros", "tokio/net", "tokio/time", "tokio/rt-multi-thread"]
 
+[build-dependencies]
+prost.workspace = true
+prost-build.workspace = true
+prost-types.workspace = true
+tonic-prost-build.workspace = true
+
 [dependencies]
 async-trait.workspace = true
 futures.workspace = true

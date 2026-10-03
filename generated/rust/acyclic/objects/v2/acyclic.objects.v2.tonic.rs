@@ -10,6 +10,7 @@ pub mod buckets_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    /// Creates, inspects, and deletes logical object buckets.
     #[derive(Debug, Clone)]
     pub struct BucketsServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -90,6 +91,7 @@ pub mod buckets_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// Creates a logical bucket.
         pub async fn create_bucket(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateBucketRequest>,
@@ -113,6 +115,7 @@ pub mod buckets_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Returns logical bucket metadata.
         pub async fn head_bucket(
             &mut self,
             request: impl tonic::IntoRequest<super::HeadBucketRequest>,
@@ -136,6 +139,7 @@ pub mod buckets_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Deletes a logical bucket when it is empty.
         pub async fn delete_bucket(
             &mut self,
             request: impl tonic::IntoRequest<super::DeleteBucketRequest>,
@@ -177,14 +181,17 @@ pub mod buckets_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with BucketsServiceServer.
     #[async_trait]
     pub trait BucketsService: std::marker::Send + std::marker::Sync + 'static {
+        /// Creates a logical bucket.
         async fn create_bucket(
             &self,
             request: tonic::Request<super::CreateBucketRequest>,
         ) -> std::result::Result<tonic::Response<super::Bucket>, tonic::Status>;
+        /// Returns logical bucket metadata.
         async fn head_bucket(
             &self,
             request: tonic::Request<super::HeadBucketRequest>,
         ) -> std::result::Result<tonic::Response<super::Bucket>, tonic::Status>;
+        /// Deletes a logical bucket when it is empty.
         async fn delete_bucket(
             &self,
             request: tonic::Request<super::DeleteBucketRequest>,
@@ -193,6 +200,7 @@ pub mod buckets_service_server {
             tonic::Status,
         >;
     }
+    /// Creates, inspects, and deletes logical object buckets.
     #[derive(Debug)]
     pub struct BucketsServiceServer<T> {
         inner: Arc<T>,
@@ -455,6 +463,7 @@ pub mod objects_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    /// Publishes, reads, lists, and deletes logical objects.
     #[derive(Debug, Clone)]
     pub struct ObjectsServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -535,6 +544,7 @@ pub mod objects_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// Publishes one complete object after an explicit upload completion frame.
         pub async fn put_object(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::PutObjectRequest>,
@@ -558,6 +568,7 @@ pub mod objects_service_client {
                 );
             self.inner.client_streaming(req, path, codec).await
         }
+        /// Reads one complete object representation as bounded response frames.
         pub async fn get_object(
             &mut self,
             request: impl tonic::IntoRequest<super::GetObjectRequest>,
@@ -584,6 +595,7 @@ pub mod objects_service_client {
                 );
             self.inner.server_streaming(req, path, codec).await
         }
+        /// Returns object metadata without its body.
         pub async fn head_object(
             &mut self,
             request: impl tonic::IntoRequest<super::HeadObjectRequest>,
@@ -610,6 +622,7 @@ pub mod objects_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Deletes the current object representation atomically.
         pub async fn delete_object(
             &mut self,
             request: impl tonic::IntoRequest<super::DeleteObjectRequest>,
@@ -636,6 +649,7 @@ pub mod objects_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Lists objects through an eventual lexical traversal.
         pub async fn list_objects(
             &mut self,
             request: impl tonic::IntoRequest<super::ListObjectsRequest>,
@@ -677,6 +691,7 @@ pub mod objects_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with ObjectsServiceServer.
     #[async_trait]
     pub trait ObjectsService: std::marker::Send + std::marker::Sync + 'static {
+        /// Publishes one complete object after an explicit upload completion frame.
         async fn put_object(
             &self,
             request: tonic::Request<tonic::Streaming<super::PutObjectRequest>>,
@@ -687,10 +702,12 @@ pub mod objects_service_server {
             >
             + std::marker::Send
             + 'static;
+        /// Reads one complete object representation as bounded response frames.
         async fn get_object(
             &self,
             request: tonic::Request<super::GetObjectRequest>,
         ) -> std::result::Result<tonic::Response<Self::GetObjectStream>, tonic::Status>;
+        /// Returns object metadata without its body.
         async fn head_object(
             &self,
             request: tonic::Request<super::HeadObjectRequest>,
@@ -698,6 +715,7 @@ pub mod objects_service_server {
             tonic::Response<super::HeadObjectResponse>,
             tonic::Status,
         >;
+        /// Deletes the current object representation atomically.
         async fn delete_object(
             &self,
             request: tonic::Request<super::DeleteObjectRequest>,
@@ -705,6 +723,7 @@ pub mod objects_service_server {
             tonic::Response<super::DeleteObjectResponse>,
             tonic::Status,
         >;
+        /// Lists objects through an eventual lexical traversal.
         async fn list_objects(
             &self,
             request: tonic::Request<super::ListObjectsRequest>,
@@ -713,6 +732,7 @@ pub mod objects_service_server {
             tonic::Status,
         >;
     }
+    /// Publishes, reads, lists, and deletes logical objects.
     #[derive(Debug)]
     pub struct ObjectsServiceServer<T> {
         inner: Arc<T>,
@@ -1068,6 +1088,7 @@ pub mod multipart_service_client {
     )]
     use tonic::codegen::*;
     use tonic::codegen::http::Uri;
+    /// Stages and publishes multipart object uploads.
     #[derive(Debug, Clone)]
     pub struct MultipartServiceClient<T> {
         inner: tonic::client::Grpc<T>,
@@ -1148,6 +1169,7 @@ pub mod multipart_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
+        /// Starts a multipart upload.
         pub async fn create_multipart(
             &mut self,
             request: impl tonic::IntoRequest<super::CreateMultipartRequest>,
@@ -1177,6 +1199,7 @@ pub mod multipart_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Uploads one multipart part after an explicit completion frame.
         pub async fn upload_part(
             &mut self,
             request: impl tonic::IntoStreamingRequest<Message = super::UploadPartRequest>,
@@ -1200,6 +1223,7 @@ pub mod multipart_service_client {
                 );
             self.inner.client_streaming(req, path, codec).await
         }
+        /// Lists the uploaded parts for a multipart upload.
         pub async fn list_parts(
             &mut self,
             request: impl tonic::IntoRequest<super::ListPartsRequest>,
@@ -1226,6 +1250,7 @@ pub mod multipart_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Publishes a multipart object from exact ordered part receipts.
         pub async fn complete_multipart(
             &mut self,
             request: impl tonic::IntoRequest<super::CompleteMultipartRequest>,
@@ -1252,6 +1277,7 @@ pub mod multipart_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
+        /// Aborts a multipart upload.
         pub async fn abort_multipart(
             &mut self,
             request: impl tonic::IntoRequest<super::AbortMultipartRequest>,
@@ -1296,14 +1322,17 @@ pub mod multipart_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with MultipartServiceServer.
     #[async_trait]
     pub trait MultipartService: std::marker::Send + std::marker::Sync + 'static {
+        /// Starts a multipart upload.
         async fn create_multipart(
             &self,
             request: tonic::Request<super::CreateMultipartRequest>,
         ) -> std::result::Result<tonic::Response<super::MultipartUpload>, tonic::Status>;
+        /// Uploads one multipart part after an explicit completion frame.
         async fn upload_part(
             &self,
             request: tonic::Request<tonic::Streaming<super::UploadPartRequest>>,
         ) -> std::result::Result<tonic::Response<super::UploadedPart>, tonic::Status>;
+        /// Lists the uploaded parts for a multipart upload.
         async fn list_parts(
             &self,
             request: tonic::Request<super::ListPartsRequest>,
@@ -1311,10 +1340,12 @@ pub mod multipart_service_server {
             tonic::Response<super::ListPartsResponse>,
             tonic::Status,
         >;
+        /// Publishes a multipart object from exact ordered part receipts.
         async fn complete_multipart(
             &self,
             request: tonic::Request<super::CompleteMultipartRequest>,
         ) -> std::result::Result<tonic::Response<super::ObjectInfo>, tonic::Status>;
+        /// Aborts a multipart upload.
         async fn abort_multipart(
             &self,
             request: tonic::Request<super::AbortMultipartRequest>,
@@ -1323,6 +1354,7 @@ pub mod multipart_service_server {
             tonic::Status,
         >;
     }
+    /// Stages and publishes multipart object uploads.
     #[derive(Debug)]
     pub struct MultipartServiceServer<T> {
         inner: Arc<T>,
