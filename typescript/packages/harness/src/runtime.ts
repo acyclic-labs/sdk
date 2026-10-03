@@ -1,4 +1,4 @@
-import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type PreparedModelRequest, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type PreparedModelRequest, type PreparedModelTransport, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type NativeModelOptionPolicyWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
@@ -2476,15 +2476,20 @@ export class AgentHarness {
     return this.run({ selectedContext });
   }
   async run(value: string | SelectedAgentInput): Promise<RunOutput> {
-    if (typeof value !== "string" && value.selectedContext !== undefined
+    const selectedContext = typeof value === "string" ? undefined : value.selectedContext;
+    if (selectedContext !== undefined && typeof value !== "string"
       && (Object.hasOwn(value, "prompt") || Object.hasOwn(value, "content"))) {
       throw new TypeError("selected context cannot be combined with another prompt or content");
     }
     const input: RuntimeAgentInput = typeof value === "string" ? { prompt: value }
-      : value.selectedContext === undefined ? value as AgentInput<UserContentPart>
-      : { prompt: "", selectedContext: value.selectedContext };
+      : selectedContext === undefined ? value as AgentInput<UserContentPart>
+      : { prompt: "", selectedContext };
     let admittedDirectContent: ModelContent | undefined;
-    if (input.selectedContext !== undefined) validateSelectedContext(input.selectedContext, this.limits);
+    let detachedDirectInput: AgentInput<UserContentPart> | undefined;
+    const detachedSelectedContext = input.selectedContext === undefined
+      ? undefined
+      : structuredClone(input.selectedContext);
+    if (detachedSelectedContext !== undefined) validateSelectedContext(detachedSelectedContext, this.limits);
     else {
       const prompt = input.prompt;
       const content = input.content;
@@ -2494,7 +2499,11 @@ export class AgentHarness {
       if (content !== undefined && content.length > this.limits.attachments) {
         throw new TypeError("turn attachments exceed harness limits");
       }
-      const directInput: AgentInput<UserContentPart> = content === undefined ? { prompt } : { prompt, content };
+      const detachedContent = content === undefined ? undefined : structuredClone(content);
+      const directInput: AgentInput<UserContentPart> = detachedContent === undefined
+        ? { prompt }
+        : { prompt, content: detachedContent };
+      detachedDirectInput = directInput;
       admittedDirectContent = snapshotDirectUserContent(directInput);
       const userContent = admittedDirectContent!;
       validateUserInputWasm(userContent);
@@ -2508,9 +2517,19 @@ export class AgentHarness {
       if (!model) throw new Error("no model or agent loop is bound");
       const contextBuilder = this.scope.contextBuilder ?? this.components.context;
       const first: ModelMessage = { role: "user", content: admittedDirectContent ?? "" };
-      const selected = input.selectedContext;
+      // Detach selected context and stage output before any native validation.
+      // Context builders are replaceable code and may return getter/proxy
+      // backed values; one snapshot must feed validation, canonical encoding,
+      // and the provider projection alike.
+      const selected = detachedSelectedContext === undefined
+        ? undefined
+        : detachedSelectedContext;
+      const contextInput: RuntimeAgentInput = selected === undefined
+        ? detachedDirectInput ?? input
+        : { ...input, selectedContext: selected };
       const base = selected?.messages ?? [first];
-      const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
+      const builtMessages = await contextBuilder?.build(contextInput, structuredClone(base)) ?? base;
+      const messages: ModelMessage[] = structuredClone(builtMessages);
       try {
         validateModelMessagesWasm(messages, nativeLimits(this.limits));
       } catch (error) {
@@ -2548,6 +2567,10 @@ export class AgentHarness {
           || actualRequestBytes.some((byte, index) => byte !== expectedRequestBytes[index])) {
           throw new Error("canonical model request evidence differs from the admitted provider request");
         }
+        const transport: PreparedModelTransport = Object.freeze({
+          body: Object.freeze([...new TextEncoder().encode(prepared.requestJson)]),
+          requestDigest: Object.freeze([...prepared.requestDigest]),
+        });
         const providerRequest: PreparedModelRequest = Object.freeze({
           model: deepFreeze(structuredClone(model.identity)),
           messages: deepFreeze(structuredClone(messages)),
@@ -2558,6 +2581,7 @@ export class AgentHarness {
             manifestJson: prepared.manifestJson,
             requestDigest: [...prepared.requestDigest],
           }),
+          transport,
         });
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
