@@ -1,0 +1,18 @@
+{
+  "schema": "acyclic.acceptance.bounded.v1",
+  "result": "passed",
+  "scope": "Independent wire suite in live isolated SDK worktree; concurrent edits mean this does not qualify the clean committed revision or later source",
+  "revision": "9cc261a61e4a319b4119fda8c5977e2d7410bde0",
+  "source_state": "dirty-worktree",
+  "command": "cargo test --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --offline --no-fail-fast",
+  "tests_passed": 78,
+  "unit_tests": 28,
+  "integration_tests": 50,
+  "integration_suites": 12,
+  "exit_code": 0,
+  "log": {
+    "path": "Q:/sdk/work/rust-source-root-wire-checkpoint9cc.log",
+    "sha256": "159b37ef4021307dbdd9b92080cd871f58d40d69f297655606bef600bceb82c6"
+  },
+  "qualifications_excluded": ["Clean-checkout reproducibility", "Later concurrent edits", "Installed multilingual packages", "Complete strict rustdoc profiles", "Website final qualification"]
+}
