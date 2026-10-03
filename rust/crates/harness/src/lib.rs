@@ -49,8 +49,9 @@ pub mod registry;
 pub mod resources;
 pub mod runtime;
 pub mod scheduler;
-pub mod swarm_budget;
 pub mod store;
+pub mod swarm_budget;
+pub mod swarm_budget_journal;
 pub mod tool;
 pub mod turn;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
