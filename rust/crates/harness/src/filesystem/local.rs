@@ -39,6 +39,9 @@ enum ExecutionReceiptEvent {
         owner_token: [u8; 32],
         generation: u64,
     },
+    CancellationRequested {
+        key: ExecutionReceiptKey,
+    },
     Completed {
         key: ExecutionReceiptKey,
         result: FileRef,
@@ -47,6 +50,8 @@ enum ExecutionReceiptEvent {
         operator_resolution: bool,
         #[serde(default)]
         operator_principal: Option<String>,
+        #[serde(default)]
+        operator_authenticated: bool,
     },
 }
 
@@ -160,6 +165,7 @@ where
 
     async fn validate_events(&self, events: &[ExecutionReceiptEvent]) -> Result<()> {
         let mut pending = Vec::<(ExecutionReceiptKey, [u8; 32], u64)>::new();
+        let mut cancellation_requested = Vec::<ExecutionReceiptKey>::new();
         let mut finalized = Vec::<ExecutionReceiptKey>::new();
         for event in events {
             match event {
@@ -178,6 +184,21 @@ where
                     }
                     pending.push((key.clone(), *owner_token, *generation));
                 }
+                ExecutionReceiptEvent::CancellationRequested { key } => {
+                    self.validate_key(key)?;
+                    if finalized.iter().any(|candidate| candidate == key)
+                        || cancellation_requested
+                            .iter()
+                            .any(|candidate| candidate == key)
+                        || !pending.iter().any(|(candidate, _, _)| candidate == key)
+                    {
+                        return Err(Error::Storage(
+                            "execution receipt journal contains an invalid cancellation intent"
+                                .into(),
+                        ));
+                    }
+                    cancellation_requested.push(key.clone());
+                }
                 ExecutionReceiptEvent::Completed {
                     key,
                     result,
@@ -185,6 +206,7 @@ where
                     generation,
                     operator_resolution,
                     operator_principal,
+                    operator_authenticated,
                 } => {
                     self.validate_key(key)?;
                     self.validate_result_ref(key, result)?;
@@ -204,7 +226,8 @@ where
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     receipt.validate()?;
                     if *operator_resolution != matches!(receipt, ExecutionReceipt::Unknown { .. })
-                        || operator_principal.is_some() != *operator_resolution
+                        || (*operator_authenticated && operator_principal.is_none())
+                        || (!*operator_authenticated && operator_principal.is_some())
                         || operator_principal.as_deref().is_some_and(str::is_empty)
                     {
                         return Err(Error::Conflict(
@@ -230,6 +253,7 @@ where
                         ));
                     }
                     pending.retain(|(candidate, _, _)| candidate != key);
+                    cancellation_requested.retain(|candidate| candidate != key);
                     finalized.push(key.clone());
                 }
             }
@@ -290,12 +314,7 @@ where
                     if !pending.iter().any(|(candidate, _)| candidate == &key) {
                         pending.push((
                             key.clone(),
-                            ExecutionClaimHandle::from_operator_parts(
-                                key,
-                                owner_token,
-                                generation,
-                                resolution.principal().to_owned(),
-                            )?,
+                            ExecutionClaimHandle::from_owner_parts(key, owner_token, generation),
                         ));
                     }
                 }
@@ -303,6 +322,7 @@ where
                     self.validate_result_ref(&key, &result)?;
                     pending.retain(|(candidate, _)| candidate != key);
                 }
+                ExecutionReceiptEvent::CancellationRequested { .. } => {}
             }
         }
         Ok(pending)
@@ -409,7 +429,7 @@ where
             ));
         }
         resolver.require(&self.volume, VolumeOperation::Write)?;
-        if !handle.is_operator() || handle.operator_principal() != Some("owner") {
+        if !handle.is_operator() || handle.operator_authenticated() {
             return Err(Error::Unauthorized(
                 "owner recovery requires the internal owner resolution handle".into(),
             ));
@@ -440,6 +460,7 @@ where
                     key: candidate,
                     result,
                     operator_principal,
+                    operator_authenticated,
                     ..
                 } if candidate == key => {
                     self.validate_result_ref(candidate, result)?;
@@ -463,6 +484,7 @@ where
                         result: result.clone(),
                         receipt,
                         operator_principal: operator_principal.clone(),
+                        operator_authenticated: *operator_authenticated,
                     };
                     if !pending {
                         return Err(Error::Storage(
@@ -565,6 +587,39 @@ where
         })
     }
 
+    fn request_cancel<'a>(&'a self, key: &'a ExecutionReceiptKey) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.validate_key(key)?;
+            loop {
+                let (tail, events) = self.events().await?;
+                if self.terminal_for(&events, key).await?.is_some() {
+                    return Ok(());
+                }
+                if events.iter().any(|event| {
+                    matches!(event, ExecutionReceiptEvent::CancellationRequested { key: candidate } if candidate == key)
+                }) {
+                    return Ok(());
+                }
+                if !events.iter().any(|event| {
+                    matches!(event, ExecutionReceiptEvent::Pending { key: candidate, .. } if candidate == key)
+                }) {
+                    return Err(Error::Conflict(
+                        "execution cancellation has no durable pending claim".into(),
+                    ));
+                }
+                if self
+                    .append_at_tail(
+                        tail,
+                        &ExecutionReceiptEvent::CancellationRequested { key: key.clone() },
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
+            }
+        })
+    }
+
     fn publish<'a>(
         &'a self,
         key: &'a ExecutionReceiptKey,
@@ -594,7 +649,10 @@ where
                     "unknown execution outcomes require operator resolution".into(),
                 ));
             }
-            if handle.is_operator() && handle.operator_principal().is_none() {
+            if handle.is_operator()
+                && handle.operator_authenticated()
+                && handle.operator_principal().is_none()
+            {
                 return Err(Error::Unauthorized(
                     "operator receipt publication lacks an authenticated principal".into(),
                 ));
@@ -660,6 +718,7 @@ where
                     result,
                     receipt: receipt.clone(),
                     operator_principal: handle.operator_principal().map(ToOwned::to_owned),
+                    operator_authenticated: handle.operator_authenticated(),
                 };
                 record.validate()?;
                 let published = record.result.clone();
@@ -673,6 +732,7 @@ where
                             generation: handle.generation(),
                             operator_resolution: handle.is_operator(),
                             operator_principal: handle.operator_principal().map(ToOwned::to_owned),
+                            operator_authenticated: handle.operator_authenticated(),
                         },
                     )
                     .await?
@@ -905,6 +965,14 @@ impl PersistentLocalHarness {
         )?))
     }
 
+    /// Returns the host-only signer used after an explicit operator approval
+    /// to authorize one exact pending execution resolution.
+    pub fn execution_operator_authorizer(
+        &self,
+    ) -> crate::host_execution::ExecutionOperatorAuthorizer {
+        self.storage.execution_operator_authorizer()
+    }
+
     /// Returns the host application's separately authenticated authority for
     /// resolving uncertain process attempts after review. This constructor is
     /// crate-private; applications must obtain an operator capability from a
@@ -923,6 +991,7 @@ impl PersistentLocalHarness {
             token,
             principal: "owner".into(),
             operation_id: None,
+            operator_authenticated: false,
         })
     }
 
@@ -953,7 +1022,8 @@ impl PersistentLocalHarness {
     /// Resolves one uncertain execution with a separately authenticated
     /// operator capability bound to the exact operation identity. The
     /// capability must be issued from a host-verified scope carrying
-    /// `execution:resolve:{operation_id}`.
+    /// [`ExecutionResolutionCapability::capability_for`] for the exact
+    /// session, canonical volume identity, and operation tuple.
     pub async fn resolve_unknown_execution_with_capability(
         &self,
         key: &ExecutionReceiptKey,
