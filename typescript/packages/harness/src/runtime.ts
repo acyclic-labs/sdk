@@ -2529,7 +2529,7 @@ export class AgentHarness {
         : { ...input, selectedContext: selected };
       const base = selected?.messages ?? [first];
       const builtMessages = await contextBuilder?.build(contextInput, structuredClone(base)) ?? base;
-      const messages: ModelMessage[] = structuredClone(builtMessages);
+      const messages: ModelMessage[] = [...structuredClone(builtMessages)];
       try {
         validateModelMessagesWasm(messages, nativeLimits(this.limits));
       } catch (error) {
