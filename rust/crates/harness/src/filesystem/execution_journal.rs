@@ -259,27 +259,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         }
         let resolution_operation =
             interaction_operation(id, &format!("resolve-{expected_version}"));
-        let detail = if matches!(&response, InteractionResponse::Approval { .. }) {
-            Some(
+        let outcome = InteractionOutcome::Answered {
+            answer: Box::new(
                 self.interactions
                     .stage_answer(id, expected_version, resolution_operation, &response)
                     .await?,
-            )
-        } else {
-            None
-        };
-        let outcome = match response {
-            InteractionResponse::Approval { approved: true, .. } => InteractionOutcome::Approved,
-            InteractionResponse::Approval {
-                approved: false, ..
-            } => InteractionOutcome::Declined,
-            other => InteractionOutcome::Answered {
-                answer: Box::new(
-                    self.interactions
-                        .stage_answer(id, expected_version, resolution_operation, &other)
-                        .await?,
-                ),
-            },
+            ),
         };
         self.interactions
             .resolve(
@@ -289,7 +274,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                     id: ticket.id,
                     expected_version,
                     outcome,
-                    detail,
+                    detail: None,
                 },
             )
             .await
