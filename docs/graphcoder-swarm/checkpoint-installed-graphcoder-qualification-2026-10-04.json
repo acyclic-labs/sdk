@@ -1,0 +1,41 @@
+{
+  "kind": "installed-graphcoder-qualification",
+  "recorded_at": "2026-10-04",
+  "source_commit": "01919704916b22cce403876745ee27618e81d8b4",
+  "descriptor": {
+    "path": "docs/graphcoder-swarm/graphcoder-native-scenarios.json",
+    "sha256": "b495fa26d3852eec498a0b9b4aae8aa461a542be06be81b0889f2e6d83dc8fe0"
+  },
+  "package": {
+    "name": "@acyclic-labs/graphcoder",
+    "version": "0.2.0",
+    "archive_sha256": "b123a5a050055ec9c78eb0decbbca56d4bc326ce760fff9c0703135bd818237c",
+    "installed_manifest_sha256": "5472c2568ef4be15aaeec56b5e1c8ebf93786b66bbd16d596828a3000fcc4409",
+    "installed_consumer": "npm install --ignore-scripts <archive> into a clean prefix",
+    "public_consumer": {
+      "status": "passed",
+      "scenario": "PKG-NATIVE-01",
+      "host_calls": 20,
+      "exports": 7,
+      "bins": 2
+    }
+  },
+  "build": {
+    "command": "bun x tsc -p typescript/packages/graphcoder/tsconfig.json",
+    "status": "failed",
+    "reason": "typescript-go compiler panic during declaration emit; no output mutation observed"
+  },
+  "native": {
+    "runtime": "target/debug/graphcoder-runtime.exe",
+    "sha256": "646e44b4097d30797c68c301d0c1a1549745075d359f4fe1c0c53613e812cc63",
+    "strict_status": "failed",
+    "strict_reason": "real-host lazy observation receipt was absent",
+    "non_strict_status": "failed",
+    "non_strict_reason": "preflight responses were correlated to the wrong request id",
+    "qualification_status": "pending_stale_or_unqualified_runtime"
+  },
+  "suite_capture": {
+    "status": "not_created",
+    "reason": "package lane passed directly; native suite requires a fresh runtime and provenance-bound observation receipt"
+  }
+}
