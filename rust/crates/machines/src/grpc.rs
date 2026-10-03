@@ -1643,6 +1643,37 @@ mod tests {
         Ok((Machines::grpc(channel), shutdown_tx, server))
     }
 
+    async fn serve_wire_operation_service(
+        service: OperationService,
+    ) -> Result<
+        (
+            wire::machines_service_client::MachinesServiceClient<tonic::transport::Channel>,
+            tokio::sync::oneshot::Sender<()>,
+            tokio::task::JoinHandle<Result<(), tonic::transport::Error>>,
+        ),
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(MachinesServiceServer::new(service))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        Ok((
+            wire::machines_service_client::MachinesServiceClient::new(channel),
+            shutdown_tx,
+            server,
+        ))
+    }
+
     fn operation_state(
         operation: OperationId,
         status: wire::OperationStatus,
@@ -1653,6 +1684,81 @@ mod tests {
             }),
             status: status as i32,
         }
+    }
+
+    #[tokio::test]
+    async fn every_machines_rpc_crosses_the_generated_grpc_boundary()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000041")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000042")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000043")?;
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: operation_state(operation, wire::OperationStatus::Pending),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let (mut client, shutdown, server) = serve_wire_operation_service(service).await?;
+
+        macro_rules! assert_unimplemented {
+            ($call:expr) => {
+                assert_eq!($call.await.unwrap_err().code(), Code::Unimplemented)
+            };
+        }
+        assert_unimplemented!(client.qualify_image(wire::QualifyImageRequest::default()));
+        assert_unimplemented!(client.create(wire::CreateMachineRequest::default()));
+        assert_unimplemented!(client.checkpoint(wire::CheckpointMachineRequest::default()));
+        assert_unimplemented!(client.fork(wire::ForkCheckpointRequest::default()));
+        assert_unimplemented!(client.fork_machine(wire::ForkMachineRequest::default()));
+        assert_unimplemented!(client.suspend(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(client.wake(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(
+            client.set_suspension_policy(wire::SetSuspensionPolicyRequest::default())
+        );
+        assert_unimplemented!(client.destroy_machine(wire::MachineMutationRequest::default()));
+        assert_unimplemented!(
+            client.destroy_checkpoint(wire::CheckpointMutationRequest::default())
+        );
+        let recovered = client
+            .recover(wire::RecoverRequest {
+                idempotency_key: Some(wire::IdempotencyKey {
+                    value: key.as_bytes().to_vec(),
+                }),
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+        assert!(recovered.result.is_some());
+        assert_unimplemented!(client.inspect_machine(wire::InspectMachineRequest::default()));
+        assert_unimplemented!(client.inspect_checkpoint(wire::InspectCheckpointRequest::default()));
+        assert_unimplemented!(client.list_machines(wire::ListMachinesRequest::default()));
+        assert_unimplemented!(client.events(wire::EventsRequest::default()));
+        assert_unimplemented!(client.usage(wire::UsageRequest::default()));
+
+        let operation_request = wire::OperationRequest {
+            operation: Some(wire::OperationId {
+                value: operation.as_bytes().to_vec(),
+            }),
+            ..Default::default()
+        };
+        let cancelled = client.cancel(operation_request.clone()).await?.into_inner();
+        assert_eq!(cancelled.status, wire::OperationStatus::Cancelled as i32);
+        let inspected = client
+            .inspect_operation(operation_request.clone())
+            .await?
+            .into_inner();
+        assert_eq!(inspected.status, wire::OperationStatus::Pending as i32);
+        let mut watch = client
+            .watch_operation(operation_request)
+            .await?
+            .into_inner();
+        assert!(watch.message().await?.is_none());
+
+        let _ = shutdown.send(());
+        server.await??;
+        Ok(())
     }
 
     fn recovered_suspend(
