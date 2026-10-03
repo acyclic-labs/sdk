@@ -8,12 +8,15 @@
 use crate::{
     Error, Outcome, Result, TaskId,
     communication::{
-        DurableCommunication, MessageRequest, MessageTarget, WaitCompletion, WaitRequest,
-        WaitTarget,
+        DurableCommunication, DurableWaitStore, MessageRequest, MessageTarget, WaitCompletion,
+        WaitRequest, WaitTarget,
     },
     conversation::FileRef,
     runtime::ToolContext,
-    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
+    tool::{
+        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
+        ToolResult,
+    },
 };
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -173,11 +176,24 @@ pub enum WaitToolOutput {
 
 /// Returns the two model-facing communication tools bound to one durable host.
 pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Result<ToolRegistry> {
+    communication_tools_with_wait_store(host, None)
+}
+
+/// Returns the communication tools with owner-retained wait persistence.
+///
+/// The wait store is deliberately supplied separately from the task host so a
+/// coordinator can bind its existing journal without exposing that journal to
+/// model content or creating a second orchestration engine.
+pub fn communication_tools_with_wait_store(
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
+) -> Result<ToolRegistry> {
     let mut registry = ToolRegistry::new();
     registry.register(Tool {
         definition: message_definition(),
         executor: Arc::new(CommunicationExecutor {
             host: host.clone(),
+            waits: waits.clone(),
             kind: CommunicationToolKind::Message,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -186,6 +202,7 @@ pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Re
         definition: wait_definition(),
         executor: Arc::new(CommunicationExecutor {
             host,
+            waits,
             kind: CommunicationToolKind::Wait,
         }),
         projection: Arc::new(CommunicationProjection),
@@ -199,7 +216,8 @@ pub fn message_definition() -> ToolDefinition {
     ToolDefinition {
         name: MESSAGE_TOOL_NAME.into(),
         revision: TOOL_REVISION.into(),
-        description: "Send explicit version-pinned content to a direct parent or child task.".into(),
+        description: "Send explicit version-pinned content to a direct parent or child task."
+            .into(),
         input_schema: message_input_schema(),
         output_schema: message_output_schema(),
     }
@@ -211,7 +229,8 @@ pub fn wait_definition() -> ToolDefinition {
     ToolDefinition {
         name: WAIT_TOOL_NAME.into(),
         revision: TOOL_REVISION.into(),
-        description: "Wait for named direct children, new inbox messages, or an absolute deadline.".into(),
+        description: "Wait for named direct children, new inbox messages, or an absolute deadline."
+            .into(),
         input_schema: wait_input_schema(),
         output_schema: wait_output_schema(),
     }
@@ -225,18 +244,25 @@ enum CommunicationToolKind {
 
 struct CommunicationExecutor {
     host: Arc<dyn crate::runtime::DurableTaskHost>,
+    waits: Option<Arc<dyn DurableWaitStore>>,
     kind: CommunicationToolKind,
 }
 
 impl CommunicationExecutor {
-    async fn execute_scoped(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
+    async fn execute_scoped(
+        &self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> Result<ToolResult> {
         invocation.validate()?;
         let expected_name = match self.kind {
             CommunicationToolKind::Message => MESSAGE_TOOL_NAME,
             CommunicationToolKind::Wait => WAIT_TOOL_NAME,
         };
         if invocation.name != expected_name {
-            return Err(Error::Conflict("communication invocation names another tool".into()));
+            return Err(Error::Conflict(
+                "communication invocation names another tool".into(),
+            ));
         }
         let waiter = context.task().durable_task_id().ok_or_else(|| {
             Error::Unsupported("communication tools require an admitted durable task".into())
@@ -276,9 +302,12 @@ impl CommunicationExecutor {
                     timeout_epoch_ms,
                     cancellation_id: None,
                 };
-                let completion = DurableCommunication::new(self.host.clone())
-                    .wait(request, None)
-                    .await?;
+                let communication = DurableCommunication::new(self.host.clone());
+                let communication = match &self.waits {
+                    Some(waits) => communication.with_wait_store(waits.clone()),
+                    None => communication,
+                };
+                let completion = communication.wait(request, None).await?;
                 Ok(ToolResult {
                     value: serde_json::to_value(wait_output(completion))
                         .map_err(|error| Error::Invalid(error.to_string()))?,
@@ -374,15 +403,23 @@ fn wait_target(input: &WaitToolInput, waiter: TaskId) -> Result<WaitTarget> {
         }),
         WaitToolInput::Deadline {
             deadline_epoch_ms, ..
-        } => Ok(WaitTarget::Deadline { deadline_epoch_ms: *deadline_epoch_ms }),
+        } => Ok(WaitTarget::Deadline {
+            deadline_epoch_ms: *deadline_epoch_ms,
+        }),
     }
 }
 
 fn wait_timeout(input: &WaitToolInput) -> Option<u64> {
     match input {
-        WaitToolInput::Tasks { timeout_epoch_ms, .. }
-        | WaitToolInput::Messages { timeout_epoch_ms, .. }
-        | WaitToolInput::Deadline { timeout_epoch_ms, .. } => *timeout_epoch_ms,
+        WaitToolInput::Tasks {
+            timeout_epoch_ms, ..
+        }
+        | WaitToolInput::Messages {
+            timeout_epoch_ms, ..
+        }
+        | WaitToolInput::Deadline {
+            timeout_epoch_ms, ..
+        } => *timeout_epoch_ms,
     }
 }
 
@@ -492,8 +529,12 @@ mod tests {
     use crate::OperationId;
     use serde_json::json;
 
-    fn task(value: u8) -> TaskId { TaskId::from_bytes([value; 16]) }
-    fn operation(value: u8) -> OperationId { OperationId::from_bytes([value; 16]) }
+    fn task(value: u8) -> TaskId {
+        TaskId::from_bytes([value; 16])
+    }
+    fn operation(value: u8) -> OperationId {
+        OperationId::from_bytes([value; 16])
+    }
 
     #[test]
     fn definitions_are_strict_and_stable() -> Result<()> {
@@ -502,8 +543,18 @@ mod tests {
         message.validate()?;
         wait.validate()?;
         assert_eq!(message.digest()?, message_definition().digest()?);
-        assert!(jsonschema::validator_for(&message.input_schema).unwrap().validate(&json!({"recipient":"x","target":"parent"})).is_err());
-        assert!(jsonschema::validator_for(&wait.input_schema).unwrap().validate(&json!({"kind":"messages","after":0,"limit":1,"extra":true})).is_err());
+        assert!(
+            jsonschema::validator_for(&message.input_schema)
+                .unwrap()
+                .validate(&json!({"recipient":"x","target":"parent"}))
+                .is_err()
+        );
+        assert!(
+            jsonschema::validator_for(&wait.input_schema)
+                .unwrap()
+                .validate(&json!({"kind":"messages","after":0,"limit":1,"extra":true}))
+                .is_err()
+        );
         Ok(())
     }
 
@@ -512,10 +563,16 @@ mod tests {
         let output = wait_output(WaitCompletion::Tasks {
             outcomes: vec![
                 (task(2), Outcome::Succeeded(json!({"ok": true}))),
-                (task(3), Outcome::Indeterminate { operation_id: operation(7) }),
+                (
+                    task(3),
+                    Outcome::Indeterminate {
+                        operation_id: operation(7),
+                    },
+                ),
             ],
         });
-        let value = serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
+        let value =
+            serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(value["kind"], "tasks");
         assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
         assert_eq!(value["outcomes"][1]["status"], "indeterminate");
