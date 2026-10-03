@@ -266,6 +266,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
             },
         ],
         boundary: None,
+        model_boundary: None,
     };
     let report = aggregate.prepare_fork(&preparer, request.clone()).await?;
     assert_eq!(report.inherited_context.len(), 1);

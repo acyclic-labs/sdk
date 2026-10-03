@@ -796,6 +796,8 @@ pub struct ForkRequest {
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_boundary: Option<ModelBoundaryReferences>,
 }
 
 /// Immutable provider allocation and context bounds for one fork operation.
@@ -961,6 +963,16 @@ impl ForkRequest {
         if let Some(boundary) = &self.boundary {
             boundary.validate()?;
         }
+        if let Some(model_boundary) = &self.model_boundary {
+            model_boundary.validate()?;
+            if model_boundary.grant_count(self.attached_agents.len())?
+                > self.preparation.maximum_inherited_references as usize
+            {
+                return Err(Error::Invalid(
+                    "model boundary references exceed the inherited grant limit".into(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -1031,6 +1043,71 @@ pub struct ReferenceGrant {
     /// Published attachment manifest proving a member that is not directly in an event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attachment_manifest: Option<FileRef>,
+}
+
+/// Exact file refs carried by one verified completed model publication.
+///
+/// The publication and boundary digests bind the list to the durable model
+/// exchange. The refs remain ordinary exact file identities: this envelope
+/// never grants a volume or write capability.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelBoundaryReferences {
+    /// Stable completed publication operation whose bytes were verified.
+    pub publication: OperationId,
+    /// Canonical digest of the verified model publication envelope.
+    pub publication_digest: [u8; 32],
+    /// Digest of the verified completed model prefix and suffix messages.
+    pub boundary_digest: [u8; 32],
+    /// Parent issuer attestation over the seed identities and this manifest.
+    pub attestation: [u8; 32],
+    /// Every exact file ref used by that model request, including inherited
+    /// prefix and explicit child suffix references.
+    pub files: Vec<FileRef>,
+}
+
+impl ModelBoundaryReferences {
+    /// Validates the bounded, deduplicated exact-ref manifest.
+    pub fn validate(&self) -> Result<()> {
+        self.validate_envelope()?;
+        if self.attestation == [0; 32] {
+            return Err(Error::Invalid("model boundary attestation is empty".into()));
+        }
+        Ok(())
+    }
+
+    /// Validates the manifest fields before the parent issuer signs them.
+    pub(crate) fn validate_envelope(&self) -> Result<()> {
+        if self.publication_digest == [0; 32] || self.boundary_digest == [0; 32] {
+            return Err(Error::Invalid(
+                "model boundary publication digest is empty".into(),
+            ));
+        }
+        if self.files.len() > MAX_FORK_REFERENCES {
+            return Err(Error::Invalid(
+                "model boundary references exceed protocol limits".into(),
+            ));
+        }
+        let mut unique = BTreeSet::new();
+        for file in &self.files {
+            file.validate()?;
+            if !unique.insert(file.read_capability()?) {
+                return Err(Error::Invalid(
+                    "model boundary reference appears twice".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Number of direct reader grants needed for this exact manifest.
+    pub fn grant_count(&self, attached_agents: usize) -> Result<usize> {
+        self.validate()?;
+        self.files
+            .len()
+            .checked_mul(attached_agents.saturating_add(1))
+            .ok_or_else(|| Error::Invalid("model boundary grant count overflow".into()))
+    }
 }
 
 impl ReferenceGrant {
@@ -1290,6 +1367,7 @@ impl ForkReport {
             reference_grants: self.reference_grants,
             attachment_manifests: self.attachment_manifests,
             boundary: self.request.boundary,
+            model_boundary: self.request.model_boundary,
         };
         seed.validate()?;
         Ok(seed)
@@ -1328,6 +1406,10 @@ pub struct ForkSeed {
     pub shared_grants: Vec<SharedGrant>,
     /// Parent-approved read-only access to pinned references.
     pub reference_grants: Vec<ReferenceGrant>,
+    /// Exact model refs bound to the completed publication that admitted this
+    /// recursive fork. The seed carries grants for these refs, never a volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_boundary: Option<ModelBoundaryReferences>,
     /// Exact published attachment lists. Each reader needs owner, selected
     /// volume, or direct exact-file authority for the manifest itself.
     pub attachment_manifests: Vec<FileRef>,
@@ -1430,6 +1512,7 @@ impl ForkSeed {
         }
         self.validate_shared_grants(&selected_shared, &attached)?;
         self.validate_reference_grants(&attached)?;
+        self.validate_model_boundary_grants()?;
         let mut manifest_ids = BTreeSet::new();
         let mut manifest_bytes = 0_u64;
         for manifest in &self.attachment_manifests {
@@ -1572,6 +1655,38 @@ impl ForkSeed {
             );
             if !unique.insert(identity) {
                 return Err(Error::Invalid("reference grant appears twice".into()));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_model_boundary_grants(&self) -> Result<()> {
+        let Some(model_boundary) = &self.model_boundary else {
+            return Ok(());
+        };
+        model_boundary.validate()?;
+        let readers = std::iter::once(self.child_agent)
+            .chain(self.attached_agents.iter().copied())
+            .collect::<Vec<_>>();
+        for file in &model_boundary.files {
+            let capability = file.read_capability()?;
+            for reader in &readers {
+                let owner_has_read = file.volume().class() == VolumeClass::AgentPrivate
+                    && file.volume().owner() == &VolumeOwner::Agent(*reader);
+                let inherited_has_read = self.inherited_context.iter().any(|inherited| {
+                    inherited.read_capability().ok().as_ref() == Some(&capability)
+                });
+                if owner_has_read || inherited_has_read {
+                    continue;
+                }
+                if !self.reference_grants.iter().any(|grant| {
+                    grant.reader == *reader
+                        && grant.file.read_capability().ok().as_ref() == Some(&capability)
+                }) {
+                    return Err(Error::Invalid(
+                        "model boundary reference is missing an exact reader grant".into(),
+                    ));
+                }
             }
         }
         Ok(())
@@ -2027,6 +2142,7 @@ mod tests {
             attachment_manifests: Vec::new(),
             inherited_through_sequence: 0,
             boundary: None,
+            model_boundary: None,
         };
         seed.validate()?;
         let filesystem_only = CompositeForkVerifier::new(vec![std::sync::Arc::new(
@@ -2233,6 +2349,7 @@ mod tests {
                     }])
                     .collect(),
                 boundary: None,
+                model_boundary: None,
             },
             captures: seed
                 .resources

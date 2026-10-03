@@ -321,6 +321,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 },
             ],
             boundary: None,
+            model_boundary: None,
         };
         let report = aggregate.prepare_fork(&preparer, request).await?;
         let child_attachment_capability = report
@@ -910,6 +911,7 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
                 },
             ],
             boundary: None,
+            model_boundary: None,
         };
         let report = aggregate.prepare_fork(&preparer, request).await?;
         let reference_capability = report

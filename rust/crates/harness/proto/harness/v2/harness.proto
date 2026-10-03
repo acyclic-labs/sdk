@@ -666,6 +666,14 @@ message ReferenceGrant {
   FileRef attachment_manifest = 3;
 }
 
+message ModelBoundaryReferences {
+  OperationIdentity publication = 1;
+  bytes publication_digest = 2;
+  bytes boundary_digest = 3;
+  bytes attestation = 4;
+  repeated FileRef files = 5;
+}
+
 message ForkSelection {
   bool required = 1;
   ResourceRevision revision = 2;
@@ -690,6 +698,7 @@ message ForkRequest {
   AttestedBoundary boundary = 7;
   repeated string attached_agent_ids = 8;
   ForkPreparation preparation = 9;
+  ModelBoundaryReferences model_boundary = 10;
 }
 
 message Capture {
@@ -730,6 +739,7 @@ message ForkSeed {
   repeated FileRef attachment_manifests = 14;
   uint64 inherited_through_sequence = 15;
   GenerationRef child_private_generation = 16;
+  ModelBoundaryReferences model_boundary = 17;
 }
 
 // One parent-authorized Filesystem join. The notice is admitted atomically

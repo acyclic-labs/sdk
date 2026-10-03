@@ -134,6 +134,7 @@ async fn project_workspace_binding_uses_parent_forks_published_after_constructio
         reference_grants: Vec::new(),
         attachment_manifests: Vec::new(),
         boundary: None,
+        model_boundary: None,
     };
     seed.validate()?;
     reducer.apply(Command {

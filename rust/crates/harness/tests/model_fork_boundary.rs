@@ -464,6 +464,7 @@ impl ForkAtBatch {
                     },
                 ],
                 boundary: None,
+                model_boundary: None,
             };
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)

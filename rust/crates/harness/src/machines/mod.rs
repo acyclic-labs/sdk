@@ -500,6 +500,7 @@ mod tests {
             attachment_manifests: Vec::new(),
             inherited_through_sequence: 0,
             boundary: None,
+            model_boundary: None,
         };
         host.verify(&seed).await?;
         let ResourceRevision::Project {
@@ -533,6 +534,7 @@ mod tests {
                 })
                 .collect(),
             boundary: None,
+            model_boundary: None,
         };
         request.validate()?;
         assert_eq!(
