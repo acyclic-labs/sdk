@@ -191,3 +191,7 @@ Focused fresh checks: native model fork 2 passed; actual generated WASM 12 passe
 See checkpoint-projection-execution-bindings.json for scoped digests, actual pass counts, required failures, and limitations. Fresh WASM admission: 12 passed; focused TypeScript runtime: 8 passed; TypeScript contracts pass after generating the Objects dependency; qualification validation: 21 passed. Native receipt reopen and actual subprocess fault checks each passed one case. These do not qualify the full recursive runtime or production approval recovery.
 
 The native malformed-call continuation test currently fails because cumulative typed rejection evidence is missing. Host-owned journal reader separation and the full published-fork fixture remain required failures. Dynamic model-selected fork routing and final installed native terminal/ConPTY qualification remain pending. The goal is active; no merge occurred.
+
+## Native terminal and host-history checkpoint
+
+Source 5cefdcc5002860196660c146d2cc9b2b4e152178 has three passing native CLI tests, including real staged-file restart and exact SDK reads. Host execution artifacts remain private; authoritative conversation stores validated model projections. Actual provider-manifest capture, repeated-call rejection replay, and orphaned tool-role rejection have focused passing evidence. The synthetic recursive test still fails missing inherited grants. This is not installed-package, recursive swarm, or final qualification. See checkpoint-native-terminal-host-history.json for digests and limitations.
