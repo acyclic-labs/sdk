@@ -51,5 +51,3 @@ node --test scripts/graphcoder-boundaries.test.mjs
 
 A passing source check establishes the composition boundary only. It does not replace
 Harness, Filesystem, native process, WASM, installed package, or PTY qualification.
-
-
