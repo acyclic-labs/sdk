@@ -1,0 +1,39 @@
+{
+  "protocol": "acyclic.graphcoder.native-scenarios.v1",
+  "purpose": "Public native GraphCoder JSON-lines qualification over a durable local Harness",
+  "runtime": {
+    "executable_env": "GRAPHCODER_NATIVE_RUNTIME",
+    "root_env": "GRAPHCODER_NATIVE_ROOT",
+    "fixture": "stage",
+    "driver": "scripts/graphcoder-native-stage-e2e.mjs",
+    "fixture_policy": "The stage model is an explicit deterministic fixture. Its transcript proves runtime routing, durable operation identity, reopen, and staged file reads; it does not prove model quality or a production provider."
+  },
+  "public_routes": [
+    "start_session",
+    "read_file",
+    "open_session",
+    "read_activity"
+  ],
+  "fault_boundary": "The first start response is discarded after durable execution. A fresh runtime process retries the same operation identity before reading the staged file and reopening the session.",
+  "required_markers": [
+    "dropped-response",
+    "retry",
+    "read_file",
+    "reopen",
+    "activity"
+  ],
+  "assertions": [
+    "the native executable is an explicit regular-file artifact",
+    "the child process receives only the minimal platform environment",
+    "the retry reuses the original operation identity",
+    "the staged file has the exact fixture bytes and media type",
+    "reopen returns the completed durable session",
+    "activity is loaded through its own public route",
+    "a nonzero process exit or malformed response fails the lane"
+  ],
+  "evidence": {
+    "execution_kind": "native",
+    "artifact_binding": "The suite descriptor must include the exact native executable digest, qualified source commit/tree, build ID, build timestamp, and unchanged post-run digest.",
+    "fixture_boundary": "This scenario may support a native fixture checkpoint, but it cannot satisfy production model or full GraphCoder terminal package rows."
+  }
+}
