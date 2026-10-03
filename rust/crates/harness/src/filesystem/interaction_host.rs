@@ -364,7 +364,13 @@ where
         )?;
         let bytes = self
             .host
-            .read_content(&ticket.request, &grant, self.maximum_bytes)
+            .read_internal_content(
+                    &ticket.request,
+                    &self.volume,
+                    &grant,
+                    super::InternalContentClass::Interaction,
+                    self.maximum_bytes,
+                )
             .await?;
         Ok(Some(ticket.validate_request_bytes(&bytes)?))
     }
@@ -385,7 +391,13 @@ where
         )?;
         Ok(Some(
             self.host
-                .read_content(&answer, &grant, self.maximum_bytes)
+                .read_internal_content(
+                    &answer,
+                    &self.volume,
+                    &grant,
+                    super::InternalContentClass::Interaction,
+                    self.maximum_bytes,
+                )
                 .await?
                 .to_vec(),
         ))
@@ -407,7 +419,13 @@ where
         )?;
         Ok(Some(
             self.host
-                .read_content(&detail, &grant, self.maximum_bytes)
+                .read_internal_content(
+                    &detail,
+                    &self.volume,
+                    &grant,
+                    super::InternalContentClass::Interaction,
+                    self.maximum_bytes,
+                )
                 .await?
                 .to_vec(),
         ))
