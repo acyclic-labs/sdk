@@ -46,10 +46,10 @@ set these values in the suite capture configuration:
 The `{{...}}` arguments are substituted by the production entrypoint after the
 preceding JSON response supplies the session, approval, operation, and
 workspace-generation identities. For interactive Windows qualification, use
-`scripts/graphcoder-production-pty.py` as the executable argument instead:
+`scripts/graphcoder-production-pty.mjs` as the executable argument instead:
 
 ```text
-python scripts/graphcoder-production-pty.py "start inspect the repository" "activity" "messages" "approvals" "approve {{approval_id}} yes" "changes" "diff README.md" "file README.md" "writeback {{writeback_operation_id}} {{workspace_generation}} yes" "cancel" "resume {{session_id}}" "cancel"
+node scripts/graphcoder-production-pty.mjs "start inspect the repository" "activity" "messages" "approvals" "approve {{approval_id}} yes" "changes" "diff README.md" "file README.md" "writeback {{writeback_operation_id}} {{workspace_generation}} yes" "cancel" "resume {{session_id}}" "cancel"
 ```
 
 Capture each lane with
