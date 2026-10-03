@@ -44,7 +44,7 @@ export class GraphCoderWireDispatcher {
     const params = record(request.params, "request params");
     switch (request.method) {
       case "list_sessions": return wirePage(await this.transport.listSessions(page(params.query)), wireSessionSummary);
-      case "start_session": return wireSnapshot(await this.transport.startSession({ prompt: requiredText(params.prompt, "prompt"), ...(params.model_fixture === undefined ? {} : { modelFixture: requiredText(params.model_fixture, "model_fixture") }) }));
+      case "start_session": return wireSnapshot(await this.transport.startSession({ prompt: requiredText(params.prompt, "prompt"), operationId: requiredText(params.operation_id, "operation_id"), ...(params.model_fixture === undefined ? {} : { modelFixture: requiredText(params.model_fixture, "model_fixture") }) }));
       case "open_session": return wireSnapshot(await this.transport.openSession(sessionId(requiredText(params.session_id, "session_id"))));
       case "resume_session": return wireSnapshot(await this.transport.resumeSession(sessionId(requiredText(params.session_id, "session_id"))));
       case "read_activity": { const id = sessionId(requiredText(params.session_id, "session_id")); return wirePage(await this.transport.readActivity(id, page(params.query)), wireActivity); }

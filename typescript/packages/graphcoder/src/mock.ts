@@ -85,6 +85,7 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
 
   startSession(input: StartSessionInput): Promise<SessionSnapshot> {
     this.calls.push({ method: "startSession" });
+    if (input.operationId.trim() === "") return Promise.reject(new GraphCoderError("invalid_input", "operation id must not be empty"));
     if (input.modelFixture !== undefined && input.modelFixture !== this.#fixture) {
       return Promise.reject(new GraphCoderError("unsupported", `mock fixture ${input.modelFixture} is unavailable`));
     }

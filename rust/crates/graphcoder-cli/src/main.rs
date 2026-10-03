@@ -207,10 +207,7 @@ impl Runtime {
         }
         let result = match request.method.as_str() {
             "list_sessions" => self.list_sessions(&request.params).await,
-            "start_session" => {
-                self.start_session(&request.request_id, &request.params)
-                    .await
-            }
+            "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.open_session(&request.params, true).await,
             "read_activity" | "read_messages" | "send_message" | "list_approvals"
@@ -266,13 +263,15 @@ impl Runtime {
         Ok(result)
     }
 
-    async fn start_session(
-        &self,
-        request_id: &str,
-        params: &Value,
-    ) -> Result<Value, DispatchError> {
+    async fn start_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let prompt = required_text(params, "prompt")?;
+        let operation_id = required_text(params, "operation_id")?;
+        if operation_id.len() > 256 {
+            return Err(DispatchError::invalid(
+                "operation_id must be at most 256 bytes",
+            ));
+        }
         if prompt.trim().is_empty() || prompt.len() > 64 * 1024 {
             return Err(DispatchError::invalid(
                 "prompt must be nonempty and at most 64 KiB",
@@ -285,7 +284,7 @@ impl Runtime {
                 ));
             }
         }
-        let operation = operation_for(request_id);
+        let operation = operation_for(operation_id);
         let output = self
             .swarm
             .run_root(operation, prompt)
@@ -642,7 +641,7 @@ mod tests {
             json!({
                 "request_id":"start-1",
                 "method":"start_session",
-                "params":{"prompt":"hello","model_fixture":"echo"}
+                "params":{"prompt":"hello","operation_id":"op-echo-1","model_fixture":"echo"}
             }),
         )
         .await;
@@ -659,17 +658,36 @@ mod tests {
                 .await
                 .expect("runtime opens"),
         );
-        let started = exchange(
-            runtime.clone(),
+        // Commit the durable operation, then drop the response as if the
+        // connection failed after execution and before transport delivery.
+        let _dropped_response = runtime
+            .dispatch(WireRequest {
+                request_id: "stage-1".into(),
+                method: "start_session".into(),
+                params: json!({
+                    "prompt":"write fixture",
+                    "operation_id":"op-stage-1",
+                    "model_fixture":"stage"
+                }),
+            })
+            .await;
+        drop(runtime);
+        let reopened = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
+                .await
+                .expect("runtime reopens"),
+        );
+        let retried = exchange(
+            reopened.clone(),
             json!({
-                "request_id":"stage-1",
+                "request_id":"stage-retry",
                 "method":"start_session",
-                "params":{"prompt":"write fixture","model_fixture":"stage"}
+                "params":{"prompt":"write fixture","operation_id":"op-stage-1","model_fixture":"stage"}
             }),
         )
         .await;
-        assert_eq!(started["ok"], true);
-        let attachment = &started["result"]["outcome"]["attachments"][0];
+        assert_eq!(retried["ok"], true);
+        let attachment = &retried["result"]["outcome"]["attachments"][0];
         assert_eq!(attachment["file"]["path"], "graphcoder-fixture.txt");
         assert_eq!(attachment["file"]["display_name"], "graphcoder-fixture.txt");
         assert_eq!(attachment["file"]["descriptor"]["media_type"], "text/plain");
@@ -682,16 +700,10 @@ mod tests {
                 0x77, 0xef, 0x8a, 0x4d
             ])
         );
-        let session_id = started["result"]["summary"]["id"]
+        let session_id = retried["result"]["summary"]["id"]
             .as_str()
             .expect("stage session id")
             .to_owned();
-        drop(runtime);
-        let reopened = Arc::new(
-            Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
-                .await
-                .expect("runtime reopens"),
-        );
         let resumed = exchange(
             reopened.clone(),
             json!({

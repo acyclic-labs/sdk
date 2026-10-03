@@ -116,6 +116,8 @@ export interface ApprovalPage {
 
 export interface StartSessionInput {
   readonly prompt: string;
+  /** Stable caller-owned identity used to recover a committed turn after reconnect. */
+  readonly operationId: string;
   /** A fixture name is explicit so a host cannot silently use a mock model. */
   readonly modelFixture?: string;
 }
@@ -182,7 +184,7 @@ export interface GraphCoderUiState {
 
 export type GraphCoderUiCommand =
   | { readonly kind: "list_sessions"; readonly after?: string; readonly limit?: number }
-  | { readonly kind: "start_session"; readonly prompt: string; readonly modelFixture?: string }
+  | { readonly kind: "start_session"; readonly prompt: string; readonly operationId: string; readonly modelFixture?: string }
   | { readonly kind: "open_session"; readonly sessionId: SessionId }
   | { readonly kind: "resume_session"; readonly sessionId: SessionId }
   | { readonly kind: "load_activity"; readonly after?: string; readonly limit?: number }
@@ -313,7 +315,7 @@ export class GraphCoderUi {
       }
       case "start_session": {
         if (command.prompt.trim() === "") throw new GraphCoderError("invalid_input", "session prompt must not be empty");
-        const input: { prompt: string; modelFixture?: string } = { prompt: command.prompt };
+        const input: { prompt: string; operationId: string; modelFixture?: string } = { prompt: command.prompt, operationId: checkedId(command.operationId, "operation id") };
         if (command.modelFixture !== undefined) input.modelFixture = command.modelFixture;
         const snapshot = await this.transport.startSession(input);
         this.#select(snapshot);

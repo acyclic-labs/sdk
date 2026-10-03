@@ -71,7 +71,7 @@ export class GraphCoderTerminal {
     const command = parts[0];
     if (command === undefined || command === "") return;
     if (command === "help") {
-      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
+      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <operation> <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
       return;
     }
     if (command === "quit" || command === "exit") {
@@ -84,8 +84,10 @@ export class GraphCoderTerminal {
       return;
     }
     if (command === "start") {
-      const prompt = line.slice(line.indexOf(command) + command.length).trim();
-      await this.#ui.dispatch({ kind: "start_session", prompt });
+      const operationId = parts[1];
+      const prompt = parts.slice(2).join(" ");
+      if (operationId === undefined || prompt.trim() === "") throw new GraphCoderError("invalid_input", "start requires <operation> <prompt>");
+      await this.#ui.dispatch({ kind: "start_session", operationId, prompt });
       writeLine(this.#io, { ok: true, value: stateProjection(this.#ui.state()) });
       return;
     }

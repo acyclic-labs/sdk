@@ -15,7 +15,7 @@ does not import Node readline or process APIs into native applications.
 The command line fixture is deliberately explicit:
 
 ```sh
-graphcoder --fixture=deterministic "start inspect the repository" list
+graphcoder --fixture=deterministic "start op-demo-1 inspect the repository" list
 ```
 
 The deterministic fixture is for tests and local demonstrations. A production
@@ -41,7 +41,7 @@ The wire envelope is:
 ```
 
 The runtime methods and parameter names are fixed: `list_sessions(query)`,
-`start_session(prompt, model_fixture?)`, `open_session(session_id)`,
+`start_session(prompt, operation_id, model_fixture?)`, `open_session(session_id)`,
 `resume_session(session_id)`, `read_activity(session_id, query?)`,
 `read_messages(session_id, query?)`, `send_message(session_id, sender_id,
 recipient_id, body)`, `list_approvals(session_id, query?)`,
@@ -60,8 +60,9 @@ these bindings before exposing it to the UI.
 
 The durable local dispatcher maps these methods to the existing Harness
 composition. `list_sessions` reads `PersistentLocalSwarm.sessions()` only;
-`start_session` admits one stable operation identity and calls
-`run_root(operation, prompt)`; `open_session` reads one lazy descriptor and
+`start_session` requires a caller supplied stable `operation_id`, admits that
+identity, and calls `run_root(operation, prompt)`; reconnects must resend the
+same operation ID. `open_session` reads one lazy descriptor and
 hydrates its snapshot on demand; and `resume_session` calls `resume(task)`
 before returning that snapshot. A task identity is the stable session and
 agent identity for this local protocol, with its direct parent and depth
@@ -76,9 +77,9 @@ approvals come from the interaction journal, and changes, generations, diffs,
 and file bodies come from the Filesystem/Git facade at the requested pinned
 generation. `approve_writeback` is the only root publication path and must
 recheck the operation identity, session, approval, and expected generation
-before invoking the typed facade operation. The dispatcher allocates an
-operation identity before admission and retries the same request after
-recovery; it must not derive a new identity from each transport attempt.
+before invoking the typed facade operation. The caller allocates an operation
+identity before admission and retries the same operation after recovery; the
+dispatcher must not derive a new identity from each transport attempt.
 These are projections over Harness and Filesystem state, rather than a second
 GraphCoder storage or merge implementation. The exported
 `GraphCoderWireParamsByMethod` and `GraphCoderWireResultByMethod` maps keep

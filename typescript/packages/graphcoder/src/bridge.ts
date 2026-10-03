@@ -57,7 +57,7 @@ export interface GraphCoderWirePageQuery {
  */
 export interface GraphCoderWireParamsByMethod {
   readonly list_sessions: { readonly query?: GraphCoderWirePageQuery };
-  readonly start_session: { readonly prompt: string; readonly model_fixture?: string };
+  readonly start_session: { readonly prompt: string; readonly operation_id: string; readonly model_fixture?: string };
   readonly open_session: { readonly session_id: string };
   readonly resume_session: { readonly session_id: string };
   readonly read_activity: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
@@ -154,9 +154,13 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async startSession(input: StartSessionInput): Promise<SessionSnapshot> {
+    if (typeof input.operationId !== "string" || input.operationId.trim() === "") {
+      throw new GraphCoderError("invalid_input", "operation id must be nonempty text");
+    }
+    const operationId = input.operationId;
     const params: GraphCoderWireParams<"start_session"> = input.modelFixture === undefined
-      ? { prompt: input.prompt }
-      : { prompt: input.prompt, model_fixture: input.modelFixture };
+      ? { prompt: input.prompt, operation_id: operationId }
+      : { prompt: input.prompt, operation_id: operationId, model_fixture: input.modelFixture };
     return decodeSnapshot(await this.#call("start_session", params));
   }
 

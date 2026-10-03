@@ -40,6 +40,27 @@ describe("GraphCoder UI transport boundary", () => {
     expect(requests[2]?.params).toEqual({ session_id: "session-1", path: "README.md", generation: "7" });
   });
 
+  test("start requests carry a caller-owned stable operation identity", async () => {
+    const requests: GraphCoderWireRequest[] = [];
+    const bridge = {
+      request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
+        requests.push(request);
+        return Promise.resolve({
+          request_id: request.request_id,
+          ok: true,
+          result: {
+            summary: { id: "session-1", title: "inspect", state: "completed", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" },
+            agents: [],
+            workspace_generation: "0",
+          },
+        });
+      },
+    };
+    const transport = new BridgeGraphCoderTransport(bridge);
+    await transport.startSession({ prompt: "inspect", operationId: "op-stable-1", modelFixture: "stage" });
+    expect(requests[0]?.params).toEqual({ prompt: "inspect", operation_id: "op-stable-1", model_fixture: "stage" });
+  });
+
   test("bridge rejects mismatched response identity and preserves typed backend errors", async () => {
     const mismatched = new BridgeGraphCoderTransport({ request: async () => ({ request_id: "wrong", ok: true, result: { items: [] } }) });
     await expect(mismatched.listSessions()).rejects.toMatchObject({ code: "transport" });
@@ -114,7 +135,7 @@ describe("GraphCoder UI transport boundary", () => {
   test("loads history, messages, approvals, and diff bodies only when requested", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
-    await ui.dispatch({ kind: "start_session", prompt: "inspect the repository" });
+    await ui.dispatch({ kind: "start_session", operationId: "op-inspect-1", prompt: "inspect the repository" });
     const id = ui.state().selectedSession!.summary.id;
 
     expect(transport.calls.map(call => call.method)).toEqual(["startSession"]);
@@ -138,7 +159,7 @@ describe("GraphCoder UI transport boundary", () => {
   test("requires an explicit matching approval before root writeback", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
-    await ui.dispatch({ kind: "start_session", prompt: "edit the README" });
+    await ui.dispatch({ kind: "start_session", operationId: "op-edit-1", prompt: "edit the README" });
     await ui.dispatch({ kind: "load_approvals" });
     const approval = ui.state().approvals[0]!;
     await expect(ui.dispatch({ kind: "approve_writeback", operationId: approval.operationId, expectedGeneration: 1n, approved: true })).rejects.toMatchObject({ code: "denied" });
@@ -161,7 +182,7 @@ describe("GraphCoder UI transport boundary", () => {
   test("resume and cancellation remain explicit transport operations", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
-    await ui.dispatch({ kind: "start_session", prompt: "run tests" });
+    await ui.dispatch({ kind: "start_session", operationId: "op-tests-1", prompt: "run tests" });
     const id = ui.state().selectedSession!.summary.id;
     await ui.dispatch({ kind: "cancel_session" });
     expect(ui.state().selectedSession?.summary.state).toBe("cancelled");
@@ -174,7 +195,7 @@ describe("GraphCoder UI transport boundary", () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
     await Promise.all([
-      ui.dispatch({ kind: "start_session", prompt: "first" }),
+      ui.dispatch({ kind: "start_session", operationId: "op-first", prompt: "first" }),
       ui.dispatch({ kind: "list_sessions" }),
     ]);
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "listSessions"]);
@@ -184,7 +205,7 @@ describe("GraphCoder UI transport boundary", () => {
   test("dispatch and nested snapshots are detached from private UI state", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
-    const dispatched = await ui.dispatch({ kind: "start_session", prompt: "inspect" });
+    const dispatched = await ui.dispatch({ kind: "start_session", operationId: "op-inspect-2", prompt: "inspect" });
     expect(Object.isFrozen(dispatched.sessions)).toBe(true);
     expect(Object.isFrozen(dispatched.selectedSession!.agents)).toBe(true);
     expect(ui.state().sessions).toHaveLength(0);
@@ -203,7 +224,7 @@ describe("GraphCoder UI transport boundary", () => {
   test("cancellation reaches the owner while a history request is pending", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
-    await ui.dispatch({ kind: "start_session", prompt: "inspect" });
+    await ui.dispatch({ kind: "start_session", operationId: "op-inspect-3", prompt: "inspect" });
     let release!: () => void;
     const original = transport.readActivity.bind(transport);
     transport.readActivity = async (id, query) => {
@@ -225,7 +246,7 @@ describe("GraphCoder terminal adapter", () => {
   test("headless commands share the same UI state machine", async () => {
     const output = writable();
     const terminal = new GraphCoderTerminal(createMockTransport(), { output: output.stream });
-    await terminal.headless(["start inspect repository", "activity", "changes", "diff README.md"]);
+    await terminal.headless(["start op-terminal-1 inspect repository", "activity", "changes", "diff README.md"]);
     const lines = output.lines();
     expect(lines).toHaveLength(4);
     expect(lines[0]).toMatchObject({ ok: true });
@@ -238,14 +259,14 @@ describe("GraphCoder terminal adapter", () => {
     expect(missing.lines()[0]).toMatchObject({ ok: false });
 
     const output = writable();
-    expect(await runCli(["--fixture=deterministic", "start hello", "list"], { output: output.stream })).toBe(0);
+    expect(await runCli(["--fixture=deterministic", "start op-cli-1 hello", "list"], { output: output.stream })).toBe(0);
     expect(output.lines()).toHaveLength(2);
   });
 
   test("injected production transports use the same headless runner without a fixture", async () => {
     const output = writable();
     const transport = createMockTransport();
-    expect(await runCliWithTransport(["start hello", "list"], transport, { output: output.stream })).toBe(0);
+    expect(await runCliWithTransport(["start op-production-1 hello", "list"], transport, { output: output.stream })).toBe(0);
     expect(output.lines()).toHaveLength(2);
     const rejected = writable();
     expect(await runCliWithTransport(["--fixture=deterministic"], transport, { output: rejected.stream })).toBe(2);
@@ -261,7 +282,7 @@ describe("GraphCoder terminal adapter", () => {
 
   test("headless and command-loop adapters issue the same lazy transport sequence", async () => {
     const commands = [
-      "start inspect",
+      "start op-loop-1 inspect",
       "activity",
       "messages",
       "approvals",
