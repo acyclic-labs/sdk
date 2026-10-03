@@ -13,8 +13,9 @@ use futures::StreamExt;
 use acyclic_harness::{
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
-        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
-        LocalSwarmConfig, PersistentLocalSwarm,
+        FilesystemHost, InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+        LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings, LocalSwarmConfig,
+        PersistentLocalSwarm,
     },
     core::Scope,
     interaction::InteractionResponse,
@@ -311,6 +312,32 @@ struct PendingApproval {
 type ApprovalAuthorizer = Arc<
     dyn Fn(PendingApproval) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
 >;
+
+/// Adapts the durable host signer to the terminal's exact pending-ticket
+/// callback. The signer is supplied by the host composition after it has
+/// authenticated the operator choice; this adapter performs no minting.
+fn approval_authorizer_from_operator(
+    operator: InteractionOperatorAuthorizer<
+        acyclic_stream::LocalStream,
+        acyclic_fs::LocalAuthorityBackend,
+        acyclic_fs::LocalObjectBackend,
+    >,
+) -> ApprovalAuthorizer {
+    Arc::new(move |pending: PendingApproval| {
+        let operator = operator.clone();
+        async move {
+            operator
+                .issue_scope(&InteractionApprovalAuthorization {
+                    interaction_id: pending.interaction,
+                    operation_id: pending.operation,
+                    action_digest: pending.action_digest,
+                    approved: pending.approved,
+                })
+                .await
+        }
+        .boxed()
+    })
+}
 
 fn unavailable_approval_authorizer(_: PendingApproval) -> BoxFuture<'static, Result<Scope>> {
     async {
