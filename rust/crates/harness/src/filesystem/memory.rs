@@ -1579,6 +1579,17 @@ where
             .ok_or_else(|| Error::Storage("resolved interaction has no committed outcome".into()))
     }
 
+    /// Opens one durable interaction through the authenticated host journal.
+    /// Applications use this to create the approval record that the native
+    /// execution verifier later authenticates.
+    pub async fn open_interaction(
+        &self,
+        id: InteractionId,
+        interaction: crate::interaction::Interaction,
+    ) -> Result<()> {
+        self.journal.open_interaction(id, interaction).await
+    }
+
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
     pub fn stream(&self) -> &StreamClient<P> {
