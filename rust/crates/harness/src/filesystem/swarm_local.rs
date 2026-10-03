@@ -4391,6 +4391,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
     use serde_json::{Value, json};
@@ -4508,6 +4509,88 @@ mod tests {
             .expect_err("incomplete parent must not activate a child");
         assert!(error.to_string().contains("completed model boundary"));
         assert_eq!(swarm.sessions().await.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_constructor_reopens_the_pinned_project_and_session_key() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let first = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let task = first.root_task().await?;
+        let first_session = first.session(task).await?;
+        let first_key = first.open_session(task).await?.signing_key();
+        let first_project = first.config.project.clone();
+        assert!(first.bindings.filesystem_fork_resolver.is_some());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        drop(first);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            model,
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        assert_eq!(reopened.session(task).await?, first_session);
+        assert_eq!(reopened.config.project, first_project);
+        assert_eq!(reopened.open_session(task).await?.signing_key(), first_key);
+        assert!(reopened.bindings.filesystem_fork_resolver.is_some());
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorded_operator_choice_requires_the_exact_decision() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let interaction = InteractionId::new();
+        let operation = OperationId::new();
+        let action_digest = [0x72; 32];
+        swarm
+            .open_session(task)
+            .await?
+            .storage()
+            .open_interaction(
+                interaction,
+                Interaction::approval("approve exact action", operation, action_digest)?,
+            )
+            .await?;
+        swarm.record_operator_approval(task, interaction, false).await?;
+        assert!(matches!(
+            swarm
+                .resolve_recorded_operator_approval(task, interaction, true)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .resolve_recorded_operator_approval(task, interaction, false)
+                .await?,
+            InteractionOutcome::Declined
+        ));
         Ok(())
     }
 }
