@@ -30,7 +30,12 @@ def main() -> int:
         print("PTY qualification requires at least one terminal command", file=sys.stderr)
         return 2
     node = os.environ.get("GRAPHCODER_NODE", "node")
-    process = PtyProcess.spawn([node, str(entrypoint)], cwd=str(sdk), env=os.environ.copy())
+    bridge_environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key == "PATH" or key.startswith("GRAPHCODER_")
+    }
+    process = PtyProcess.spawn([node, str(entrypoint)], cwd=str(sdk), env=bridge_environment)
     output: list[str] = []
 
     def drain() -> None:
