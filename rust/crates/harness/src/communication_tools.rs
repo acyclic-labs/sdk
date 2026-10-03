@@ -58,10 +58,18 @@ pub struct LocalTaskCancellationSource {
 impl LocalTaskCancellationSource {
     /// Registers or resets one admitted task's live cancellation scope.
     pub fn register(&self, task_id: TaskId) -> Result<()> {
+        self.register_state(task_id, false)
+    }
+
+    /// Registers one admitted task with an owner-retained cancellation state.
+    ///
+    /// A resumed task should pass the journal's cancellation declaration here
+    /// before any model tool call is admitted.
+    pub fn register_state(&self, task_id: TaskId, cancelled: bool) -> Result<()> {
         if task_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid("cancellation task identity is nil".into()));
         }
-        let (sender, _) = watch::channel(false);
+        let (sender, _) = watch::channel(cancelled);
         self.scopes
             .lock()
             .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
@@ -672,13 +680,17 @@ mod tests {
         let source = LocalTaskCancellationSource::default();
         let owner = task(8);
         let sibling = task(9);
+        let resumed = task(11);
         source.register(owner)?;
         source.register(sibling)?;
+        source.register_state(resumed, true)?;
         assert!(!*source.receiver(owner).expect("owner scope").borrow());
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        assert!(*source.receiver(resumed).expect("resumed scope").borrow());
         source.cancel(owner)?;
         assert!(*source.receiver(owner).expect("owner scope").borrow());
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        assert!(*source.receiver(resumed).expect("resumed scope").borrow());
         assert!(matches!(source.cancel(task(10)), Err(Error::NotFound(_))));
         Ok(())
     }
