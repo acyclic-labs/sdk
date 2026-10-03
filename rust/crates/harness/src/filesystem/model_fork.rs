@@ -43,6 +43,29 @@ where
         publication: &ModelBatchPublication,
         limits: Limits,
     ) -> Result<VerifiedModelForkBoundary<P>> {
+        self.verify_model_fork_composition(publication, limits, None)
+            .await
+    }
+
+    /// Verify a recursive boundary against the exact inheritance declaration
+    /// retained by the composition layer for this child. Extra middle messages
+    /// are rejected even when the child's own conversation tail matches.
+    pub async fn verified_inherited_model_fork_boundary(
+        &self,
+        publication: &ModelBatchPublication,
+        limits: Limits,
+        inherited: &crate::model_input::InheritedModelContext,
+    ) -> Result<VerifiedModelForkBoundary<P>> {
+        self.verify_model_fork_composition(publication, limits, Some(inherited))
+            .await
+    }
+
+    async fn verify_model_fork_composition(
+        &self,
+        publication: &ModelBatchPublication,
+        limits: Limits,
+        inherited: Option<&crate::model_input::InheritedModelContext>,
+    ) -> Result<VerifiedModelForkBoundary<P>> {
         let expected = ModelToolContext {
             parent_operation: publication.parent_operation,
             step: publication.step,
@@ -122,10 +145,16 @@ where
             limits.render_bytes,
         )
         .await?;
-        if selected.messages != boundary.request.messages {
-            return Err(Error::Conflict(
-                "fork boundary differs from authoritative conversation".into(),
-            ));
+        match inherited {
+            Some(declaration) => {
+                declaration.verify_composition(&boundary.request, &selected.messages, limits)?
+            }
+            None if selected.messages == boundary.request.messages => {}
+            None => {
+                return Err(Error::Conflict(
+                    "fork boundary differs from authoritative conversation".into(),
+                ));
+            }
         }
         Ok(VerifiedModelForkBoundary { boundary, parent })
     }

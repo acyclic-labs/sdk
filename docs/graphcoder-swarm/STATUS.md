@@ -141,3 +141,41 @@ strict complexity checks prompted the helper separation.
 This is not full recursive qualification. Ancestor grant propagation at deeper levels,
 declared suffix/authoritative replay consistency, real swarm integration, fault injection,
 WASM/package/platform lanes, and production terminal qualification remain required.
+
+## Final context and allocation authority checkpoint
+
+Checkpoint 8b9c7496 verifies every final model-context file reference through the
+journal resolver before provider admission. A custom context stage injecting an
+existing sibling private file is rejected before any prepared/started/model event
+or provider request. Published child composition also validates all inherited
+file providers and private/project allocation provenance before binding.
+
+Windows native execution_journal passed 6/6 and model_fork_boundary passed 2/2,
+with no failures or ignored cases. Fresh unbound-child negatives cover foreign
+file provider, changed operation allocation, and altered project seed. The last
+case fails the private allocation whole-seed digest before the project guard;
+it does not independently qualify missing project allocation recovery.
+
+checkpoint-final-context-authority.json records scoped source and executable
+digests. This is focused checkpoint evidence, not full-tree, recursive, WASM,
+packaged terminal, fault-matrix, or final qualification.
+
+## Recursive declaration and WASM admission checkpoint
+
+prepareModelRequest shares PreparedModelInput admission and completed exchange
+validation with TypeScript. Actual wasm32 compilation and wasm-release artifact
+generation passed at 50e334ad. Generated public declarations expose the export.
+Provider dispatch parity and lossless normalized request consumption remain pending.
+
+The recursive fork helper now accepts an explicit InheritedModelContext and checks
+the complete frozen prefix, exact declared suffix, and all authoritative own messages.
+The root helper retains exact full conversation equality. The negative composition
+test passed; real native fork boundary scenarios passed 2/2 (8.20 seconds).
+Production persistence of that declaration and recursive activation remain required.
+
+Broader model_input unit selection produced 8 passes and 1 required failure:
+production_batch_pins_text_and_all_ordered_results rejects exact file read authority.
+Its old recursion loop creates independent child stores then inherits references
+without published seed grants. The new final-context verifier exposes this gap.
+No bypass or skip was introduced; replacement with typed published recursion and
+ancestor reference propagation remains an unmet acceptance gate.
