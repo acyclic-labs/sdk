@@ -8,10 +8,13 @@ commands through `runCliWithTransport`. The bridge receives only the explicit
 `GRAPHCODER_BRIDGE_ENV_JSON` object; credentials from the invoking process are
 not inherited.
 
-For the packaged mock stage, use the checked-in JSON-lines bridge with an
-explicit fixture. This validates package loading, process framing, dispatcher
-correlation, and terminal behavior; it does not qualify the local Harness,
-filesystem effects, native runtime, or PTY/package acceptance rows:
+For the packaged mock stage, generate a source-bound configuration with
+`scripts/graphcoder-mock-stage-config.mjs`. It binds the installed package,
+mock bridge, and production entrypoint to one source commit/tree and records
+the fixture in the explicit bridge environment. This validates package
+loading, process framing, dispatcher correlation, and terminal behavior; it
+does not qualify the local Harness, filesystem effects, native runtime, or
+PTY acceptance rows:
 
 ```json
 {
@@ -21,6 +24,14 @@ filesystem effects, native runtime, or PTY/package acceptance rows:
   }
 }
 ```
+
+Run the generated configuration with
+`node scripts/graphcoder-qualification-suite.mjs capture CONFIG.json`. Its
+artifact list includes the package archive plus both source drivers, so a
+receipt cannot attach a package result to a different bridge or entrypoint.
+The command sequence contains no `--fixture` flag; the bridge fixture is
+explicit in `GRAPHCODER_BRIDGE_ENV_JSON` and appears in the fixture activity
+record.
 
 The production bridge must replace this helper before native or PTY evidence
 can be bound to a receipt. Its runtime must exercise the durable local Harness
@@ -78,8 +89,9 @@ qualified source commit, source tree, build ID, build timestamp, and `fresh:
 true`. Every artifact must be freshly built for the qualified source and the
 runner requires `fresh: true`; each configuration also has a positive
 `timeout_ms` (120000 ms by default) that bounds the child process. The capture
-runner checks the declared digest against the bytes before
-dispatch, then checks the digest again after the suite. Use separate
+runner checks the declared digest against the bytes before dispatch, records
+the qualified source commit/tree in the suite descriptor, then checks the
+digest again after the suite. Use separate
 suite IDs and output directories for headless and PTY runs. Reusing an output
 directory after a crash is rejected by the runner's exclusive descriptor and
 transcript creation; resume with a new suite ID after confirming the previous

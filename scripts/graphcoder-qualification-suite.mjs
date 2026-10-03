@@ -124,6 +124,34 @@ function loadConfig(path) {
   };
 }
 
+export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, artifactDigests }) {
+  return {
+    protocol: "acyclic.graphcoder.suite-descriptor.v1",
+    id: config.id,
+    descriptor: config.descriptor,
+    // Bind the suite descriptor itself to the checkout being qualified. The
+    // consumed artifacts carry the same pair, but mock/package lanes may use
+    // source drivers without a native binary artifact.
+    source_commit: qualifiedCommit,
+    source_tree: qualifiedTree,
+    platform: config.platform,
+    execution_kind: config.execution_kind,
+    command: {
+      ...config.command,
+      env: Object.keys(config.command.env).sort(),
+    },
+    expected_exit_code: config.expected_exit_code,
+    timeout_ms: config.timeout_ms,
+    consumed_artifacts: config.artifacts.map(item => ({
+      path: item.path,
+      sha256: artifactDigests.get(item.path),
+      source_commit: item.source_commit,
+      source_tree: item.source_tree,
+      build_id: item.build_id,
+    })),
+  };
+}
+
 function capture(configPath) {
   const config = loadConfig(configPath);
   if (!Number.isInteger(config.expected_exit_code) || config.expected_exit_code < 0) fail("expected_exit_code must be a nonnegative integer");
@@ -158,17 +186,7 @@ function capture(configPath) {
   const descriptorPath = resolve(output, `${config.id}.descriptor.json`);
   const transcriptPath = resolve(output, `${config.id}.transcript.log`);
   const recordPath = resolve(output, `${config.id}.record.json`);
-  const descriptor = {
-    protocol: "acyclic.graphcoder.suite-descriptor.v1",
-    id: config.id,
-    descriptor: config.descriptor,
-    platform: config.platform,
-    execution_kind: config.execution_kind,
-    command: { ...config.command, env: Object.keys(config.command.env).sort() },
-    expected_exit_code: config.expected_exit_code,
-    timeout_ms: config.timeout_ms,
-    consumed_artifacts: config.artifacts.map(item => ({ path: item.path, sha256: before.get(item.path) })),
-  };
+  const descriptor = makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, artifactDigests: before });
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { flag: "wx" });
   writeFileSync(transcriptPath, transcript, { flag: "wx" });
   let artifactError;

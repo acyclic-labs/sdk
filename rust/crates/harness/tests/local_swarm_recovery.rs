@@ -183,7 +183,7 @@ async fn local_cancellation_survives_restart_and_blocks_dispatch() -> Result<()>
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::normal();
-    let swarm = PersistentLocalSwarm::open_with_model(
+    let swarm = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -194,7 +194,7 @@ async fn local_cancellation_survives_restart_and_blocks_dispatch() -> Result<()>
     swarm.cancel(task).await?;
     drop(swarm);
 
-    let reopened = PersistentLocalSwarm::open_with_model(
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -221,7 +221,7 @@ async fn local_completed_result_replays_after_restart_without_second_dispatch() 
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::normal();
     let operation = OperationId::new();
-    let swarm = PersistentLocalSwarm::open_with_model(
+    let swarm = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -233,7 +233,7 @@ async fn local_completed_result_replays_after_restart_without_second_dispatch() 
     assert_completed(&swarm.session(swarm.root_task().await?).await?);
     drop(swarm);
 
-    let reopened = PersistentLocalSwarm::open_with_model(
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -252,7 +252,7 @@ async fn local_lost_provider_reply_is_indeterminate_until_owner_reconciles() -> 
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::fail_once();
     let operation = OperationId::new();
-    let swarm = PersistentLocalSwarm::open_with_model(
+    let swarm = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -267,7 +267,7 @@ async fn local_lost_provider_reply_is_indeterminate_until_owner_reconciles() -> 
     );
     drop(swarm);
 
-    let reopened = PersistentLocalSwarm::open_with_model(
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -289,7 +289,7 @@ async fn local_retry_with_changed_input_cannot_reuse_claimed_operation() -> Resu
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::fail_once();
     let operation = OperationId::new();
-    let swarm = PersistentLocalSwarm::open_with_model(
+    let swarm = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -299,7 +299,7 @@ async fn local_retry_with_changed_input_cannot_reuse_claimed_operation() -> Resu
     assert!(swarm.run_root(operation, "original input").await.is_err());
     drop(swarm);
 
-    let reopened = PersistentLocalSwarm::open_with_model(
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -321,14 +321,14 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::blocked();
-    let first = PersistentLocalSwarm::open_with_model(
+    let first = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
         Limits::default(),
     )
     .await?;
-    let second = PersistentLocalSwarm::open_with_model(
+    let second = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -346,7 +346,9 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
         tokio::task::yield_now().await;
     }
     provider.release();
-    let (left, right) = tokio::join!(left, right);
+    let (left, right) = timeout(Duration::from_secs(2), async { tokio::join!(left, right) })
+        .await
+        .expect("shared operation did not finish after provider release");
     let left = left?;
     let right = right?;
     assert_eq!(left, right);
@@ -359,14 +361,14 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     prepare_local_root(root.path()).await?;
     let provider = RecoveryProvider::blocked();
-    let first = PersistentLocalSwarm::open_with_model(
+    let first = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
         Limits::default(),
     )
     .await?;
-    let second = PersistentLocalSwarm::open_with_model(
+    let second = PersistentLocalSwarm::open_shared_with_model(
         root.path(),
         model()?,
         provider.clone(),
@@ -379,13 +381,19 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
     provider.wait_for_calls(1).await;
     second.cancel(task).await?;
     provider.release();
-    let _ = running.await;
+    let _ = timeout(Duration::from_secs(2), running)
+        .await
+        .expect("cancelled in-flight operation did not finish after provider release");
     drop(first);
     drop(second);
 
-    let reopened =
-        PersistentLocalSwarm::open_with_model(root.path(), model()?, provider, Limits::default())
-            .await?;
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider,
+        Limits::default(),
+    )
+    .await?;
     assert_eq!(
         reopened.session(task).await?.phase,
         LocalSessionPhase::Cancelled,

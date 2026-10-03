@@ -32,7 +32,16 @@ const validateReceiptSchema = receiptSchemaAjv.compile(
 function suiteFixture(directory, executionKind = "native") {
   const descriptorPath = join(directory, `${executionKind}.descriptor.json`);
   const transcriptPath = join(directory, `${executionKind}.transcript.log`);
-  const descriptor = `{"suite":"${executionKind}","revision":1}\n`;
+  const descriptor = `${JSON.stringify({
+    protocol: "acyclic.graphcoder.suite-descriptor.v1",
+    id: `suite-${executionKind}`,
+    descriptor: `${executionKind} fixture`,
+    source_commit: TEST_COMMIT,
+    source_tree: TEST_TREE,
+    platform: "windows-x86_64",
+    execution_kind: executionKind,
+    consumed_artifacts: [],
+  })}\n`;
   const transcript = `suite ${executionKind} passed\n`;
   writeFileSync(descriptorPath, descriptor);
   writeFileSync(transcriptPath, transcript);
@@ -50,6 +59,20 @@ function suiteFixture(directory, executionKind = "native") {
     transcript_path: transcriptPath,
     transcript_sha256: digest(transcript),
   };
+}
+
+function bindSuiteArtifacts(suite, artifacts) {
+  const descriptor = JSON.parse(readFileSync(suite.descriptor_path, "utf8"));
+  descriptor.consumed_artifacts = artifacts.map(artifact => ({
+    path: artifact.path,
+    sha256: artifact.sha256,
+    source_commit: artifact.source_commit,
+    source_tree: artifact.source_tree,
+    build_id: artifact.build_id,
+  }));
+  const bytes = `${JSON.stringify(descriptor)}\n`;
+  writeFileSync(suite.descriptor_path, bytes);
+  suite.descriptor_sha256 = digest(bytes);
 }
 
 test("the locked matrix has unique coverage for every requirement", () => {
@@ -183,6 +206,23 @@ test("suite evidence is bound to the descriptor and transcript bytes on disk", (
   }
 });
 
+test("suite descriptors are bound to the qualified source and suite identity", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-descriptor-"));
+  try {
+    const suite = suiteFixture(directory);
+    const descriptor = JSON.parse(readFileSync(suite.descriptor_path, "utf8"));
+    descriptor.source_commit = "0".repeat(40);
+    const bytes = `${JSON.stringify(descriptor)}\n`;
+    writeFileSync(suite.descriptor_path, bytes);
+    suite.descriptor_sha256 = digest(bytes);
+    const receipt = pendingReceipt();
+    receipt.suites = [suite];
+    assert.throws(() => validate(receipt), /descriptor source commit does not match/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("final package suites must identify the installed artifact used by their evidence", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
@@ -217,7 +257,10 @@ test("a bystander artifact cannot satisfy a suite's consuming-artifact evidence"
       fresh: true,
     });
     receipt.suites = [suite];
-    receipt.artifacts = [artifact(consumedPath, "consumed-build"), artifact(bystanderPath, "bystander-build")];
+    const consumedArtifact = artifact(consumedPath, "consumed-build");
+    const bystanderArtifact = artifact(bystanderPath, "bystander-build");
+    bindSuiteArtifacts(suite, [consumedArtifact]);
+    receipt.artifacts = [consumedArtifact, bystanderArtifact];
     receipt.cases.find(item => item.id === "CLI-01").status = "passed";
     receipt.cases.find(item => item.id === "CLI-01").evidence = [{
       suite: suite.id,
@@ -241,8 +284,7 @@ test("suite execution cannot precede the build of its referenced artifact", () =
     writeFileSync(artifactPath, bytes);
     suite.artifact_paths = [artifactPath];
     const receipt = pendingReceipt();
-    receipt.suites = [suite];
-    receipt.artifacts = [{
+    const artifact = {
       path: artifactPath,
       sha256: digest(bytes),
       source_commit: receipt.source.commit,
@@ -250,7 +292,10 @@ test("suite execution cannot precede the build of its referenced artifact", () =
       built_at: "2026-10-03T00:00:02.000Z",
       build_id: "build-after-suite",
       fresh: true,
-    }];
+    };
+    bindSuiteArtifacts(suite, [artifact]);
+    receipt.suites = [suite];
+    receipt.artifacts = [artifact];
     assert.throws(() => validate(receipt), /started before artifact .* was built/);
   } finally {
     rmSync(directory, { recursive: true, force: true });

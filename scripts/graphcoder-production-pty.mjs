@@ -38,9 +38,9 @@ function nativeConhost() {
   return path;
 }
 
-function bridgeEnvironment() {
+export function bridgeEnvironment(environment = process.env) {
   return Object.fromEntries(
-    Object.entries(process.env).filter(([key]) =>
+    Object.entries(environment).filter(([key]) =>
       ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].includes(key) || key.startsWith("GRAPHCODER_"),
     ),
   );
@@ -50,11 +50,11 @@ function stripAnsi(value) {
   return value.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "");
 }
 
-function framedPromptCount(value) {
+export function framedPromptCount(value) {
   return [...stripAnsi(value).matchAll(/(?:^|\r?\n)graphcoder>[ ]?/gu)].length;
 }
 
-function commandContext(transcript) {
+export function commandContext(transcript) {
   const context = {};
   for (const line of stripAnsi(transcript).split(/\r?\n/u)) {
     const start = line.indexOf("{");
@@ -141,8 +141,10 @@ async function waitForClose(processClosed, processError, child) {
   return killed;
 }
 
-async function run(commands) {
+export async function run(commands) {
   if (commands.length === 0) fail("at least one terminal command is required");
+  if (process.platform !== "win32") fail("Windows ConPTY qualification requires a Windows host");
+  if (process.env.GRAPHCODER_MOCK_FIXTURE !== undefined) fail("mock fixture environment cannot be used by the production PTY lane");
   const sdkRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const entrypoint = join(sdkRoot, "scripts", "graphcoder-production-entrypoint.mjs");
   if (!existsSync(entrypoint)) fail(`missing entrypoint: ${entrypoint}`);
@@ -157,6 +159,7 @@ async function run(commands) {
     windowsHide: true,
     shell: false,
   });
+  if (child.stdin === null || child.stdout === null || child.stderr === null) fail("ConPTY process did not expose all standard streams");
   const state = { output: "", promptCount: 0, listeners: new Set() };
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -202,7 +205,9 @@ async function run(commands) {
   }
 }
 
-run(process.argv.slice(2)).catch(error => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  run(process.argv.slice(2)).catch(error => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

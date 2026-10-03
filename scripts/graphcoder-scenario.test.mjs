@@ -33,6 +33,8 @@ test("the PTY scenario is mapped to the native helper and captured artifact boun
   const lanes = readFileSync("docs/graphcoder-swarm/PRODUCTION-LANES.md", "utf8");
   assert.match(lanes, /graphcoder-production-pty\.mjs/u);
   assert.match(lanes, /graphcoder-qualification-suite\.mjs capture/u);
+  assert.match(lanes, /graphcoder-mock-stage-config\.mjs/u);
+  assert.match(lanes, /source commit\/tree in the suite descriptor/u);
   assert.match(scenario.evidence.artifact_binding, /exact GraphCoder package artifact/u);
   assert.match(scenario.evidence.artifact_binding, /bridge executable/u);
 });

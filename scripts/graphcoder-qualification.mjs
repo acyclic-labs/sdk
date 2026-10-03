@@ -8,6 +8,7 @@ import Ajv2020 from "ajv/dist/2020.js";
 const DEFAULT_MATRIX = "docs/graphcoder-swarm/requirements.json";
 const RECEIPT_PROTOCOL = "acyclic.graphcoder.qualification-receipt.v1";
 const MATRIX_PROTOCOL = "acyclic.graphcoder.requirements.v1";
+const SUITE_DESCRIPTOR_PROTOCOL = "acyclic.graphcoder.suite-descriptor.v1";
 const STATUS_VALUES = new Set(["passed", "pending", "failed", "skipped", "flaky", "not-run"]);
 const EXECUTION_KINDS = new Set(["native", "compile", "mock", "pty", "package", "wasm"]);
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -70,7 +71,41 @@ export function validateMatrix(matrix) {
   return matrix;
 }
 
-function validateSuite(suite, index, final, artifactPaths) {
+function validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree) {
+  let descriptor;
+  try {
+    descriptor = JSON.parse(readFileSync(resolve(suite.descriptor_path), "utf8"));
+  } catch (error) {
+    failure(`suite ${suite.id} descriptor is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!descriptor || typeof descriptor !== "object" || descriptor.protocol !== SUITE_DESCRIPTOR_PROTOCOL) {
+    failure(`suite ${suite.id} descriptor protocol is invalid`);
+  }
+  if (descriptor.id !== suite.id) failure(`suite ${suite.id} descriptor id does not match the suite`);
+  if (descriptor.source_commit !== qualifiedCommit) failure(`suite ${suite.id} descriptor source commit does not match the qualified source`);
+  if (descriptor.source_tree !== qualifiedTree) failure(`suite ${suite.id} descriptor source tree does not match the qualified source`);
+  if (descriptor.execution_kind !== suite.execution_kind) failure(`suite ${suite.id} descriptor execution kind does not match the suite`);
+  if (!Array.isArray(descriptor.consumed_artifacts)) failure(`suite ${suite.id} descriptor lacks consumed artifacts`);
+  const descriptorArtifacts = new Map();
+  for (const [index, item] of descriptor.consumed_artifacts.entries()) {
+    if (!item || typeof item !== "object" || typeof item.path !== "string" || item.path.trim() === "") {
+      failure(`suite ${suite.id} descriptor artifact ${index} is invalid`);
+    }
+    if (descriptorArtifacts.has(item.path)) failure(`suite ${suite.id} descriptor repeats artifact ${item.path}`);
+    descriptorArtifacts.set(item.path, item);
+    const artifact = artifactByPath.get(item.path);
+    if (!artifact) failure(`suite ${suite.id} descriptor references an unknown artifact`);
+    for (const field of ["sha256", "source_commit", "source_tree", "build_id"]) {
+      if (typeof item[field] !== "string" || item[field].trim() === "") failure(`suite ${suite.id} descriptor artifact ${item.path} lacks ${field}`);
+      if (item[field] !== artifact[field]) failure(`suite ${suite.id} descriptor artifact ${item.path} does not match the receipt artifact`);
+    }
+  }
+  const descriptorPaths = [...descriptorArtifacts.keys()].sort();
+  const suitePaths = [...new Set(suite.artifact_paths)].sort();
+  if (JSON.stringify(descriptorPaths) !== JSON.stringify(suitePaths)) failure(`suite ${suite.id} descriptor artifact use does not match the suite`);
+}
+
+function validateSuite(suite, index, final, artifactByPath, qualifiedCommit, qualifiedTree) {
   if (!suite || typeof suite !== "object") failure(`suite ${index} is not an object`);
   for (const field of ["id", "descriptor", "descriptor_path", "descriptor_sha256", "platform", "execution_kind", "status", "started_at", "completed_at", "transcript_path", "transcript_sha256"]) {
     if (typeof suite[field] !== "string" || suite[field].trim() === "") failure(`suite ${index} lacks ${field}`);
@@ -80,7 +115,7 @@ function validateSuite(suite, index, final, artifactPaths) {
   if (Number.isNaN(Date.parse(suite.started_at)) || Number.isNaN(Date.parse(suite.completed_at))) failure(`suite ${suite.id} has invalid execution timestamps`);
   if (Date.parse(suite.completed_at) < Date.parse(suite.started_at)) failure(`suite ${suite.id} completed before it started`);
   if (!Array.isArray(suite.artifact_paths) || suite.artifact_paths.some(path => typeof path !== "string" || path.trim() === "")) failure(`suite ${suite.id} has invalid artifact paths`);
-  if (suite.artifact_paths.some(path => !artifactPaths.has(path))) failure(`suite ${suite.id} references an unknown artifact`);
+  if (suite.artifact_paths.some(path => !artifactByPath.has(path))) failure(`suite ${suite.id} references an unknown artifact`);
   if (final && suite.execution_kind === "package" && suite.artifact_paths.length === 0) failure(`final package suite ${suite.id} must reference its installed artifact`);
   if (!HEX64.test(suite.descriptor_sha256)) failure(`suite ${suite.id} has invalid descriptor digest`);
   if (!HEX64.test(suite.transcript_sha256)) failure(`suite ${suite.id} has invalid transcript digest`);
@@ -89,6 +124,7 @@ function validateSuite(suite, index, final, artifactPaths) {
     const actual = fileDigest(path);
     if (actual !== expected) failure(`suite ${suite.id} ${kind} digest mismatch: ${path}`);
   }
+  validateSuiteDescriptor(suite, artifactByPath, qualifiedCommit, qualifiedTree);
 }
 
 function validateArtifact(artifact, index, final, qualifiedCommit, qualifiedTree) {
@@ -174,15 +210,14 @@ export function validateReceipt(matrix, receipt, { final = false, matrixPath = D
   if (!receipt.gate || typeof receipt.gate !== "object") failure("receipt gate is missing");
   const effectiveFinal = final || receipt.gate.final === true;
   const suiteIds = new Set();
-  const artifactPaths = new Set(receipt.artifacts.map(artifact => artifact?.path));
+  const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact?.path, artifact]));
+  const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, suite] of receipt.suites.entries()) {
-    validateSuite(suite, index, effectiveFinal, artifactPaths);
+    validateSuite(suite, index, effectiveFinal, artifactByPath, qualifiedCommit, qualifiedTree);
     if (suiteIds.has(suite.id)) failure(`duplicate suite id ${suite.id}`);
     suiteIds.add(suite.id);
   }
-  const qualifiedTree = gitOps.gitTree(qualifiedCommit);
   for (const [index, artifact] of receipt.artifacts.entries()) validateArtifact(artifact, index, effectiveFinal, qualifiedCommit, qualifiedTree);
-  const artifactByPath = new Map(receipt.artifacts.map(artifact => [artifact.path, artifact]));
   for (const suite of receipt.suites) {
     for (const path of suite.artifact_paths) {
       const artifact = artifactByPath.get(path);

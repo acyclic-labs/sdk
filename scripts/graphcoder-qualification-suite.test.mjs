@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { loadConfig } from "./graphcoder-qualification-suite.mjs";
+import { loadConfig, makeSuiteDescriptor } from "./graphcoder-qualification-suite.mjs";
 
 const digest = value => createHash("sha256").update(value).digest("hex");
 
@@ -74,4 +74,31 @@ test("suite configuration requires fresh artifacts and a bounded timeout", () =>
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("suite descriptors bind source provenance and every consumed artifact", () => {
+  const config = {
+    id: "mock-stage",
+    descriptor: "graphcoder-real-backend-scenarios.json",
+    execution_kind: "package",
+    platform: "windows-x86_64",
+    command: { executable: "node", args: ["driver.mjs"], cwd: process.cwd(), env: { TOKEN: "filtered" } },
+    expected_exit_code: 0,
+    timeout_ms: 1000,
+    artifacts: [
+      { path: "package.tgz", source_commit: "a".repeat(40), source_tree: "b".repeat(40), build_id: "package-1" },
+      { path: "driver.mjs", source_commit: "a".repeat(40), source_tree: "b".repeat(40), build_id: "driver-1" },
+    ],
+  };
+  const descriptor = makeSuiteDescriptor({
+    config,
+    qualifiedCommit: "a".repeat(40),
+    qualifiedTree: "b".repeat(40),
+    artifactDigests: new Map([["package.tgz", "c".repeat(64)], ["driver.mjs", "d".repeat(64)]]),
+  });
+  assert.equal(descriptor.source_commit, "a".repeat(40));
+  assert.equal(descriptor.source_tree, "b".repeat(40));
+  assert.deepEqual(descriptor.command.env, ["TOKEN"]);
+  assert.deepEqual(descriptor.consumed_artifacts.map(item => item.build_id), ["package-1", "driver-1"]);
+  assert.deepEqual(descriptor.consumed_artifacts.map(item => item.sha256), ["c".repeat(64), "d".repeat(64)]);
 });
