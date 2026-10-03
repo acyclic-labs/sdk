@@ -7,7 +7,7 @@
 //! caller can attach it to the bundle and use it as the authoritative item
 //! inventory. The scanner never claims to resolve a re-export or cfg branch.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
@@ -871,7 +871,7 @@ fn load_scenario_bundle_with_authority(
             ))
         })?
     } else {
-        let source_files = source
+        let declared_source_files = source
             .get("files")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| {
@@ -879,15 +879,15 @@ fn load_scenario_bundle_with_authority(
                     "SDK examples source directory {source_path} has no source files closure"
                 ))
             })?;
-        if source_files.is_empty() {
+        if declared_source_files.is_empty() {
             return Err(Error::Strict(format!(
                 "SDK examples source directory {source_path} has an empty source files closure"
             )));
         }
         let source_root = Path::new(&source_path);
         let mut seen = HashSet::new();
-        let mut closure = Vec::new();
-        for value in source_files {
+        let mut closure_files = Vec::new();
+        for value in declared_source_files {
             let relative = value.as_str().ok_or_else(|| {
                 Error::Strict("SDK examples source closure path is not a string".to_owned())
             })?;
@@ -909,12 +909,9 @@ fn load_scenario_bundle_with_authority(
                     "SDK examples source closure file {relative} is unavailable: {error}"
                 ))
             })?;
-            closure.extend_from_slice(relative.as_bytes());
-            closure.push(0);
-            closure.extend_from_slice(&bytes);
-            closure.push(0);
+            closure_files.push((relative.to_owned(), bytes));
         }
-        closure
+        cargo_source_closure_bytes(repository_root, &source_path, &closure_files)?
     };
     let source_blake3 = digest_bytes(&source_bytes);
     let actual_source_sha256 = sha256_digest(&source_bytes);
@@ -941,7 +938,7 @@ fn load_scenario_bundle_with_authority(
             &declared_revision,
             &actual_source_sha256,
             source_authority_sha256,
-            )?;
+        )?;
         source.insert(
             "source_authority_sha256".to_owned(),
             serde_json::Value::String(authority_sha256),
@@ -1075,6 +1072,169 @@ fn load_scenario_bundle_with_authority(
         );
     }
     Ok(manifest)
+}
+
+fn cargo_source_closure_bytes(
+    repository_root: &Path,
+    source_path: &str,
+    files: &[(String, Vec<u8>)],
+) -> Result<Vec<u8>, Error> {
+    let source_root = repository_root.canonicalize()?;
+    let manifest = source_root.join(source_path).join("Cargo.toml");
+    let output = Command::new("cargo")
+        .args([
+            "metadata",
+            "--manifest-path",
+            &manifest.to_string_lossy(),
+            "--locked",
+            "--format-version",
+            "1",
+        ])
+        .output()
+        .map_err(Error::Io)?;
+    if !output.status.success() {
+        return Err(Error::Strict(format!(
+            "cargo metadata failed ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let recipe = normalized_cargo_build_recipe(&source_root, &metadata)?;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"cargo-build-recipe\0");
+    bytes.extend_from_slice(&recipe);
+    bytes.push(0);
+    for (relative, contents) in files {
+        bytes.extend_from_slice(relative.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(contents);
+        bytes.push(0);
+    }
+    Ok(bytes)
+}
+
+fn normalized_cargo_build_recipe(
+    source_root: &Path,
+    metadata: &serde_json::Value,
+) -> Result<Vec<u8>, Error> {
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Strict("cargo metadata packages are missing".to_owned()))?;
+    let package_by_id = packages
+        .iter()
+        .filter_map(|package| Some((package.get("id")?.as_str()?.to_owned(), package)))
+        .collect::<BTreeMap<_, _>>();
+    let nodes = metadata
+        .pointer("/resolve/nodes")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::Strict("cargo metadata resolve.nodes are missing".to_owned()))?;
+    let node_by_id = nodes
+        .iter()
+        .filter_map(|node| Some((node.get("id")?.as_str()?.to_owned(), node)))
+        .collect::<BTreeMap<_, _>>();
+    let root_id = metadata
+        .pointer("/resolve/root")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| Error::Strict("cargo metadata resolve.root is missing".to_owned()))?;
+    let root_package = package_by_id
+        .get(root_id)
+        .ok_or_else(|| Error::Strict(format!("cargo metadata package is missing for {root_id}")))?;
+    let root_label = format!(
+        "{}@{}",
+        root_package
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown"),
+        root_package
+            .get("version")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("unknown")
+    );
+    let mut reachable = BTreeSet::new();
+    let mut pending = VecDeque::from([root_id.to_owned()]);
+    while let Some(id) = pending.pop_front() {
+        if !reachable.insert(id.clone()) {
+            continue;
+        }
+        let node = node_by_id
+            .get(&id)
+            .ok_or_else(|| Error::Strict(format!("cargo metadata node is missing for {id}")))?;
+        for dependency in node
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(serde_json::Value::as_str)
+        {
+            pending.push_back(dependency.to_owned());
+        }
+    }
+    let mut normalized = BTreeMap::new();
+    for id in reachable {
+        let package = package_by_id
+            .get(&id)
+            .ok_or_else(|| Error::Strict(format!("cargo metadata package is missing for {id}")))?;
+        let node = node_by_id
+            .get(&id)
+            .ok_or_else(|| Error::Strict(format!("cargo metadata node is missing for {id}")))?;
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from)
+            .and_then(|path| path.strip_prefix(source_root).ok().map(Path::to_owned))
+            .map(|path| path.to_string_lossy().replace('\\', "/"));
+        let key = format!(
+            "{}@{}",
+            package
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown"),
+            package
+                .get("version")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown")
+        );
+        let targets = package
+            .get("targets")
+            .and_then(serde_json::Value::as_array)
+            .map(|targets| {
+                let mut targets = targets
+                    .iter()
+                    .map(|target| {
+                        serde_json::json!({
+                            "name": target.get("name"),
+                            "kind": target.get("kind"),
+                            "crate_types": target.get("crate_types"),
+                            "required_features": target.get("required_features"),
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                targets.sort_by_key(serde_json::Value::to_string);
+                targets
+            })
+            .unwrap_or_default();
+        normalized.insert(
+            format!("{key}:{}", manifest.as_deref().unwrap_or("registry")),
+            serde_json::json!({
+                "name": package.get("name"),
+                "version": package.get("version"),
+                "source": if package.get("source").is_some_and(|source| !source.is_null()) { "registry" } else { "local" },
+                "manifest": manifest,
+                "features": node.get("features"),
+                "targets": targets,
+                "dependencies": package.get("dependencies"),
+            }),
+        );
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "schema": "acyclic.sdk.cargo-build-recipe.v1",
+        "target": serde_json::Value::Null,
+        "root": root_label,
+        "packages": normalized,
+    }))
+    .map_err(Error::Json)
 }
 
 /// Verify the source closure against an authority manifest supplied outside
