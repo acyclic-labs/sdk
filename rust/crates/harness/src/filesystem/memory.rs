@@ -1300,6 +1300,18 @@ where
         self.content_verifier.read(file).await
     }
 
+    /// Returns the provider-bound verifier for composing host adapters.
+    #[must_use]
+    pub fn content_verifier(&self) -> Arc<dyn ContentResidencyVerifier> {
+        self.content_verifier.clone()
+    }
+
+    /// Returns the provider-bound publisher for composing host adapters.
+    #[must_use]
+    pub fn content_publisher(&self) -> Arc<dyn ContentPublisher> {
+        self.publisher.clone()
+    }
+
     /// Lazily discovers this agent's private files under its existing signed
     /// volume-read grant. Pages pin a generation; callers pass it back to
     /// detect a changed directory instead of silently mixing two heads.
