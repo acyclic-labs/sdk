@@ -131,6 +131,33 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             source.contains("replay"),
             "replay policy missing from {relative}"
         );
+        assert!(
+            !source.contains("retry"),
+            "automatic retry policy leaked into {relative}"
+        );
+        match relative {
+            "ruby/lib/acyclic_sdk/generated_remote_policy.rb" => {
+                assert!(
+                    source.contains("installed.fetch(kind, false) && endpoint.fetch(kind, false)"),
+                    "Ruby facade does not intersect installed and endpoint availability"
+                );
+            }
+            "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php" => {
+                assert!(
+                    source.contains("($installed[$option['kind']] ?? false)")
+                        && source.contains("($endpoint[$option['kind']] ?? false)"),
+                    "PHP facade does not intersect installed and endpoint availability"
+                );
+            }
+            "dart/lib/src/generated_remote_policy.dart" => {
+                assert!(
+                    source.contains("installedAvailability[option.$1]")
+                        && source.contains("endpointAvailability[option.$1]"),
+                    "Dart facade does not intersect installed and endpoint availability"
+                );
+            }
+            _ => unreachable!("unexpected generated facade path: {relative}"),
+        }
     }
 
     let _ = fs::remove_dir_all(root);
