@@ -1120,7 +1120,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     &conflict_request,
                     host.as_ref(),
                     aggregate.reducer(),
-                    child_authority,
+                    child_authority.clone(),
                     &child_project,
                     &conflict_plan,
                     std::collections::BTreeMap::new(),
