@@ -141,3 +141,21 @@ strict complexity checks prompted the helper separation.
 This is not full recursive qualification. Ancestor grant propagation at deeper levels,
 declared suffix/authoritative replay consistency, real swarm integration, fault injection,
 WASM/package/platform lanes, and production terminal qualification remain required.
+
+## Final context and allocation authority checkpoint
+
+Checkpoint 8b9c7496 verifies every final model-context file reference through the
+journal resolver before provider admission. A custom context stage injecting an
+existing sibling private file is rejected before any prepared/started/model event
+or provider request. Published child composition also validates all inherited
+file providers and private/project allocation provenance before binding.
+
+Windows native execution_journal passed 6/6 and model_fork_boundary passed 2/2,
+with no failures or ignored cases. Fresh unbound-child negatives cover foreign
+file provider, changed operation allocation, and altered project seed. The last
+case fails the private allocation whole-seed digest before the project guard;
+it does not independently qualify missing project allocation recovery.
+
+checkpoint-final-context-authority.json records scoped source and executable
+digests. This is focused checkpoint evidence, not full-tree, recursive, WASM,
+packaged terminal, fault-matrix, or final qualification.
