@@ -61,5 +61,29 @@
   "original_checkout_issue": {
     "path": "Q:/sdk/.graphcoder-terminal.tsbuildinfo",
     "status": "Prior worker wrote ignored metadata; prior contents unknown, preserved."
-  }
+  },
+  "additional_results": [
+    {
+      "suite": "cargo test -p acyclic-harness --features filesystem-local --lib executor::tests -j 2 -- --nocapture",
+      "source_commit": "63513211cc6a0ec2bca44498decf405bc7cee32c",
+      "passed": 20,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.03,
+      "source_digests": {
+        "rust/crates/harness/src/executor.rs": "f38d162ed317dc5da5d7193a1f0f5290c981133856ed9854a8e154379b7143e0",
+        "rust/crates/harness/src/filesystem/execution_journal.rs": "283e39f0ca46e7e34fb43461f79af7730655cb2211806674ba45b7ac02b70388"
+      },
+      "artifact": {
+        "path": "target/debug/deps/acyclic_harness-0a8588af6047f55e.exe",
+        "sha256": "9a9604cd31b7dbf1038f45163c7d8e1377774a2d240bc1f5baa7bfb61be8ec31"
+      },
+      "scope": "Pinned preparation duplicate/corruption rejection, future-step rejection filtering and wrong-call feedback identity plus prior seventeen regressions. Actual cross-operation filesystem artifact injection still requires dedicated fixture."
+    }
+  ],
+  "repaired_verification_failures": [
+    "Local-feature compile exposed moved communication payload; clone repaired in d5f1df10.",
+    "Duplicate-input classification and corrupt descriptor classification each produced 19/20 pass runs; repaired in 3f0ab878 and 63513211. Final expanded run passes20/20.",
+    "Actual native driver blocked because responses were not flushed until EOF; flush and persistent-stdin regression repaired in4d0a9e92. Confirmed owned hung process/driver terminated, temporary storage retained."
+  ]
 }
