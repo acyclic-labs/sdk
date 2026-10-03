@@ -62,26 +62,33 @@ The model-input and local composition paths are implemented but remain under
 qualification. Production project grants, per-child fork identities, durable
 operator principals, and receipt preflight are committed on the isolated branch.
 
-Latest scoped results (see checkpoint-integrated-native-fork-budget.json):
-- Terminal TypeScript transport and UI: 44 passed, zero failed (c8dd2c45).
-- Durable LocalStream swarm budget journal: 11 passed, zero failed (d87db363),
-  including concurrent reservations and receipt bounds before append.
-- Native budget units: 23 passed, zero failed (18aeec63).
-- Harness TypeScript runtime/memory: 95 passed, three failed; WASM is stale.
-- Native executor: 19 passed, two failed; inherited rejection evidence and
-  duplicate preparation classification remain under repair.
-- Model fork boundary: one passed, one failed with an already allocated child
-  volume (d87db363). Recursive prefix qualification remains incomplete.
-- Production model swarm: zero passed, one failed at tool-result projection
-  (d87db363). Provider fixture identities have been corrected.
-- Typed recursive fork suite: the 1024-level fixture passed; two facade cases failed.
-- Filesystem Git compatibility: 42 passed, zero failed (657b1309).
-- Rust-generated Git bindings now include Join.source_tree; generator check
-  passed at 65bfbde7. Consumer checks remain separate.
-- Real plugin conflict/abort fixes are integrated; native verification is running.
-- Recovery tests are being updated for shared provider composition and remain
-  unqualified. Scoped approval wrappers compile; exact operator grants and
-  native terminal callers still need qualification.
+Latest scoped results are recorded in checkpoint-runtime-integration-2026-10-03.json
+and checkpoint-native-2026-10-03-followup.json:
+- TypeScript runtime and memory conversation: 100 passed, zero failed at eb8f41a4,
+  using existing WASM. Fresh artifact qualification is still required.
+- Native Harness library: 300 passed, three failed at eb8f41a4. Wait cancellation,
+  terminal wait replay, duplicate-input classification, and the bounded fork
+  fixture now pass. Execution uncertainty and the wire fixture remain failing.
+- Native local swarm recovery: six passed, one failed. Cancellation fencing and
+  persisted-prefix reconciliation pass; the concurrent losing handle returns
+  typed uncertainty and its eventual replay contract remains under repair.
+- Native root writeback: two passed, zero failed. These support boundary tests
+  establish exact approval and preservation of concurrent edits, not installed
+  terminal/operator qualification.
+- Model fork boundary: one passed, two failed. Invalid attestation still leaves
+  an allocated child workspace, and positive recursive attestation is rejected.
+- Production recursive model swarm: zero passed, one failed at fork manifest
+  command/parent revision binding. This is an open correctness gate.
+- The interrupted earlier library run is explicitly recorded as incomplete;
+  no aggregate pass was inferred from its partial output.
+- Budget dispatch context and production coordinator admission tests are
+  integrated. Actual provider metering and restart budget enforcement remain
+  under implementation and qualification.
+- Terminal authenticated operator-control changes are pending integration and
+  verification. Cross-handle child activation, execution attempt fencing, lazy
+  child reopen, and known failed writeback recovery have assigned repair work.
+- The shared native/WASM event fixture was refreshed from actual native bytes
+  at 2ff44ad3. Independent fresh native and WASM equality remains required.
 
 ## Next
 
