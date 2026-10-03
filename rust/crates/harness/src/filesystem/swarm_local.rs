@@ -3545,10 +3545,7 @@ impl PersistentLocalSwarm {
         };
         let output = match self.run_child_turn(&harness, &bundle, &request).await {
             Ok(output) => output,
-            Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
         let output_bytes = crate::contract::canonical_json_bytes(&output)?;
         let output_digest = crate::contract::canonical_json_digest(&output_bytes)?;
@@ -4320,12 +4317,32 @@ fn apply_record(
             output_ref,
             output_digest,
         } => {
+            if requests
+                .get(&child)
+                .is_none_or(|request| request.child_operation != operation)
+            {
+                return Err(Error::Conflict(
+                    "persisted child completion is bound to another operation".into(),
+                ));
+            }
             let session = sessions
                 .get_mut(&child)
                 .ok_or_else(|| Error::Storage("fork completion child is missing".into()))?;
             if session.phase == LocalSessionPhase::Cancelled {
                 return Err(Error::Conflict(
                     "persisted child completion follows a terminal cancellation".into(),
+                ));
+            }
+            if matches!(session.phase, LocalSessionPhase::Failed(_)) {
+                return Err(Error::Conflict(
+                    "persisted child completion follows a terminal failure".into(),
+                ));
+            }
+            if session.phase == LocalSessionPhase::Completed
+                && session.operation != Some(operation)
+            {
+                return Err(Error::Conflict(
+                    "persisted child completion changes the terminal operation".into(),
                 ));
             }
             session.operation = Some(operation);
@@ -4339,6 +4356,13 @@ fn apply_record(
                                 "persisted inline child completion digest changed".into(),
                             ));
                         }
+                    }
+                    if let Some(existing) = outcomes.get(&child)
+                        && existing != &output
+                    {
+                        return Err(Error::Conflict(
+                            "persisted child completion output changed".into(),
+                        ));
                     }
                     outcomes.insert(child, output);
                 }
@@ -4371,6 +4395,12 @@ fn apply_record(
         }
         StoredEvent::ForkFailed { child, reason } => {
             if let Some(session) = sessions.get_mut(&child) {
+                if matches!(
+                    session.phase,
+                    LocalSessionPhase::Completed | LocalSessionPhase::Cancelled
+                ) {
+                    return Ok(());
+                }
                 session.phase = LocalSessionPhase::Failed(reason);
             }
         }
@@ -4440,6 +4470,130 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[test]
+    fn completion_and_failure_cannot_rebind_a_child_operation() -> Result<()> {
+        let parent = TaskId::new();
+        let child = TaskId::new();
+        let expected = OperationId::new();
+        let mut sessions = BTreeMap::from([
+            (
+                parent,
+                LocalSwarmSession {
+                    task: parent,
+                    parent: None,
+                    depth: 0,
+                    task_description: "root".into(),
+                    operation: None,
+                    phase: LocalSessionPhase::Ready,
+                },
+            ),
+            (
+                child,
+                LocalSwarmSession {
+                    task: child,
+                    parent: Some(parent),
+                    depth: 1,
+                    task_description: "child".into(),
+                    operation: Some(expected),
+                    phase: LocalSessionPhase::Activating,
+                },
+            ),
+        ]);
+        let mut requests = BTreeMap::from([(
+            child,
+            LocalForkRequest {
+                parent,
+                parent_operation: OperationId::new(),
+                parent_step: 0,
+                fork_operation: Some(OperationId::new()),
+                child_operation: expected,
+                child_authority: None,
+                child_agent: None,
+                task: "child".into(),
+                prompt: "prompt".into(),
+            },
+        )]);
+        let mut seeds = BTreeMap::new();
+        let mut reports = BTreeMap::new();
+        let mut publications = BTreeMap::new();
+        let mut declarations = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
+        let mut completion_refs = BTreeMap::new();
+        let wrong = StoredRecord {
+            version: REGISTRY_VERSION,
+            event: StoredEvent::ForkCompleted {
+                child,
+                operation: OperationId::new(),
+                output: Some(TurnOutput {
+                    text: "wrong".into(),
+                    attachments: Vec::new(),
+                    metadata: Value::Null,
+                    steps: 0,
+                }),
+                output_ref: None,
+                output_digest: None,
+            },
+        };
+        assert!(apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            wrong,
+        )
+        .is_err());
+        assert_eq!(sessions[&child].phase, LocalSessionPhase::Activating);
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            StoredRecord {
+                version: REGISTRY_VERSION,
+                event: StoredEvent::ForkCompleted {
+                    child,
+                    operation: expected,
+                    output: Some(TurnOutput {
+                        text: "done".into(),
+                        attachments: Vec::new(),
+                        metadata: Value::Null,
+                        steps: 1,
+                    }),
+                    output_ref: None,
+                    output_digest: None,
+                },
+            },
+        )?;
+        apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            StoredRecord {
+                version: REGISTRY_VERSION,
+                event: StoredEvent::ForkFailed {
+                    child,
+                    reason: "late provider failure".into(),
+                },
+            },
+        )?;
+        assert_eq!(sessions[&child].phase, LocalSessionPhase::Completed);
+        assert_eq!(outcomes[&child].text, "done");
+        Ok(())
     }
 
     #[tokio::test]
