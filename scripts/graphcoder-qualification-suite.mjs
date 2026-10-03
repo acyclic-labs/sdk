@@ -33,6 +33,17 @@ function git(cwd, ...args) {
   return result.trim();
 }
 
+function sourceWorktreeChanges(cwd, ignoredUntrackedPaths) {
+  const output = git(cwd, "status", "--porcelain", "--untracked-files=all");
+  return output.split(/\r?\n/u).filter(line => {
+    if (line.trim() === "") return false;
+    if (!line.startsWith("??")) return true;
+    const path = line.slice(3).trim();
+    const absolute = resolve(cwd, path);
+    return !ignoredUntrackedPaths.some(ignored => absolute.toLowerCase() === ignored.toLowerCase() || absolute.toLowerCase().startsWith(`${ignored.toLowerCase()}\\`));
+  }).join("\n");
+}
+
 function iso(value, label) {
   const parsed = value === undefined ? new Date() : new Date(value);
   if (Number.isNaN(parsed.valueOf())) fail(`${label} is not a timestamp`);
@@ -107,7 +118,8 @@ function loadConfig(path) {
 function capture(configPath) {
   const config = loadConfig(configPath);
   if (!Number.isInteger(config.expected_exit_code) || config.expected_exit_code < 0) fail("expected_exit_code must be a nonnegative integer");
-  if (git(config.command.cwd, "status", "--porcelain") !== "") fail("qualified source worktree has uncommitted changes");
+  const ignoredUntrackedPaths = [resolve(config.output), resolve(configPath)];
+  if (sourceWorktreeChanges(config.command.cwd, ignoredUntrackedPaths) !== "") fail("qualified source worktree has uncommitted changes");
   const qualifiedCommit = git(config.command.cwd, "rev-parse", "HEAD");
   const qualifiedTree = git(config.command.cwd, "rev-parse", "HEAD^{tree}");
   const startedAt = iso(config.started_at, "started_at");
