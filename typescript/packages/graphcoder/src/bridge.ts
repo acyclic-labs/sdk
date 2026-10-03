@@ -71,6 +71,9 @@ export interface GraphCoderBridge {
   request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse>;
 }
 
+/** Default upper bound for one bridge response envelope, in UTF-8 bytes. */
+export const DEFAULT_MAX_BRIDGE_RESPONSE_BYTES = 16 * 1024 * 1024;
+
 type WireSessionSummary = Omit<SessionSummary, "id" | "rootAgentId"> & { readonly id: string; readonly root_agent_id: string };
 type WireAgentSummary = Omit<AgentSummary, "id" | "parentId" | "children"> & { readonly id: string; readonly parent_id: string | null; readonly children: readonly string[] };
 type WireActivityEvent = Omit<ActivityEvent, "sequence" | "actorId"> & { readonly sequence: string; readonly actor_id: string | null };
@@ -106,7 +109,15 @@ type WireParams<M extends GraphCoderWireMethod> = GraphCoderWireParams & { reado
 export class BridgeGraphCoderTransport implements GraphCoderTransport {
   #nextRequest = 1;
 
-  constructor(readonly bridge: GraphCoderBridge, readonly requestPrefix = "graphcoder") {}
+  constructor(
+    readonly bridge: GraphCoderBridge,
+    readonly requestPrefix = "graphcoder",
+    readonly maximumResponseBytes = DEFAULT_MAX_BRIDGE_RESPONSE_BYTES,
+  ) {
+    if (!Number.isSafeInteger(maximumResponseBytes) || maximumResponseBytes < 1) {
+      throw new GraphCoderError("invalid_input", "maximum bridge response bytes must be positive");
+    }
+  }
 
   async listSessions(query?: PageQuery): Promise<SessionPage> {
     return this.#page("list_sessions", queryParams(query), decodeSessionSummary);
@@ -153,22 +164,22 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
 
   async listChanges(id: SessionSnapshot["summary"]["id"]): Promise<{ readonly generation: bigint; readonly items: readonly ChangeSummary[] }> {
     const result = await this.#call("list_changes", { session_id: id });
-    return { generation: wireBigInt(result.generation, "changes generation"), items: result.items };
+    return { generation: wireBigInt(result.generation, "changes generation"), items: array(result.items, "change list").map(decodeChangeSummary) };
   }
 
   async readChange(id: SessionSnapshot["summary"]["id"], path: string, generation: bigint): Promise<ChangeBody> {
-    return decodeChangeBody(await this.#call("read_change", { session_id: id, path, generation: generation.toString() }));
+    return decodeChangeBody(await this.#call("read_change", { session_id: id, path: checkedPath(path), generation: checkedGeneration(generation, "change generation") }));
   }
 
   async readFile(id: SessionSnapshot["summary"]["id"], path: string, generation: bigint): Promise<FileBody> {
-    return decodeFileBody(await this.#call("read_file", { session_id: id, path, generation: generation.toString() }));
+    return decodeFileBody(await this.#call("read_file", { session_id: id, path: checkedPath(path), generation: checkedGeneration(generation, "file generation") }));
   }
 
   async approveWriteback(input: WritebackApproval): Promise<WritebackReceipt> {
     const result = await this.#call("approve_writeback", {
       session_id: input.sessionId,
       operation_id: input.operationId,
-      expected_generation: input.expectedGeneration.toString(),
+      expected_generation: checkedGeneration(input.expectedGeneration, "writeback generation"),
       approved: input.approved,
     });
     return { operationId: result.operation_id, sessionId: sessionId(result.session_id), generation: wireBigInt(result.generation, "writeback generation"), applied: result.applied };
@@ -177,20 +188,22 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   async #call<M extends GraphCoderWireMethod>(method: M, params: WireParams<M>): Promise<WireResultMap[M]> {
     const requestId = `${this.requestPrefix}-${this.#nextRequest++}`;
     const request = { request_id: requestId, method, params } as GraphCoderWireRequest<M>;
-    let response: GraphCoderWireResponse;
+    let response: unknown;
     try {
       response = await this.bridge.request(request);
     } catch (error) {
       throw new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
     }
-    if (response.request_id !== requestId) throw new GraphCoderError("transport", `bridge response id ${response.request_id} does not match ${requestId}`);
-    if (!response.ok) throw new GraphCoderError(response.error.code, response.error.message);
-    return response.result as WireResultMap[M];
+    const result = decodeResponse(response, requestId, this.maximumResponseBytes);
+    return result as WireResultMap[M];
   }
 
   async #page<M extends "list_sessions" | "read_activity" | "read_messages" | "list_approvals", T>(method: M, params: WireParams<M>, decode: (value: unknown) => T): Promise<{ readonly items: readonly T[]; readonly next?: string }> {
     const result = await this.#call(method, params);
-    return { items: (result.items as readonly unknown[]).map(decode), ...(result.next === undefined ? {} : { next: result.next }) };
+    const raw = record(result, `${method} result`);
+    const items = array(raw.items, `${method} items`).map(decode);
+    const next = raw.next === undefined ? undefined : text(raw.next, `${method} next cursor`);
+    return { items, ...(next === undefined ? {} : { next }) };
   }
 }
 
@@ -199,6 +212,8 @@ export { BridgeGraphCoderTransport as HarnessGraphCoderTransport };
 
 function wireQuery(query: PageQuery | undefined): GraphCoderWirePageQuery | undefined {
   if (query === undefined) return undefined;
+  if (query.after !== undefined && query.after.trim() === "") throw new GraphCoderError("invalid_input", "page cursor must not be empty");
+  if (query.limit !== undefined && (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 1_024)) throw new GraphCoderError("invalid_input", "page limit must be between 1 and 1024");
   const value: { after?: string; limit?: number } = {};
   if (query.after !== undefined) value.after = query.after;
   if (query.limit !== undefined) value.limit = query.limit;
@@ -210,14 +225,56 @@ function queryParams(query: PageQuery | undefined): GraphCoderWireParams {
   return value === undefined ? {} : { query: value };
 }
 
+function checkedPath(path: string): string {
+  if (path.trim() === "") throw new GraphCoderError("invalid_input", "path must not be empty");
+  return path;
+}
+
+function checkedGeneration(generation: bigint, label: string): string {
+  if (generation < 0n) throw new GraphCoderError("invalid_input", `${label} must be nonnegative`);
+  return generation.toString();
+}
+
+function decodeResponse(value: unknown, requestId: string, maximumBytes: number): unknown {
+  let encoded: string;
+  try {
+    encoded = JSON.stringify(value);
+  } catch (error) {
+    throw new GraphCoderError("transport", `bridge response is not serializable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (encoded === undefined) throw new GraphCoderError("transport", "bridge response is empty");
+  if (new TextEncoder().encode(encoded).byteLength > maximumBytes) throw new GraphCoderError("transport", "bridge response exceeds the configured size limit");
+  const raw = record(value, "bridge response");
+  if (text(raw.request_id, "bridge response id") !== requestId) throw new GraphCoderError("transport", `bridge response id ${String(raw.request_id)} does not match ${requestId}`);
+  if (raw.ok === true) {
+    if (!("result" in raw)) throw new GraphCoderError("transport", "successful bridge response has no result");
+    return raw.result;
+  }
+  if (raw.ok !== false) throw new GraphCoderError("transport", "bridge response ok must be boolean");
+  const error = record(raw.error, "bridge error");
+  const code = error.code;
+  if (code !== "invalid_input" && code !== "not_found" && code !== "stale" && code !== "denied" && code !== "unsupported" && code !== "transport") throw new GraphCoderError("transport", "bridge error code is invalid");
+  throw new GraphCoderError(code, text(error.message, "bridge error message"));
+}
+
 function record(value: unknown, label: string): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an object`);
   return value as Record<string, unknown>;
 }
 
+function array(value: unknown, label: string): readonly unknown[] {
+  if (!Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an array`);
+  return value;
+}
+
 function text(value: unknown, label: string): string {
   if (typeof value !== "string") throw new GraphCoderError("transport", `${label} is not text`);
   return value;
+}
+
+function oneOf<T extends string>(value: unknown, choices: readonly T[], label: string): T {
+  if (typeof value !== "string" || !choices.includes(value as T)) throw new GraphCoderError("transport", `${label} is invalid`);
+  return value as T;
 }
 
 function wireBigInt(value: unknown, label: string): bigint {
@@ -228,20 +285,23 @@ function wireBigInt(value: unknown, label: string): bigint {
 
 function decodeSessionSummary(value: unknown): SessionSummary {
   const raw = record(value, "session summary");
-  return { id: sessionId(text(raw.id, "session id")), title: text(raw.title, "session title"), state: raw.state as SessionSummary["state"], updatedAt: text(raw.updated_at, "session updated_at"), rootAgentId: agentId(text(raw.root_agent_id, "root agent id")) };
+  return { id: sessionId(text(raw.id, "session id")), title: text(raw.title, "session title"), state: oneOf(raw.state, ["idle", "running", "completed", "failed", "cancelled"], "session state"), updatedAt: text(raw.updated_at, "session updated_at"), rootAgentId: agentId(text(raw.root_agent_id, "root agent id")) };
 }
 
-function decodeAgent(value: WireAgentSummary): AgentSummary {
-  return { id: agentId(value.id), parentId: value.parent_id === null ? null : agentId(value.parent_id), task: value.task, state: value.state, depth: value.depth, children: value.children.map(agentId) };
+function decodeAgent(value: unknown): AgentSummary {
+  const raw = record(value, "agent summary");
+  if (!Number.isSafeInteger(raw.depth) || (raw.depth as number) < 0) throw new GraphCoderError("transport", "agent depth is invalid");
+  return { id: agentId(text(raw.id, "agent id")), parentId: raw.parent_id === null ? null : agentId(text(raw.parent_id, "agent parent id")), task: text(raw.task, "agent task"), state: oneOf(raw.state, ["queued", "running", "waiting", "completed", "failed", "cancelled"], "agent state"), depth: raw.depth as number, children: array(raw.children, "agent children").map(value => agentId(text(value, "agent child id"))) };
 }
 
-function decodeSnapshot(value: WireSnapshot): SessionSnapshot {
-  return { summary: decodeSessionSummary(value.summary as never), agents: value.agents.map(decodeAgent), workspaceGeneration: wireBigInt(value.workspace_generation, "workspace generation") };
+function decodeSnapshot(value: unknown): SessionSnapshot {
+  const raw = record(value, "session snapshot");
+  return { summary: decodeSessionSummary(raw.summary), agents: array(raw.agents, "session agents").map(decodeAgent), workspaceGeneration: wireBigInt(raw.workspace_generation, "workspace generation") };
 }
 
 function decodeActivity(value: unknown): ActivityEvent {
   const raw = record(value, "activity event");
-  return { sequence: wireBigInt(raw.sequence, "activity sequence"), id: text(raw.id, "activity id"), kind: raw.kind as ActivityEvent["kind"], actorId: raw.actor_id === null ? null : agentId(text(raw.actor_id, "activity actor id")), text: text(raw.text, "activity text"), at: text(raw.at, "activity timestamp") };
+  return { sequence: wireBigInt(raw.sequence, "activity sequence"), id: text(raw.id, "activity id"), kind: oneOf(raw.kind, ["session", "agent", "message", "approval", "workspace", "model"], "activity kind"), actorId: raw.actor_id === null ? null : agentId(text(raw.actor_id, "activity actor id")), text: text(raw.text, "activity text"), at: text(raw.at, "activity timestamp") };
 }
 
 function decodeMessage(value: unknown): GraphMessage {
@@ -251,14 +311,29 @@ function decodeMessage(value: unknown): GraphMessage {
 
 function decodeApproval(value: unknown): ApprovalRequest {
   const raw = record(value, "approval");
-  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: text(raw.operation_id, "approval operation id"), actionDigest: text(raw.action_digest, "approval action digest"), description: text(raw.description, "approval description"), state: raw.state as ApprovalRequest["state"], createdAt: text(raw.created_at, "approval created_at") };
+  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: text(raw.operation_id, "approval operation id"), actionDigest: text(raw.action_digest, "approval action digest"), description: text(raw.description, "approval description"), state: oneOf(raw.state, ["pending", "approved", "declined", "cancelled", "expired", "denied"], "approval state"), createdAt: text(raw.created_at, "approval created_at") };
 }
 
-function decodeChangeBody(value: WireChangeBody): ChangeBody {
-  return { path: value.path, unifiedDiff: value.unifiedDiff, generation: wireBigInt(value.generation, "change generation") };
+function decodeChangeSummary(value: unknown): ChangeSummary {
+  const raw = record(value, "change summary");
+  const result: ChangeSummary = { path: text(raw.path, "change path"), kind: oneOf(raw.kind, ["added", "modified", "deleted", "renamed"], "change kind"), additions: checkedCount(raw.additions, "change additions"), deletions: checkedCount(raw.deletions, "change deletions") };
+  if (raw.oldPath !== undefined) return { ...result, oldPath: text(raw.oldPath, "change old path") };
+  return result;
 }
 
-function decodeFileBody(value: WireFileBody): FileBody {
-  if (!value.bytes.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) throw new GraphCoderError("transport", "file bytes contain an invalid octet");
-  return { path: value.path, mediaType: value.mediaType, bytes: Uint8Array.from(value.bytes), generation: wireBigInt(value.generation, "file generation") };
+function checkedCount(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new GraphCoderError("transport", `${label} is invalid`);
+  return value as number;
+}
+
+function decodeChangeBody(value: unknown): ChangeBody {
+  const raw = record(value, "change body");
+  return { path: text(raw.path, "change path"), unifiedDiff: text(raw.unifiedDiff, "unified diff"), generation: wireBigInt(raw.generation, "change generation") };
+}
+
+function decodeFileBody(value: unknown): FileBody {
+  const raw = record(value, "file body");
+  const bytes = array(raw.bytes, "file bytes");
+  if (!bytes.every(byte => Number.isInteger(byte) && (byte as number) >= 0 && (byte as number) <= 255)) throw new GraphCoderError("transport", "file bytes contain an invalid octet");
+  return { path: text(raw.path, "file path"), mediaType: text(raw.mediaType, "file media type"), bytes: Uint8Array.from(bytes as number[]), generation: wireBigInt(raw.generation, "file generation") };
 }
