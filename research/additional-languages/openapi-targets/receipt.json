@@ -289,11 +289,11 @@
       },
       "portable_artifact": {
         "manifest": "research/additional-languages/openapi-targets/c-portable-manifest.json",
-        "manifest_sha256": "fb420bbb6da47cfc763b003111242ebef14e73fbd7f4ce891c08fbf741027e03",
+        "manifest_sha256": "1d22674665b80fba4c93ced5b393762fc024f1d675802e51273241d997fedc1d",
         "archive": "Q:/sdk/tmp-openapi-extra/c-portable.zip",
-        "bytes": 69903,
-        "sha256": "7befc41251761d525f73941e6a5bb4e954cefc0629082916e2c8cd09e18b4f33",
-        "install_result": "pass: cmake --install prefix contains DLL, import library, headers, CMake config, and LICENSES.json"
+        "bytes": 1890030,
+        "sha256": "2a3a76585e919529bc6bc5bb8293cf79cad0658cda3a5804dc5d8cdc83e942c2",
+        "install_result": "pass: cmake --install prefix contains generated DLL, bundled libcurl-x64.dll, import library, headers, CMake config, and LICENSES.json"
       }
     },
     "dart": {

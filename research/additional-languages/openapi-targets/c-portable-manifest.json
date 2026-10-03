@@ -2,8 +2,8 @@
   "schema": "openapi-extra-portable-manifest/v1",
   "target": "c",
   "archive": "Q:/sdk/tmp-openapi-extra/c-portable.zip",
-  "archive_bytes": 69903,
-  "archive_sha256": "7befc41251761d525f73941e6a5bb4e954cefc0629082916e2c8cd09e18b4f33",
+  "archive_bytes": 1890030,
+  "archive_sha256": "2a3a76585e919529bc6bc5bb8293cf79cad0658cda3a5804dc5d8cdc83e942c2",
   "install_prefix": "Q:/sdk/tmp-openapi-extra/c-install",
   "files": [
     {
@@ -190,6 +190,11 @@
       "path": "lib/acyclic_workers_api.lib",
       "bytes": 50224,
       "sha256": "48ffeea7fb37ccdba74e517075a65c3ca41863eae2d4de7ea4e945cda7388dc3"
+    },
+    {
+      "path": "lib/libcurl-x64.dll",
+      "bytes": 3647080,
+      "sha256": "f31fa58061e162ff4702b37224404df210346df6dff4a49e92d07b8dd5217334"
     },
     {
       "path": "lib/cmake/acyclic_workers_api/acyclic_workers_apiConfig.cmake",
