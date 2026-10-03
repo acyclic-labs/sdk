@@ -628,6 +628,28 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "swarm admission requires a canonical task admission digest".into(),
             ));
         }
+        if self.scheduler.swarm_budget_usage()?.is_none() {
+            let session = self
+                .scheduler
+                .operation(session_id)
+                .ok_or_else(|| Error::NotFound(format!("operation {session_id}")))?;
+            let root_admission = TaskAdmissionRecord::from_canonical_value(
+                self.load_json(&session.spec.state).await?,
+            )?;
+            if root_admission.operation_id != session_id
+                || root_admission.parent.is_some()
+                || session.spec.parent.is_some()
+                || root_admission.dependencies != session.spec.dependencies
+                || root_admission.task.name != session.spec.entrypoint.name
+                || root_admission.task.version != session.spec.entrypoint.version
+                || root_admission.task.digest != session.spec.entrypoint.digest
+                || root_admission.output_schema != session.spec.entrypoint.result_schema
+            {
+                return Err(Error::Conflict(
+                    "swarm session root is not the host-issued declaration".into(),
+                ));
+            }
+        }
         let operation = self
             .scheduler
             .operation(operation_id)
