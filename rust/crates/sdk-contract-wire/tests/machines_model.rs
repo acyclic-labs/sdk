@@ -6,6 +6,10 @@ const MACHINES_GOLDEN_DESCRIPTOR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/machines-v1.descriptor.bin"
 ));
+const MACHINES_DOC_DESCRIPTOR: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../machines/src/generated/acyclic-machines-v1.model.docs.bin"
+));
 
 #[test]
 fn machines_model_matches_compatibility_descriptor() {
@@ -62,4 +66,86 @@ fn machines_model_matches_compatibility_descriptor() {
         .find(|method| method.name.as_deref() == Some("WatchOperation"))
         .expect("WatchOperation descriptor");
     assert_eq!(watch.server_streaming, Some(true));
+}
+
+#[test]
+fn machines_product_descriptor_overlay_is_source_info_only() {
+    let canonical = FileDescriptorSet::decode(
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../machines/src/generated/acyclic-machines-v1.model.bin"
+        ))
+        .as_slice(),
+    )
+    .expect("decode Machines model descriptor");
+    let overlaid = FileDescriptorSet::decode(MACHINES_DOC_DESCRIPTOR)
+        .expect("decode Machines documentation descriptor");
+    let canonical_file = canonical
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("acyclic.machines.v1"))
+        .expect("Machines canonical file");
+    let overlaid_file = overlaid
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("acyclic.machines.v1"))
+        .expect("Machines overlaid file");
+    assert!(canonical_file.source_code_info.is_none());
+    let locations = overlaid_file
+        .source_code_info
+        .as_ref()
+        .expect("Machines source docs overlay")
+        .location
+        .as_slice();
+    assert!(locations.iter().any(|location| {
+        location
+            .leading_comments
+            .as_deref()
+            .is_some_and(|text| text.contains("protocol version"))
+    }));
+    assert_eq!(canonical_file.name, overlaid_file.name);
+    assert_eq!(canonical_file.message_type, overlaid_file.message_type);
+    assert_eq!(canonical_file.service, overlaid_file.service);
+}
+
+#[test]
+fn machines_policy_metadata_binds_rpc_only_operations_and_provider_errors() {
+    let policies = MACHINES.operation_policies();
+    assert_eq!(policies.len(), 19);
+    assert!(
+        MACHINES.routes.is_empty(),
+        "Machines has no HTTP route projection"
+    );
+
+    let expected_errors = [
+        "invalid",
+        "not_found",
+        "conflict",
+        "unsupported",
+        "rejected",
+        "unavailable",
+        "operation_indeterminate",
+        "operation_observation_indeterminate",
+        "operation_failed",
+        "operation_cancelled",
+    ];
+    for policy in policies {
+        assert_eq!(policy.errors, expected_errors);
+    }
+
+    for method in ["Recover", "Cancel", "InspectOperation", "WatchOperation"] {
+        let policy = policies
+            .iter()
+            .find(|policy| policy.rpc.ends_with(&format!("MachinesService/{method}")))
+            .unwrap_or_else(|| panic!("missing MachinesService/{method} policy"));
+        assert_eq!(policy.capabilities, &["machines.operations"]);
+    }
+
+    let watch = MACHINES.services[0]
+        .methods
+        .iter()
+        .find(|method| method.name == "WatchOperation")
+        .expect("MachinesService.WatchOperation");
+    assert!(!watch.client_streaming);
+    assert!(watch.server_streaming);
 }

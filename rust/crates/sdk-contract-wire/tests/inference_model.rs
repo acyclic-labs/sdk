@@ -9,6 +9,10 @@ const INFERENCE_GOLDEN_DESCRIPTOR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/tests/fixtures/inference-v1.descriptor.bin"
 ));
+const INFERENCE_DOC_DESCRIPTOR: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../inference/inference_model_descriptor_docs.bin"
+));
 
 struct WireField<'a> {
     number: u32,
@@ -233,4 +237,78 @@ fn inference_model_preserves_signed_and_optional_wire_fields() {
     assert_eq!(result.number, Some(6));
     assert_eq!(result.proto3_optional, Some(true));
     assert_eq!(result.oneof_index, Some(0));
+}
+
+#[test]
+fn inference_product_descriptor_overlay_is_source_info_only() {
+    let canonical = FileDescriptorSet::decode(
+        include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../inference/inference_model_descriptor.bin"
+        ))
+        .as_slice(),
+    )
+    .expect("decode Inference model descriptor");
+    let overlaid = FileDescriptorSet::decode(INFERENCE_DOC_DESCRIPTOR)
+        .expect("decode Inference documentation descriptor");
+    let canonical_file = canonical
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("inference.customer.v1"))
+        .expect("Inference canonical file");
+    let overlaid_file = overlaid
+        .file
+        .iter()
+        .find(|file| file.package.as_deref() == Some("inference.customer.v1"))
+        .expect("Inference overlaid file");
+    assert!(canonical_file.source_code_info.is_none());
+    let locations = overlaid_file
+        .source_code_info
+        .as_ref()
+        .expect("Inference source docs overlay")
+        .location
+        .as_slice();
+    assert!(locations.iter().any(|location| {
+        location
+            .leading_comments
+            .as_deref()
+            .is_some_and(|text| text.contains("model capabilities"))
+    }));
+    assert_eq!(canonical_file.name, overlaid_file.name);
+    assert_eq!(canonical_file.message_type, overlaid_file.message_type);
+    assert_eq!(canonical_file.service, overlaid_file.service);
+}
+
+#[test]
+fn inference_policy_metadata_binds_capability_discovery_and_client_errors() {
+    let policies = INFERENCE.operation_policies();
+    assert_eq!(policies.len(), 14);
+
+    let models = policies
+        .iter()
+        .find(|policy| policy.rpc.ends_with("ModelsService/List"))
+        .expect("ModelsService/List policy");
+    assert_eq!(models.capabilities, &["inference.models.read"]);
+    assert_eq!(
+        models.validations,
+        &["model_capabilities.bounded", "retention_profiles.valid"]
+    );
+
+    let expected_errors = [
+        "inference.invalid",
+        "inference.transport",
+        "inference.observation",
+    ];
+    for policy in policies {
+        assert_eq!(policy.errors, expected_errors);
+    }
+
+    let generate = policies
+        .iter()
+        .find(|policy| policy.rpc.ends_with("RunsService/Generate"))
+        .expect("RunsService/Generate policy");
+    assert_eq!(
+        generate.capabilities,
+        &["inference.runs.write", "inference.idempotent_mutation"]
+    );
 }
