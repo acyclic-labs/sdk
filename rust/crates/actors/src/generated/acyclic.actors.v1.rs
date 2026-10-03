@@ -29,11 +29,13 @@ pub struct ActorLimits {
 /// The cursor or head position from which a subscription starts.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct SubscriptionStart {
+    /// A mutually exclusive field group in the Actors v1 wire contract.
     #[prost(oneof = "subscription_start::Start", tags = "1, 2")]
     pub start: ::core::option::Option<subscription_start::Start>,
 }
 /// Nested message and enum types in `SubscriptionStart`.
 pub mod subscription_start {
+    /// A mutually exclusive field group in the Actors v1 wire contract.
     #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Start {
         /// A previously observed stream cursor.
@@ -327,8 +329,11 @@ pub struct Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum SubscriptionState {
+    /// An enum value in the Actors v1 wire contract.
     Unspecified = 0,
+    /// An enum value in the Actors v1 wire contract.
     Active = 1,
+    /// An enum value in the Actors v1 wire contract.
     Paused = 2,
 }
 impl SubscriptionState {
@@ -357,9 +362,13 @@ impl SubscriptionState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ActorState {
+    /// An enum value in the Actors v1 wire contract.
     Unspecified = 0,
+    /// An enum value in the Actors v1 wire contract.
     Active = 1,
+    /// An enum value in the Actors v1 wire contract.
     Hibernated = 2,
+    /// An enum value in the Actors v1 wire contract.
     Paused = 3,
 }
 impl ActorState {
@@ -390,16 +399,27 @@ impl ActorState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ErrorCode {
+    /// An enum value in the Actors v1 wire contract.
     Unspecified = 0,
+    /// An enum value in the Actors v1 wire contract.
     InvalidArgument = 1,
+    /// An enum value in the Actors v1 wire contract.
     CapabilityDenied = 2,
+    /// An enum value in the Actors v1 wire contract.
     CapabilityExpired = 3,
+    /// An enum value in the Actors v1 wire contract.
     ActorNotFound = 4,
+    /// An enum value in the Actors v1 wire contract.
     SubscriptionNotFound = 5,
+    /// An enum value in the Actors v1 wire contract.
     IdempotencyMismatch = 6,
+    /// An enum value in the Actors v1 wire contract.
     Conflict = 7,
+    /// An enum value in the Actors v1 wire contract.
     AdmissionDenied = 8,
+    /// An enum value in the Actors v1 wire contract.
     CheckpointFailed = 9,
+    /// An enum value in the Actors v1 wire contract.
     DependencyUnavailable = 10,
 }
 impl ErrorCode {

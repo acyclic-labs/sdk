@@ -374,7 +374,7 @@ fn generate_plugin_files(
     );
     let prost_files = protoc_gen_prost::execute(&request)
         .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, prost_files)?;
+    write_plugin_files(out_dir, prost_files, false)?;
 
     let mut tonic_params = Vec::new();
     if !config.client {
@@ -390,12 +390,13 @@ fn generate_plugin_files(
         &tonic_params.join(","),
     ))
     .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, tonic_files)
+    write_plugin_files(out_dir, tonic_files, family == BindingFamily::Objects)
 }
 
 fn write_plugin_files(
     out_dir: &Path,
     files: Vec<prost_types::compiler::code_generator_response::File>,
+    guard_grpc: bool,
 ) -> Result<(), BindingGenerationError> {
     for file in files {
         let name = file.name.ok_or_else(|| {
@@ -416,10 +417,31 @@ fn write_plugin_files(
             current.insert_str(offset, file.content.as_deref().unwrap_or_default());
             fs::write(path, current)?;
         } else {
-            fs::write(path, file.content.unwrap_or_default())?;
+            let content = file.content.unwrap_or_default();
+            let content = if guard_grpc && name.ends_with(".tonic.rs") {
+                guard_tonic_modules(&content)
+            } else {
+                content
+            };
+            fs::write(path, content)?;
         }
     }
     Ok(())
+}
+
+fn guard_tonic_modules(source: &str) -> String {
+    let mut guarded = String::with_capacity(source.len() + 128);
+    for line in source.lines() {
+        if line.starts_with("pub mod ") {
+            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+        }
+        guarded.push_str(line);
+        guarded.push('\n');
+    }
+    if !source.ends_with('\n') {
+        guarded.pop();
+    }
+    guarded
 }
 
 fn code_generator_request(
@@ -593,9 +615,12 @@ fn model_source_locations(family: BindingFamily, file: &FileDescriptorProto) -> 
             add_location(
                 &mut locations,
                 vec![5, index as i32, 2, value_index as i32],
-                "",
+                model_enum_value_docs(
+                    package,
+                    enumeration.name.as_deref().unwrap_or_default(),
+                    value.name.as_deref().unwrap_or_default(),
+                ),
             );
-            let _ = value;
         }
     }
     for (index, service) in file.service.iter().enumerate() {
@@ -654,31 +679,29 @@ fn add_message_locations(
             enum_path.clone(),
             model_enum_docs(package, enumeration.name.as_deref().unwrap_or_default()),
         );
-        for (value_index, _value) in enumeration.value.iter().enumerate() {
+        for (value_index, value) in enumeration.value.iter().enumerate() {
             add_location(
                 locations,
                 [enum_path.as_slice(), &[2, value_index as i32]].concat(),
-                "",
-            );
-        }
-    }
-    for (index, _oneof) in message.oneof_decl.iter().enumerate() {
-        let oneof_path = [path, &[8, index as i32]].concat();
-        add_location(locations, oneof_path.clone(), "");
-        for (field_index, field) in message.field.iter().enumerate() {
-            if field.oneof_index != Some(index as i32) {
-                continue;
-            }
-            add_location(
-                locations,
-                [oneof_path.as_slice(), &[2, field_index as i32]].concat(),
-                model_field_docs(
+                model_enum_value_docs(
                     package,
-                    message.name.as_deref().unwrap_or_default(),
-                    field.name.as_deref().unwrap_or_default(),
+                    enumeration.name.as_deref().unwrap_or_default(),
+                    value.name.as_deref().unwrap_or_default(),
                 ),
             );
         }
+    }
+    for (index, oneof) in message.oneof_decl.iter().enumerate() {
+        let oneof_path = [path, &[8, index as i32]].concat();
+        add_location(
+            locations,
+            oneof_path,
+            model_oneof_docs(
+                package,
+                message.name.as_deref().unwrap_or_default(),
+                oneof.name.as_deref().unwrap_or_default(),
+            ),
+        );
     }
 }
 
@@ -737,6 +760,40 @@ fn model_enum_docs(package: &str, name: &str) -> &'static str {
         "acyclic.harness.v2" => crate::harness::harness_enum_doc(name)
             .unwrap_or("An enum in the Harness v2 wire contract."),
         _ => crate::enum_docs(package, name),
+    }
+}
+
+fn model_enum_value_docs(package: &str, _enumeration: &str, _value: &str) -> &'static str {
+    match package {
+        "acyclic.filesystem.v2" => "An enum value in the Filesystem v2 wire contract.",
+        "acyclic.harness.v2" => "An enum value in the Harness v2 wire contract.",
+        "inference.customer.v1" => "An enum value in the Inference customer v1 wire contract.",
+        "acyclic.machines.v1" => "An enum value in the Machines v1 wire contract.",
+        "acyclic.actors.v1" => "An enum value in the Actors v1 wire contract.",
+        "acyclic.workers.v1" => "An enum value in the Workers v1 wire contract.",
+        "acyclic.objects.v2" => "An enum value in the Objects v2 wire contract.",
+        "acyclic.stream.v2" => "An enum value in the Stream v2 wire contract.",
+        _ => "An enum value in the Rust-owned wire contract.",
+    }
+}
+
+fn model_oneof_docs(package: &str, _message: &str, _oneof: &str) -> &'static str {
+    match package {
+        "acyclic.filesystem.v2" => {
+            "A mutually exclusive field group in the Filesystem v2 wire contract."
+        }
+        "acyclic.harness.v2" => "A mutually exclusive field group in the Harness v2 wire contract.",
+        "inference.customer.v1" => {
+            "A mutually exclusive field group in the Inference customer v1 wire contract."
+        }
+        "acyclic.machines.v1" => {
+            "A mutually exclusive field group in the Machines v1 wire contract."
+        }
+        "acyclic.actors.v1" => "A mutually exclusive field group in the Actors v1 wire contract.",
+        "acyclic.workers.v1" => "A mutually exclusive field group in the Workers v1 wire contract.",
+        "acyclic.objects.v2" => "A mutually exclusive field group in the Objects v2 wire contract.",
+        "acyclic.stream.v2" => "A mutually exclusive field group in the Stream v2 wire contract.",
+        _ => "A mutually exclusive field group in the Rust-owned wire contract.",
     }
 }
 
@@ -1076,6 +1133,17 @@ mod tests {
     }
 
     #[test]
+    fn objects_tonic_modules_are_feature_gated_by_product_generation() {
+        let source = guard_tonic_modules(
+            "// @generated\npub mod buckets_service_client {}\npub mod objects_service_server {}\n",
+        );
+        assert_eq!(
+            source,
+            "// @generated\n#[cfg(feature = \"grpc\")]\npub mod buckets_service_client {}\n#[cfg(feature = \"grpc\")]\npub mod objects_service_server {}\n"
+        );
+    }
+
+    #[test]
     fn descriptor_docs_overlay_preserves_model_bytes_and_covers_filesystem_harness() {
         for family in [BindingFamily::Filesystem, BindingFamily::Harness] {
             let model = family.model_descriptor();
@@ -1105,6 +1173,51 @@ mod tests {
                 .find(|file| file.package.as_deref() == Some(family.package()))
                 .expect("canonical family descriptor");
             assert!(canonical_target.source_code_info.is_none());
+        }
+    }
+
+    #[test]
+    fn descriptor_docs_overlay_documents_nested_declarations_and_choices() {
+        for &family in BindingFamily::ALL {
+            let model = family.model_descriptor();
+            let overlaid = descriptor_set_with_docs(family, &model).expect("docs overlay");
+            let generated = FileDescriptorSet::decode(overlaid.as_slice()).expect("overlay");
+            let target = generated
+                .file
+                .iter()
+                .find(|file| file.package.as_deref() == Some(family.package()))
+                .expect("family descriptor");
+            let locations = target
+                .source_code_info
+                .as_ref()
+                .expect("family source info")
+                .location
+                .as_slice();
+
+            assert!(
+                locations.iter().all(|location| location
+                    .leading_comments
+                    .as_deref()
+                    .is_some_and(|comments| !comments.trim().is_empty())),
+                "{} has an undocumented declaration location",
+                family.name()
+            );
+            for (enum_index, enumeration) in target.enum_type.iter().enumerate() {
+                let enum_path = vec![5, enum_index as i32];
+                assert!(locations.iter().any(|location| location.path == enum_path));
+                for value_index in 0..enumeration.value.len() {
+                    assert!(locations.iter().any(|location| {
+                        location.path == [enum_path.as_slice(), &[2, value_index as i32]].concat()
+                    }));
+                }
+            }
+            for (message_index, message) in target.message_type.iter().enumerate() {
+                let message_path = vec![4, message_index as i32];
+                for (oneof_index, _oneof) in message.oneof_decl.iter().enumerate() {
+                    let oneof_path = [message_path.as_slice(), &[8, oneof_index as i32]].concat();
+                    assert!(locations.iter().any(|location| location.path == oneof_path));
+                }
+            }
         }
     }
 

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
-    BindingFamily, actors_descriptor, actors_proto,
+    BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_product_bindings,
     harness::{harness_descriptor, harness_proto},
@@ -49,9 +49,15 @@ const HARNESS_PRODUCT_ARCHIVE: &str = "rust/crates/harness/src/generated/harness
 const INFERENCE_PRODUCT_DESCRIPTOR: &str = "rust/crates/inference/inference_model_descriptor.bin";
 const INFERENCE_CONTRACT_PRODUCT_DESCRIPTOR: &str =
     "rust/crates/inference-contract/inference_model_descriptor.bin";
+const INFERENCE_PRODUCT_DOC_DESCRIPTOR: &str =
+    "rust/crates/inference/inference_model_descriptor_docs.bin";
+const INFERENCE_CONTRACT_PRODUCT_DOC_DESCRIPTOR: &str =
+    "rust/crates/inference-contract/inference_model_descriptor_docs.bin";
 const INFERENCE_PRODUCT_ARCHIVE: &str = "rust/crates/inference/inference_descriptor.bin";
 const MACHINES_PRODUCT_DESCRIPTOR: &str =
     "rust/crates/machines/src/generated/acyclic-machines-v1.model.bin";
+const MACHINES_PRODUCT_DOC_DESCRIPTOR: &str =
+    "rust/crates/machines/src/generated/acyclic-machines-v1.model.docs.bin";
 const MACHINES_PRODUCT_ARCHIVE: &str = "rust/crates/machines/src/generated/acyclic-machines-v1.bin";
 const HARNESS_ARCHIVED_FIXTURE: &[u8] =
     include_bytes!("../../tests/fixtures/harness-v2.descriptor.bin");
@@ -194,12 +200,24 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
             inference_descriptor(),
         ),
         (
+            INFERENCE_PRODUCT_DOC_DESCRIPTOR.to_owned(),
+            descriptor_set_with_docs(BindingFamily::Inference, &inference_descriptor())?,
+        ),
+        (
+            INFERENCE_CONTRACT_PRODUCT_DOC_DESCRIPTOR.to_owned(),
+            descriptor_set_with_docs(BindingFamily::Inference, &inference_descriptor())?,
+        ),
+        (
             INFERENCE_PRODUCT_ARCHIVE.to_owned(),
             INFERENCE_ARCHIVED_FIXTURE.to_vec(),
         ),
         (
             MACHINES_PRODUCT_DESCRIPTOR.to_owned(),
             machines_descriptor(),
+        ),
+        (
+            MACHINES_PRODUCT_DOC_DESCRIPTOR.to_owned(),
+            descriptor_set_with_docs(BindingFamily::Machines, &machines_descriptor())?,
         ),
         (
             MACHINES_PRODUCT_ARCHIVE.to_owned(),

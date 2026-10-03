@@ -79,11 +79,13 @@ pub struct ObjectRef {
 /// Job input supplied inline or by a retained object reference.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct Payload {
+    /// A mutually exclusive field group in the Workers v1 wire contract.
     #[prost(oneof = "payload::Source", tags = "1, 2")]
     pub source: ::core::option::Option<payload::Source>,
 }
 /// Nested message and enum types in `Payload`.
 pub mod payload {
+    /// A mutually exclusive field group in the Workers v1 wire contract.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Source {
         /// Input bytes retained directly with the job.
@@ -127,11 +129,13 @@ pub struct RetryPolicy {
 /// The deployment alias or immutable version that receives a job.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct JobTarget {
+    /// A mutually exclusive field group in the Workers v1 wire contract.
     #[prost(oneof = "job_target::Target", tags = "1, 2")]
     pub target: ::core::option::Option<job_target::Target>,
 }
 /// Nested message and enum types in `JobTarget`.
 pub mod job_target {
+    /// A mutually exclusive field group in the Workers v1 wire contract.
     #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
     pub enum Target {
         /// Deployment alias selected for execution.
@@ -305,11 +309,17 @@ pub struct Error {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum JobState {
+    /// An enum value in the Workers v1 wire contract.
     Unspecified = 0,
+    /// An enum value in the Workers v1 wire contract.
     Accepted = 1,
+    /// An enum value in the Workers v1 wire contract.
     Running = 2,
+    /// An enum value in the Workers v1 wire contract.
     Succeeded = 3,
+    /// An enum value in the Workers v1 wire contract.
     Failed = 4,
+    /// An enum value in the Workers v1 wire contract.
     Cancelled = 5,
 }
 impl JobState {
@@ -344,16 +354,27 @@ impl JobState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
 #[repr(i32)]
 pub enum ErrorCode {
+    /// An enum value in the Workers v1 wire contract.
     Unspecified = 0,
+    /// An enum value in the Workers v1 wire contract.
     InvalidArgument = 1,
+    /// An enum value in the Workers v1 wire contract.
     CapabilityDenied = 2,
+    /// An enum value in the Workers v1 wire contract.
     CapabilityExpired = 3,
+    /// An enum value in the Workers v1 wire contract.
     VersionNotFound = 4,
+    /// An enum value in the Workers v1 wire contract.
     DeploymentNotFound = 5,
+    /// An enum value in the Workers v1 wire contract.
     JobNotFound = 6,
+    /// An enum value in the Workers v1 wire contract.
     IdempotencyMismatch = 7,
+    /// An enum value in the Workers v1 wire contract.
     RevisionConflict = 8,
+    /// An enum value in the Workers v1 wire contract.
     Overloaded = 9,
+    /// An enum value in the Workers v1 wire contract.
     TerminalJobFailure = 10,
 }
 impl ErrorCode {

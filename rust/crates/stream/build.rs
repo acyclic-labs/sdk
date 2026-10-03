@@ -14,5 +14,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     println!("cargo:rerun-if-changed=build.rs");
+    for source in [
+        "../sdk-contract-wire/src/bindings.rs",
+        "../sdk-contract-wire/src/lib.rs",
+        "../sdk-contract-wire/src/protocol.rs",
+        "../sdk-contract-wire/src/stream.rs",
+        "../sdk-contract-options/src/lib.rs",
+    ] {
+        println!("cargo:rerun-if-changed={source}");
+    }
     Ok(())
 }
