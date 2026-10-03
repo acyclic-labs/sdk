@@ -14,5 +14,3 @@ prost-types = "0.14.4"
 [dev-dependencies]
 protoc-bin-vendored = "3.2.0"
 acyclic-sdk-contract-validation = { path = "../sdk-contract-validation" }
-
-[workspace]

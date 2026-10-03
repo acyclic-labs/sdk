@@ -24,6 +24,95 @@ use prost_types::{
     ServiceDescriptorProto,
 };
 
+/// Validation metadata for the two Workers invocation operations.
+///
+/// These identifiers are exported with generated client metadata so every
+/// language binding can name the same Rust-owned constraints.
+pub const WORKERS_INVOKE_VERSION_VALIDATIONS: &[&str] =
+    &["version_sha256.length_32", "method.non_empty_utf8"];
+pub const WORKERS_INVOKE_DEPLOYMENT_VALIDATIONS: &[&str] = &[
+    "alias.alphanumeric_punctuation_1_256",
+    "method.non_empty_utf8",
+];
+
+/// A pure request validation failure from the shared contract rules.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestValidationError {
+    /// The supplied method name was empty.
+    EmptyMethod,
+    /// A version digest was not exactly 32 bytes.
+    VersionDigestLength { actual: usize },
+    /// A deployment alias did not satisfy the Rust-owned alias grammar.
+    InvalidDeploymentAlias,
+}
+
+impl fmt::Display for RequestValidationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyMethod => formatter.write_str("method must be non-empty UTF-8"),
+            Self::VersionDigestLength { actual } => {
+                write!(formatter, "version digest must contain exactly 32 bytes (got {actual})")
+            }
+            Self::InvalidDeploymentAlias => formatter.write_str(
+                "deployment alias must be 1-256 ASCII letters, digits, '.', '_' or '-' and not '.' or '..'",
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RequestValidationError {}
+
+/// Validate the immutable version digest and method for `InvokeVersion`.
+pub fn validate_workers_invoke_version(
+    version_sha256: &[u8],
+    method: &str,
+) -> Result<(), RequestValidationError> {
+    validate_version_sha256(version_sha256)?;
+    validate_method(method)
+}
+
+/// Validate the deployment alias and method for `InvokeDeployment`.
+pub fn validate_workers_invoke_deployment(
+    alias: &str,
+    method: &str,
+) -> Result<(), RequestValidationError> {
+    validate_deployment_alias(alias)?;
+    validate_method(method)
+}
+
+/// Validate an immutable SHA-256 digest field.
+pub fn validate_version_sha256(version_sha256: &[u8]) -> Result<(), RequestValidationError> {
+    if version_sha256.len() == 32 {
+        Ok(())
+    } else {
+        Err(RequestValidationError::VersionDigestLength {
+            actual: version_sha256.len(),
+        })
+    }
+}
+
+/// Validate an invocation method name.
+pub fn validate_method(method: &str) -> Result<(), RequestValidationError> {
+    if method.is_empty() {
+        Err(RequestValidationError::EmptyMethod)
+    } else {
+        Ok(())
+    }
+}
+
+/// Validate a Workers deployment alias without allocation or regex engines.
+pub fn validate_deployment_alias(alias: &str) -> Result<(), RequestValidationError> {
+    let valid_length = (1..=256).contains(&alias.len());
+    let valid_characters = alias
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'));
+    if valid_length && valid_characters && alias != "." && alias != ".." {
+        Ok(())
+    } else {
+        Err(RequestValidationError::InvalidDeploymentAlias)
+    }
+}
+
 /// A descriptor comparison result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ComparisonReport {
@@ -1081,6 +1170,59 @@ mod tests {
                 .iter()
                 .any(|difference| difference.kind == kind),
             "{report:?}"
+        );
+    }
+
+    #[test]
+    fn workers_invoke_constraints_accept_golden_requests() {
+        assert_eq!(
+            WORKERS_INVOKE_VERSION_VALIDATIONS,
+            &["version_sha256.length_32", "method.non_empty_utf8"]
+        );
+        assert_eq!(
+            WORKERS_INVOKE_DEPLOYMENT_VALIDATIONS,
+            &[
+                "alias.alphanumeric_punctuation_1_256",
+                "method.non_empty_utf8"
+            ]
+        );
+        assert!(validate_workers_invoke_version(&[7; 32], "fetch").is_ok());
+        assert!(validate_workers_invoke_deployment("production.us-east_1", "fetch").is_ok());
+    }
+
+    #[test]
+    fn workers_invoke_version_mutations_fail_closed() {
+        assert_eq!(
+            validate_workers_invoke_version(&[7; 31], "fetch"),
+            Err(RequestValidationError::VersionDigestLength { actual: 31 })
+        );
+        assert_eq!(
+            validate_workers_invoke_version(&[7; 33], "fetch"),
+            Err(RequestValidationError::VersionDigestLength { actual: 33 })
+        );
+        assert_eq!(
+            validate_workers_invoke_version(&[7; 32], ""),
+            Err(RequestValidationError::EmptyMethod)
+        );
+    }
+
+    #[test]
+    fn workers_deployment_alias_mutations_fail_closed() {
+        for alias in ["", ".", "..", "bad/alias", "bad alias", "é"] {
+            assert_eq!(
+                validate_deployment_alias(alias),
+                Err(RequestValidationError::InvalidDeploymentAlias),
+                "alias should be rejected: {alias:?}"
+            );
+        }
+        assert_eq!(
+            validate_deployment_alias(&"a".repeat(257)),
+            Err(RequestValidationError::InvalidDeploymentAlias)
+        );
+        assert!(validate_deployment_alias(&"a".repeat(256)).is_ok());
+        assert_eq!(
+            validate_workers_invoke_deployment("production", ""),
+            Err(RequestValidationError::EmptyMethod)
         );
     }
 

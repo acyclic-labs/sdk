@@ -11,8 +11,3 @@ description = "Semantic compatibility checks for generated SDK descriptor sets"
 blake3 = "1.8.2"
 prost = "0.14.4"
 prost-types = "0.14.4"
-
-# This crate is intentionally standalone while it is being integrated into the
-# SDK workspace. It can be tested without changing the root workspace manifest
-# or any active generated artifact.
-[workspace]
