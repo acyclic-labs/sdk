@@ -2846,6 +2846,26 @@ impl PersistentLocalSwarm {
                 "cancelled local swarm task cannot run again".into(),
             ));
         }
+        // A published child owns one durable turn identity and prompt. Check
+        // both while the registry still says the turn is non-terminal, before
+        // opening the harness or staging any prompt bytes. A caller that
+        // supplies a fresh operation or prompt must not reach model dispatch
+        // and only fail later in complete_session.
+        if let Some(retained) = self.requests.lock().await.get(&task).cloned() {
+            if retained.child_operation != operation || retained.prompt != prompt {
+                return Err(Error::Conflict(
+                    "local child retry must use its retained operation and prompt".into(),
+                ));
+            }
+        }
+        if session.phase == LocalSessionPhase::Completed {
+            if session.operation != Some(operation) {
+                return Err(Error::Conflict(
+                    "local swarm task already completed under another operation".into(),
+                ));
+            }
+            return self.outcome(task).await;
+        }
         let parent = session.parent;
         self.verify_admitted_task(task, parent).await?;
         let harness = self.open_session(task).await?;
@@ -3141,6 +3161,17 @@ impl PersistentLocalSwarm {
                 return Err(Error::Conflict(
                     "cancelled child operation is terminal and cannot be resurrected".into(),
                 ));
+            }
+            if phase == Some(LocalSessionPhase::Completed) {
+                // The admission loser observed a terminal winner while it
+                // was preparing the child. Preserve that terminal state and
+                // replay its durable output; never reopen the session as
+                // Activating or dispatch a duplicate turn.
+                return Ok(LocalForkOutcome {
+                    child,
+                    operation: request.child_operation,
+                    output: self.outcome(child).await?,
+                });
             }
             if phase != Some(LocalSessionPhase::Activating) {
                 self.update_session(child, |session| {
@@ -3579,17 +3610,44 @@ impl PersistentLocalSwarm {
                 "child operation was cancelled before completion acknowledgement".into(),
             ));
         }
-        append_record(
-            &stream,
-            StoredEvent::ForkCompleted {
+        // The refresh above is also the authoritative tail observation for
+        // the completion append. A plain append_record would read the tail
+        // again after this check, allowing two handles to race through the
+        // same terminal acknowledgement. Reconcile an append conflict to
+        // the durable completion and replay that result instead of appending
+        // a second completion or returning a locally generated answer.
+        if let Some(existing) = self
+            .recover_completed_output(&stream, child, request.child_operation, &harness)
+            .await?
+        {
+            return Ok(LocalForkOutcome {
                 child,
                 operation: request.child_operation,
-                output: inline_output,
-                output_ref,
-                output_digest: Some(output_digest),
-            },
-        )
-        .await?;
+                output: existing,
+            });
+        }
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let completion = StoredEvent::ForkCompleted {
+            child,
+            operation: request.child_operation,
+            output: inline_output,
+            output_ref,
+            output_digest: Some(output_digest),
+        };
+        if let Err(error) = append_record_at(&stream, completion, observed_tail).await {
+            self.refresh_registry_state().await?;
+            if let Some(existing) = self
+                .recover_completed_output(&stream, child, request.child_operation, &harness)
+                .await?
+            {
+                return Ok(LocalForkOutcome {
+                    child,
+                    operation: request.child_operation,
+                    output: existing,
+                });
+            }
+            return Err(error);
+        }
         self.refresh_registry_state().await?;
         self.outcomes.lock().await.insert(child, output.clone());
         Ok(LocalForkOutcome {
@@ -3761,6 +3819,11 @@ impl PersistentLocalSwarm {
         issuer: AuthorityIssuer,
         parent: &mut StreamAggregate<LocalStream>,
     ) -> Result<LocalForkOutcome> {
+        // A restarted handle must resolve the durable request and terminal
+        // outcome before it reconstructs the child aggregate. Otherwise a
+        // stale in-memory map can replay an older report or redispatch a
+        // child that another handle has already completed.
+        self.refresh_registry_state().await?;
         let request = self
             .requests
             .lock()
@@ -4246,10 +4309,21 @@ fn apply_record(
                     "persisted fork admission changed for the child key".into(),
                 ));
             }
+            // A replayed admission is metadata for the child operation; it
+            // must never move a terminal projection back to Activating. This
+            // matters when a stale publisher appends or replays its admission
+            // after another handle has already completed or failed the turn.
             let phase = sessions
                 .get(&child)
                 .map(|session| session.phase.clone())
-                .filter(|phase| matches!(phase, LocalSessionPhase::Cancelled))
+                .map(|phase| match phase {
+                    LocalSessionPhase::Completed => LocalSessionPhase::Completed,
+                    LocalSessionPhase::Cancelled => LocalSessionPhase::Cancelled,
+                    LocalSessionPhase::Failed(reason) => LocalSessionPhase::Failed(reason),
+                    LocalSessionPhase::Ready | LocalSessionPhase::Activating => {
+                        LocalSessionPhase::Activating
+                    }
+                })
                 .unwrap_or(LocalSessionPhase::Activating);
             sessions.insert(
                 child,

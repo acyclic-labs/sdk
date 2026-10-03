@@ -344,6 +344,14 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "fork preparation is not at the parent revision".into(),
             ));
         }
+        if let Some(model_boundary) = request.model_boundary.as_ref() {
+            self.reducer.verify_model_boundary_references(
+                &request.child,
+                request.child_agent,
+                &request.attached_agents,
+                model_boundary,
+            )?;
+        }
         let report = provider.prepare(request.clone()).await?;
         report.validate()?;
         if report.request != request {

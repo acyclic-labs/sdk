@@ -1560,6 +1560,27 @@ impl Reducer {
         self.revision
     }
 
+    /// Verifies a model boundary reference against this aggregate's parent
+    /// authority before an external fork preparer is allowed to allocate.
+    /// Preparation may create durable workspaces, so this preflight belongs
+    /// on the reducer side of the provider boundary as well as in the
+    /// preparer's later report validation.
+    pub(crate) fn verify_model_boundary_references(
+        &self,
+        child: &Authority,
+        child_agent: AgentId,
+        attached_agents: &[AgentId],
+        model_boundary: &ModelBoundaryReferences,
+    ) -> Result<()> {
+        self.authority_verifier.verify_model_boundary(
+            &self.authority,
+            child,
+            child_agent,
+            attached_agents,
+            model_boundary,
+        )
+    }
+
     /// Validates exact staged extension bytes at the provider admission boundary.
     pub fn validate_custom_bytes(
         &self,
