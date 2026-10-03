@@ -30,6 +30,7 @@
     "the retry reuses the original operation identity",
     "the staged file has the exact fixture bytes and media type",
     "the installed createNodeGraphCoderConnection transport decodes readFile with a nonzero BigInt generation",
+    "installed consumer requests have bounded deadlines and the bridge process exit is observed before cleanup",
     "reopen returns the completed durable session",
     "activity is loaded through its own public route",
     "a nonzero process exit or malformed response fails the lane"

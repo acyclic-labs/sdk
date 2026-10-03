@@ -51,6 +51,17 @@ function assertNoAttachments(value, label) {
   if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "attachments")) fail(`${label} unexpectedly exposed automatic attachments`);
 }
 
+async function withDeadline(promise, label) {
+  let timer;
+  const result = await Promise.race([
+    promise,
+    new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), RESPONSE_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (result?.timeout === true) fail(`${label} timed out after ${RESPONSE_TIMEOUT_MS}ms`);
+  return result;
+}
+
 function runDroppedStart(runtime, root) {
   const result = spawnSync(runtime, ["--root", root, "--model-fixture", "stage"], {
     cwd: resolve("."),
@@ -179,10 +190,10 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
     onDiagnostic: event => { if (event.kind === "exit") exitResolve(event); },
   });
   try {
-    const snapshot = await connection.transport.openSession(sessionId);
+    const snapshot = await withDeadline(connection.transport.openSession(sessionId), "installed consumer open_session");
     if (snapshot.workspaceGeneration <= 0n || snapshot.workspaceGeneration !== BigInt(generation)) fail(`installed consumer decoded an unexpected workspace generation: ${snapshot.workspaceGeneration}`);
     assertNoAttachments(snapshot, "installed consumer snapshot");
-    const file = await connection.transport.readFile(sessionId, "graphcoder-fixture.txt", snapshot.workspaceGeneration);
+    const file = await withDeadline(connection.transport.readFile(sessionId, "graphcoder-fixture.txt", snapshot.workspaceGeneration), "installed consumer read_file");
     if (typeof file.generation !== "bigint" || file.generation !== snapshot.workspaceGeneration) fail(`installed consumer did not preserve BigInt file generation: ${String(file.generation)}`);
     if (file.mediaType !== "text/plain" || Buffer.from(file.bytes).toString("utf8") !== "fixture:stage") fail(`installed consumer decoded unexpected file body: ${JSON.stringify({ path: file.path, mediaType: file.mediaType, bytes: [...file.bytes] })}`);
     assertNoAttachments(file, "installed consumer file");
