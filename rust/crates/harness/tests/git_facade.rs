@@ -256,6 +256,44 @@ fn fixture(
     Ok((facade, workspace_id, issuer))
 }
 
+fn writer_without_merge_fixture() -> Result<(FilesystemGitFacade<MemoryGitCompatStore>, WorkspaceId)>
+{
+    let provider = ProviderRef::new("git-facade-authority", "filesystem", "2")?;
+    let volume = VolumeRef::new(
+        provider,
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let issuer = AuthorityIssuer::new(
+        "git-facade-authority",
+        [63; 32],
+        Authority {
+            kind: AggregateKind::Conversation,
+            id: "root".into(),
+        },
+    );
+    let scope = issuer.root_for_agent(
+        AgentId::from_bytes([64; 16]),
+        "root",
+        Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let workspace_id = WorkspaceId::from_bytes([65; 16]);
+    Ok((
+        FilesystemGitFacade::new(
+            workspace_id,
+            MemoryGitCompatStore::new(),
+            volume,
+            issuer.verifier(),
+            scope,
+        )?,
+        workspace_id,
+    ))
+}
+
 fn live_tree(workspace_id: WorkspaceId) -> GitTreeRef {
     GitTreeRef::exact(workspace_id, GenerationId::new(Digest::from_bytes([1; 32])))
 }
@@ -370,6 +408,29 @@ async fn mutating_commands_require_the_exact_volume_write_capability() -> Result
         .err()
         .ok_or_else(|| Error::Invalid("read-only scope executed a commit".into()))?;
     assert!(matches!(error, Error::Unauthorized(_)));
+    Ok(())
+}
+
+#[tokio::test]
+async fn merge_lifecycle_commands_require_parent_merge_authority() -> Result<()> {
+    let (facade, workspace_id) = writer_without_merge_fixture()?;
+    for command in [
+        GitCommand::Merge {
+            branch: "feature".into(),
+        },
+        GitCommand::MergeContinue,
+        GitCommand::MergeAbort,
+        GitCommand::Rebase {
+            branch: "feature".into(),
+        },
+    ] {
+        let error = facade
+            .run(command, live_tree(workspace_id), &NoopExecutor)
+            .await
+            .err()
+            .ok_or_else(|| Error::Invalid("merge lifecycle command bypassed authority".into()))?;
+        assert!(matches!(error, Error::Unsupported(value) if value == "project:merge"));
+    }
     Ok(())
 }
 
