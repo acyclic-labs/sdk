@@ -287,6 +287,7 @@ impl DurableToolRunner {
         let mut completed = None;
         let mut failed = None;
         for (index, record) in records.iter().enumerate() {
+            record.event.validate_schema_version()?;
             if record.operation_id != operation_id
                 || record.sequence != index as u64 + 1
                 || !keys.insert(&record.idempotency_key)
@@ -322,6 +323,7 @@ impl DurableToolRunner {
                     dispatched = true;
                 }
                 ExecutionEvent::ToolCompleted {
+                    schema_version: crate::executor::TOOL_COMPLETED_EVENT_VERSION,
                     step: 0,
                     call_id,
                     result,
@@ -332,9 +334,7 @@ impl DurableToolRunner {
                     && failed.is_none()
                     && *call_id == invocation.call_id =>
                 {
-                    if *invocation_digest
-                        != crate::contract::canonical_json_digest(&invocation)?
-                    {
+                    if *invocation_digest != crate::contract::canonical_json_digest(&invocation)? {
                         return Err(Error::Conflict(
                             "completed tool result is bound to another invocation".into(),
                         ));
@@ -636,6 +636,7 @@ impl DurableToolRunner {
                 2,
                 format!("tool:completed:{}", OperationId::new()),
                 ExecutionEvent::ToolCompleted {
+                    schema_version: crate::executor::TOOL_COMPLETED_EVENT_VERSION,
                     step: 0,
                     call_id: invocation.call_id.clone(),
                     invocation_digest: crate::contract::canonical_json_digest(&invocation)?,

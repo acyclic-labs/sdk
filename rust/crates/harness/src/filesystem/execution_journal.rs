@@ -467,6 +467,7 @@ where
                         serde_json::from_slice(&record.value).map_err(|error| {
                             Error::Storage(format!("execution journal record is invalid: {error}"))
                         })?;
+                    observation.event.validate_schema_version()?;
                     if observation.operation_id != operation_id
                         || !keys.insert(observation.retry_digest.clone())
                     {
@@ -499,6 +500,7 @@ where
                     "execution journal idempotency key is invalid".into(),
                 ));
             }
+            event.validate_schema_version()?;
             self.verify_event_refs(&event).await?;
             let digest = blake3::hash(format!("{operation_id}:{idempotency_key}").as_bytes());
             let bytes = serde_json::to_vec(&Observation {
@@ -544,6 +546,7 @@ where
                     "execution journal compare-and-append is invalid".into(),
                 ));
             }
+            event.validate_schema_version()?;
             self.verify_event_refs(&event).await?;
             let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
             let retry_digest = digest.to_hex().to_string();

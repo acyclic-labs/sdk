@@ -2200,6 +2200,11 @@ export class AgentHarness {
   }
   async call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal = new AbortController().signal,
     taskId?: RuntimeTaskId, operationId?: string, providerCallId?: string): Promise<Output> {
+    return this.#call(tool, input, signal, taskId, operationId, providerCallId, true);
+  }
+  async #call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, signal: AbortSignal,
+    taskId?: RuntimeTaskId, operationId?: string, providerCallId?: string,
+    validateProjection = true): Promise<Output> {
     const { admittedInput, parsedInput, publishOutput, callId, invocation, approvals } =
       await this.#prepareToolCall(tool, input, signal, operationId, providerCallId);
     const actionInstance = invocation.operationId;
@@ -2246,7 +2251,7 @@ export class AgentHarness {
     if (registered.definition.handler) {
       const value = await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput);
       const published = publishOutput(value);
-      this.contracts.validateToolProjection(registered.definition, {
+      if (validateProjection) this.contracts.validateToolProjection(registered.definition, {
         value: registered.definition.projectOutput?.(published) ?? published,
       });
       return published;
@@ -2254,7 +2259,7 @@ export class AgentHarness {
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
     const result = await registered.executor.execute(invocation);
     const published = publishOutput(result.value);
-    this.contracts.validateToolProjection(registered.definition, {
+    if (validateProjection) this.contracts.validateToolProjection(registered.definition, {
       value: registered.definition.projectOutput?.(published) ?? published,
     });
     return published;
@@ -2388,7 +2393,8 @@ export class AgentHarness {
             call_id: call.callId,
           }), "operation");
           const tool = this.tool(call.name);
-          const value = await context.call(tool, call.arguments, toolOperationId, call.callId);
+          const value = await this.#call(tool, call.arguments, context.signal, context.taskId,
+            toolOperationId, call.callId, false);
           const projected = this.#projectToolOutput(tool, value);
           const projection = await boundedToolValue(projected, this.limits.render_bytes, this.contracts);
           this.contracts.validateToolProjection(tool.definition, { value: projection });

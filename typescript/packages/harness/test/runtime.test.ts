@@ -1841,6 +1841,7 @@ describe("typed agent runtime", () => {
   test("projects raw tool output before model capture and replay", async () => {
     type Raw = { readonly private: string; readonly public: string };
     let modelStep = 0;
+    let projectionCalls = 0;
     const observed: ModelMessage[] = [];
     const serializedRequests: string[] = [];
     const tool = defineTool<null, Raw>({
@@ -1856,13 +1857,18 @@ describe("typed agent runtime", () => {
       },
       parseInput: parseNull,
       parseOutput: value => value as Raw,
-      projectOutput: value => ({ public: value.public }),
+      projectOutput: value => { projectionCalls++; return { public: value.public }; },
     }, async () => ({ private: "secret", public: "shown" }));
     const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:private-result")
       .model(testModel, {
         async *generate(request) {
           serializedRequests.push(JSON.stringify(request));
           observed.push(...request.messages);
+          if (modelStep === 0) {
+            expect(Object.isFrozen(request.messages)).toBe(true);
+            expect(Object.isFrozen(request.tools)).toBe(true);
+            expect(Object.isFrozen(request.messages[0])).toBe(true);
+          }
           if (modelStep++ === 0) {
             yield { kind: "tool_call" as const, callId: "private-call", name: "private-result", arguments: null };
             yield { kind: "completed" as const, metadata: {} };
@@ -1882,6 +1888,7 @@ describe("typed agent runtime", () => {
     expect(JSON.stringify(observed[3]?.content)).not.toContain("secret");
     expect(serializedRequests.every(request => !request.includes("secret"))).toBe(true);
     expect(serializedRequests[1]).toContain('"modelOutputSchema"');
+    expect(projectionCalls).toBe(1);
   });
 
   test("oversized tool projections refuse the model step without an omission sentinel", async () => {

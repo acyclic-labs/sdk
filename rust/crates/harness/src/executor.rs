@@ -82,6 +82,11 @@ pub struct ExecutionRecord {
     pub event: ExecutionEvent,
 }
 
+/// Semantic version of the durable completed-tool event. A missing field is
+/// decoded as zero so old journals can be rejected with a typed conflict
+/// instead of surfacing a generic deserialization failure.
+pub const TOOL_COMPLETED_EVENT_VERSION: u32 = 2;
+
 /// Canonical executor observation suitable for a durable journal.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -165,6 +170,9 @@ pub enum ExecutionEvent {
     },
     /// Tool execution and projection completed.
     ToolCompleted {
+        /// Semantic event version; older records are rejected before replay.
+        #[serde(default)]
+        schema_version: u32,
         /// Zero-based executor step.
         step: u32,
         /// Stable provider/model-owned call identity.
@@ -186,6 +194,21 @@ pub enum ExecutionEvent {
         /// Bounded classification; raw provider errors never enter the journal.
         reason: ToolFailureKind,
     },
+}
+
+impl ExecutionEvent {
+    /// Rejects durable event shapes from before the pinned completion schema.
+    pub fn validate_schema_version(&self) -> Result<()> {
+        if let Self::ToolCompleted { schema_version, .. } = self
+            && *schema_version != TOOL_COMPLETED_EVENT_VERSION
+        {
+            return Err(Error::Conflict(
+                "durable tool completion schema version is unsupported; re-admission is required"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Admission refusals distinct from failures of dispatched effects.
@@ -487,6 +510,7 @@ impl StockExecutor {
     ) -> Result<()> {
         let records = journal.replay(input.operation_id).await?;
         for (index, record) in records.iter().enumerate() {
+            record.event.validate_schema_version()?;
             if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
                 return Err(Error::Conflict(
                     "execution journal is not gapless or belongs to another turn".into(),
@@ -533,27 +557,146 @@ impl StockExecutor {
         prior_messages: &[ModelMessage],
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
-        let context = self
-            .context
-            .run(&ContextInput {
-                input: input.input.clone(),
-                selected_context: input.selected_context.clone(),
-                step,
-                prior_messages: prior_messages.to_vec(),
-            })
-            .await?;
-        if context.messages.len() > self.limits.context_messages {
-            return Err(Error::Invalid("model context exceeds message limit".into()));
-        }
-        for message in &context.messages {
-            message.content.validate_limits(self.limits)?;
-            // Stages may introduce references beyond the original turn selection.
-            // Resolve each final reference under this journal's exact authority
-            // before admission, reconciliation, or dispatch reaches a provider.
-            for reference in message.content.file_refs() {
-                journal.verify_input_file(reference).await?;
+        let mut persisted_prepared = None;
+        let mut started = None;
+        for record in &records {
+            match &record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: event_step,
+                    manifest,
+                    request,
+                } if *event_step == step => {
+                    if persisted_prepared.is_some() {
+                        return Err(Error::Storage(
+                            "duplicate prepared model input for executor step".into(),
+                        ));
+                    }
+                    persisted_prepared = Some((manifest.clone(), request.clone()));
+                }
+                ExecutionEvent::ModelStarted {
+                    step: event_step,
+                    request_digest,
+                } if *event_step == step => {
+                    if started.replace(*request_digest).is_some() {
+                        return Err(Error::Storage(
+                            "duplicate model start for executor step".into(),
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
+
+        let request = if let Some((manifest_ref, request_ref)) = persisted_prepared {
+            // A prepared request is the durable boundary for model input. Never
+            // re-run context stages on replay: they may read mutable files or
+            // perform retrieval, which would silently change the provider bytes.
+            let manifest =
+                load_json::<crate::model_input::ModelInputManifest>(journal, &manifest_ref).await?;
+            let request = load_json::<ModelRequest>(journal, &request_ref).await?;
+            let prepared =
+                crate::model_input::PreparedModelInput::prepare(request.clone(), self.limits)?;
+            let current_tools = self
+                .tools
+                .definitions()?
+                .into_iter()
+                .filter(|tool| {
+                    self.tool_scope
+                        .grants()
+                        .contains(&format!("tool:call:{}", tool.name))
+                })
+                .collect::<Vec<_>>();
+            if request.model != self.model || request.tools != current_tools {
+                return Err(Error::Conflict(
+                    "persisted model input component bindings changed".into(),
+                ));
+            }
+            if manifest.version != crate::model_input::MODEL_INPUT_VERSION
+                || manifest != *prepared.manifest()
+            {
+                return Err(Error::Conflict(
+                    "persisted model input manifest no longer matches its request".into(),
+                ));
+            }
+            prepared.validate_complete_exchange()?;
+            self.provider.admit(&request)?;
+            for message in &request.messages {
+                message.content.validate_limits(self.limits)?;
+                for reference in message.content.file_refs() {
+                    journal.verify_input_file(reference).await?;
+                }
+            }
+            request
+        } else {
+            let context = self
+                .context
+                .run(&ContextInput {
+                    input: input.input.clone(),
+                    selected_context: input.selected_context.clone(),
+                    step,
+                    prior_messages: prior_messages.to_vec(),
+                })
+                .await?;
+            if context.messages.len() > self.limits.context_messages {
+                return Err(Error::Invalid("model context exceeds message limit".into()));
+            }
+            for message in &context.messages {
+                message.content.validate_limits(self.limits)?;
+                // Stages may introduce references beyond the original turn selection.
+                // Resolve each final reference under this journal's exact authority
+                // before admission, reconciliation, or dispatch reaches a provider.
+                for reference in message.content.file_refs() {
+                    journal.verify_input_file(reference).await?;
+                }
+            }
+            let prepared = crate::model_input::PreparedModelInput::prepare(
+                ModelRequest {
+                    model: self.model.clone(),
+                    messages: context.messages,
+                    tools: self
+                        .tools
+                        .definitions()?
+                        .into_iter()
+                        .filter(|tool| {
+                            self.tool_scope
+                                .grants()
+                                .contains(&format!("tool:call:{}", tool.name))
+                        })
+                        .collect(),
+                    max_output_tokens: None,
+                },
+                self.limits,
+            )?;
+            prepared.validate_complete_exchange()?;
+            self.provider.admit(prepared.request())?;
+            let manifest_key = format!("model:{step}:input");
+            let manifest = stage_json(
+                journal,
+                input.operation_id,
+                &manifest_key,
+                prepared.manifest(),
+            )
+            .await?;
+            let request_file = stage_json(
+                journal,
+                input.operation_id,
+                &format!("model:{step}:request"),
+                prepared.request(),
+            )
+            .await?;
+            journal
+                .append(
+                    input.operation_id,
+                    manifest_key,
+                    ExecutionEvent::ModelInputPrepared {
+                        step,
+                        manifest,
+                        request: request_file,
+                    },
+                )
+                .await?;
+            prepared.into_request()
+        };
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
         for record in &records {
@@ -568,61 +711,8 @@ impl StockExecutor {
                 replayed_model.push(event);
             }
         }
-        let prepared = crate::model_input::PreparedModelInput::prepare(
-            ModelRequest {
-                model: self.model.clone(),
-                messages: context.messages,
-                tools: self
-                    .tools
-                    .definitions()?
-                    .into_iter()
-                    .filter(|tool| {
-                        self.tool_scope
-                            .grants()
-                            .contains(&format!("tool:call:{}", tool.name))
-                    })
-                    .collect(),
-                max_output_tokens: None,
-            },
-            self.limits,
-        )?;
-        prepared.validate_complete_exchange()?;
-        self.provider.admit(prepared.request())?;
-        let request_digest = prepared.manifest().request_digest;
-        let manifest_key = format!("model:{step}:input");
-        let manifest = stage_json(
-            journal,
-            input.operation_id,
-            &manifest_key,
-            prepared.manifest(),
-        )
-        .await?;
-        let request_file = stage_json(
-            journal,
-            input.operation_id,
-            &format!("model:{step}:request"),
-            prepared.request(),
-        )
-        .await?;
-        journal
-            .append(
-                input.operation_id,
-                manifest_key,
-                ExecutionEvent::ModelInputPrepared {
-                    step,
-                    manifest,
-                    request: request_file,
-                },
-            )
-            .await?;
-        let request = prepared.into_request();
-        let started = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ModelStarted {
-                step: event_step,
-                request_digest,
-            } if *event_step == step => Some(*request_digest),
-            _ => None,
-        });
+        let request_digest =
+            *blake3::hash(&crate::contract::canonical_json_bytes(&request)?).as_bytes();
         if started.is_none() && !replayed_model.is_empty() {
             return Err(Error::Storage(
                 "model observations exist without an admitted attempt".into(),
@@ -672,14 +762,23 @@ impl StockExecutor {
             observed
         } else {
             let current = journal.replay(input.operation_id).await?;
-            if let Some(existing) = current.iter().find_map(|record| match &record.event {
-                ExecutionEvent::ModelStarted {
-                    step: event_step,
-                    request_digest,
-                } if *event_step == step => Some(*request_digest),
-                _ => None,
-            }) {
-                if existing != request_digest {
+            let current_starts = current
+                .iter()
+                .filter_map(|record| match &record.event {
+                    ExecutionEvent::ModelStarted {
+                        step: event_step,
+                        request_digest,
+                    } if *event_step == step => Some(*request_digest),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if current_starts.len() > 1 {
+                return Err(Error::Storage(
+                    "duplicate model start for executor step".into(),
+                ));
+            }
+            if let Some(existing) = current_starts.first() {
+                if *existing != request_digest {
                     return Err(Error::Conflict(
                         "model attempt identity is bound to another request".into(),
                     ));
@@ -998,6 +1097,7 @@ impl StockExecutor {
         let mut started = None;
         let mut completed_tool = None;
         let mut retained_rejection = None;
+        let mut failed_tool = None;
         for record in &records {
             match &record.event {
                 ExecutionEvent::ToolStarted {
@@ -1048,8 +1148,28 @@ impl StockExecutor {
                     }
                     retained_rejection = Some((*reason, feedback.clone()));
                 }
+                ExecutionEvent::ToolFailed {
+                    step: event_step,
+                    call_id,
+                    reason,
+                } if *event_step == step && call_id == &invocation.call_id => {
+                    if failed_tool.is_some() {
+                        return Err(Error::Storage("duplicate failed tool record".into()));
+                    }
+                    failed_tool = Some(*reason);
+                }
                 _ => {}
             }
+        }
+        if completed_tool.is_some() && (retained_rejection.is_some() || failed_tool.is_some()) {
+            return Err(Error::Storage(
+                "tool journal contains contradictory terminal records".into(),
+            ));
+        }
+        if retained_rejection.is_some() && failed_tool.is_some() {
+            return Err(Error::Storage(
+                "tool journal contains contradictory terminal records".into(),
+            ));
         }
         if completed_tool.is_some() && started.is_none() {
             return Err(Error::Invalid(
@@ -1224,14 +1344,7 @@ impl StockExecutor {
             return Ok(());
         }
         let started = started.is_some();
-        if let Some(reason) = records.iter().find_map(|record| match &record.event {
-            ExecutionEvent::ToolFailed {
-                step: event_step,
-                call_id,
-                reason,
-            } if *event_step == step && call_id == &invocation.call_id => Some(*reason),
-            _ => None,
-        }) {
+        if let Some(reason) = failed_tool {
             return Err(Error::Invalid(reason.message().into()));
         }
         let (result, projection) = {
@@ -1516,6 +1629,7 @@ impl StockExecutor {
                         OperationId::new()
                     ),
                     ExecutionEvent::ToolCompleted {
+                        schema_version: TOOL_COMPLETED_EVENT_VERSION,
                         step,
                         call_id: invocation.call_id.clone(),
                         invocation_digest: crate::contract::canonical_json_digest(&invocation)?,
@@ -1831,6 +1945,7 @@ mod tests {
     use super::*;
     use crate::{
         AgentId, Capabilities,
+        context::{Context, ContextStage},
         conversation::{FileDescriptor, VolumeOwner, VolumeRef},
         resources::ProviderRef,
     };
@@ -1999,6 +2114,57 @@ mod tests {
     struct RecoverableModel {
         generate_calls: AtomicUsize,
         reconcile_calls: AtomicUsize,
+    }
+
+    struct ReplayModel {
+        calls: AtomicUsize,
+    }
+
+    impl ModelProvider for ReplayModel {
+        fn generate<'a>(
+            &'a self,
+            _: ModelRequest,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Content {
+                    delta: "done".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: json!({"finish": "stop"}),
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    struct CountingContext {
+        runs: Arc<AtomicUsize>,
+    }
+
+    impl ContextStage for CountingContext {
+        fn name(&self) -> &str {
+            "test.counting-context"
+        }
+
+        fn contract(&self) -> Value {
+            json!({"name": self.name(), "revision": 1})
+        }
+
+        fn apply<'a>(
+            &'a self,
+            _: &'a ContextInput,
+            context: Context,
+        ) -> BoxFuture<'a, Result<Context>> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            async move { Ok(context) }.boxed()
+        }
     }
 
     impl ModelProvider for RecoverableModel {
@@ -3181,6 +3347,16 @@ mod tests {
                 _ => None,
             })
             .ok_or_else(|| Error::Storage("missing completed tool record".into()))?;
+        let mut old_wire = serde_json::to_value(&completed)?;
+        old_wire
+            .as_object_mut()
+            .ok_or_else(|| Error::Storage("completed tool event is not an object".into()))?
+            .remove("schema_version");
+        let old_event: ExecutionEvent = serde_json::from_value(old_wire)?;
+        assert!(matches!(
+            old_event.validate_schema_version(),
+            Err(Error::Conflict(message)) if message.contains("schema version")
+        ));
         journal
             .append(input.operation_id, "duplicate-completed".into(), completed)
             .await?;
@@ -3396,6 +3572,63 @@ mod tests {
         assert_eq!(replayed, recovered);
         assert_eq!(model.generate_calls.load(Ordering::SeqCst), 1);
         assert_eq!(model.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_uses_persisted_model_input_without_rerunning_context() -> Result<()> {
+        let model = Arc::new(ReplayModel {
+            calls: AtomicUsize::new(0),
+        });
+        let context_runs = Arc::new(AtomicUsize::new(0));
+        let executor = StockExecutor::new(
+            Model::new("example", "replay", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::new([Arc::new(CountingContext {
+                runs: context_runs.clone(),
+            })]),
+            ToolRegistry::default(),
+        );
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([11; 16]),
+            input: ModelContent::Text("mutable source".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+
+        executor.execute(input.clone(), &journal).await?;
+        assert_eq!(context_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let prepared_count = journal
+            .replay(input.operation_id)
+            .await?
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.event,
+                    ExecutionEvent::ModelInputPrepared { step: 0, .. }
+                )
+            })
+            .count();
+        assert_eq!(prepared_count, 1);
+
+        executor.execute(input, &journal).await?;
+        assert_eq!(context_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let records = journal.replay(OperationId::from_bytes([11; 16])).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| {
+                    matches!(
+                        record.event,
+                        ExecutionEvent::ModelInputPrepared { step: 0, .. }
+                    )
+                })
+                .count(),
+            1
+        );
         Ok(())
     }
 

@@ -925,7 +925,9 @@ impl DurableCommunication {
         request.validate(None)?;
         self.authorize_wait(&request).await?;
         let waits = self.waits.as_ref().ok_or_else(|| {
-            Error::Unsupported("wait cancellation requires an owner-retained durable wait store".into())
+            Error::Unsupported(
+                "wait cancellation requires an owner-retained durable wait store".into(),
+            )
         })?;
         request.validate_completion(&WaitCompletion::Cancelled)?;
         let completion = waits.cancel(request.clone()).await?;
@@ -950,6 +952,11 @@ impl DurableCommunication {
     }
 
     async fn authorize_wait(&self, request: &WaitRequest) -> Result<()> {
+        // A wait is an owner-scoped observation just like message delivery.
+        // Authenticate the waiter before returning a retained timeout or
+        // cancellation so a caller cannot use a known operation identity as a
+        // bearer credential after restart.
+        self.host.observe_admission(request.waiter).await?;
         let WaitTarget::Tasks { task_ids } = &request.target else {
             return Ok(());
         };
@@ -1403,11 +1410,13 @@ mod tests {
             },
             ..request
         };
-        assert!(inbox
-            .validate_completion(&WaitCompletion::Messages {
-                items: vec![item(1, 23)?],
-            })
-            .is_err());
+        assert!(
+            inbox
+                .validate_completion(&WaitCompletion::Messages {
+                    items: vec![item(1, 23)?],
+                })
+                .is_err()
+        );
         Ok(())
     }
 
@@ -1472,6 +1481,31 @@ mod tests {
             })
             .await?;
         assert_eq!(host.sent.lock().expect("test lock").len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_requires_an_admitted_waiter_before_replaying_terminal_state() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let communication = DurableCommunication::new(host);
+        let now = unix_millis()?;
+        assert!(matches!(
+            communication
+                .wait(
+                    WaitRequest {
+                        operation_id: operation(42),
+                        waiter: task(8),
+                        target: WaitTarget::Deadline {
+                            deadline_epoch_ms: now.saturating_sub(1),
+                        },
+                        timeout_epoch_ms: None,
+                        cancellation_id: None,
+                    },
+                    None,
+                )
+                .await,
+            Err(Error::NotFound(_))
+        ));
         Ok(())
     }
 
