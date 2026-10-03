@@ -411,7 +411,7 @@
       "manifest_sha256": "5b47a4aa56a8b2a3b79592c34d53370d9389ff8f8a8c12221bf44a24e69553d"
     },
     "julia": {
-      "generator": "julia HTTP (Rust-owned adapter)",
+      "generator": "julia HTTP (Rust-owned adapter and family projection)",
       "runtime": "Julia 1.13.1 stable official Windows portable",
       "runtime_executable": "Q:/sdk/tmp-openapi-extra/julia-official-1.13.1/julia-1.13.1/bin/julia.exe",
       "runtime_executable_sha256": "d8804b0d175337edbe69db6dba8a71b389335b06ce82382ce6dd614c429675b6",
@@ -419,17 +419,67 @@
       "source_artifact_sha256": "24d9723fe5be6cbc8c363887843b43199658de0a4b9fc3d818d20abc6cc3a84f",
       "generated_package": "AcyclicWorkers 1.0.0",
       "package_archive": "Q:/sdk/tmp-openapi-extra/julia-acyclic-workers-1.0.0.zip",
-      "package_archive_sha256": "b8771edefb75900701980cc0c925ed37d3919414845206fbec16ae2633d53c1f",
-      "package_archive_bytes": 6869,
+      "package_archive_sha256": "e8d2ae25fb329dd70b89b711954c6c63049b1a3918f7e4a3943627f81141a9e2",
+      "package_archive_bytes": 13623,
       "project_toml_sha256": "e2feeee44a7f8670e852236e8aa6784d787eede3cc340d180003c7cd3cd8f9f5",
       "manifest_toml_sha256": "bd01b176ec32fb32deeb7ebc4cff06febce90606e0324bad9d7408e4d965f4f4",
       "installation": "pass: Pkg.instantiate update_registry=false with JULIA_PKG_OFFLINE=true from extracted portable package",
       "license_metadata": {
         "manifest": "research/additional-languages/openapi-targets/julia-manifest.json",
-        "manifest_sha256": "ae645a42e03def97ef9dcbdc53f7e3040544e7553508e2d56b264e6be635c9f9",
+        "manifest_sha256": "d60c79c1e61477206483cd24fe08bffe8ee66a04ae736419cd6193b3ccb5888c",
         "package": "Apache-2.0",
         "package_license_sha256": "dd4ab0fb7c00c1c80ce70dea9fe961875ac4bdc0fabeffc6c7c362838d3915b4",
         "dependency_scope": "Julia, Base64, Downloads, and transitive runtime licenses are external and not claimed as Apache"
+      },
+      "family_projections": {
+        "authority": "acyclic_sdk_contract_wire::explicit_http_family_views",
+        "projection_command": "sdk-openapi --julia-family-adaptation <family> <output.jl>",
+        "http_projection": true,
+        "native_grpc": "unavailable; inventory has no maintained Julia gRPC generator",
+        "transport_selection": "Rust-owned policy selects only capability-qualified HTTP transport; no forced client default or silent fallback",
+        "modules": {
+          "actors": {
+            "path": "family-projections/actors.jl",
+            "sha256": "792b9762673556b26e7c017c11465fc90afc8411ded2250bd6070d879f151a68",
+            "bytes": 6275,
+            "routes": 8,
+            "policies": 8
+          },
+          "workers": {
+            "path": "family-projections/workers.jl",
+            "sha256": "04f600aaec00fed52f76efea80a640b12e794bbdd125ce55cfd19b26f2909db9",
+            "bytes": 4147,
+            "routes": 7,
+            "policies": 7
+          },
+          "stream": {
+            "path": "family-projections/stream.jl",
+            "sha256": "a5e8d034f0e0f4e98b4585a93d4e84062ae865732b12e880e3a6189781984817",
+            "bytes": 4619,
+            "routes": 10,
+            "policies": 10
+          },
+          "objects": {
+            "path": "family-projections/objects.jl",
+            "sha256": "a5e2140cb55400bb53fd974b9fbedeebbddf6a3cac8af55a41e2663c50661a4c",
+            "bytes": 10157,
+            "routes": 13,
+            "policies": 13
+          },
+          "inference": {
+            "path": "family-projections/inference.jl",
+            "sha256": "a6c1fe3b05e6cf038ab3e875b1af1d1ef7223f9a0f81a26c9f4bc30ab8ec4215",
+            "bytes": 7073,
+            "routes": 14,
+            "policies": 14
+          }
+        }
+      },
+      "transport_selection": {
+        "policy_owner": "Rust sdk-contract-wire registry",
+        "qualified_transport": "HTTP projection",
+        "native_grpc": "unavailable; inventory has no maintained Julia gRPC generator",
+        "default_behavior": "select only capability-qualified transport; no forced client default or silent fallback"
       },
       "semantic_consumer": {
         "test_source": "research/additional-languages/openapi-targets/julia-consumer.jl",
@@ -447,7 +497,9 @@
         "entrypoint": "sdk-openapi --julia-adaptation",
         "library": "rust/crates/sdk-openapi-prototype/src/lib.rs",
         "contract_guard": "acyclic.workers.v1",
-        "authority": "Rust ContractSpec and route table; no separately authored shared schema"
+        "authority": "Rust ContractSpec and route table; no separately authored shared schema",
+        "family_entrypoint": "sdk-openapi --julia-family-adaptation",
+        "family_library": "rust/crates/sdk-openapi-prototype/src/lib.rs:julia_family_projection_source"
       },
       "official_runtime": {
         "archive_url": "https://julialang-s3.julialang.org/bin/winnt/x64/1.13/julia-1.13.1-win64.zip",
@@ -461,7 +513,7 @@
     "OpenAPI Generator 7.25.0 outputs remain target-generated; Rust owns only contract-bound C/Dart adaptations and checks.",
     "C package license manifest records generated source scope, cJSON MIT, libcurl/curl scopes; no global dependency license claim.",
     "Dart package license manifest records Apache-2.0 package metadata and every resolved lock package LICENSE hash. Official Dart 3.13.5 plus frontend_server_client 4.0.0 now passes the emitted generated test suite; the earlier 3.8.3 failure is preserved as historical evidence.",
-    "Julia 1.13.1 official portable runtime and Rust-owned Workers adapter are qualified with an installable package and 8 semantic tests; generated package license scope is limited to AcyclicWorkers and stdlib/transitive licenses remain external."
+    "Julia 1.13.1 official portable runtime and Rust-owned Workers adapter are qualified with an installable package and 8 semantic tests; the same package now carries registry-derived route/policy projections for all five explicit HTTP families. Julia is HTTP-only in the current inventory; native gRPC is unqualified, and stdlib/transitive licenses remain external."
   ],
   "unqualified": {
     "c": {
@@ -484,7 +536,7 @@
     },
     "bootstrap_report": {
       "path": "research/additional-languages/openapi-targets/bootstrap-pending-targets.md",
-      "sha256": "2e8b921c240810513f29386a684ab06c4c934f813da32f39b6e84f5e9ed76257",
+      "sha256": "6f6da6b2b18981ec3580101e181e7d091bceb0d1e3581508d3a5c26c1fb0d174",
       "scope": "C compiler/curl bootstrap and stable Dart runtime evidence; technical C and Dart consumers are now qualified with per-target license/test limitations recorded."
     }
   }

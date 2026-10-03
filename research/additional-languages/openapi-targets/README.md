@@ -94,13 +94,21 @@ the compiled consumer passes base64 bytes, the maximum uint64 decimal string,
 and the typed 409 error response against the canonical fixtures.
 
 The Julia target is a Rust-owned Workers adapter emitted by
-`sdk-openapi --julia-adaptation`. The official Julia 1.13.1 Windows portable
-runtime installs the `AcyclicWorkers` 1.0.0 package from its pinned archive
-with only the standard `Base64` and `Downloads` dependencies. The packaged
-consumer passes eight tests against the canonical loopback fixtures: request
-and response bytes, exact maximum `UInt64`, typed HTTP 409 errors, and a
-pre-cancelled token. The package license is Apache-2.0; Julia, stdlib, and
-transitive runtime licenses remain explicitly outside that package claim.
+`sdk-openapi --julia-adaptation`. The same package now includes five
+registry-derived route and operation-policy modules emitted by
+`sdk-openapi --julia-family-adaptation`: actors, workers, stream, objects, and
+inference. Each module records the Rust route table and capability/error/
+validation metadata; it is an HTTP projection inventory, not a second
+transport implementation. The official Julia 1.13.1 Windows portable runtime
+installs the `AcyclicWorkers` 1.0.0 package from its pinned archive with only
+the standard `Base64` and `Downloads` dependencies. The packaged consumer
+passes eight tests against the canonical loopback fixtures: request and
+response bytes, exact maximum `UInt64`, typed HTTP 409 errors, and a
+pre-cancelled token. Julia is HTTP-only in the current target inventory, so
+native gRPC is unqualified and Rust policy selects only capability-qualified
+transports without a forced client default or silent fallback. The package
+license is Apache-2.0; Julia, stdlib, and transitive runtime licenses remain
+explicitly outside that package claim.
 
 `c-portable-manifest.json` and `dart-portable-manifest.json` record archive
 hashes and file inventories. `c-install-license-manifest.json` and

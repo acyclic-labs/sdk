@@ -9,7 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use acyclic_sdk_contract_wire::workers::{
     WORKERS_ENUM_DOCS, WORKERS_FIELD_DOCS, WORKERS_MESSAGE_DOCS, WORKERS_SERVICE_DOC,
 };
-use acyclic_sdk_contract_wire::{Cardinality, ContractSpec, FieldSpec, FieldType};
+use acyclic_sdk_contract_wire::{
+    Cardinality, ContractSpec, FieldSpec, FieldType, explicit_http_family_views,
+};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
@@ -1252,6 +1254,81 @@ pub fn julia_workers_adaptation_source(contract: &ContractSpec) -> Result<String
     Ok(source)
 }
 
+fn julia_string(value: &str) -> Result<String, Error> {
+    Ok(serde_json::to_string(value)?)
+}
+
+fn julia_string_array(values: &[&str]) -> Result<String, Error> {
+    values
+        .iter()
+        .map(|value| julia_string(value))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|values| format!("[{}]", values.join(", ")))
+}
+
+/// Render the Rust registry-backed Julia route/policy projection for one
+/// explicit HTTP family. This is an inventory module, not a second transport
+/// implementation: route, RPC, capability, error, and validation metadata all
+/// come from `sdk-contract-wire`'s unified family registry.
+pub fn julia_family_projection_source(family: &str) -> Result<String, Error> {
+    let view = explicit_http_family_views()
+        .find(|view| view.name == family)
+        .ok_or_else(|| Error::MissingContract(format!("explicit HTTP family {family}")))?;
+    let contract = view
+        .model
+        .as_contract_spec()
+        .ok_or_else(|| Error::MissingContract(format!("structured HTTP family {family}")))?;
+    let mut routes = String::new();
+    for route in view.routes() {
+        routes.push_str(&format!(
+            "    RouteSpec({}, {}, {}, {}, {}, {}, {}),\n",
+            julia_string(route.method)?,
+            julia_string(route.path)?,
+            julia_string(route.operation_id)?,
+            julia_string(route.rpc)?,
+            julia_string(route.request)?,
+            julia_string(route.response)?,
+            julia_string(route.docs)?,
+        ));
+    }
+    let mut policies = String::new();
+    for policy in view.operation_policies {
+        policies.push_str(&format!(
+            "    (rpc={}, capabilities={}, errors={}, validations={}),\n",
+            julia_string(policy.rpc)?,
+            julia_string_array(policy.capabilities)?,
+            julia_string_array(policy.errors)?,
+            julia_string_array(policy.validations)?,
+        ));
+    }
+    Ok(format!(
+        concat!(
+            "module AcyclicHttpProjection\n\n",
+            "export RouteSpec, FAMILY, PACKAGE, HTTP_PROJECTION, GRPC_PROJECTION, ROUTES, POLICIES\n\n",
+            "struct RouteSpec\n",
+            "    method::String\n",
+            "    path::String\n",
+            "    operation_id::String\n",
+            "    rpc::String\n",
+            "    request::String\n",
+            "    response::String\n",
+            "    docs::String\n",
+            "end\n\n",
+            "const FAMILY = {}\n",
+            "const PACKAGE = {}\n",
+            "const HTTP_PROJECTION = true\n",
+            "const GRPC_PROJECTION = false\n",
+            "const ROUTES = RouteSpec[\n{}]\n",
+            "const POLICIES = [\n{}]\n\n",
+            "end\n"
+        ),
+        julia_string(view.name)?,
+        julia_string(contract.package)?,
+        routes,
+        policies,
+    ))
+}
+
 /// Return whether an existing generated artifact matches the current model.
 /// This is the stale-output guard used by CI and local generation checks.
 pub fn check_json_file(path: impl AsRef<std::path::Path>) -> Result<bool, Error> {
@@ -1409,6 +1486,25 @@ mod tests {
         let error = julia_workers_adaptation_source(&ACTORS)
             .expect_err("Actors must not receive Workers Julia adaptation");
         assert!(error.to_string().contains("requires acyclic.workers.v1"));
+    }
+
+    #[test]
+    fn julia_family_projection_uses_registry_routes_and_policies() {
+        for family in ["actors", "workers", "stream", "objects", "inference"] {
+            let source = julia_family_projection_source(family)
+                .expect("explicit HTTP family projection renders");
+            assert!(source.contains("const HTTP_PROJECTION = true"));
+            assert!(source.contains("const GRPC_PROJECTION = false"));
+            assert!(source.contains("const ROUTES = RouteSpec["));
+            assert!(source.contains("const POLICIES = ["));
+        }
+    }
+
+    #[test]
+    fn julia_family_projection_rejects_non_http_registry_families() {
+        let error = julia_family_projection_source("machines")
+            .expect_err("machines has no explicit HTTP projection");
+        assert!(error.to_string().contains("explicit HTTP family machines"));
     }
 
     #[test]

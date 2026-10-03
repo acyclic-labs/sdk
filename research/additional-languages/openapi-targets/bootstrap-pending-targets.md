@@ -54,11 +54,17 @@ third-party dependencies.
 ## Julia
 
 The Rust-owned `sdk-openapi --julia-adaptation` emits the Workers package
-source from the `ContractSpec` route and field anchors. The official Julia
-1.13.1 Windows portable archive is pinned by URL, archive hash, and executable
-hash. The packaged `AcyclicWorkers` 1.0.0 archive installs offline with its
-stdlib-only `Project.toml`/`Manifest.toml` and Apache-2.0 package license.
-Eight packaged tests pass against the loopback fixtures: request and response
-bytes, exact maximum uint64, typed 409 errors, and pre-transport cancellation.
-The target remains an HTTP projection; Julia and all stdlib/transitive runtime
-licenses are tracked outside the generated package’s Apache-2.0 scope.
+source from the `ContractSpec` route and field anchors. The package also
+contains five Rust registry-derived HTTP family projections emitted by
+`sdk-openapi --julia-family-adaptation` (actors, workers, stream, objects, and
+inference), each carrying the Rust route and operation-policy metadata. The
+official Julia 1.13.1 Windows portable archive is pinned by URL, archive hash,
+and executable hash. The packaged `AcyclicWorkers` 1.0.0 archive installs
+offline with its stdlib-only `Project.toml`/`Manifest.toml` and Apache-2.0
+package license. Eight packaged tests pass against the loopback fixtures:
+request and response bytes, exact maximum uint64, typed 409 errors, and
+pre-transport cancellation. The target remains HTTP-only in the current
+inventory; native gRPC is unqualified, and Rust policy selects only
+capability-qualified transports without a forced client default or silent
+fallback. Julia and all stdlib/transitive runtime licenses are tracked outside
+the generated package’s Apache-2.0 scope.

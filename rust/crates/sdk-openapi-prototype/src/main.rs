@@ -90,6 +90,36 @@ fn main() -> ExitCode {
         println!("wrote Rust-owned Julia adaptation to {}", path.display());
         return ExitCode::SUCCESS;
     }
+    if first.as_deref() == Some(std::ffi::OsStr::new("--julia-family-adaptation")) {
+        let Some(family) = args.next().and_then(|value| value.into_string().ok()) else {
+            eprintln!(
+                "usage: sdk-openapi --julia-family-adaptation <family> <generated-projection.jl>"
+            );
+            return ExitCode::FAILURE;
+        };
+        let Some(path) = args.next().map(PathBuf::from) else {
+            eprintln!(
+                "usage: sdk-openapi --julia-family-adaptation <family> <generated-projection.jl>"
+            );
+            return ExitCode::FAILURE;
+        };
+        let source = match sdk_openapi_prototype::julia_family_projection_source(&family) {
+            Ok(source) => source,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = fs::write(&path, source) {
+            eprintln!("failed writing {}: {error}", path.display());
+            return ExitCode::FAILURE;
+        }
+        println!(
+            "wrote Rust registry-backed Julia {family} projection to {}",
+            path.display()
+        );
+        return ExitCode::SUCCESS;
+    }
     let check = first.as_deref() == Some(std::ffi::OsStr::new("--check"));
     let family = if check {
         "actors".to_owned()
