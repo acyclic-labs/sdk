@@ -200,3 +200,7 @@ The native malformed-call continuation test currently fails because cumulative t
 ## Native terminal and host-history checkpoint
 
 Source 5cefdcc5002860196660c146d2cc9b2b4e152178 has three passing native CLI tests, including real staged-file restart and exact SDK reads. Host execution artifacts remain private; authoritative conversation stores validated model projections. Actual provider-manifest capture, repeated-call rejection replay, and orphaned tool-role rejection have focused passing evidence. The synthetic recursive test still fails missing inherited grants. This is not installed-package, recursive swarm, or final qualification. See checkpoint-native-terminal-host-history.json for digests and limitations.
+
+## Authoritative replay and interactive native checkpoint
+
+See checkpoint-authoritative-replay-interactive-native.json for scoped source and artifact digests. Seventeen native executor regressions pass at e76ff0be; four native CLI regressions pass at 384cdeaa, including a response with stdin kept open. An actual hidden native process and installed SDK consumer pass staged-file operation retry, exact read, and reopen. The installed package was prepared in a separate validation worktree, so this is focused behavior evidence rather than final package qualification. The test discards a completed response; it does not prove a mid-effect crash. Recursive swarm, authenticated effects, budgets, writeback, PTY, regenerated WASM, and the full matrix remain required.

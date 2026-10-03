@@ -1,0 +1,65 @@
+{
+  "kind": "focused-checkpoint",
+  "complete": false,
+  "recorded_source_commit": "183b1bfe9c3454802fdb4cf8fb9ac8cd04ede199",
+  "platform": "Windows native",
+  "digests": {
+    "rust/crates/harness/src/executor.rs": "a152511f5336261d0b224c06f940ac72f08260b0a91daafc7fd2cf5c868c96d6",
+    "rust/crates/harness/src/filesystem/execution_journal.rs": "283e39f0ca46e7e34fb43461f79af7730655cb2211806674ba45b7ac02b70388",
+    "rust/crates/harness/src/model_input.rs": "30ff47c8488d20904b19c3a2288999d096a429a8881633a833527c532ad9be7d",
+    "rust/crates/graphcoder-cli/src/main.rs": "6d3ee3acedc153e26f21471a11c9068c021d2622b808fb3591a2b4e0f53acf1f",
+    "scripts/graphcoder-native-stage-e2e.mjs": "cd0b2febc9359383529564ccb3db700c4a23901c11e633102c4fff33ab2117ba",
+    "docs/graphcoder-swarm/graphcoder-native-scenarios.json": "0fba0dcdc09e3cddee8f793ed80be6f288294cc014d0731822393c37e8954497",
+    "docs/graphcoder-swarm/requirements.json": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+  },
+  "artifacts": {
+    "target/debug/graphcoder-runtime.exe": "646e44b4097d30797c68c301d0c1a1549745075d359f4fe1c0c53613e812cc63",
+    "target/debug/deps/graphcoder_runtime-93471752f5b7a615.exe": "acfbd403544d2b27c4cf96b8fdd98a01188d017ae40ba0e107d407296ff4a788",
+    "target/debug/deps/acyclic_harness-b1a785774e21d1fe.exe": "8949c6f49411b5f09251fed263f158dd4d209490d850e86723b4820ac882704f"
+  },
+  "results": [
+    {
+      "suite": "executor::tests --features filesystem",
+      "source_commit": "e76ff0be",
+      "passed": 17,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.03,
+      "scope": "Persisted request reuse without context rerun, prior executor/projection/recovery regressions. Later operation-scoping tests still running."
+    },
+    {
+      "suite": "acyclic-graphcoder-cli",
+      "source_commit": "384cdeaa",
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 3.39,
+      "scope": "Native test executable, real storage and public JSON-lines; includes keep-stdin-open response deadline."
+    },
+    {
+      "suite": "graphcoder-native-stage-e2e.mjs",
+      "runtime_source_commit": "384cdeaa",
+      "driver_source_commit": "384cdeaa",
+      "passed": 1,
+      "failed": 0,
+      "scope": "Actual native executable with hidden pipes: completed response discarded, stable operation retry, exact fixture:stage read, reopen/activity, installed SDK BigInt decode. Discard after process completion is not a mid-effect crash."
+    }
+  ],
+  "installed_package": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-validation\\sdk\\.qualification\\fresh-installed\\graphcoder-0.2.0.tgz",
+    "sha256": "80f67d79a71c0441a549b63564173eb51d34f87fd93139847c8cfa4cf720ccb7",
+    "provenance": "Prepared from separate validation worktree; cross-worktree source identity prevents final package qualification."
+  },
+  "remaining_required_gates": [
+    "Actual recursive root/two children/grandchild production runtime and exact published grants",
+    "Scheduler trusted measured receipts, budget hard limits, activation/cancellation ownership races",
+    "Authenticated subprocess approval/recovery latest worker chain not integrated",
+    "Direct-parent integration and concurrent-user root writeback latest chain not integrated",
+    "Fresh single-source installed artifacts, PTY, WASM/bindings and full locked matrix",
+    "Native dead-code lint warning remains"
+  ],
+  "original_checkout_issue": {
+    "path": "Q:/sdk/.graphcoder-terminal.tsbuildinfo",
+    "status": "Prior worker wrote ignored metadata; prior contents unknown, preserved."
+  }
+}
