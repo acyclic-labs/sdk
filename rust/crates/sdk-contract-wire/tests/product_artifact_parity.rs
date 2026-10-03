@@ -66,6 +66,8 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
         "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
         "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
         "dart/lib/src/generated_remote_policy.dart",
+        "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+        "dotnet/GeneratedRemotePolicy.cs",
     ] {
         let path = root.join(relative);
         let mut bytes = fs::read(&path).expect("generated product fixture");
@@ -112,6 +114,8 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
         "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
         "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
         "dart/lib/src/generated_remote_policy.dart",
+        "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+        "dotnet/GeneratedRemotePolicy.cs",
     ] {
         let source = fs::read_to_string(root.join(relative)).expect("generated facade source");
         assert!(
@@ -123,17 +127,21 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             "streaming Read policy missing from {relative}"
         );
         assert!(
-            source.contains("acyclic.machines.v1.MachinesService/WatchOperation")
-                && source.contains("machines.operations"),
+            source.contains("acyclic.machines.v1.MachinesService/WatchOperation"),
             "Machines native bridge operation metadata missing from {relative}"
+        );
+        assert!(
+            source.contains("machines.operations")
+                || source.contains("Map<String, Operation> machines")
+                || source.contains("var machines = new Dictionary"),
+            "Machines operation collection missing from {relative}"
         );
         assert!(
             source.contains("cancellation") && source.contains("operation"),
             "Machines cancellation metadata missing from {relative}"
         );
         assert!(
-            source.contains("post_failure_fallback")
-                || source.contains("postFailureFallback"),
+            source.contains("post_failure_fallback") || source.contains("postFailureFallback"),
             "post-failure fallback policy missing from {relative}"
         );
         assert!(
@@ -163,6 +171,30 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
                     source.contains("installedAvailability[option.$1]")
                         && source.contains("endpointAvailability[option.$1]"),
                     "Dart facade does not intersect installed and endpoint availability"
+                );
+            }
+            "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java" => {
+                assert!(
+                    source.contains("installed.supports(option.transport())")
+                        && source.contains("endpoint.supports(option.transport())"),
+                    "Java facade does not intersect installed and endpoint availability"
+                );
+                assert!(
+                    source.contains("Defaults fromEnvironment()")
+                        && source.contains("validateBearer"),
+                    "Java facade does not expose endpoint/token defaults"
+                );
+            }
+            "dotnet/GeneratedRemotePolicy.cs" => {
+                assert!(
+                    source.contains("installed.Supports(option.Transport)")
+                        && source.contains("endpoint.Supports(option.Transport)"),
+                    "C# facade does not intersect installed and endpoint availability"
+                );
+                assert!(
+                    source.contains("Defaults FromEnvironment()")
+                        && source.contains("ValidateBearer"),
+                    "C# facade does not expose endpoint/token defaults"
                 );
             }
             _ => unreachable!("unexpected generated facade path: {relative}"),

@@ -1,4 +1,5 @@
 using Google.Protobuf;
+using Acyclic.Sdk.Transport;
 using Acyclic.Actors.V1;
 using Acyclic.Stream.V2;
 using Grpc.Core;
@@ -8,6 +9,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 GoldenRoundTrip.Run();
+FactoryDefaults.Run();
 await Consumer.RunAsync();
 
 sealed class GoldenFixture
@@ -23,6 +25,33 @@ sealed class GoldenFixture
 
     [JsonPropertyName("sha256")]
     public required string Sha256 { get; init; }
+}
+
+static class FactoryDefaults
+{
+    public static void Run()
+    {
+        var defaults = new GeneratedRemotePolicy.Defaults("http://127.0.0.1:1", "test-token");
+        using var client = RemoteClientFactory.Create("actors", streaming: false, defaults, null);
+        if (client.Transport != GeneratedRemotePolicy.Transport.Grpc)
+            throw new InvalidOperationException($"Expected Rust policy to choose gRPC, got {client.Transport}.");
+        if (client.Headers.GetValue("authorization") != "Bearer test-token")
+            throw new InvalidOperationException("Factory did not carry the bearer token into call metadata.");
+        try
+        {
+            _ = RemoteClientFactory.Create(
+                "actors",
+                streaming: false,
+                new GeneratedRemotePolicy.Defaults("http://127.0.0.1:1", "bad\ntoken"),
+                null);
+            throw new InvalidOperationException("Invalid bearer token was accepted.");
+        }
+        catch (ArgumentException)
+        {
+            // Rust-emitted bearer validation rejects the call before any network operation.
+        }
+        Console.WriteLine("Rust-emitted transport policy factory defaults passed.");
+    }
 }
 
 static class GoldenRoundTrip

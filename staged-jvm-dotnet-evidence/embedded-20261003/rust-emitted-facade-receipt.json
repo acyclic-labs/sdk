@@ -1,0 +1,69 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.rust-emitted-facade.v1",
+  "qualification": "JVM and .NET automatic native transport factories consume Rust-emitted policy snapshots and current installed packages",
+  "authority": {
+    "export": "Q:/sdk/.tmp-sdk-contract-policy-current/rust-authority.json",
+    "manifest_sha256": "C340B87EDE942EC7F237DA358F37D52EF34C541AB250DDF3DCAF4F71D861451B",
+    "source_revision": "a1677f826e295a165cf8e0e7a2bf4137f99630c9ca9643de80108c138c112d10",
+    "rust_facades_source_sha256": "885B39D5E8A1937E303E7284F3963487B2151D6BDFC79C3E8F2DF6CB4C6B701A",
+    "rust_policy_source_binding": "1BE25FCFE123DDE00C2F7D434A1E22FFE04E0630F909ECD868E814EE14F20E3F",
+    "families": 9
+  },
+  "generated_targets": {
+    "java": {
+      "path": "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+      "sha256": "78725CD475C6980724B3E575A023C498883724D537D33B05F18CE8DB9B8EE9E3",
+      "transport": "grpc preferred; http_json and grpc_web represented by Rust policy",
+      "defaults": "acyclic.endpoint or ACYCLIC_ENDPOINT, then http://127.0.0.1:8080; token from acyclic.bearerToken or ACYCLIC_BEARER_TOKEN"
+    },
+    "csharp": {
+      "path": "dotnet/GeneratedRemotePolicy.cs",
+      "sha256": "F7965E578BC8BDC4F772EB37342C8366C1294683170D2590709571C48104C143",
+      "transport": "grpc preferred; http_json and grpc_web represented by Rust policy",
+      "defaults": "ACYCLIC_ENDPOINT, then http://127.0.0.1:8080; token from ACYCLIC_BEARER_TOKEN"
+    }
+  },
+  "factories": {
+    "java": {
+      "path": "jvm/src/main/java/dev/acyclic/transport/RemoteClientFactory.java",
+      "sha256": "EB5AC367FC2C84CB3DEADC46DEE5678640537DD1BBEE5BAFD14A3C32BDBEE359",
+      "test": "jvm/src/test/java/dev/acyclic/transport/RemoteClientFactoryTest.java",
+      "test_sha256": "2918C89B4EA3BEA37536872ABAFB75A1ECFC9F7B25486C191EF92742D525F2A3",
+      "maven_build_seconds": 18.553,
+      "maven_test_seconds": 21.454,
+      "result": "pass"
+    },
+    "dotnet": {
+      "path": "dotnet/RemoteClientFactory.cs",
+      "sha256": "4A9DF60DBC49AB5139290205CD34D17307C4809C5D6A77D99D9B7BE68ECE6DE0",
+      "consumer": "dotnet/consumer/Program.cs",
+      "consumer_sha256": "92E8307F6461223339F2187077985EBEF3446EEA1C33049CD965D9C7ADE4AE3E",
+      "pack_seconds": 23.901,
+      "result": "pass"
+    }
+  },
+  "packages": {
+    "java": {
+      "artifact": "Q:/sdk/.tmp-jvm-policy-project-20261003/jvm/target/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+      "sha256": "DF842B66E4AB3613083FC412BA6C03179BFDA067176AA4EF58AC6B6B5ACB83BF",
+      "embedded_authority": "a1677f826e295a165cf8e0e7a2bf4137f99630c9ca9643de80108c138c112d10",
+      "installed_factory": "pass; final JAR probe"
+    },
+    "dotnet": {
+      "artifact": "Q:/sdk/.tmp-dotnet-policy-package-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+      "sha256": "36E6AEDA1EC21ADE1FD3BA65DF6B51750D7F43C0F296734742042FA468A6635B",
+      "embedded_authority": "a1677f826e295a165cf8e0e7a2bf4137f99630c9ca9643de80108c138c112d10",
+      "installed_consumer": "pass"
+    }
+  },
+  "selection": {
+    "default": "Rust-emitted native policy selects the first compatible option, preferring gRPC when the installed JVM/.NET adapter and endpoint both advertise it",
+    "installed": "grpc only in these packages",
+    "endpoint": "availability is supplied by the factory call; no probe is performed",
+    "override": "optional explicit override is checked against the same Rust policy",
+    "post_failure_fallback": "none",
+    "replay": "none",
+    "http_json": "represented in the generated policy, but no JVM/.NET HTTP adapter is claimed by this package"
+  },
+  "publication": "local evidence only; no merge, publish, or deployment"
+}
