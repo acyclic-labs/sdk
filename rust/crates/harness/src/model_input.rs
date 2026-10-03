@@ -772,8 +772,8 @@ mod tests {
         let mut orphan = request()?;
         orphan.messages.remove(2);
         assert!(
-            PreparedModelInput::prepare(orphan, Limits::default())?
-                .validate_complete_exchange()
+            PreparedModelInput::prepare(orphan, Limits::default())
+                .and_then(|prepared| prepared.validate_complete_exchange())
                 .is_err()
         );
         let mut mismatch = request()?;
@@ -783,8 +783,8 @@ mod tests {
             value: json!({}),
         });
         assert!(
-            PreparedModelInput::prepare(mismatch, Limits::default())?
-                .validate_complete_exchange()
+            PreparedModelInput::prepare(mismatch, Limits::default())
+                .and_then(|prepared| prepared.validate_complete_exchange())
                 .is_err()
         );
         Ok(())
