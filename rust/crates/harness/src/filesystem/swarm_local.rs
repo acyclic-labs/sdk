@@ -280,6 +280,32 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind")]
 enum StoredEvent {
     Session(StoredSession),
+    /// Prepared request retained before provider publication. This event is
+    /// replayable but does not authorize child activation by itself.
+    ForkPrepared {
+        parent: TaskId,
+        parent_operation: OperationId,
+        parent_step: u32,
+        child: TaskId,
+        child_operation: OperationId,
+        #[serde(default)]
+        child_authority: Option<Authority>,
+        #[serde(default)]
+        child_agent: Option<AgentId>,
+        task: String,
+        #[serde(default)]
+        prompt: String,
+        #[serde(default)]
+        seed: Option<ForkSeed>,
+        #[serde(default)]
+        seed_digest: Option<[u8; 32]>,
+        #[serde(default)]
+        report: Option<ForkReport>,
+        #[serde(default)]
+        publication: Option<ModelBatchPublication>,
+        #[serde(default)]
+        declaration: Option<LocalInheritedModelDeclaration>,
+    },
     ForkAdmitted {
         parent: TaskId,
         parent_operation: OperationId,
@@ -649,6 +675,9 @@ impl PersistentLocalSwarm {
         let parent_harness = self.open_session(request.parent).await?;
         let publication = self.publications.lock().await.get(&child).cloned();
         let declaration = self.declarations.lock().await.get(&child).cloned();
+        let stored_publication = publication.clone();
+        let stored_declaration = declaration.clone();
+        let stored_report = self.reports.lock().await.get(&child).cloned();
         if publication.is_none() || declaration.is_none() {
             return Err(Error::Conflict(
                 "typed publication and recursive declaration are required; use publish_and_activate_child_with_publication".into(),
@@ -672,6 +701,37 @@ impl PersistentLocalSwarm {
             _ => unreachable!("typed publication and declaration were checked together"),
         };
         let storage_parent = verified_parent.as_ref().unwrap_or(parent);
+        // The proof above is the admission boundary. Only after it succeeds
+        // do we append the authoritative ForkAdmitted record; a prepared
+        // record alone cannot make an unverified child runnable.
+        if let (Some(publication), Some(declaration)) =
+            (stored_publication, stored_declaration)
+        {
+            let registry = self
+                .registry
+                .stream(REGISTRY_STREAM)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            append_record(
+                &registry,
+                StoredEvent::ForkAdmitted {
+                    parent: request.parent,
+                    parent_operation: request.parent_operation,
+                    parent_step: request.parent_step,
+                    child,
+                    child_operation: request.child_operation,
+                    child_authority: request.child_authority.clone(),
+                    child_agent: request.child_agent.clone(),
+                    task: request.task.clone(),
+                    prompt: request.prompt.clone(),
+                    seed: Some(seed.clone()),
+                    seed_digest: Some(fork_seed_digest(seed)?),
+                    report: stored_report,
+                    publication: Some(publication),
+                    declaration: Some(declaration),
+                },
+            )
+            .await?;
+        }
         let existing = self.records.lock().await.get(&child).cloned();
         let new_admission = match existing {
             None => true,
@@ -830,7 +890,7 @@ impl PersistentLocalSwarm {
             .map_err(|error| Error::Storage(error.to_string()))?;
         append_record(
             &registry,
-            StoredEvent::ForkAdmitted {
+            StoredEvent::ForkPrepared {
                 parent: request.parent,
                 parent_operation: request.parent_operation,
                 parent_step: request.parent_step,
@@ -1096,6 +1156,34 @@ impl PersistentLocalSwarm {
             });
         }
         let seed = self.published_seed(task).await?;
+        if let Ok(report) = self.prepared_report(task).await {
+            let mut child = StreamAggregate::open(
+                &stream,
+                seed.child.clone(),
+                issuer.verifier(),
+                SchemaRegistry::new(),
+            )
+            .await?;
+            let parent_scope = self
+                .open_session(request.parent)
+                .await?
+                .storage()
+                .owner_scope()
+                .clone();
+            let child_scope = issuer.root_for_agent(
+                seed.child_agent,
+                "fork-bind",
+                Capabilities::new(["conversation:bind".to_owned()]),
+            );
+            let reconciled = child
+                .spawn_from_report(parent, report, parent_scope, child_scope)
+                .await?;
+            if reconciled != seed {
+                return Err(Error::Conflict(
+                    "reconciled fork seed differs from the admitted seed".into(),
+                ));
+            }
+        }
         self.activate_published_child(request, host, stream, issuer, parent, &seed)
             .await
     }
@@ -1250,7 +1338,23 @@ fn apply_record(
             }
             sessions.insert(session.task, session.into());
         }
-        StoredEvent::ForkAdmitted {
+        StoredEvent::ForkPrepared {
+            parent,
+            parent_operation,
+            parent_step,
+            child,
+            child_operation,
+            child_authority,
+            child_agent,
+            task,
+            prompt,
+            seed,
+            seed_digest,
+            report,
+            publication,
+            declaration,
+        }
+        | StoredEvent::ForkAdmitted {
             parent,
             parent_operation,
             parent_step,
@@ -1270,6 +1374,23 @@ fn apply_record(
             let parent_session = sessions
                 .get(&parent)
                 .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
+            let request = LocalForkRequest {
+                parent,
+                parent_operation,
+                parent_step,
+                child_operation,
+                child_authority: child_authority.clone(),
+                child_agent: child_agent.clone(),
+                task: task.clone(),
+                prompt: prompt.clone(),
+            };
+            if let Some(existing) = requests.get(&child)
+                && existing != &request
+            {
+                return Err(Error::Conflict(
+                    "persisted fork admission changed for the child key".into(),
+                ));
+            }
             sessions.insert(
                 child,
                 LocalSwarmSession {
@@ -1281,29 +1402,31 @@ fn apply_record(
                     phase: LocalSessionPhase::Activating,
                 },
             );
-            requests.insert(
-                child,
-                LocalForkRequest {
-                    parent,
-                    parent_operation,
-                    parent_step,
-                    child_operation,
-                    child_authority,
-                    child_agent,
-                    task,
-                    prompt,
-                },
-            );
+            requests.insert(child, request);
             if let Some(seed) = seed {
                 if let Some(expected) = seed_digest {
                     if fork_seed_digest(&seed)? != expected {
                         return Err(Error::Conflict("persisted fork seed digest changed".into()));
                     }
                 }
+                if let Some(existing) = seeds.get(&child)
+                    && existing != &seed
+                {
+                    return Err(Error::Conflict(
+                        "persisted fork seed changed for the child key".into(),
+                    ));
+                }
                 seeds.insert(child, seed);
             }
             if let Some(report) = report {
                 report.validate()?;
+                if let Some(existing) = reports.get(&child)
+                    && existing != &report
+                {
+                    return Err(Error::Conflict(
+                        "persisted fork report changed for the child key".into(),
+                    ));
+                }
                 reports.insert(child, report);
             }
             if let Some(publication) = publication {
