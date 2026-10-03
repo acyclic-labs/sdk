@@ -629,11 +629,42 @@ where
                 &self.volume,
                 VolumeOperation::Read,
             )?;
-            Ok(self
-                .host
-                .read_content(reference, &grant, self.maximum_payload_bytes)
-                .await?
-                .to_vec())
+            let bytes = if reference.path().starts_with(".system/execution/") {
+                self.host
+                    .read_internal_content(
+                        reference,
+                        &self.volume,
+                        &grant,
+                        InternalContentClass::Execution,
+                        self.maximum_payload_bytes,
+                    )
+                    .await?
+            } else if reference.path().starts_with(".system/interactions/") {
+                self.host
+                    .read_internal_content(
+                        reference,
+                        &self.volume,
+                        &grant,
+                        InternalContentClass::Interaction,
+                        self.maximum_payload_bytes,
+                    )
+                    .await?
+            } else if reference.path().starts_with(".system/workflows/") {
+                self.host
+                    .read_internal_content(
+                        reference,
+                        &self.volume,
+                        &grant,
+                        InternalContentClass::Workflow,
+                        self.maximum_payload_bytes,
+                    )
+                    .await?
+            } else {
+                self.host
+                    .read_content(reference, &grant, self.maximum_payload_bytes)
+                    .await?
+            };
+            Ok(bytes.to_vec())
         })
     }
 

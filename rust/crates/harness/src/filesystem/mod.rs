@@ -1893,6 +1893,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(bytes)
     }
 
+    /// Reads one immutable host journal artifact under its assigned internal
+    /// class. This path is intentionally separate from model content
+    /// admission: model readers reject `.system`, while journal replay must
+    /// restore its own authenticated execution, interaction, and workflow
+    /// records by pinned reference.
+    pub(crate) async fn read_internal_content(
+        &self,
+        reference: &FileRef,
+        volume: &VolumeRef,
+        grant: &ContentGrant,
+        class: InternalContentClass,
+        maximum_bytes: u64,
+    ) -> Result<Bytes> {
+        reference.validate()?;
+        grant.require(volume, VolumeOperation::Read)?;
+        if reference.volume() != volume
+            || reference.volume().provider() != &self.provider
+            || !reference.path().starts_with(class.prefix())
+        {
+            return Err(Error::Unauthorized(
+                "host journal reference is outside its authenticated internal class".into(),
+            ));
+        }
+        let bytes = self.read_pinned(reference, maximum_bytes).await?;
+        let generation = self.file_generation(reference)?;
+        let workspace = workspace_ref(self.provider.clone(), &reference.volume().storage_name()?)?;
+        self.retain_generation(&workspace, &generation).await?;
+        reference.descriptor().verify(&bytes)?;
+        Ok(bytes)
+    }
+
     /// Discovers a granted private directory at the owner's current head, or
     /// continues at the immutable generation returned by a prior page.
     /// The physical workspace is opened only when this method is called;
