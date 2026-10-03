@@ -159,6 +159,53 @@
         "same operation race counts idempotent successes instead of durable append count"
       ],
       "contract_scope": "real durable storage; two library defects and two fixture defects remain"
+    },
+    {
+      "suite": "recursive_fork",
+      "source": "1e7f993a",
+      "passed": 1,
+      "failed": 2,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test recursive_fork -j 2 -- --nocapture",
+      "artifact_sha256": "b911a143ea5b4edb20635c1634924f9371b23328c368c1001d1a850136553ae8",
+      "suite_sha256": "531408dbc448187070a236d5d5f20c651af6bc0db26fb91ea9f4a05781bd1910",
+      "failures": [
+        "facade_two_children_grandchild_integrates_upward_with_approval: grandchild JoinOutcome not Applied",
+        "thirty_two_sibling_forks_reject_stale_and_conflicting_merges: child has no published parent fork"
+      ],
+      "contract_scope": "1024-level typed recursive fixture passed; direct-parent facade integrations remain failed; not model-emitted production swarm"
+    },
+    {
+      "suite": "GraphCoder terminal TypeScript",
+      "source": "15408630",
+      "passed": 36,
+      "failed": 0,
+      "assertions": 126,
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts typescript/packages/graphcoder/test/dispatcher.test.ts typescript/packages/graphcoder/test/process.test.ts",
+      "contract_scope": "source transport/UI tests; native saturation and durable cancellation remain unproven"
+    },
+    {
+      "suite": "Harness TypeScript runtime and memory",
+      "source": "d392dd7b",
+      "passed": 92,
+      "failed": 6,
+      "assertions": 560,
+      "command": "bun test typescript/packages/harness/test/runtime.test.ts typescript/packages/harness/test/memory-conversation.test.ts",
+      "contract_scope": "current TS source against stale existing WASM; two new tool-revision extension representation errors, predispatch outcome and replay/fixture failures remain"
+    },
+    {
+      "suite": "model_fork_boundary",
+      "source": "d392dd7b",
+      "passed": 1,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test model_fork_boundary -j 2 -- --nocapture",
+      "artifact_sha256": "35c210e07169e066677b1028c03320f05cfbc6474d727f1d3e9eaafe680bcd60",
+      "suite_sha256": "28411d319bb3203286b24d4c63dbeb2776aac7e14e9ccdeb0a0dc07367e2084c",
+      "failures": [
+        "native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix: completed batch has stale conversation boundary"
+      ],
+      "contract_scope": "inherited malformed-call evidence progressed to subsequent stale boundary refusal; no recursive prefix pass claimed"
     }
   ],
   "input_digests": {
