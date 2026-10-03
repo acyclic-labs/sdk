@@ -312,12 +312,13 @@ export class NativeContracts {
     }).validateModelInputManifest;
     if (typeof prepare !== "function") throw new Error("harness WASM does not provide canonical model request admission");
     if (typeof validateManifest !== "function") throw new Error("harness WASM does not provide canonical model manifest validation");
-    // Snapshot both inputs before crossing the ABI. The exact bytes and
+    // Snapshot all admission inputs before crossing the ABI. The exact bytes and
     // manifest must describe one request, even if a caller retains mutable
     // objects and changes them while native admission is running.
     const admittedRequest = structuredClone(request);
+    const admittedLimits = structuredClone(limits);
     const admittedPolicy = policy === null ? null : structuredClone(policy);
-    const admitted = normalizeNativeValue(prepare(admittedRequest, limits, admittedPolicy));
+    const admitted = normalizeNativeValue(prepare(admittedRequest, admittedLimits, admittedPolicy));
     if (admitted === null || typeof admitted !== "object" || Array.isArray(admitted)) {
       throw new TypeError("native model request admission returned an invalid result");
     }
@@ -349,7 +350,7 @@ export class NativeContracts {
       || actualManifestBytes.some((byte, index) => byte !== expectedManifestBytes[index])) {
       throw new TypeError("native model request admission returned non-canonical manifest bytes");
     }
-    validateManifest(admittedRequest, limits, admittedPolicy, result.manifest_json);
+    validateManifest(admittedRequest, admittedLimits, admittedPolicy, result.manifest_json);
     return freezeNative({
       requestJson: result.request_json,
       manifestJson: result.manifest_json,
