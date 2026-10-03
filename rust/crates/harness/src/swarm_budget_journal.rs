@@ -6,12 +6,13 @@
 //! ledger when two local runtimes race to reserve a child.
 
 use crate::{
-    Error, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     contract::canonical_json_bytes,
+    runtime::TaskAdmissionRecord,
     swarm_budget::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
-        SwarmOwnerFence, SwarmUsage, VerifiedForkPublication,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, VerifiedForkPublication,
     },
 };
 use acyclic_stream::{
@@ -154,6 +155,30 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 replayed: false,
             })
             .ok_or_else(|| Error::Storage("committed swarm reservation is missing".into()))
+    }
+
+    /// Admits a child from the canonical durable task admission envelope.
+    ///
+    /// The task operation identity and prerequisite dependencies therefore
+    /// remain owned by `TaskAdmissionRecord`; this layer adds only the swarm
+    /// parent/depth and session resource reservation.
+    pub async fn reserve_after_admission(
+        &mut self,
+        admission: &TaskAdmissionRecord,
+        idempotency_key: IdempotencyKey,
+        parent_operation_id: Option<OperationId>,
+        depth: u32,
+        resources: SwarmResourceRequest,
+    ) -> Result<SwarmAdmissionReceipt> {
+        admission.validate()?;
+        let request = SwarmForkRequest::from_task_admission(
+            admission,
+            idempotency_key,
+            parent_operation_id,
+            depth,
+            resources,
+        )?;
+        self.reserve_child(request).await
     }
 
     /// Activates a reservation only after complete fork publication evidence.
