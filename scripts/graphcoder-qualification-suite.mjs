@@ -107,6 +107,7 @@ function loadConfig(path) {
 function capture(configPath) {
   const config = loadConfig(configPath);
   if (!Number.isInteger(config.expected_exit_code) || config.expected_exit_code < 0) fail("expected_exit_code must be a nonnegative integer");
+  if (git(config.command.cwd, "status", "--porcelain") !== "") fail("qualified source worktree has uncommitted changes");
   const qualifiedCommit = git(config.command.cwd, "rev-parse", "HEAD");
   const qualifiedTree = git(config.command.cwd, "rev-parse", "HEAD^{tree}");
   const startedAt = iso(config.started_at, "started_at");
@@ -147,13 +148,20 @@ function capture(configPath) {
   };
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { flag: "wx" });
   writeFileSync(transcriptPath, transcript, { flag: "wx" });
+  let artifactError;
   const artifacts = config.artifacts.map(item => {
-    const after = hash(readFileSync(item.path));
-    if (after !== before.get(item.path)) fail(`consumed artifact changed during suite: ${item.path}`);
+    let after = before.get(item.path);
+    try {
+      after = hash(readFileSync(item.path));
+      if (after !== before.get(item.path)) artifactError ??= `consumed artifact changed during suite: ${item.path}`;
+    } catch (error) {
+      artifactError ??= `consumed artifact could not be read after suite: ${item.path}: ${error instanceof Error ? error.message : String(error)}`;
+    }
     return { ...item, sha256: after };
   });
   const exitCode = result.error ? null : result.status;
-  const status = exitCode === config.expected_exit_code && result.signal === null && !result.error ? "passed" : "failed";
+  const status = artifactError === undefined && exitCode === config.expected_exit_code && result.signal === null && !result.error ? "passed" : "failed";
+  const resultError = artifactError ?? result.error?.message;
   const suite = {
     id: config.id,
     descriptor: config.descriptor,
@@ -168,8 +176,8 @@ function capture(configPath) {
     transcript_path: transcriptPath,
     transcript_sha256: hash(readFileSync(transcriptPath)),
   };
-  writeFileSync(recordPath, `${JSON.stringify({ suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal, error: result.error?.message } }, null, 2)}\n`, { flag: "wx" });
-  process.stdout.write(`${JSON.stringify({ record: recordPath, suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal } }, null, 2)}\n`);
+  writeFileSync(recordPath, `${JSON.stringify({ suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal, error: resultError } }, null, 2)}\n`, { flag: "wx" });
+  process.stdout.write(`${JSON.stringify({ record: recordPath, suite, artifacts, result: { status, exit_code: exitCode, signal: result.signal, error: resultError } }, null, 2)}\n`);
   process.exitCode = status === "passed" ? 0 : 1;
 }
 
