@@ -16,7 +16,7 @@ use crate::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, Event, SchemaRegistry, Scope,
     },
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
-    interaction::{InteractionOutcome, InteractionResponse},
+    interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{Model, ModelProvider},
     projection::select_model_context,
     resources::{GenerationRef, ProviderRef},
@@ -1853,6 +1853,88 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[tokio::test]
+    async fn operator_authorizer_binds_exact_decision_and_action_at_resolution() -> Result<()> {
+        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([101; 16]), 4_096).await?;
+        let interaction_id = InteractionId::from_bytes([102; 16]);
+        let operation_id = OperationId::from_bytes([103; 16]);
+        let action_digest = [104; 32];
+        storage
+            .open_interaction(
+                interaction_id,
+                Interaction::approval("approve exact action", operation_id, action_digest)?,
+            )
+            .await?;
+        let authorizer = storage.interaction_operator_authorizer()?;
+        let approved = authorizer
+            .issue_scope(&crate::filesystem::InteractionApprovalAuthorization {
+                interaction_id,
+                operation_id,
+                action_digest,
+                approved: true,
+            })
+            .await?;
+        let declined = authorizer
+            .issue_scope(&crate::filesystem::InteractionApprovalAuthorization {
+                interaction_id,
+                operation_id,
+                action_digest,
+                approved: false,
+            })
+            .await?;
+        let host = FilesystemInteractionHost::new(
+            storage.stream.clone(),
+            storage.host.clone(),
+            storage.conversation.clone(),
+            storage.issuer.verifier(),
+            SchemaRegistry::new(),
+            storage.scope.clone(),
+            storage.volume.clone(),
+            storage.maximum_file_bytes,
+        )?;
+        assert!(matches!(
+            host.resolve_approval(
+                operation_id,
+                declined,
+                interaction_id,
+                1,
+                true,
+                None,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            host.resolve_approval(
+                operation_id,
+                approved,
+                interaction_id,
+                1,
+                false,
+                None,
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        host.resolve_approval(
+            operation_id,
+            authorizer
+                .issue_scope(&crate::filesystem::InteractionApprovalAuthorization {
+                    interaction_id,
+                    operation_id,
+                    action_digest,
+                    approved: true,
+                })
+                .await?,
+            interaction_id,
+            1,
+            true,
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     #[tokio::test]

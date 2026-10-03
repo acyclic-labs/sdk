@@ -7,8 +7,8 @@
 //! files are still owned by [`PersistentLocalHarness`].
 
 use super::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost, LocalHarnessTools,
-    PersistentLocalHarness, workspace_ref,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost, InteractionOperatorAuthorizer,
+    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, OperationId, Result, TaskId,
@@ -2232,6 +2232,18 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm root session is missing".into()))
+    }
+
+    /// Returns the host-only signer bound to one task's durable interaction
+    /// storage. The caller still has to authenticate the operator decision
+    /// before asking this signer to issue an exact resolution scope.
+    pub async fn interaction_operator_authorizer(
+        &self,
+        task: TaskId,
+    ) -> Result<InteractionOperatorAuthorizer<LocalStream, LocalAuthorityBackend, LocalObjectBackend>>
+    {
+        let harness = self.open_session(task).await?;
+        harness.storage().interaction_operator_authorizer()
     }
 
     /// Lists canonical session descriptors without starting workers or

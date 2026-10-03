@@ -154,32 +154,70 @@ where
                 "approval is no longer pending operator choice".into(),
             ));
         }
-        let digest = authorization
-            .action_digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        let decision = if authorization.approved {
-            "approved"
-        } else {
-            "declined"
-        };
         Ok(self.issuer.root(
             format!("interaction-operator:{}", authorization.interaction_id),
             Capabilities::new([
                 "interaction:resolve".to_owned(),
                 ticket.responder_grant(),
-                format!(
-                    "interaction:decision:{}:{decision}",
-                    authorization.interaction_id
-                ),
-                format!(
-                    "interaction:approve:{}:{}:{digest}",
-                    authorization.interaction_id, authorization.operation_id
+                approval_decision_grant(authorization.interaction_id, authorization.approved),
+                approval_action_grant(
+                    authorization.interaction_id,
+                    authorization.operation_id,
+                    authorization.action_digest,
                 ),
             ]),
         ))
     }
+}
+
+fn approval_decision_grant(id: InteractionId, approved: bool) -> String {
+    let decision = if approved { "approved" } else { "declined" };
+    format!("interaction:decision:{id}:{decision}")
+}
+
+fn approval_action_grant(
+    id: InteractionId,
+    operation_id: OperationId,
+    action_digest: [u8; 32],
+) -> String {
+    let digest = action_digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("interaction:approve:{id}:{operation_id}:{digest}")
+}
+
+fn validate_approval_scope(
+    scope: &Scope,
+    id: InteractionId,
+    ticket: &InteractionTicket,
+    operation_id: OperationId,
+    approved: bool,
+) -> Result<()> {
+    let binding = ticket
+        .approval
+        .as_ref()
+        .ok_or_else(|| Error::Invalid("interaction is not an approval ticket".into()))?;
+    if binding.operation_id != operation_id
+        || !scope.capabilities().contains(&approval_action_grant(
+            id,
+            binding.operation_id,
+            binding.action_digest,
+        ))
+    {
+        return Err(Error::Unauthorized(
+            "scope lacks the exact approval operation grant".into(),
+        ));
+    }
+    if !scope
+        .capabilities()
+        .contains(&approval_decision_grant(id, approved))
+    {
+        return Err(Error::Unauthorized(
+            "scope lacks the exact approval decision grant".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl<P, A, O> InteractionResolver for FilesystemInteractionHost<P, A, O>
@@ -448,6 +486,7 @@ where
         if ticket.kind != InteractionKind::Approval {
             return Err(Error::Invalid("interaction is not an approval".into()));
         }
+        validate_approval_scope(&scope, id, &ticket, operation_id, approved)?;
         let outcome = if approved {
             InteractionOutcome::Approved
         } else {
@@ -754,6 +793,14 @@ where
             )
             .await?;
         let request = ticket.validate_request_bytes(&request_bytes)?;
+        let decision = match &resolution.outcome {
+            InteractionOutcome::Approved => Some(true),
+            InteractionOutcome::Declined => Some(false),
+            _ => None,
+        };
+        if let Some(approved) = decision {
+            validate_approval_scope(scope, id, &ticket, operation_id, approved)?;
+        }
         match (&resolution.outcome, &resolution.detail) {
             (InteractionOutcome::Answered { answer }, None) => {
                 self.validate_internal_ref(
