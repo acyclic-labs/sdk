@@ -615,12 +615,12 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                     "admission",
                 )
                 .await;
-            if let Err(error @ Error::Conflict(_)) = append {
+            if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
                 if let Some(retained) = Self::retained(&events, &request)? {
                     return Ok(retained.completion);
                 }
-                return Err(error);
+                return Err(error.clone());
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
@@ -663,14 +663,14 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                     "completion",
                 )
                 .await;
-            if let Err(error @ Error::Conflict(_)) = append {
+            if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
                 if let Some(retained) = Self::retained(&events, &request)? {
                     if let Some(completion) = retained.completion {
                         return Ok(completion);
                     }
                 }
-                return Err(error);
+                return Err(error.clone());
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
