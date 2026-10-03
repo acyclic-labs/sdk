@@ -47,7 +47,9 @@ const retiredContent = presentFiles.find(({ fullPath }) => {
 if (retiredContent) throw new Error(`retired-runtime reference exists: ${retiredContent}`);
 const ajv = new Ajv2020({ allErrors: true });
 ajv.compile(await load("rust/crates/conformance/schemas/runner-report.schema.json"));
-new Ajv2020({ allErrors: true }).compile(
+const qualificationAjv = new Ajv2020({ allErrors: true });
+qualificationAjv.addFormat("date-time", value => typeof value === "string" && !Number.isNaN(Date.parse(value)));
+qualificationAjv.compile(
   await load("rust/crates/conformance/schemas/qualification-receipt.schema.json"),
 );
 const documents = [
