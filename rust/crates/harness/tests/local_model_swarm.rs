@@ -44,6 +44,7 @@ fn message_contains(request: &ModelRequest, needle: &str) -> bool {
         .iter()
         .any(|message| match &message.content {
             ModelContent::Text(text) => text.contains(needle),
+            ModelContent::Part(ModelContentPart::File { .. }) => false,
             ModelContent::Part(ModelContentPart::Text { text }) => text.contains(needle),
             ModelContent::Parts(parts) => parts.iter().any(
                 |part| matches!(part, ModelContentPart::Text { text } if text.contains(needle)),
@@ -218,7 +219,7 @@ impl ModelProvider for DeterministicProvider {
                 }
                 Self::ordinary()
             };
-            return Box::pin(barrier.chain(stream::iter(events.into_iter().map(Ok))));
+            return Box::pin(stream::once(barrier).chain(stream::iter(events.into_iter().map(Ok))));
         }
 
         let events = if root && !self.root_fork_sent.swap(true, Ordering::SeqCst) {
