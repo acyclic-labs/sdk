@@ -1080,7 +1080,12 @@ impl Scheduler {
                 let root = next.mutable(session_id)?;
                 require_phase(root, OperationPhase::Running)?;
                 require_fence(root, &fence)?;
-                next.validate_swarm_usage_receipt(session_id, usage, receipt.as_ref())?;
+                next.validate_swarm_root_usage_receipt(
+                    session_id,
+                    &fence,
+                    usage,
+                    receipt.as_ref(),
+                )?;
                 next.apply_swarm_root_usage(session_id, owner, usage)?;
                 if let Some(receipt) = receipt {
                     next.mutable(session_id)?.swarm_usage_sequence = receipt.sequence;
@@ -1875,6 +1880,33 @@ impl Scheduler {
         {
             return Err(Error::Conflict(
                 "swarm usage receipt is stale or not bound to the dispatch".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_swarm_root_usage_receipt(
+        &self,
+        operation_id: OperationId,
+        fence: &LeaseFence,
+        usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
+    ) -> Result<()> {
+        let Some(receipt) = receipt else {
+            return Ok(());
+        };
+        receipt.validate()?;
+        let operation = self
+            .operations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        if receipt.operation_id != operation_id
+            || receipt.usage != usage
+            || receipt.sequence != operation.swarm_usage_sequence.saturating_add(1)
+            || receipt.dispatch_id.as_str() != fence.reservation_id
+        {
+            return Err(Error::Conflict(
+                "swarm root usage receipt is stale or not bound to the root lease".into(),
             ));
         }
         Ok(())
