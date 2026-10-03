@@ -73,8 +73,9 @@ mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use swarm_local::{
     LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration, LocalModelForkPlan,
-    LocalModelForkPlans, LocalModelForkPublisher, LocalSessionPhase, LocalSwarmBindings,
-    LocalSwarmConfig, LocalSwarmSession, PersistentLocalSwarm,
+    LocalModelForkPlans, LocalModelForkPublisher, LocalSessionPhase, LocalSwarmApproval,
+    LocalSwarmBindings, LocalSwarmConfig, LocalSwarmMessage, LocalSwarmSession,
+    LocalSwarmSnapshot, PersistentLocalSwarm,
 };
 
 mod memory;

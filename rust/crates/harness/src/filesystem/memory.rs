@@ -6,10 +6,13 @@ use crate::{
     Result, SessionId,
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
-        FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation,
+        ConversationState, FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass,
+        VolumeOperation,
         VolumeOwner, VolumeRef,
     },
-    core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
+    core::{
+        Action, AggregateKind, Authority, AuthorityIssuer, Command, Event, SchemaRegistry, Scope,
+    },
     executor::{ExecutionEvent, ExecutionJournal, TurnInput, TurnOutput},
     interaction::{InteractionOutcome, InteractionResponse},
     model::{Model, ModelProvider},
@@ -1543,6 +1546,61 @@ where
     #[must_use]
     pub fn stream(&self) -> &StreamClient<P> {
         &self.stream
+    }
+
+    /// Reads the current authoritative conversation projection from Stream.
+    /// The caller supplies the same limits pinned in the session descriptor;
+    /// this method never reconstructs history from model output.
+    pub async fn conversation_state(&self, limits: Limits) -> Result<ConversationState> {
+        let aggregate = self.open_conversation(limits).await?;
+        aggregate
+            .reducer()
+            .conversation()
+            .cloned()
+            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))
+    }
+
+    /// Reads a bounded page of authoritative conversation events after a
+    /// revision cursor. Message and activity adapters use this cursor without
+    /// hydrating child workspaces or starting model workers.
+    pub async fn conversation_events(
+        &self,
+        after_revision: u64,
+        limit: usize,
+        limits: Limits,
+    ) -> Result<Vec<Event>> {
+        if limit == 0 || limit > 1_024 {
+            return Err(Error::Invalid(
+                "conversation event page limit must be between 1 and 1024".into(),
+            ));
+        }
+        let aggregate = self.open_conversation(limits).await?;
+        aggregate.reducer().events_after(after_revision, limit)
+    }
+
+    /// Reads one authenticated private file at a pinned generation. The
+    /// caller must retain the exact generation returned by directory listing.
+    pub async fn read_private_path(
+        &self,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+    ) -> Result<(FileRef, Vec<u8>)> {
+        self.content_verifier
+            .read_private_path(&self.volume, "", path, expected_generation)
+            .await
+    }
+
+    /// Lists one authenticated private directory page at a pinned generation.
+    pub async fn list_private_directory_page(
+        &self,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        after: Option<&str>,
+        maximum_entries: u32,
+    ) -> Result<crate::conversation::PrivateDirectoryPage> {
+        self.list_private_directory(path, expected_generation, after, maximum_entries)
+            .await
+            .map(|(_, page)| page)
     }
 
     /// Returns the bound conversation aggregate identity.

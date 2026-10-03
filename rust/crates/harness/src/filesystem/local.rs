@@ -866,6 +866,55 @@ impl PersistentLocalHarness {
     pub fn storage(&self) -> &DurableHarnessStorage {
         &self.storage
     }
+
+    /// Reads the current authoritative conversation projection for host
+    /// adapters without starting a model worker.
+    pub async fn conversation_state(&self, limits: crate::conversation::Limits) -> Result<crate::conversation::ConversationState> {
+        self.storage.conversation_state(limits).await
+    }
+
+    /// Reads a bounded authoritative event page after a revision cursor.
+    pub async fn conversation_events(
+        &self,
+        after_revision: u64,
+        limit: usize,
+        limits: crate::conversation::Limits,
+    ) -> Result<Vec<crate::core::Event>> {
+        self.storage
+            .conversation_events(after_revision, limit, limits)
+            .await
+    }
+
+    /// Reads one private file at an owner authenticated generation.
+    pub async fn read_private_path(
+        &self,
+        path: &str,
+        generation: Option<&crate::resources::GenerationRef>,
+    ) -> Result<(FileRef, Vec<u8>)> {
+        self.storage.read_private_path(path, generation).await
+    }
+
+    /// Lists one private directory page at an owner authenticated generation.
+    pub async fn list_private_directory(
+        &self,
+        path: &str,
+        generation: Option<&crate::resources::GenerationRef>,
+        after: Option<&str>,
+        maximum_entries: u32,
+    ) -> Result<crate::conversation::PrivateDirectoryPage> {
+        self.storage
+            .list_private_directory_page(path, generation, after, maximum_entries)
+            .await
+    }
+
+    /// Resolves one owner-authenticated interaction in this task's journal.
+    pub async fn resolve_interaction(
+        &self,
+        id: crate::InteractionId,
+        response: crate::interaction::InteractionResponse,
+    ) -> Result<crate::interaction::InteractionOutcome> {
+        self.storage.resolve_interaction(id, response).await
+    }
     /// Runtime shared with other local host compositions.
     #[must_use]
     pub fn bundle(&self) -> &crate::Harness {

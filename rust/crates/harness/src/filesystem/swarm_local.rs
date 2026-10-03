@@ -10,13 +10,16 @@ use super::{FilesystemHost, LocalHarnessTools, PersistentLocalHarness};
 use crate::{
     AgentId, Capabilities, Error, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
-    conversation::{FileRef, Limits},
+    communication::{DurableCommunication, MessageRequest, MessageTarget},
+    conversation::{ConversationMessage, FileRef, Limits},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry},
     executor::TurnOutput,
     fork::{ForkReport, ForkSeed},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
+    interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
     registry::ComponentIdentity,
+    resources::GenerationRef,
     runtime::TaskRunLimits,
     store::StreamAggregate,
     tool::{ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
@@ -41,6 +44,7 @@ const REGISTRY_VERSION: u32 = 1;
 /// their immutable reference and digest.
 const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 
 /// Configuration for one persistent local swarm.
 #[derive(Clone, Debug)]
@@ -569,7 +573,8 @@ impl LocalForkRequest {
 }
 
 /// Durable state of one local task session.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind", content = "message")]
 pub enum LocalSessionPhase {
     /// The task is the root or was admitted as a child.
     Ready,
@@ -577,12 +582,15 @@ pub enum LocalSessionPhase {
     Activating,
     /// The child completed its requested turn.
     Completed,
+    /// The owner durably cancelled this task.
+    Cancelled,
     /// The last activation or turn failed with a stable message.
     Failed(String),
 }
 
 /// Lazy session descriptor returned by listing and lookup.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalSwarmSession {
     /// Stable task identity.
     pub task: TaskId,
@@ -596,6 +604,50 @@ pub struct LocalSwarmSession {
     pub operation: Option<OperationId>,
     /// Current durable lifecycle phase.
     pub phase: LocalSessionPhase,
+}
+
+/// Authoritative host snapshot for one task. Child descriptors are read from
+/// the durable swarm index; conversation and private generation state are
+/// loaded only for the requested task.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSwarmSnapshot {
+    /// Requested task descriptor.
+    pub session: LocalSwarmSession,
+    /// Direct children retained by the owner admission index.
+    pub children: Vec<LocalSwarmSession>,
+    /// Current authoritative conversation revision.
+    pub conversation_revision: u64,
+    /// Generation observed from the task's private filesystem volume.
+    pub workspace_generation: Option<GenerationRef>,
+}
+
+/// One interaction visible to the owner-facing local API. Request and
+/// resolution remain ref-only; callers must use the task's authenticated
+/// storage to resolve or read referenced content.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSwarmApproval {
+    /// Task that owns the interaction journal.
+    pub task: TaskId,
+    /// Durable request ticket.
+    pub ticket: InteractionTicket,
+    /// Durable response, when one has been committed.
+    pub resolution: Option<InteractionResolution>,
+}
+
+/// A durable sender receipt returned after the owner host accepts a message.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalSwarmMessage {
+    /// Sending task.
+    pub sender: TaskId,
+    /// Receiving task.
+    pub recipient: TaskId,
+    /// Caller supplied retry identity.
+    pub message_id: OperationId,
+    /// Immutable staged message content.
+    pub payload: FileRef,
 }
 
 /// Result of one child activation and turn.
@@ -653,6 +705,7 @@ enum StoredPhase {
     Ready,
     Activating,
     Completed,
+    Cancelled,
     Failed(String),
 }
 
@@ -731,10 +784,8 @@ enum StoredEvent {
         #[serde(default)]
         output_digest: Option<[u8; 32]>,
     },
-    ForkFailed {
-        child: TaskId,
-        reason: String,
-    },
+    ForkFailed { child: TaskId, reason: String },
+    ForkCancelled { child: TaskId },
 }
 
 impl From<StoredPhase> for LocalSessionPhase {
@@ -743,6 +794,7 @@ impl From<StoredPhase> for LocalSessionPhase {
             StoredPhase::Ready => Self::Ready,
             StoredPhase::Activating => Self::Activating,
             StoredPhase::Completed => Self::Completed,
+            StoredPhase::Cancelled => Self::Cancelled,
             StoredPhase::Failed(message) => Self::Failed(message),
         }
     }
@@ -754,6 +806,7 @@ impl From<LocalSessionPhase> for StoredPhase {
             LocalSessionPhase::Ready => Self::Ready,
             LocalSessionPhase::Activating => Self::Activating,
             LocalSessionPhase::Completed => Self::Completed,
+            LocalSessionPhase::Cancelled => Self::Cancelled,
             LocalSessionPhase::Failed(message) => Self::Failed(message),
         }
     }
@@ -1030,6 +1083,289 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))
     }
 
+    /// Reads one task snapshot from the owner-retained index and its
+    /// authoritative local providers. This method never starts a model turn
+    /// or eagerly opens child sessions.
+    pub async fn session_snapshot(&self, task: TaskId) -> Result<LocalSwarmSnapshot> {
+        let session = self.session(task).await?;
+        let children = self
+            .records
+            .lock()
+            .await
+            .values()
+            .filter(|candidate| candidate.parent == Some(task))
+            .cloned()
+            .collect();
+        let harness = self.open_session(task).await?;
+        let conversation = harness
+            .conversation_state(self.config.limits)
+            .await?;
+        let workspace_generation = match harness
+            .list_private_directory("system", None, None, 1)
+            .await
+        {
+            Ok(page) => Some(page.generation),
+            Err(Error::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(LocalSwarmSnapshot {
+            session,
+            children,
+            conversation_revision: conversation.messages.len() as u64,
+            workspace_generation,
+        })
+    }
+
+    /// Reads a bounded page of authoritative conversation events. The cursor
+    /// is the aggregate revision and is rejected when it is outside the
+    /// durable history window.
+    pub async fn read_activity(
+        &self,
+        task: TaskId,
+        after_revision: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::core::Event>> {
+        let harness = self.open_session(task).await?;
+        harness
+            .conversation_events(after_revision, limit, self.config.limits)
+            .await
+    }
+
+    /// Reads a bounded page of canonical conversation messages by sequence.
+    /// Message content remains an immutable FileRef until the caller requests
+    /// it through the authenticated private file API.
+    pub async fn read_messages(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<ConversationMessage>> {
+        if limit == 0 || limit > 1_024 {
+            return Err(Error::Invalid(
+                "conversation message page limit must be between 1 and 1024".into(),
+            ));
+        }
+        let harness = self.open_session(task).await?;
+        let state = harness.conversation_state(self.config.limits).await?;
+        Ok(state
+            .messages
+            .into_iter()
+            .filter(|message| message.sequence > after_sequence)
+            .take(limit)
+            .collect())
+    }
+
+    /// Reads one page of owner-authenticated private files. The generation
+    /// returned by the first page must be supplied for subsequent pages.
+    pub async fn list_files(
+        &self,
+        task: TaskId,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+        after: Option<&str>,
+        maximum_entries: u32,
+    ) -> Result<crate::conversation::PrivateDirectoryPage> {
+        let harness = self.open_session(task).await?;
+        harness
+            .list_private_directory(path, expected_generation, after, maximum_entries)
+            .await
+    }
+
+    /// Reads one owner-authenticated private file at an optional pinned
+    /// generation. No ancestor volume is consulted implicitly.
+    pub async fn read_file(
+        &self,
+        task: TaskId,
+        path: &str,
+        expected_generation: Option<&GenerationRef>,
+    ) -> Result<(FileRef, Vec<u8>)> {
+        let harness = self.open_session(task).await?;
+        harness.read_private_path(path, expected_generation).await
+    }
+
+    /// Lists durable approval requests retained in one task conversation.
+    /// The result contains only immutable tickets and resolutions; request
+    /// and decision bytes remain behind their FileRefs.
+    pub async fn list_approvals(&self, task: TaskId) -> Result<Vec<LocalSwarmApproval>> {
+        let events = self.read_all_activity(task).await?;
+        let mut approvals = BTreeMap::new();
+        for event in events {
+            match event.payload {
+                crate::core::EventPayload::InteractionOpened { ticket }
+                    if ticket.kind == InteractionKind::Approval => {
+                        approvals.insert(
+                            ticket.id,
+                            LocalSwarmApproval {
+                                task,
+                                ticket,
+                                resolution: None,
+                            },
+                        );
+                    }
+                crate::core::EventPayload::InteractionResolved { resolution } => {
+                    if let Some(approval) = approvals.get_mut(&resolution.id) {
+                        approval.resolution = Some(resolution);
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(approvals.into_values().collect())
+    }
+
+    /// Resolves one approval through the task's owner-authenticated journal.
+    pub async fn resolve_approval(
+        &self,
+        task: TaskId,
+        id: crate::InteractionId,
+        response: InteractionResponse,
+    ) -> Result<crate::interaction::InteractionOutcome> {
+        let approvals = self.list_approvals(task).await?;
+        let approval = approvals
+            .iter()
+            .find(|approval| approval.ticket.id == id)
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if approval.resolution.is_some() {
+            return approval
+                .resolution
+                .as_ref()
+                .map(|resolution| resolution.outcome.clone())
+                .ok_or_else(|| Error::Storage("approval resolution disappeared".into()));
+        }
+        let harness = self.open_session(task).await?;
+        harness.storage().resolve_interaction(id, response).await
+    }
+
+    /// Sends a ref-only message through the authenticated durable host.
+    /// Parent/child authorization is derived from the immutable swarm index;
+    /// model content cannot choose an unrelated recipient.
+    pub async fn send_message(
+        &self,
+        sender: TaskId,
+        recipient: TaskId,
+        message_id: OperationId,
+        body: &[u8],
+    ) -> Result<LocalSwarmMessage> {
+        if body.len() > self.config.limits.file_bytes as usize {
+            return Err(Error::Invalid("swarm message exceeds the configured file bound".into()));
+        }
+        let sender_session = self.session(sender).await?;
+        let recipient_session = self.session(recipient).await?;
+        let target = if sender_session.parent == Some(recipient) {
+            MessageTarget::Parent
+        } else if recipient_session.parent == Some(sender) {
+            MessageTarget::Child
+        } else {
+            return Err(Error::Unauthorized(
+                "swarm messages require a direct parent or child recipient".into(),
+            ));
+        };
+        let host = self
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let harness = self.open_session(sender).await?;
+        let payload = harness
+            .storage()
+            .stage(
+                message_id,
+                &format!("system/swarm/messages/{message_id}.txt"),
+                body,
+                "text/plain",
+                "message.txt",
+            )
+            .await?;
+        DurableCommunication::new(host)
+            .send(MessageRequest {
+                sender,
+                recipient,
+                message_id,
+                target,
+                payload: payload.clone(),
+            })
+            .await?;
+        Ok(LocalSwarmMessage {
+            sender,
+            recipient,
+            message_id,
+            payload,
+        })
+    }
+
+    /// Reads a bounded durable inbox page for a task.
+    pub async fn read_inbox(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::scheduler::InboxItem>> {
+        let host = self
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        DurableCommunication::new(host)
+            .inbox(task, after_sequence, limit)
+            .await
+    }
+
+    /// Durably cancels one task and propagates the owner cancellation signal
+    /// when a live source is available. The journal append is authoritative;
+    /// an observation-only live bridge does not undo the persisted decision.
+    pub async fn cancel(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        let session = self.session(task).await?;
+        if session.phase == LocalSessionPhase::Cancelled {
+            return Ok(session);
+        }
+        if session.phase == LocalSessionPhase::Completed {
+            return Err(Error::Conflict("completed local swarm task cannot be cancelled".into()));
+        }
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(&registry, StoredEvent::ForkCancelled { child: task }).await?;
+        self.update_session(task, |current| current.phase = LocalSessionPhase::Cancelled)
+            .await?;
+        if let Some(source) = &self.bindings.cancellation {
+            let _ = source.cancel(task);
+        }
+        if let Some(host) = &self.bindings.communication_host
+            && let Err(error) = host.cancel(task).await
+            && !matches!(error, Error::Unsupported(_))
+        {
+            return Err(error);
+        }
+        self.session(task).await
+    }
+
+    async fn read_all_activity(&self, task: TaskId) -> Result<Vec<crate::core::Event>> {
+        let mut after = 0_u64;
+        let mut all = Vec::new();
+        loop {
+            let page = self.read_activity(task, after, 1_024).await?;
+            if page.is_empty() {
+                break;
+            }
+            let next = page
+                .last()
+                .map(|event| event.revision)
+                .ok_or_else(|| Error::Storage("activity page unexpectedly empty".into()))?;
+            if next <= after {
+                return Err(Error::Storage("activity cursor did not advance".into()));
+            }
+            after = next;
+            all.extend(page);
+            if all.len() > MAX_SWARM_ACTIVITY_EVENTS {
+                return Err(Error::Invalid(
+                    "approval history exceeds the bounded local API page window".into(),
+                ));
+            }
+        }
+        Ok(all)
+    }
+
     /// Returns the exact typed seed recorded for a published child.
     pub async fn published_seed(&self, task: TaskId) -> Result<ForkSeed> {
         self.seeds
@@ -1106,6 +1442,8 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
+        let parent = self.session(task).await?.parent;
+        self.verify_admitted_task(task, parent).await?;
         let harness = self.open_session(task).await?;
         let output = harness.run(operation, prompt).await?;
         self.update_session(task, |session| {
@@ -1174,6 +1512,8 @@ impl PersistentLocalSwarm {
             ));
         }
         let parent_session = self.session(request.parent).await?;
+        self.verify_admitted_task(request.parent, parent_session.parent)
+            .await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
         if let Some(existing) = self.requests.lock().await.get(&child)
             && existing != &request
@@ -1326,6 +1666,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
+        self.verify_admitted_task(child, Some(request.parent)).await?;
         self.sessions.lock().await.insert(child, harness.clone());
         self.activate_child_with_harness(
             request,
@@ -1802,6 +2143,25 @@ impl PersistentLocalSwarm {
             .await
     }
 
+    /// Rechecks the owner-retained admission immediately before model
+    /// dispatch. A reopened process must not run a task under a changed
+    /// parent, numeric limit, or run budget binding.
+    async fn verify_admitted_task(&self, task: TaskId, parent: Option<TaskId>) -> Result<()> {
+        let Some(host) = &self.bindings.communication_host else {
+            return Ok(());
+        };
+        let admission = host.observe_admission(task).await?;
+        if admission.parent != parent
+            || admission.limits != self.config.limits
+            || admission.run_limits != self.config.run_limits
+        {
+            return Err(Error::Conflict(
+                "local swarm task admission no longer matches its pinned owner binding".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Replays the exact admitted request after a process interruption.
     pub async fn retry(&self, task: TaskId) -> Result<LocalForkOutcome> {
         let request = self
@@ -2200,6 +2560,11 @@ fn apply_record(
         StoredEvent::ForkFailed { child, reason } => {
             if let Some(session) = sessions.get_mut(&child) {
                 session.phase = LocalSessionPhase::Failed(reason);
+            }
+        }
+        StoredEvent::ForkCancelled { child } => {
+            if let Some(session) = sessions.get_mut(&child) {
+                session.phase = LocalSessionPhase::Cancelled;
             }
         }
     }
