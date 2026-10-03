@@ -1,4 +1,4 @@
-use acyclic_sdk_contract_validation::compare_bytes;
+use acyclic_sdk_contract_validation::{compare_bytes, DifferenceKind};
 use acyclic_sdk_contract_wire::{
     actors_descriptor, explicit_http_family_views, family_view, filesystem::filesystem_descriptor,
     filesystem::filesystem_file_descriptor, filesystem::FILESYSTEM, harness::harness_descriptor,
@@ -436,6 +436,133 @@ fn raw_option_extensions_survive_independent_semantic_validation() {
             report.differences
         );
     }
+}
+
+#[test]
+fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
+    let baseline = actors_descriptor();
+
+    let mut field_tag = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
+    let actors_file = field_tag
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("actors/v1/actors.proto"))
+        .expect("Actors file");
+    let message = actors_file
+        .message_type
+        .iter_mut()
+        .find(|message| !message.field.is_empty())
+        .expect("Actors message with fields");
+    message.field[0].number = Some(message.field[0].number.expect("field number") + 1000);
+    let report = compare_bytes(&baseline, &field_tag.encode_to_vec()).expect("field-tag report");
+    assert!(!report.semantic_compatible);
+    assert!(report
+        .differences
+        .iter()
+        .any(|difference| { difference.kind == DifferenceKind::FieldTag }));
+
+    let mut json_name = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
+    let actors_file = json_name
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("actors/v1/actors.proto"))
+        .expect("Actors file");
+    let message = actors_file
+        .message_type
+        .iter_mut()
+        .find(|message| !message.field.is_empty())
+        .expect("Actors message with fields");
+    message.field[0].json_name = Some("wireIdentityChanged".to_owned());
+    let report = compare_bytes(&baseline, &json_name.encode_to_vec()).expect("JSON-name report");
+    assert!(!report.semantic_compatible, "JSON name drift was accepted");
+
+    let mut file_option =
+        FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
+    let actors_file = file_option
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("actors/v1/actors.proto"))
+        .expect("Actors file");
+    actors_file
+        .options
+        .as_mut()
+        .expect("Actors file options")
+        .go_package = Some("wire.identity.changed".to_owned());
+    let report = compare_bytes(&baseline, &file_option.encode_to_vec()).expect("option report");
+    assert!(
+        !report.semantic_compatible,
+        "file option drift was accepted"
+    );
+    assert!(report
+        .differences
+        .iter()
+        .any(|difference| { difference.kind == DifferenceKind::CustomOption }));
+
+    let mut presence =
+        FileDescriptorSet::decode(objects_descriptor().as_slice()).expect("Objects descriptor");
+    let objects_file = presence
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("objects/v2/objects.proto"))
+        .expect("Objects file");
+    let optional = objects_file
+        .message_type
+        .iter_mut()
+        .flat_map(|message| message.field.iter_mut())
+        .find(|field| field.proto3_optional == Some(true))
+        .expect("optional Objects field");
+    optional.proto3_optional = Some(false);
+    let report =
+        compare_bytes(&objects_descriptor(), &presence.encode_to_vec()).expect("presence report");
+    assert!(!report.semantic_compatible, "presence drift was accepted");
+    assert!(report.differences.iter().any(|difference| {
+        matches!(
+            difference.kind,
+            DifferenceKind::Presence | DifferenceKind::Oneof
+        )
+    }));
+
+    let mut enum_value = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
+    let actors_file = enum_value
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("actors/v1/actors.proto"))
+        .expect("Actors file");
+    let enumeration = actors_file
+        .enum_type
+        .iter_mut()
+        .find(|enumeration| !enumeration.value.is_empty())
+        .expect("Actors enum");
+    enumeration.value[0].number =
+        Some(enumeration.value[0].number.expect("enum value number") + 1000);
+    let report = compare_bytes(&baseline, &enum_value.encode_to_vec()).expect("enum report");
+    assert!(!report.semantic_compatible);
+    assert!(report
+        .differences
+        .iter()
+        .any(|difference| { difference.kind == DifferenceKind::EnumValue }));
+
+    let mut method = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
+    let actors_file = method
+        .file
+        .iter_mut()
+        .find(|file| file.name.as_deref() == Some("actors/v1/actors.proto"))
+        .expect("Actors file");
+    let service = actors_file
+        .service
+        .iter_mut()
+        .find(|service| !service.method.is_empty())
+        .expect("Actors service");
+    service.method[0].server_streaming = Some(!service.method[0].server_streaming.unwrap_or(false));
+    let report = compare_bytes(&baseline, &method.encode_to_vec()).expect("RPC report");
+    assert!(
+        !report.semantic_compatible,
+        "RPC streaming drift was accepted"
+    );
+    assert!(report
+        .differences
+        .iter()
+        .any(|difference| { difference.kind == DifferenceKind::ServiceStreaming }));
 }
 
 #[test]
