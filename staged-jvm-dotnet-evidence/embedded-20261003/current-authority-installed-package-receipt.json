@@ -1,0 +1,95 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.current-authority-installed-package.v1",
+  "qualification": "clean JVM and .NET package builds and installed consumer runs bound to the current Rust authority export",
+  "authority": {
+    "export": "Q:/sdk/.tmp-sdk-contract-current/rust-authority.json",
+    "manifest_sha256": "AC8808BB97B05360BF4C3675071325C16AD29178AA523374C6645F5F8AA3889C",
+    "source_revision": "31cd185f9f4aed78e6cea5a231cc7b05549d96e32bf13ac39b5ee476095a49c6",
+    "families": 9,
+    "generator": "acyclic-sdk-contract-wire@0.1.0"
+  },
+  "source_closure": {
+    "jvm_pom_sha256": "952BCDB5A5340CA0D7DBEBE9F58D5A3FC9AB55C06BA0ACB5044D53EB301A6CCC",
+    "jvm_authority_verifier_sha256": "C6C886E679C6D78582D983E3776B5A00386F07C1A0BB54C551F24AA593B47092",
+    "dotnet_project_sha256": "223B92AA0CF84710FFF0FB00B631C4D5DE3B6BF969953D6977016F9218515049",
+    "dotnet_generation_lock": "dotnet/generation.lock.json",
+    "dotnet_generation_lock_sha256": "F09EE4259EBC3020F2C12ED7BF0B9D1877B021E7CFBCBFB310B83532030CAF80",
+    "dotnet_authority_verifier_sha256": "C6C886E679C6D78582D983E3776B5A00386F07C1A0BB54C551F24AA593B47092",
+    "dotnet_reproducible_pack_sha256": "D0BE4D6EB1B663E1CCC8C1493684C9EAA2BA0C08ABDA41E6BE43DFED19DE3927",
+    "license_sha256": "DD4AB0FB7C00C1C80CE70DEA9FE961875AC4BDC0FABEFFC6C7C362838D3915B4",
+    "notice_sha256": "01AC4CD68BA6910357D2A05905B8329566A8D46858515F829A512EC91432BF8C"
+  },
+  "packages": {
+    "jvm": {
+      "build_project": "Q:/sdk/.tmp-jvm-project-current-20261003/jvm",
+      "build_seconds": 115.0,
+      "artifact": "Q:/sdk/.tmp-jvm-project-current-20261003/jvm/target/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+      "artifact_sha256": "F41BB39B35F043D18B549D2DFEA3E6EB570E3C175DAD18F9F07CB475BCDF448B",
+      "embedded_authority_revision": "31cd185f9f4aed78e6cea5a231cc7b05549d96e32bf13ac39b5ee476095a49c6",
+      "embedded_authority_manifest_sha256": "AC8808BB97B05360BF4C3675071325C16AD29178AA523374C6645F5F8AA3889C",
+      "reproducibility": {
+        "second_build_seconds": 43.823,
+        "second_artifact_sha256": "F41BB39B35F043D18B549D2DFEA3E6EB570E3C175DAD18F9F07CB475BCDF448B",
+        "byte_equal": true
+      }
+    },
+    "dotnet": {
+      "build_project": "Q:/sdk/.tmp-dotnet-project-current-20261003/dotnet",
+      "build_seconds": 27.355,
+      "artifact": "Q:/sdk/.tmp-dotnet-package-current-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+      "artifact_sha256": "DC548CD24A1419DE075BC93D8B7AC864B5CA44F3A2EE05110DF5F27AF6242A2A",
+      "embedded_authority_revision": "31cd185f9f4aed78e6cea5a231cc7b05549d96e32bf13ac39b5ee476095a49c6",
+      "embedded_authority_manifest_sha256": "AC8808BB97B05360BF4C3675071325C16AD29178AA523374C6645F5F8AA3889C"
+    }
+  },
+  "fixture": {
+    "binary": "Q:/sdk/.tmp-fixture-build-current2/debug/fixture-server.exe",
+    "binary_sha256": "AC3D3F13E1C21DD16843B565AD2E34308FBD28A925C771725E04A7D26B0AF95A",
+    "source": "rust/crates/sdk-examples/src/lib.rs",
+    "source_sha256": "A9B25653E5E4BED4146E4927BAB23E186778DDD5AA77A7450B8C842C1A1B414C",
+    "server_source": "rust/crates/sdk-examples/src/bin/fixture-server.rs",
+    "server_source_sha256": "85D664E6D62DA8FF57911EC149D01EF63E38FCAAB6CEBA9457CCFA098A5712DB",
+    "grpc_endpoint": "http://127.0.0.1:53476",
+    "service_availability": "not_claimed"
+  },
+  "installed_consumers": {
+    "jvm": {
+      "source": "staged-jvm-dotnet-evidence/embedded-20261003/InstalledTransportFixtureConsumer.java",
+      "source_sha256": "535AE460F05ECF02F28ECEFB4DC0E15D155FB1597DAA0FC9559AD923967086C2",
+      "runtime": "Java 17",
+      "run_seconds": 2.014,
+      "result": "pass",
+      "output": "installed JVM transport fixture checks passed: Actors/Stream replay/mismatch/cancel/recovery"
+    },
+    "dotnet": {
+      "source": "dotnet/consumer/Program.cs",
+      "source_sha256": "52F357123D31CEE3E3A4A51EDB6FCDA59FE7A3E28BEB17306C12A0BDB2D07CA1",
+      "project": "dotnet/consumer/Acyclic.Sdk.Transport.Consumer.csproj",
+      "project_sha256": "7BB8DCFDB20F176308CC833E84C8249CBC579AAE48E6032D1C54C0D2221A93FC",
+      "locked_assets_sha256": "61C371B01AC15C261736C9DCD963686C75F1266FCAD801EC53FEFB9BE3504D41",
+      "runtime": "official .NET SDK 8.0.425, runtime 8.0.31",
+      "build_seconds": 16.969,
+      "run_seconds": 2.73,
+      "result": "pass",
+      "output": [
+        "Rust golden all-family serialization checks passed.",
+        "Rust fixture idempotency replay, mismatch, follow cancellation, and resume checks passed.",
+        "Rust fixture unary, server-stream, and cancellation checks passed.",
+        "Generated Actors and Stream consumer checks passed."
+      ]
+    }
+  },
+  "transport_and_facade_scope": {
+    "rust_emitted_remote_facades": [
+      "ruby",
+      "php",
+      "dart"
+    ],
+    "jvm_dotnet_remote_facade": "not emitted by the current Rust facade generator",
+    "fixture_endpoint_selection": "explicit loopback endpoint supplied only for the installed consumer probe",
+    "fallback_after_failure": "none",
+    "replay_after_failure": "none",
+    "qualification_boundary": "The installed JVM/.NET generated stubs are source-bound and live-tested; seamless automatic remote transport selection remains pending a Rust-emitter target for JVM/.NET and is not handwritten here."
+  },
+  "publication": "local evidence only; no merge, publish, or deployment"
+}

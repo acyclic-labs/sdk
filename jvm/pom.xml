@@ -1,0 +1,178 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>dev.acyclic</groupId>
+  <artifactId>acyclic-sdk-jvm-transport</artifactId>
+  <version>0.2.0-SNAPSHOT</version>
+  <name>Acyclic SDK JVM transport prototype</name>
+  <description>Generated Rust authority Java and Kotlin gRPC transport bindings.</description>
+  <packaging>jar</packaging>
+  <licenses>
+    <license>
+      <name>Apache License, Version 2.0</name>
+      <url>https://www.apache.org/licenses/LICENSE-2.0</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+  <properties>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <maven.compiler.release>17</maven.compiler.release>
+    <protobuf.version>4.31.1</protobuf.version>
+    <grpc.version>1.75.0</grpc.version>
+    <grpc.kotlin.version>1.4.3</grpc.kotlin.version>
+    <grpc.kotlin.plugin.executable></grpc.kotlin.plugin.executable>
+    <protobuf.maven.version>0.6.1</protobuf.maven.version>
+    <os.maven.version>1.7.1</os.maven.version>
+    <junit.version>5.13.4</junit.version>
+    <!-- Keep archive entry timestamps stable when the caller does not override it. -->
+    <project.build.outputTimestamp>2026-01-01T00:00:00Z</project.build.outputTimestamp>
+    <!-- Produced by sdk-contract-wire; override with -Dacyclic.schema.root=... -->
+    <acyclic.schema.root>${project.basedir}/../target/sdk-contract</acyclic.schema.root>
+  </properties>
+  <dependencies>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-protobuf</artifactId><version>${grpc.version}</version></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-stub</artifactId><version>${grpc.version}</version></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-netty-shaded</artifactId><version>${grpc.version}</version><scope>runtime</scope></dependency>
+    <dependency><groupId>io.grpc</groupId><artifactId>grpc-inprocess</artifactId><version>${grpc.version}</version><scope>test</scope></dependency>
+    <dependency><groupId>com.google.protobuf</groupId><artifactId>protobuf-java</artifactId><version>${protobuf.version}</version></dependency>
+    <dependency><groupId>com.google.code.findbugs</groupId><artifactId>jsr305</artifactId><version>3.0.2</version></dependency>
+    <dependency><groupId>org.junit.jupiter</groupId><artifactId>junit-jupiter</artifactId><version>${junit.version}</version><scope>test</scope></dependency>
+  </dependencies>
+  <build>
+    <resources>
+      <resource>
+        <directory>${project.basedir}/..</directory>
+        <includes><include>LICENSE</include><include>NOTICE</include></includes>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>kr.motd.maven</groupId><artifactId>os-maven-plugin</artifactId><version>${os.maven.version}</version><extensions>true</extensions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-antrun-plugin</artifactId><version>3.1.0</version>
+        <executions>
+          <execution><id>stage-canonical-protos</id><phase>generate-sources</phase>
+          <configuration><target>
+            <exec executable="powershell.exe" failonerror="true">
+              <arg value="-NoProfile" /><arg value="-ExecutionPolicy" /><arg value="Bypass" />
+              <arg value="-File" /><arg value="${project.basedir}/verify-rust-authority.ps1" />
+              <arg value="-SchemaRoot" /><arg value="${acyclic.schema.root}" />
+            </exec>
+            <available file="${acyclic.schema.root}/rust-authority.json" property="rust.authority.present" />
+            <fail unless="rust.authority.present"
+                  message="SchemaRoot must be an sdk-contract-wire Rust authority export (missing rust-authority.json)." />
+            <loadfile property="rust.authority.manifest" srcFile="${acyclic.schema.root}/rust-authority.json" />
+            <condition property="rust.authority.valid">
+              <and>
+                <contains string="${rust.authority.manifest}" substring="&quot;schema&quot;: &quot;acyclic.sdk.rust-authority.v1&quot;" />
+                <contains string="${rust.authority.manifest}" substring="&quot;authority&quot;: &quot;rust&quot;" />
+                <contains string="${rust.authority.manifest}" substring="&quot;families&quot;: [" />
+              </and>
+            </condition>
+            <fail unless="rust.authority.valid"
+                  message="SchemaRoot rust-authority.json is not bound to the Rust authority export." />
+            <mkdir dir="${project.build.outputDirectory}/META-INF" />
+            <!-- The Rust authority manifest enumerates the family closure; stage
+                 every emitted proto instead of maintaining a second family list. -->
+            <copy todir="${project.build.directory}/proto">
+              <fileset dir="${acyclic.schema.root}" includes="**/*.proto" />
+            </copy>
+            <copy file="${acyclic.schema.root}/rust-authority.json" tofile="${project.build.outputDirectory}/META-INF/rust-authority.json" />
+          </target></configuration>
+          <goals><goal>run</goal></goals>
+        </execution>
+          <execution><id>adapt-generated-harness-accessors</id><phase>process-sources</phase>
+            <configuration><target>
+              <exec executable="powershell.exe" failonerror="true">
+                <arg value="-NoProfile" /><arg value="-ExecutionPolicy" /><arg value="Bypass" />
+                <arg value="-File" /><arg value="${project.basedir}/adapt-generated-harness.ps1" />
+                <arg value="-GeneratedRoot" /><arg value="${project.build.directory}/generated-sources/protobuf/java" />
+              </exec>
+            </target></configuration>
+            <goals><goal>run</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>${protobuf.maven.version}</version>
+        <configuration>
+          <protoSourceRoot>${project.build.directory}/proto</protoSourceRoot>
+          <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+          <pluginId>grpc-java</pluginId>
+          <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+          <clearOutputDirectory>true</clearOutputDirectory>
+        </configuration>
+        <executions>
+          <execution><id>generate-java-protobuf</id>
+            <configuration>
+              <protoSourceRoot>${project.build.directory}/proto</protoSourceRoot>
+              <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+              <pluginId>grpc-java</pluginId>
+              <pluginArtifact>io.grpc:protoc-gen-grpc-java:${grpc.version}:exe:${os.detected.classifier}</pluginArtifact>
+              <!-- Do not inherit the optional grpc-kotlin wrapper from the profile. -->
+              <pluginExecutable></pluginExecutable>
+              <clearOutputDirectory>true</clearOutputDirectory>
+            </configuration>
+            <goals><goal>compile</goal><goal>compile-custom</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-surefire-plugin</artifactId><version>3.5.3</version>
+        <configuration><useModulePath>false</useModulePath></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId><artifactId>maven-jar-plugin</artifactId><version>3.4.2</version>
+        <configuration><outputTimestamp>${project.build.outputTimestamp}</outputTimestamp></configuration>
+      </plugin>
+    </plugins>
+  </build>
+  <profiles>
+    <profile>
+      <id>kotlin-generation</id>
+      <activation><property><name>generateKotlin</name></property></activation>
+      <dependencies>
+        <dependency><groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-stdlib</artifactId><version>2.1.21</version></dependency>
+        <dependency><groupId>org.jetbrains.kotlinx</groupId><artifactId>kotlinx-coroutines-core-jvm</artifactId><version>1.10.2</version></dependency>
+        <dependency><groupId>io.grpc</groupId><artifactId>grpc-kotlin-stub</artifactId><version>${grpc.kotlin.version}</version></dependency>
+      </dependencies>
+      <build><plugins>
+        <plugin>
+          <groupId>org.xolstice.maven.plugins</groupId><artifactId>protobuf-maven-plugin</artifactId><version>${protobuf.maven.version}</version>
+          <configuration>
+            <protoSourceRoot>${project.build.directory}/proto</protoSourceRoot>
+            <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
+          </configuration>
+          <executions><execution><id>generate-kotlin-grpc</id>
+            <configuration>
+              <pluginId>grpc-kotlin</pluginId>
+              <pluginArtifact>io.grpc:protoc-gen-grpc-kotlin:${grpc.kotlin.version}:jar:jdk8</pluginArtifact>
+              <!-- On Windows, override this with a java -jar wrapper because the
+                   Maven plugin cannot execute the grpc-kotlin jar directly. -->
+              <pluginExecutable>${grpc.kotlin.plugin.executable}</pluginExecutable>
+              <clearOutputDirectory>false</clearOutputDirectory>
+            </configuration>
+            <goals><goal>compile-custom</goal></goals>
+          </execution></executions>
+        </plugin>
+        <plugin>
+          <groupId>org.jetbrains.kotlin</groupId><artifactId>kotlin-maven-plugin</artifactId><version>2.1.21</version>
+          <configuration>
+            <jvmTarget>17</jvmTarget>
+            <sourceDirs>
+              <source>${project.build.directory}/generated-sources/protobuf/grpc-kotlin</source>
+            </sourceDirs>
+          </configuration>
+          <executions>
+            <!-- Java protobuf and grpc-java stubs must be compiled first; the Kotlin
+                 coroutine stubs reference those classes. -->
+            <execution><id>compile-kotlin-grpc</id><phase>process-classes</phase><goals><goal>compile</goal></goals></execution>
+          </executions>
+        </plugin>
+      </plugins></build>
+    </profile>
+  </profiles>
+</project>

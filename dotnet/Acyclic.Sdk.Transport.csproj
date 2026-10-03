@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <PackageId>Acyclic.Sdk.Transport</PackageId>
+    <Version>0.2.0-alpha.1</Version>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/acyclic-labs/sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-transport</PathMap>
+    <!-- Produced by sdk-contract-wire; override with /p:SchemaRoot=... -->
+    <SchemaRoot Condition="'$(SchemaRoot)' == ''">$(MSBuildThisFileDirectory)..\target\sdk-contract</SchemaRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+    <PackageReference Include="Grpc.Net.Client" Version="2.71.0" />
+    <PackageReference Include="Grpc.Tools" Version="2.71.0" PrivateAssets="All" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="consumer\**\*.cs" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="$(MSBuildThisFileDirectory)..\LICENSE" Pack="true" PackagePath="LICENSE" />
+    <None Include="$(MSBuildThisFileDirectory)..\NOTICE" Pack="true" PackagePath="NOTICE" />
+    <None Include="$(SchemaRoot)\rust-authority.json" Pack="true" PackagePath="build\rust-authority.json" />
+    <!-- The Rust authority manifest is the family closure. Consume every
+         emitted proto so newly qualified families do not require SDK edits. -->
+    <Protobuf Include="$(SchemaRoot)\**\*.proto"
+              ProtoRoot="$(SchemaRoot)"
+              Link="Protos\%(RecursiveDir)%(Filename)%(Extension)"
+              GrpcServices="Client" />
+  </ItemGroup>
+
+  <Target Name="ValidateRustAuthority" BeforeTargets="PrepareForBuild">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\verify-rust-authority.ps1&quot; -SchemaRoot &quot;$(SchemaRoot)&quot;" />
+    <Error Condition="!Exists('$(SchemaRoot)\rust-authority.json')"
+           Text="SchemaRoot must be an sdk-contract-wire Rust authority export (missing rust-authority.json)." />
+    <ReadLinesFromFile File="$(SchemaRoot)\rust-authority.json">
+      <Output TaskParameter="Lines" PropertyName="RustAuthorityManifest" />
+    </ReadLinesFromFile>
+    <Error Condition="!$(RustAuthorityManifest.Contains('&quot;schema&quot;: &quot;acyclic.sdk.rust-authority.v1&quot;')) Or !$(RustAuthorityManifest.Contains('&quot;authority&quot;: &quot;rust&quot;')) Or !$(RustAuthorityManifest.Contains('&quot;families&quot;: ['))"
+           Text="SchemaRoot rust-authority.json is not bound to the Rust authority." />
+  </Target>
+
+  <Target Name="NormalizeNupkgForReproducibility" AfterTargets="Pack">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\reproducible-pack.ps1&quot; -PackagePath &quot;$(PackageOutputPath)\$(PackageId).$(PackageVersion).nupkg&quot;" />
+  </Target>
+</Project>

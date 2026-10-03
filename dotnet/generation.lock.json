@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "generator": {
+    "package": "Grpc.Tools",
+    "version": "2.71.0"
+  },
+  "runtime": {
+    "googleProtobuf": "3.31.1",
+    "grpcNetClient": "2.71.0",
+    "targetFramework": "net8.0"
+  },
+  "inputs": [
+    "target/sdk-contract/actors/v1/actors.proto",
+    "target/sdk-contract/stream/v2/stream.proto",
+    "target/sdk-contract/objects/v2/objects.proto",
+    "target/sdk-contract/workers/v1/workers.proto",
+    "target/sdk-contract/filesystem/v2/filesystem.proto",
+    "target/sdk-contract/harness/v2/harness.proto",
+    "target/sdk-contract/protocol/v1/protocol.proto",
+    "target/sdk-contract/inference/v1/inference.proto",
+    "target/sdk-contract/machines/v1/machines.proto",
+    "target/sdk-contract/validation/v1/options.proto"
+  ],
+  "grpcServices": "Client",
+  "namespacePolicy": "Use existing protobuf package names; do not add active descriptor options",
+  "sourceRevision": "31cd185f9f4aed78e6cea5a231cc7b05549d96e32bf13ac39b5ee476095a49c6"
+}

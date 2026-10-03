@@ -1,0 +1,59 @@
+{
+  "schema": "acyclic.sdk.cross-language-fixtures.v1",
+  "families": [
+    {
+      "family": "actors",
+      "message": "CreateActorRequest",
+      "bytes_b64": "CgdmaXh0dXJlEhNmaXh0dXJlLWhvbWVfcmVnaW9uMhdmaXh0dXJlLWlkZW1wb3RlbmN5X2tleQ==",
+      "sha256": "fcc4e8c9366ac8efa5301274383ee6f71e293235dcb47feb52b90be9342f3148"
+    },
+    {
+      "family": "stream",
+      "message": "AppendRequest",
+      "bytes_b64": "CgxmaXh0dXJlLXBhdGgSB2ZpeHR1cmUYByIHZml4dHVyZQ==",
+      "sha256": "626074d2f36ee52f62bc85a803f1c96d3be46fb615133aabb21acf3f3768e106"
+    },
+    {
+      "family": "objects",
+      "message": "PutObjectHeader",
+      "bytes_b64": "EhJmaXh0dXJlLW9iamVjdF9rZXk=",
+      "sha256": "86c343638868df7a7fde45fc01342f25ed95ebcc30d7ccc9a8bf299c8e760bc4"
+    },
+    {
+      "family": "workers",
+      "message": "PublishVersionRequest",
+      "bytes_b64": "CgdmaXh0dXJlEgdmaXh0dXJlGhdmaXh0dXJlLWlkZW1wb3RlbmN5X2tleQ==",
+      "sha256": "a77c6d3fe612b50eb68b9d2b5b581f2d2a6bb12a031812a44c0b53ade9f2f516"
+    },
+    {
+      "family": "filesystem",
+      "message": "HandshakeRequest",
+      "bytes_b64": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "family": "harness",
+      "message": "CommandEnvelope",
+      "bytes_b64": "IAc6E2ZpeHR1cmUtYWN0aW9uX3R5cGVCB2ZpeHR1cmVKB2ZpeHR1cmU=",
+      "sha256": "d934d3973b0e4782f699dd2dce0a5d7a928edebca039bf814f8ad5fdd0cfeb3e"
+    },
+    {
+      "family": "machines",
+      "message": "CreateMachineRequest",
+      "bytes_b64": "QgdmaXh0dXJl",
+      "sha256": "697dc1bcbb492d61cf2845a69fb649426b4b7e50af969006635fd14f57c7549b"
+    },
+    {
+      "family": "inference",
+      "message": "ListModelsRequest",
+      "bytes_b64": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "family": "protocol",
+      "message": "HandshakeRequest",
+      "bytes_b64": "",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}
