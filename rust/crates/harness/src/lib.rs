@@ -37,7 +37,7 @@ pub mod machines;
 #[cfg(any(
     test,
     feature = "filesystem",
-    all(feature = "wasm", target_arch = "wasm32")
+    target_arch = "wasm32"
 ))]
 pub(crate) mod memory_store;
 pub mod merge;
@@ -52,7 +52,7 @@ pub mod scheduler;
 pub mod store;
 pub mod tool;
 pub mod turn;
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 mod wasm;
 pub mod wire_api;
 mod wire_codec;

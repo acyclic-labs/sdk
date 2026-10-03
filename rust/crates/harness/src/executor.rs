@@ -1150,7 +1150,7 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(crate) struct ModelEventAdmissionState {
     #[serde(default)]
@@ -1169,7 +1169,7 @@ pub(crate) struct ModelEventAdmission {
 }
 
 impl ModelEventAdmission {
-    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn from_state(state: ModelEventAdmissionState, limits: Limits) -> Result<Self> {
         if state.count > limits.model_events_per_step {
             return Err(Error::Invalid(
@@ -1202,7 +1202,7 @@ impl ModelEventAdmission {
         })
     }
 
-    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn state(&self) -> ModelEventAdmissionState {
         ModelEventAdmissionState {
             count: self.count,

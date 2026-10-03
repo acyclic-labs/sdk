@@ -5,7 +5,7 @@ use crate::{
     core::{AggregateKind, Authority, Event, EventPayload, EventReference, Scope},
     wire,
 };
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 use crate::{
     IdempotencyKey,
     core::{Action, ApplyResult, Command, canonical_intent},
@@ -93,7 +93,7 @@ pub(crate) fn decode_event(bytes: &[u8]) -> Result<(Authority, Event)> {
 }
 
 /// Decodes one canonical event payload and checks its generated discriminator.
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Result<EventPayload> {
     let payload: EventPayload =
         serde_json::from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))?;
@@ -105,7 +105,7 @@ pub(crate) fn decode_event_payload(event_type_name: &str, bytes: &[u8]) -> Resul
     Ok(payload)
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     let envelope =
         wire::CommandEnvelope::decode(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -150,7 +150,7 @@ pub(crate) fn decode_command(bytes: &[u8]) -> Result<(Authority, Command)> {
     Ok((authority, command))
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn encode_apply_result(authority: &Authority, result: &ApplyResult) -> Result<Vec<u8>> {
     let (state, event) = match result {
         ApplyResult::Applied { event } => (wire::ApplyState::Applied, event),
@@ -235,7 +235,7 @@ fn event_type(payload: &EventPayload) -> &'static str {
     }
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+#[cfg(target_arch = "wasm32")]
 fn action_type(action: &Action) -> &'static str {
     match action {
         Action::TransitionLifecycle { .. } => "transition_lifecycle",

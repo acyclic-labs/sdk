@@ -10,7 +10,7 @@ The `acyclic-harness` crate keeps its runtime provider-neutral. Native consumers
 | Objects provider adapter | `objects` | `acyclic_harness::objects` |
 | Machines adapter | `machines` | `acyclic_harness::machines` |
 | Tonic gRPC adapter | `grpc` | `acyclic_harness::grpc::{HarnessGrpcService, transport}` |
-| Wasm bindings | `wasm` with defaults disabled | `wasm32` bindings and JS projections |
+| Wasm bindings | target-selected | `wasm32` bindings and JS projections |
 
 The transport contract is `acyclic.harness.v2`. The
 [`HarnessWireApi`](../src/wire_api.rs) trait owns handshake, submit, replay,

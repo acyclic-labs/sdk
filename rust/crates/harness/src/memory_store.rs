@@ -6,9 +6,9 @@
 //! identity, byte deduplication, path heads, generation history, and bounded
 //! residency.
 
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::contract::canonical_json_digest;
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+#[cfg(any(test, target_arch = "wasm32"))]
 use crate::conversation::FileDescriptor;
 use crate::conversation::{FileRef, MAX_PRIVATE_DIRECTORY_PAGE, VolumeRef, is_internal_path};
 use crate::{Error, Result};
@@ -90,7 +90,7 @@ impl MemoryStore {
         })
     }
 
-    #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
+    #[cfg(any(test, target_arch = "wasm32"))]
     pub(crate) fn stage(
         &mut self,
         path: &str,
@@ -241,7 +241,7 @@ impl MemoryStore {
         Ok(stored.bytes.to_vec())
     }
 
-    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn has(&self, file: &FileRef) -> Result<bool> {
         file.validate()?;
         if file.volume() != &self.volume {
