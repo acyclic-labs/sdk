@@ -30,6 +30,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+fn execution_request_locator_digest(volume: &VolumeRef, path: &str) -> Result<[u8; 32]> {
+    let bytes = crate::contract::canonical_json_bytes(&(volume, path))?;
+    Ok(*blake3::hash(&bytes).as_bytes())
+}
+
 const REQUEST_DOMAIN: &[u8] = b"acyclic:harness:approved-execution:v1";
 const MAX_ARGUMENTS: usize = 1024;
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
@@ -190,6 +195,11 @@ pub struct ExecutionApproval {
     pub request: ExecutionSpec,
     /// Digest of `request` at approval time.
     pub request_digest: [u8; 32],
+    /// Digest of the exact host volume and logical path approved for dispatch.
+    /// The locator is bound before staging so the approval record is not
+    /// self-referential.
+    #[serde(default)]
+    pub request_locator_digest: Option<[u8; 32]>,
     /// Whether the owner approved dispatch.
     pub approved: bool,
     /// Bounded owner reason for a denial, if any.
@@ -223,6 +233,7 @@ impl ExecutionApproval {
             operation_id,
             request,
             request_digest,
+            request_locator_digest: None,
             approved: true,
             denial_reason: None,
         })
@@ -263,6 +274,7 @@ impl ExecutionApproval {
             operation_id,
             request,
             request_digest,
+            request_locator_digest: None,
             approved: false,
             denial_reason: Some(denial_reason),
         })
@@ -294,6 +306,18 @@ impl ExecutionApproval {
                 ));
             }
         }
+        Ok(())
+    }
+
+    /// Binds this approval to the exact host volume and path later staged.
+    pub fn bind_request_location(&mut self, volume: &VolumeRef, path: &str) -> Result<()> {
+        volume.validate()?;
+        if path.is_empty() || path.contains('\0') {
+            return Err(Error::Invalid(
+                "execution approval request path is invalid".into(),
+            ));
+        }
+        self.request_locator_digest = Some(execution_request_locator_digest(volume, path)?);
         Ok(())
     }
 }
@@ -455,7 +479,11 @@ impl std::fmt::Debug for ExecutionResolutionCapability {
 }
 
 impl ExecutionResolutionCapability {
-    pub(crate) fn issue(session_id: SessionId, volume: &VolumeRef) -> Result<Self> {
+    pub(crate) fn issue(
+        session_id: SessionId,
+        volume: &VolumeRef,
+        owner_scope: &crate::core::Scope,
+    ) -> Result<Self> {
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid(
                 "execution resolution session identity cannot be zero".into(),
@@ -465,6 +493,7 @@ impl ExecutionResolutionCapability {
         input.extend_from_slice(b"acyclic:harness:execution-resolution:v1");
         input.extend_from_slice(&session_id.into_bytes());
         input.extend_from_slice(volume.id().as_bytes());
+        input.extend_from_slice(owner_scope.proof());
         Ok(Self {
             session_id,
             token: *blake3::hash(&input).as_bytes(),
@@ -963,6 +992,8 @@ pub struct ExecutionApprovalContext<'a> {
     pub guarantee: EffectGuarantee,
     /// Digest of the exact immutable approval request content.
     pub request_digest: [u8; 32],
+    /// Digest of the exact host volume and logical path being dispatched.
+    pub request_locator_digest: [u8; 32],
 }
 
 /// Verifies that an execution request was approved by the durable owner.
@@ -1279,6 +1310,15 @@ impl NativeExecutionProvider {
                 "approved execution request must be JSON content".into(),
             ));
         }
+        if self.receipt_store.is_some() {
+            let locator =
+                execution_request_locator_digest(request.request.volume(), request.request.path())?;
+            if approval.request_locator_digest != Some(locator) {
+                return Err(Error::Conflict(
+                    "execution approval is not bound to this host request location".into(),
+                ));
+            }
+        }
         let bytes = self.resolver.read(&request.request).await?;
         request.request.descriptor().verify(&bytes)?;
         let approval: ExecutionApproval = serde_json::from_slice(&bytes).map_err(|error| {
@@ -1302,6 +1342,10 @@ impl NativeExecutionProvider {
                     effect_kind: &request.effect_kind,
                     guarantee: request.guarantee,
                     request_digest: request.request_digest,
+                    request_locator_digest: execution_request_locator_digest(
+                        request.request.volume(),
+                        request.request.path(),
+                    )?,
                 },
                 &approval,
             )
@@ -1414,6 +1458,21 @@ impl NativeExecutionProvider {
         if let Err(error) = receipt.validate() {
             self.release_attempt(approval.operation_id, request.attempt_id)?;
             return Err(error);
+        }
+        // A native runner can finish with an unknown external outcome. Keep
+        // the durable claim pending and require operator resolution; publishing
+        // an Unknown receipt from the dispatcher would incorrectly clear the
+        // retry fence.
+        if self.receipt_store.is_some() && matches!(&receipt, ExecutionReceipt::Unknown { .. }) {
+            self.release_attempt(approval.operation_id, request.attempt_id)?;
+            return Ok(EffectObservation {
+                provider: request.provider,
+                effect_id: request.effect_id,
+                attempt_id: request.attempt_id,
+                request_digest: request.request_digest,
+                guarantee: request.guarantee,
+                status: EffectStatus::Indeterminate,
+            });
         }
         let receipt_bytes = match serde_json::to_vec(&receipt) {
             Ok(bytes) => bytes,
@@ -1823,8 +1882,10 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
         )?;
+        let mut approval = approval.clone();
+        approval.bind_request_location(&volume, "requests/approved.json")?;
         let bytes =
-            serde_json::to_vec(approval).map_err(|error| Error::Invalid(error.to_string()))?;
+            serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
         let descriptor = FileDescriptor::from_bytes(&bytes, "application/json")?;
         let reference = FileRef::new(
             volume.clone(),
@@ -2712,7 +2773,8 @@ mod local_provider_tests {
             PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
                 .await?;
         let operation = OperationId::from_bytes([41; 16]);
-        let approval = ExecutionApproval::approve(operation, local_spec())?;
+        let mut approval = ExecutionApproval::approve(operation, local_spec())?;
+        approval.bind_request_location(session.storage().volume(), "requests/approved.json")?;
         let approval_bytes =
             serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
         let request_file = session
@@ -2881,7 +2943,7 @@ mod local_provider_tests {
                 .storage()
                 .open_interaction(interaction_id, interaction)
                 .await?;
-            let approval = ExecutionApproval::approve_for(
+            let mut approval = ExecutionApproval::approve_for(
                 session.storage().session_id(),
                 interaction_id,
                 operation,
@@ -2897,6 +2959,8 @@ mod local_provider_tests {
                     },
                 )
                 .await?;
+            approval
+                .bind_request_location(session.storage().volume(), "requests/authenticated.json")?;
             let bytes =
                 serde_json::to_vec(&approval).map_err(|error| Error::Invalid(error.to_string()))?;
             request_file = session
@@ -2928,6 +2992,37 @@ mod local_provider_tests {
             let observation = provider.dispatch(dispatch.clone()).await?;
             assert!(matches!(observation.status, EffectStatus::Succeeded { .. }));
 
+            let copied_file = session
+                .storage()
+                .stage(
+                    OperationId::from_bytes([99; 16]),
+                    "requests/copied.json",
+                    &bytes,
+                    "application/json",
+                    "copied.json",
+                )
+                .await?;
+            let copied_digest = crate::core::effect_request_digest(
+                provider.id(),
+                EffectGuarantee::AtMostOnce,
+                "host.process",
+                &copied_file,
+            )?;
+            assert!(matches!(
+                provider
+                    .dispatch(EffectDispatch {
+                        provider: provider.id().into(),
+                        effect_id: EffectId::from_bytes([100; 16]),
+                        attempt_id: EffectAttemptId::from_bytes([101; 16]),
+                        effect_kind: "host.process".into(),
+                        request: copied_file,
+                        guarantee: EffectGuarantee::AtMostOnce,
+                        request_digest: copied_digest,
+                    })
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+
             let denied_operation = OperationId::from_bytes([96; 16]);
             let denied_interaction = InteractionId::from_bytes([97; 16]);
             session
@@ -2951,13 +3046,14 @@ mod local_provider_tests {
                     },
                 )
                 .await?;
-            let denied = ExecutionApproval::deny_for(
+            let mut denied = ExecutionApproval::deny_for(
                 session.storage().session_id(),
                 denied_interaction,
                 denied_operation,
                 request.clone(),
                 "owner declined",
             )?;
+            denied.bind_request_location(session.storage().volume(), "requests/denied.json")?;
             let denied_bytes =
                 serde_json::to_vec(&denied).map_err(|error| Error::Invalid(error.to_string()))?;
             let denied_file = session
@@ -2993,11 +3089,15 @@ mod local_provider_tests {
                     if message.contains("owner declined")
             ));
 
-            let forged = ExecutionApproval::approve_for(
+            let mut forged = ExecutionApproval::approve_for(
                 SessionId::new(),
                 interaction_id,
                 operation,
                 request.clone(),
+            )?;
+            forged.bind_request_location(
+                session.storage().volume(),
+                "requests/forged-session.json",
             )?;
             let forged_bytes =
                 serde_json::to_vec(&forged).map_err(|error| Error::Invalid(error.to_string()))?;
