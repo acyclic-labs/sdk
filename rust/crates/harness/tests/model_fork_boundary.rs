@@ -1819,7 +1819,7 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         .await
         .expect_err("invalid model attestation reached preparation effects");
     assert!(
-        matches!(error, Error::Unauthorized(message) | Error::Invalid(message) if message.contains("attestation")),
+        matches!(&error, Error::Unauthorized(message) | Error::Invalid(message) if message.contains("attestation")),
         "unexpected invalid-attestation error: {error:?}"
     );
     assert_eq!(
