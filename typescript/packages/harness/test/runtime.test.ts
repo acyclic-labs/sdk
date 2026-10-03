@@ -1867,6 +1867,7 @@ describe("typed agent runtime", () => {
     let projectionCalls = 0;
     const observed: ModelMessage[] = [];
     const serializedRequests: string[] = [];
+    const canonicalRequests: string[] = [];
     const transportBodies: number[][] = [];
     const transportDigests: number[][] = [];
     const tool = defineTool<null, Raw>({
@@ -1888,6 +1889,7 @@ describe("typed agent runtime", () => {
       .model(testModel, {
         async *generate(request) {
           serializedRequests.push(JSON.stringify(request));
+          canonicalRequests.push(request.canonical.requestJson);
           // The mock transport captures the exact admitted body and digest;
           // it must not reconstruct either from the mutable model projection.
           // The mock transport receives the dedicated bytes-only control. It
@@ -2034,7 +2036,7 @@ describe("typed agent runtime", () => {
         const canonical = JSON.parse(request.canonical.requestJson) as {
           messages: readonly { readonly content: unknown }[];
         };
-        expect(observed[0]?.content).toBe(canonical.messages[0]?.content);
+        expect(observed[0]?.content).toEqual(canonical.messages[0]?.content);
         yield { kind: "completed" as const, metadata: {} };
       },
       async reconcile() { return undefined; },
