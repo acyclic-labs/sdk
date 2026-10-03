@@ -425,8 +425,13 @@ impl WaitRequest {
                 validate_inbox_page(*task_id, *after, *limit, items)?;
             }
             (WaitTarget::Deadline { .. }, WaitCompletion::Deadline)
-            | (_, WaitCompletion::Cancelled)
-            | (_, WaitCompletion::TimedOut) => {}
+            | (_, WaitCompletion::Cancelled) => {}
+            (_, WaitCompletion::TimedOut) if self.timeout_epoch_ms.is_some() => {}
+            (_, WaitCompletion::TimedOut) => {
+                return Err(Error::Conflict(
+                    "wait timeout completion has no declared timeout".into(),
+                ));
+            }
             (WaitTarget::Tasks { .. }, _)
             | (WaitTarget::Messages { .. }, _)
             | (WaitTarget::Deadline { .. }, _) => {
