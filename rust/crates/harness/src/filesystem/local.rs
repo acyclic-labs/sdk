@@ -219,7 +219,7 @@ where
                 }
                 ExecutionReceiptEvent::Completed { key, result, .. } => {
                     result.validate()?;
-                    pending.retain(|(candidate, _)| candidate != key);
+                    pending.retain(|(candidate, _)| *candidate != key);
                 }
             }
         }

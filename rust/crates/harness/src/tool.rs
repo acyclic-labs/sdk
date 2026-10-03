@@ -565,7 +565,7 @@ mod tests {
         let value = feedback.to_model_value("invalid")?;
         assert_eq!(
             ToolRejectionFeedback::from_model_value(&value)?,
-            Some(feedback)
+            Some(feedback.clone())
         );
         let mut forged = value.clone();
         forged["injected"] = json!(true);
