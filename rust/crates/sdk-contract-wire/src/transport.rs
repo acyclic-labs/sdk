@@ -389,6 +389,17 @@ mod tests {
             select_transport_by_name("objects", native).unwrap().kind,
             TransportKind::HttpJson
         );
+        let mut rejected_endpoint = request(ClientRuntime::Native);
+        rejected_endpoint.override_kind = Some(TransportKind::Grpc);
+        rejected_endpoint.endpoint = TransportAvailability {
+            grpc: false,
+            grpc_web: false,
+            http_json: true,
+        };
+        assert_eq!(
+            select_transport_by_name("objects", rejected_endpoint),
+            Err(TransportSelectionError::UnsupportedOverride)
+        );
         native.installed = TransportAvailability {
             grpc: false,
             grpc_web: false,
