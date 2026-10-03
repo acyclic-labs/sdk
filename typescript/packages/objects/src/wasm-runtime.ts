@@ -13,8 +13,14 @@ export async function ensureObjectsWasm(): Promise<void> {
         const filesystem = runtime.process?.getBuiltinModule?.(["node", "fs/promises"].join(":")) as {
           readFile?: (path: URL) => Promise<Uint8Array>;
         } | undefined;
-        if (filesystem?.readFile === undefined) throw new Error("Objects WASM file loading requires a native runtime");
-        await initObjectsWasm({ module_or_path: Uint8Array.from(await filesystem.readFile(url)) });
+        if (filesystem?.readFile !== undefined) {
+          await initObjectsWasm({ module_or_path: Uint8Array.from(await filesystem.readFile(url)) });
+        } else {
+          // Browser bundlers rewrite this asset URL to the emitted WASM file.
+          // Keep the URL path for that case; browsers cannot read file URLs
+          // directly, but a served bundle will have an http(s) module URL.
+          await initObjectsWasm({ module_or_path: url });
+        }
       } else {
         await initObjectsWasm({ module_or_path: url });
       }
