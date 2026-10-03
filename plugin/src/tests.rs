@@ -3495,6 +3495,134 @@ async fn root_git_conflicted_merge_continue_case() {
     reopened.shutdown().await.expect("reopened shutdown");
 }
 
+#[test]
+fn root_git_rebase_and_hard_reset_update_exact_files() {
+    std::thread::Builder::new()
+        .name("plugin-root-git-rebase-reset".to_owned())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime")
+                .block_on(root_git_rebase_and_hard_reset_case());
+        })
+        .expect("test thread")
+        .join()
+        .expect("plugin root Git rebase thread");
+}
+
+async fn root_git_rebase_and_hard_reset_case() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = temporary.path().join("root");
+    fs::create_dir_all(&root).expect("root directory");
+    fs::write(root.join("base.txt"), b"base\n").expect("baseline file");
+    fs::write(
+        root.join("feature.patch"),
+        b"diff --git a/feature.txt b/feature.txt\nnew file mode 100644\n--- /dev/null\n+++ b/feature.txt\n@@ -0,0 +1 @@\n+feature\n",
+    )
+    .expect("feature patch");
+    fs::write(
+        root.join("main.patch"),
+        b"diff --git a/main.txt b/main.txt\nnew file mode 100644\n--- /dev/null\n+++ b/main.txt\n@@ -0,0 +1 @@\n+main\n",
+    )
+    .expect("main patch");
+
+    let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+        .await
+        .expect("control plane");
+    control
+        .session_start(json!({
+            "session_id":"session",
+            "cwd":root.display().to_string()
+        }))
+        .await
+        .expect("root session");
+    let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
+    control
+        .root_git_tool(root_id, vec!["status".to_owned()])
+        .await
+        .expect("initial status");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "baseline".to_owned()],
+        )
+        .await
+        .expect("baseline commit");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["switch".to_owned(), "-c".to_owned(), "feature".to_owned()],
+        )
+        .await
+        .expect("feature switch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["apply".to_owned(), "feature.patch".to_owned()],
+        )
+        .await
+        .expect("feature patch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "feature".to_owned()],
+        )
+        .await
+        .expect("feature commit");
+    control
+        .root_git_tool(root_id, vec!["switch".to_owned(), "main".to_owned()])
+        .await
+        .expect("main switch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["apply".to_owned(), "main.patch".to_owned()],
+        )
+        .await
+        .expect("main patch");
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "main".to_owned()],
+        )
+        .await
+        .expect("main commit");
+    control
+        .root_git_tool(root_id, vec!["switch".to_owned(), "feature".to_owned()])
+        .await
+        .expect("feature re-switch");
+    control
+        .root_git_tool(root_id, vec!["rebase".to_owned(), "main".to_owned()])
+        .await
+        .expect("rebase feature onto main");
+    assert_eq!(
+        fs::read(root.join("feature.txt")).expect("feature after rebase"),
+        b"feature\n"
+    );
+    assert_eq!(
+        fs::read(root.join("main.txt")).expect("main after rebase"),
+        b"main\n"
+    );
+    control
+        .root_git_tool(
+            root_id,
+            vec!["reset".to_owned(), "--hard".to_owned(), "main".to_owned()],
+        )
+        .await
+        .expect("hard reset feature to main");
+    assert_eq!(
+        fs::read(root.join("main.txt")).expect("main after hard reset"),
+        b"main\n"
+    );
+    assert!(
+        !root.join("feature.txt").exists(),
+        "hard reset must remove the feature-only exact file"
+    );
+    control.shutdown().await.expect("control shutdown");
+}
+
 #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
 async fn endpoint_shutdown_case() {
     use tokio::io::AsyncWriteExt as _;
