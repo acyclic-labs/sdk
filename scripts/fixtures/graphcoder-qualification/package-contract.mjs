@@ -3,6 +3,7 @@ import { lstatSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { readBoundedGzip, tarEntries } from "../../archive-utils.mjs";
 
 export const GRAPH_CODER_PACKAGE = "@acyclic-labs/graphcoder";
 export const GRAPH_CODER_VERSION = "0.2.0";
@@ -30,6 +31,47 @@ function inside(root, path, label) {
   if (value === "" || value === ".." || value.startsWith(`..\\`) || value.startsWith(`../`) || /^[A-Za-z]:/u.test(value)) {
     fail(`${label} escapes the installed package root: ${path}`);
   }
+}
+
+function exportedTargets(value) {
+  if (typeof value === "string") return [value];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.values(value).flatMap(exportedTargets);
+}
+
+function inspectArtifact(archive, packageJson) {
+  let expanded;
+  try { expanded = readBoundedGzip(archive, 100 * 1024 * 1024, 512 * 1024 * 1024).expanded; }
+  catch (error) { fail(`package artifact is not a valid bounded gzip archive: ${error instanceof Error ? error.message : String(error)}`); }
+  let manifestEntry;
+  const files = new Set();
+  for (const entry of tarEntries(expanded)) {
+    if (entry.path.startsWith("package/") && (entry.type === "0" || entry.type === "\\0")) {
+      files.add(entry.path);
+      if (entry.path === "package/package.json") manifestEntry = entry;
+    }
+  }
+  if (manifestEntry === undefined) fail("package artifact is missing package/package.json");
+  let artifactJson;
+  try { artifactJson = JSON.parse(manifestEntry.body); }
+  catch (error) { fail(`package artifact manifest is not valid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+  if (artifactJson.name !== packageJson.name || artifactJson.version !== packageJson.version) {
+    fail("installed package and package artifact have different name/version");
+  }
+  if (JSON.stringify(artifactJson.exports) !== JSON.stringify(packageJson.exports)
+    || JSON.stringify(artifactJson.bin) !== JSON.stringify(packageJson.bin)) {
+    fail("installed package export/bin metadata differs from package artifact");
+  }
+  for (const target of [...exportedTargets(packageJson.exports), ...exportedTargets(packageJson.bin)]) {
+    if (!target.startsWith("./") || !files.has(`package/${target.slice(2)}`)) {
+      fail(`package artifact is missing target ${target}`);
+    }
+  }
+  return {
+    manifest_sha256: createHash("sha256").update(manifestEntry.body).digest("hex"),
+    exports: exportedTargets(packageJson.exports),
+    bins: exportedTargets(packageJson.bin),
+  };
 }
 
 export function loadInstalledExport(consumerRoot, specifier) {
@@ -76,9 +118,13 @@ export function inspectInstalledPackage(packageRoot, { artifactPath } = {}) {
   if (artifactPath !== undefined) {
     const archive = resolve(artifactPath);
     regularFile(archive, "package artifact");
+    const artifactContract = inspectArtifact(archive, packageJson);
     identity.artifact = {
       path: archive,
       sha256: createHash("sha256").update(readFileSync(archive)).digest("hex"),
+      manifest_sha256: artifactContract.manifest_sha256,
+      exports: artifactContract.exports,
+      bins: artifactContract.bins,
     };
   }
   return identity;

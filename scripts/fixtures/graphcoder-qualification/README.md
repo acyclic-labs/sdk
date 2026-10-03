@@ -43,7 +43,9 @@ fixtures do not prove durable cancellation of a real worker, storage policy,
 model behavior, production swarm orchestration, N-API/Cargo bindings, or all
 possible native field combinations. The package consumer records the bridge
 executable and host-script identities and can consume a SHA-256 package archive
-with `--artifact`; it remains a protocol fixture until paired with a real
+with `--artifact`. When supplied, the archive manifest, export targets, and bin
+targets are parsed and compared with the installed package before the fixture
+starts; it remains a protocol fixture until paired with a real
 local-runtime host. A real host can additionally write a lazy observation file
 using schema `graphcoder.lazy-observation.v1`. It must identify the host PID and
 executable, the exact `list_sessions` request, and counters (`worker_starts`,
