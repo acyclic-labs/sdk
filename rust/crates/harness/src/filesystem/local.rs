@@ -197,7 +197,13 @@ where
                     self.validate_result_ref(key, result)?;
                     let bytes = self
                         .host
-                        .read_content(result, &self.read, self.maximum_bytes)
+                        .read_internal_content(
+                            result,
+                            &self.volume,
+                            &self.read,
+                            super::InternalContentClass::Execution,
+                            self.maximum_bytes,
+                        )
                         .await?
                         .to_vec();
                     result.descriptor().verify(&bytes)?;
@@ -353,7 +359,13 @@ where
                     self.validate_result_ref(candidate, result)?;
                     let bytes = self
                         .host
-                        .read_content(result, &self.read, self.maximum_bytes)
+                        .read_internal_content(
+                            result,
+                            &self.volume,
+                            &self.read,
+                            super::InternalContentClass::Execution,
+                            self.maximum_bytes,
+                        )
                         .await?
                         .to_vec();
                     result.descriptor().verify(&bytes)?;
