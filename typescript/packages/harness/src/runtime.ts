@@ -2486,9 +2486,9 @@ export class AgentHarness {
       : { prompt: "", selectedContext };
     let admittedDirectContent: ModelContent | undefined;
     let detachedDirectInput: AgentInput<UserContentPart> | undefined;
-    const detachedSelectedContext = input.selectedContext === undefined
+    const detachedSelectedContext = selectedContext === undefined
       ? undefined
-      : structuredClone(input.selectedContext);
+      : structuredClone(selectedContext);
     if (detachedSelectedContext !== undefined) validateSelectedContext(detachedSelectedContext, this.limits);
     else {
       const prompt = input.prompt;
