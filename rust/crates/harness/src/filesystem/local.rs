@@ -1,11 +1,11 @@
 //! Durable local Harness composition using public Stream and Filesystem providers.
 use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
 use crate::{
-    AgentId, ConversationId, Error, OperationId, Result, SessionId,
+    AgentId, Capabilities, ConversationId, Error, OperationId, Result, SessionId,
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, Capabilities},
+    core::{AggregateKind, Authority, AuthorityIssuer},
     effects::EffectRegistry,
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
