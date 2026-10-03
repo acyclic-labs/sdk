@@ -17,7 +17,7 @@ use crate::{
     },
 };
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, Stream, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, Stream, StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
@@ -694,10 +694,14 @@ async fn append_record<P: StreamProvider>(
             "swarm budget event exceeds Stream limit".into(),
         ));
     }
-    let key = StreamKey::new(Bytes::copy_from_slice(&digest))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+    // Do not use the event digest as the provider idempotency key here.  A
+    // keyed replay is reported by the Stream API as the original
+    // `Committed` outcome, which makes every concurrent caller appear to have
+    // won the tail CAS.  The journal's event digest scan below provides the
+    // durable duplicate check, while an uncached append preserves exactly one
+    // observable CAS winner.
     match stream
-        .append_batch(vec![Bytes::from(bytes)], Some(expected_tail), Some(key))
+        .append_batch(vec![Bytes::from(bytes)], Some(expected_tail), None)
         .await
     {
         Ok(AppendOutcome::Committed(receipt))
