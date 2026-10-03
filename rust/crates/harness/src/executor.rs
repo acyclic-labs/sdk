@@ -509,12 +509,42 @@ impl StockExecutor {
         input: &TurnInput,
     ) -> Result<()> {
         let records = journal.replay(input.operation_id).await?;
+        let mut prepared_steps = BTreeSet::new();
+        let mut started_steps = BTreeSet::new();
+        let mut started_tools = BTreeSet::new();
         for (index, record) in records.iter().enumerate() {
             record.event.validate_schema_version()?;
             if record.operation_id != input.operation_id || record.sequence != index as u64 + 1 {
                 return Err(Error::Conflict(
                     "execution journal is not gapless or belongs to another turn".into(),
                 ));
+            }
+            match &record.event {
+                ExecutionEvent::ModelInputPrepared { step, .. } => {
+                    if !prepared_steps.insert(*step) || started_steps.contains(step) {
+                        return Err(Error::Storage(
+                            "model input preparation is duplicated or out of order".into(),
+                        ));
+                    }
+                }
+                ExecutionEvent::ModelStarted { step, .. } => {
+                    if !prepared_steps.contains(step) || !started_steps.insert(*step) {
+                        return Err(Error::Storage(
+                            "model start is missing preparation or is duplicated".into(),
+                        ));
+                    }
+                }
+                ExecutionEvent::Model { step, .. } if !started_steps.contains(step) => {
+                    return Err(Error::Storage(
+                        "model observation is missing its admitted start".into(),
+                    ));
+                }
+                ExecutionEvent::ToolStarted { step, call_id, .. } => {
+                    if !started_tools.insert((*step, call_id.clone())) {
+                        return Err(Error::Storage("tool admission is duplicated".into()));
+                    }
+                }
+                _ => {}
             }
         }
         let request_digest = self.request_digest(input)?;
@@ -1170,6 +1200,11 @@ impl StockExecutor {
         if retained_rejection.is_some() && failed_tool.is_some() {
             return Err(Error::Storage(
                 "tool journal contains contradictory terminal records".into(),
+            ));
+        }
+        if retained_rejection.is_some() && started.is_some() {
+            return Err(Error::Storage(
+                "tool journal contains contradictory admission records".into(),
             ));
         }
         if completed_tool.is_some() && started.is_none() {
@@ -3335,6 +3370,80 @@ mod tests {
         let boundary: crate::model_input::CompletedModelBoundary =
             load_json(&journal, &boundary_ref).await?;
         assert_eq!(boundary.rejection_evidence, vec![current_feedback]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_feedback_bound_to_another_call_identity() -> Result<()> {
+        let mut tools = ToolRegistry::new();
+        let definition = crate::tool::ToolDefinition {
+            name: "example.echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "additionalProperties": false,
+            }),
+            output_schema: json!({"type": "object"}),
+            model_output_schema: json!({"type": "object"}),
+        };
+        tools.register(crate::tool::Tool {
+            definition: definition.clone(),
+            executor: Arc::new(FakeTool(AtomicUsize::new(0))),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(ReplayModel {
+                calls: AtomicUsize::new(0),
+            }),
+            ContextPipeline::default(),
+            tools,
+        );
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([84; 16]);
+        let invocation = ToolInvocation {
+            operation_id: operation,
+            call_id: "expected-call".into(),
+            name: definition.name.clone(),
+            arguments: json!({"unexpected": true}),
+        };
+        let error = validate_value(
+            &definition.input_schema,
+            &invocation.arguments,
+            "tool input",
+        )
+        .expect_err("invocation should be malformed")
+        .to_string();
+        let forged = ToolInvocation {
+            call_id: "forged-call".into(),
+            ..invocation.clone()
+        };
+        let forged_feedback =
+            ToolRejectionFeedback::invalid_arguments(&forged, &definition.input_schema, &error)?;
+        let invocation_ref = stage_json(&journal, operation, "invocation", &invocation).await?;
+        let feedback_ref = stage_json(&journal, operation, "feedback", &forged_feedback).await?;
+        journal
+            .append(
+                operation,
+                "rejection".into(),
+                ExecutionEvent::ToolAdmissionRejected {
+                    step: 0,
+                    invocation: invocation_ref,
+                    reason: ToolRejectionKind::InvalidArguments,
+                    feedback: Some(feedback_ref),
+                },
+            )
+            .await?;
+        let mut prior = Vec::new();
+        assert!(matches!(
+            executor
+                .resolve_tool_call(&journal, operation, 0, invocation, &mut prior)
+                .await,
+            Err(Error::Conflict(message)) if message.contains("feedback changed")
+        ));
+        assert!(prior.is_empty());
         Ok(())
     }
 

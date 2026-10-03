@@ -278,7 +278,11 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             .map(|_| ())
     }
 
-    async fn verify_event_refs(&self, event: &ExecutionEvent) -> Result<()>
+    async fn verify_event_refs(
+        &self,
+        operation_id: OperationId,
+        event: &ExecutionEvent,
+    ) -> Result<()>
     where
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
@@ -314,6 +318,12 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             if reference.volume() != &self.volume {
                 return Err(Error::Unauthorized(
                     "journal event refers to another private volume".into(),
+                ));
+            }
+            let operation_prefix = format!(".system/execution/{operation_id}/");
+            if !reference.path().starts_with(&operation_prefix) {
+                return Err(Error::Unauthorized(
+                    "journal event refers to another operation's content".into(),
                 ));
             }
             let grant = ContentGrant::verify(
@@ -475,7 +485,8 @@ where
                             "execution journal identity is invalid".into(),
                         ));
                     }
-                    self.verify_event_refs(&observation.event).await?;
+                    self.verify_event_refs(operation_id, &observation.event)
+                        .await?;
                     result.push(ExecutionRecord {
                         operation_id,
                         sequence: record.sequence + 1,
@@ -501,7 +512,7 @@ where
                 ));
             }
             event.validate_schema_version()?;
-            self.verify_event_refs(&event).await?;
+            self.verify_event_refs(operation_id, &event).await?;
             let digest = blake3::hash(format!("{operation_id}:{idempotency_key}").as_bytes());
             let bytes = serde_json::to_vec(&Observation {
                 operation_id,
@@ -547,7 +558,7 @@ where
                 ));
             }
             event.validate_schema_version()?;
-            self.verify_event_refs(&event).await?;
+            self.verify_event_refs(operation_id, &event).await?;
             let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
             let retry_digest = digest.to_hex().to_string();
             let bytes = serde_json::to_vec(&Observation {
