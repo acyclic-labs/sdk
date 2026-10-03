@@ -31,23 +31,27 @@ public final class RemoteClientFactory {
       boolean streaming,
       GeneratedRemotePolicy.Defaults defaults,
       GeneratedRemotePolicy.Transport override) {
+    var requiresBearer = GeneratedRemotePolicy.requiresBearer(
+        family, GeneratedRemotePolicy.Runtime.NATIVE);
     var transport = GeneratedRemotePolicy.select(
         family,
         GeneratedRemotePolicy.Runtime.NATIVE,
         streaming,
-        true,
+        requiresBearer,
         GeneratedRemotePolicy.Availability.GRPC_ONLY,
         GeneratedRemotePolicy.Availability.ALL,
         override);
     if (transport != GeneratedRemotePolicy.Transport.GRPC) {
       throw new UnsupportedOperationException("the installed JVM package has no " + transport + " adapter");
     }
-    var token = GeneratedRemotePolicy.validateBearer(defaults.bearerToken());
     var managed = channelBuilder(defaults.endpoint()).build();
     var headers = new Metadata();
-    headers.put(
-        Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
-        "Bearer " + token);
+    if (requiresBearer) {
+      var token = GeneratedRemotePolicy.validateBearer(defaults.bearerToken());
+      headers.put(
+          Metadata.Key.of("authorization", Metadata.ASCII_STRING_MARSHALLER),
+          "Bearer " + token);
+    }
     var intercepted = ClientInterceptors.intercept(managed, MetadataUtils.newAttachHeadersInterceptor(headers));
     return new Client(managed, intercepted, transport, headers);
   }

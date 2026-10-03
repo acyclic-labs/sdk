@@ -1,0 +1,32 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.current-rust-transport.v1",
+  "qualification": "Current Rust-emitted JVM/.NET native transport policy and installed package consumer qualification",
+  "authority": {
+    "export": "Q:/sdk/.tmp-sdk-contract-policy-current/rust-authority.json",
+    "manifest_sha256": "C340B87EDE942EC7F237DA358F37D52EF34C541AB250DDF3DCAF4F71D861451B",
+    "manifest_source_revision": "a1677f826e295a165cf8e0e7a2bf4137f99630c9ca9643de80108c138c112d10",
+    "rust_policy_source_binding": "E66898B83BDD457BD6B86BA0EA616B0F250D4F7996FAC1DDD8DEC534E27FA51E",
+    "emitter_path": "rust/crates/sdk-contract-wire/src/facades.rs",
+    "transport_policy_path": "rust/crates/sdk-contract-wire/src/transport.rs",
+    "source_closure_status": "Current transport source includes Machines mTLS policy; authority export must be refreshed by its owner before release qualification.",
+    "native_transport_families": ["actors", "workers", "objects", "stream", "inference", "machines", "filesystem", "harness"],
+    "model_only_family": "protocol"
+  },
+  "generated_sources": {
+    "rust_facades_sha256": "C09E78D12BD3472E758D0D945E61EFE744126A0E4504C6036713B25E9DEDBE93",
+    "java_policy": {"path": "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java", "sha256": "0CBC1916264B37331F7861E36E64ED9115EA50DC95FAA7714C2337E8692AA505"},
+    "csharp_policy": {"path": "dotnet/GeneratedRemotePolicy.cs", "sha256": "A8F4195D879497F7FA4609835A7060EE7749DB155F412CDB8DF532C08711675C"},
+    "machines": {"native_transport": "grpc only; bearer_auth=false; mTLS handoff metadata", "watch_operation": "acyclic.machines.v1.MachinesService/WatchOperation", "server_streaming": true, "cancellation": "call", "fake_grpc_fallback": false}
+  },
+  "factories": {
+    "java": {"path": "jvm/src/main/java/dev/acyclic/transport/RemoteClientFactory.java", "sha256": "F118B16D192DC63C3496F2014A6386EC1FD8510098F15F38624A1AA3450DE194", "test": "jvm/src/test/java/dev/acyclic/transport/RemoteClientFactoryTest.java", "test_sha256": "615E8A1081C19C4C282BE92AE2834ED9CB03133644430DD70C4EF52716E7A0CB", "installed_consumer": "Q:/sdk/.tmp-java-consumer-full-final; TransportPolicyConsumerTest; 1 test passed", "selection_result": "all 8 native transport families selected gRPC with GRPC_ONLY installed and endpoint ALL", "machines_result": "empty bearer metadata; unavailable HTTP endpoint rejected before call"},
+    "dotnet": {"path": "dotnet/RemoteClientFactory.cs", "sha256": "2A541CC546FFAE6861C04EC6828F42AB15312BE8A870B26A53A00125FE0400FA", "consumer": "dotnet/consumer/Program.cs", "consumer_sha256": "F333E9E12C08DAA3DBCDAC2F556DE4FA0B49CA9FDB4B7707C060892EEC84570A", "installed_consumer": "official .NET SDK 8.0.425; installed package run passed", "selection_result": "all 8 native transport families selected gRPC with GRPC_ONLY installed and endpoint ALL", "machines_result": "empty bearer metadata; unavailable HTTP endpoint rejected before call"}
+  },
+  "packages": {
+    "java": {"name": "acyclic-sdk-jvm-transport", "version": "0.2.0-SNAPSHOT", "path": "staged-jvm-dotnet-evidence/portable-20261003/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar", "sha256": "0B3D550033C6E29A23979039F42095D4A6C53001B724454EC707C4FAB33AD0A5"},
+    "dotnet": {"name": "Acyclic.Sdk.Transport", "version": "0.2.0-alpha.1", "path": "staged-jvm-dotnet-evidence/portable-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg", "sha256": "A784C2D579632C0BEC09B776F7616E92F599D6D0D7D23F23C0EF7DA834B04ABF"}
+  },
+  "fixture_scope": {"live_rust_fixture": ["actors", "stream"], "model_or_golden_selection_only": ["workers", "objects", "inference", "machines", "filesystem", "harness"], "serialization_only": ["protocol"], "note": "No live backend call is claimed for the seven selection-only families; no fake gRPC fallback was used."},
+  "safety": {"probe": "none", "post_failure_fallback": "none", "replay": "none", "endpoint_mismatch": "rejected before call"},
+  "coordination": {"ruby_php_dart": "Their generated snapshots must be regenerated from the current emitter binding E668...; this lane did not overwrite their outputs.", "publication": "local evidence only; no merge, publish, or deployment"}
+}

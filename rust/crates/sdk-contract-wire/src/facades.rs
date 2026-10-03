@@ -187,7 +187,16 @@ pub fn facade_operations(
                 rpc: policy.rpc,
                 client_streaming,
                 server_streaming,
-                bearer_auth: true,
+                // Keep operation metadata aligned with the Rust-owned native
+                // adapter. Machines is native gRPC with mTLS and deliberately
+                // does not require the shared bearer credential.
+                bearer_auth: family
+                    .transport
+                    .native
+                    .options
+                    .first()
+                    .map(|option| option.bearer_auth)
+                    .unwrap_or(true),
                 cancellation,
                 capabilities: policy.capabilities,
                 errors: policy.errors,
@@ -563,6 +572,14 @@ fn render_java(binding: &str) -> String {
         && (!streaming || option.streaming()) && (!bearerAuth || option.bearerAuth());
   }
 
+  public static boolean requiresBearer(String family, Runtime runtime) {
+    List<Option> familyOptions = OPTIONS.get(runtime).get(family);
+    if (familyOptions == null || familyOptions.isEmpty()) {
+      throw new IllegalArgumentException("unknown transport family or runtime: " + family + "/" + runtime);
+    }
+    return familyOptions.get(0).bearerAuth();
+  }
+
   public static String validateBearer(String token) {
     if (token == null || token.isBlank() || token.indexOf('\r') >= 0 || token.indexOf('\n') >= 0) {
       throw new IllegalArgumentException("invalid bearer credential");
@@ -678,6 +695,14 @@ fn render_csharp(binding: &str) -> String {
         && endpoint.Supports(option.Transport)
         && (!streaming || option.Streaming)
         && (!bearerAuth || option.BearerAuth);
+
+    public static bool RequiresBearer(string family, Runtime runtime)
+    {
+        if (!Options.TryGetValue(runtime, out var byFamily) ||
+            !byFamily.TryGetValue(family, out var familyOptions) || familyOptions.Count == 0)
+            throw new ArgumentException($"unknown transport family or runtime: {family}/{runtime}");
+        return familyOptions[0].BearerAuth;
+    }
 
     public static string ValidateBearer(string token)
     {
@@ -967,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn operation_metadata_is_descriptor_linked_and_bearer_authenticated() {
+    fn operation_metadata_is_descriptor_linked_and_uses_family_auth_policy() {
         let mut count = 0;
         for family in FAMILY_VIEWS {
             let operations = facade_operations(family);
@@ -979,11 +1004,15 @@ mod tests {
             );
             for operation in operations {
                 count += 1;
-                assert!(
-                    operation.bearer_auth,
-                    "{} missing bearer policy",
-                    operation.rpc
-                );
+                if family.name == "machines" {
+                    assert!(!operation.bearer_auth, "Machines must use native mTLS metadata");
+                } else {
+                    assert!(
+                        operation.bearer_auth,
+                        "{} missing bearer policy",
+                        operation.rpc
+                    );
+                }
                 if operation.cancellation == CancellationKind::Call {
                     assert!(
                         operation.client_streaming || operation.server_streaming,

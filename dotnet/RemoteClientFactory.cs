@@ -32,20 +32,26 @@ public static class RemoteClientFactory
         GeneratedRemotePolicy.Defaults defaults,
         GeneratedRemotePolicy.Transport? overrideTransport)
     {
+        var requiresBearer = GeneratedRemotePolicy.RequiresBearer(
+            family, GeneratedRemotePolicy.Runtime.Native);
         var transport = GeneratedRemotePolicy.Select(
             family,
             GeneratedRemotePolicy.Runtime.Native,
             streaming,
-            bearerAuth: true,
+            bearerAuth: requiresBearer,
             GeneratedRemotePolicy.Availability.GrpcOnly,
             GeneratedRemotePolicy.Availability.All,
             overrideTransport);
         if (transport != GeneratedRemotePolicy.Transport.Grpc)
             throw new NotSupportedException($"the installed .NET package has no {transport} adapter");
 
-        var token = GeneratedRemotePolicy.ValidateBearer(defaults.BearerToken);
         var channel = GrpcChannel.ForAddress(defaults.Endpoint);
-        var headers = new Metadata { { "authorization", $"Bearer {token}" } };
+        var headers = new Metadata();
+        if (requiresBearer)
+        {
+            var token = GeneratedRemotePolicy.ValidateBearer(defaults.BearerToken);
+            headers.Add("authorization", $"Bearer {token}");
+        }
         return new RemoteClient(channel, transport, headers);
     }
 }

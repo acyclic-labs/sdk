@@ -50,7 +50,49 @@ static class FactoryDefaults
         {
             // Rust-emitted bearer validation rejects the call before any network operation.
         }
+
+        var families = new[]
+        {
+            "actors", "workers", "objects", "stream", "inference",
+            "machines", "filesystem", "harness"
+        };
+        foreach (var family in families)
+        {
+            using var familyClient = RemoteClientFactory.Create(
+                family,
+                streaming: false,
+                family == "machines"
+                    ? new GeneratedRemotePolicy.Defaults("http://127.0.0.1:1", "")
+                    : defaults,
+                null);
+            if (familyClient.Transport != GeneratedRemotePolicy.Transport.Grpc)
+                throw new InvalidOperationException($"Rust policy did not choose gRPC for {family}.");
+            if (family == "machines" && familyClient.Headers.Count != 0)
+                throw new InvalidOperationException("Machines unexpectedly received bearer metadata.");
+        }
+
+        try
+        {
+            _ = GeneratedRemotePolicy.Select(
+                "machines",
+                GeneratedRemotePolicy.Runtime.Native,
+                streaming: false,
+                bearerAuth: false,
+                GeneratedRemotePolicy.Availability.GrpcOnly,
+                new GeneratedRemotePolicy.Availability(false, false, true),
+                null);
+            throw new InvalidOperationException("Machines silently accepted an unavailable endpoint transport.");
+        }
+        catch (ArgumentException)
+        {
+            // No HTTP downgrade or fake gRPC fallback is allowed.
+        }
+        var watch = GeneratedRemotePolicy.Operations["machines"]
+            ["acyclic.machines.v1.MachinesService/WatchOperation"];
+        if (!watch.ServerStreaming || watch.Cancellation != "call" || watch.BearerAuth)
+            throw new InvalidOperationException("Machines WatchOperation metadata lost native handoff semantics.");
         Console.WriteLine("Rust-emitted transport policy factory defaults passed.");
+        Console.WriteLine("Rust-emitted native transport policy selected gRPC for all 8 native families; Machines mTLS metadata passed (protocol remains model-only).");
     }
 }
 
