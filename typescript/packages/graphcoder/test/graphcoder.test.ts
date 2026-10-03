@@ -53,6 +53,7 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedPage.listSessions({ limit: 0 })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", -1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "../secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(malformedPage.readFile(sessionId("session-1"), "README.md", 1 as unknown as bigint)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "C:\\secret", 1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "a//b", 1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "x".repeat(4_097), 1n)).rejects.toMatchObject({ code: "invalid_input" });
@@ -151,6 +152,7 @@ describe("GraphCoder UI transport boundary", () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);
     await expect(ui.dispatch({ kind: "open_session", sessionId: sessionId("missing") })).rejects.toMatchObject({ code: "not_found" });
+    await expect(ui.dispatch({ kind: "open_session", sessionId: 1 as unknown as ReturnType<typeof sessionId> })).rejects.toMatchObject({ code: "invalid_input" });
     expect(ui.state().selectedSession).toBeUndefined();
     await expect(ui.dispatch({ kind: "send_message", senderId: agentId("a"), recipientId: agentId("b"), body: "hello" })).rejects.toMatchObject({ code: "invalid_input" });
   });

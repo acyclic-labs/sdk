@@ -273,7 +273,7 @@ function checkedPath(path: string): string {
 }
 
 function checkedGeneration(generation: bigint, label: string): string {
-  if (generation < 0n) throw new GraphCoderError("invalid_input", `${label} must be nonnegative`);
+  if (typeof generation !== "bigint" || generation < 0n) throw new GraphCoderError("invalid_input", `${label} must be a nonnegative bigint`);
   return generation.toString();
 }
 

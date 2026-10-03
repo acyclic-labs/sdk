@@ -203,7 +203,7 @@ const initialState: GraphCoderUiState = {
 };
 
 function checkedId(value: string, label: string): string {
-  if (value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must not be empty`);
+  if (typeof value !== "string" || value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must not be empty`);
   return value;
 }
 
@@ -386,6 +386,9 @@ export class GraphCoderUi {
       }
       case "approve_writeback": {
         const session = this.#requireSelected();
+        if (typeof command.expectedGeneration !== "bigint" || command.expectedGeneration < 0n) {
+          throw new GraphCoderError("invalid_input", "writeback generation must be a nonnegative bigint");
+        }
         const receipt = await this.transport.approveWriteback({ sessionId: session.summary.id, operationId: checkedId(command.operationId, "operation id"), expectedGeneration: command.expectedGeneration, approved: command.approved });
         this.#state = { ...this.#state, writeback: receipt };
         return;
