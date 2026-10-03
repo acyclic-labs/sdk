@@ -76,6 +76,17 @@ describe("GraphCoder UI transport boundary", () => {
     expect(ui.state().selectedSession?.summary.state).toBe("running");
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "cancelSession", "resumeSession"]);
   });
+
+  test("serializes concurrent UI commands so projections cannot overtake durable operations", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await Promise.all([
+      ui.dispatch({ kind: "start_session", prompt: "first" }),
+      ui.dispatch({ kind: "list_sessions" }),
+    ]);
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "listSessions"]);
+    expect(ui.state().sessions.map(session => session.id)).toEqual(["session-1"]);
+  });
 });
 
 describe("GraphCoder terminal adapter", () => {

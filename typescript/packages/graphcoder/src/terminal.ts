@@ -16,7 +16,7 @@ export interface TerminalOptions {
 
 function writeLine(io: TerminalIO, value: unknown): void {
   const output = io.output ?? stdout;
-  output.write(`${JSON.stringify(value, (_key, item) => typeof item === "bigint" ? `${item}n` : item)}\n`);
+  output.write(`${JSON.stringify(value, (_key, item) => typeof item === "bigint" ? String(item) : item)}\n`);
 }
 
 function words(line: string): string[] {
