@@ -826,7 +826,7 @@ where
 {
     let mut input = BufReader::new(input);
     let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
-    let mut jobs = futures::stream::FuturesUnordered::new();
+    let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
     loop {
         while jobs.len() >= MAX_IN_FLIGHT {
             if let Some(job) = jobs.next().await {
@@ -875,7 +875,7 @@ where
         }));
     }
     while let Some(job) = jobs.next().await {
-        job.await.map_err(std::io::Error::other)??;
+        job.map_err(std::io::Error::other)??;
     }
     output.lock().await.flush().await
 }
