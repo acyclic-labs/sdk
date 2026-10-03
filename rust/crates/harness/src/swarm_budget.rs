@@ -11,11 +11,14 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result, contract::canonical_json_bytes,
     runtime::TaskAdmissionRecord,
 };
-use futures::StreamExt as _;
+use futures::{Stream, StreamExt as _};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll},
     time::Instant,
 };
 
@@ -385,6 +388,20 @@ pub trait SwarmUsageSource {
     ) -> Result<SwarmUsage>;
 }
 
+impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
+    fn provider_identity(&self) -> &str {
+        (**self).provider_identity()
+    }
+
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        (**self).cumulative_usage(operation_id, dispatch_id)
+    }
+}
+
 /// Monotonic receipt issuer bound to one provider dispatch.
 pub struct SwarmUsageReceiptIssuer<S> {
     source: S,
@@ -515,6 +532,14 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
 
     /// Reads provider counters and issues the next verified durable receipt.
     pub fn issue(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issue_at_least(SwarmUsage::default())
+    }
+
+    /// Reads provider counters and issues a receipt only when the host
+    /// measurement covers the metered runtime counters. The cursor advances
+    /// after this check, so a rejected stale measurement cannot skip a
+    /// sequence on restart.
+    pub fn issue_at_least(&mut self, minimum: SwarmUsage) -> Result<VerifiedSwarmUsageReceipt> {
         let sequence = self
             .sequence
             .checked_add(1)
@@ -522,6 +547,14 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         let usage = self
             .source
             .cumulative_usage(self.operation_id, &self.dispatch_id)?;
+        if usage.model_steps < minimum.model_steps
+            || usage.output_bytes < minimum.output_bytes
+            || usage.execution_time_ms < minimum.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "host usage source is behind metered provider usage".into(),
+            ));
+        }
         if let Some(limits) = self.limits {
             if usage.model_steps > limits.model_steps
                 || usage.output_bytes > limits.output_bytes
@@ -640,6 +673,13 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         self.issuer.issue()
     }
 
+    fn issue_usage_receipt_at_least(
+        &mut self,
+        minimum: SwarmUsage,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_at_least(minimum)
+    }
+
     /// Returns the latest provider measurement accepted by this context.
     #[must_use]
     pub const fn usage(&self) -> SwarmUsage {
@@ -681,6 +721,13 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     /// Reads provider counters and creates the next verified root receipt.
     pub fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
         self.issuer.issue()
+    }
+
+    fn issue_usage_receipt_at_least(
+        &mut self,
+        minimum: SwarmUsage,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_at_least(minimum)
     }
 
     /// Returns the latest provider measurement accepted by this context.
@@ -737,18 +784,9 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
         let local = self.usage();
         let receipt = match self {
-            Self::Child(context) => context.issue_usage_receipt()?,
-            Self::Root(context) => context.issue_usage_receipt()?,
+            Self::Child(context) => context.issue_usage_receipt_at_least(local)?,
+            Self::Root(context) => context.issue_usage_receipt_at_least(local)?,
         };
-        let measured = receipt.0.usage;
-        if measured.model_steps < local.model_steps
-            || measured.output_bytes < local.output_bytes
-            || measured.execution_time_ms < local.execution_time_ms
-        {
-            return Err(Error::Conflict(
-                "host usage source is behind metered provider usage".into(),
-            ));
-        }
         Ok(receipt)
     }
 
@@ -854,6 +892,79 @@ pub struct MeteredModelProvider<P: ?Sized, S> {
     meter: SwarmProviderMeter<S>,
 }
 
+struct MeteredStream<'a, S> {
+    inner: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
+    meter: SwarmProviderMeter<S>,
+    started: Instant,
+    charged_ms: u64,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+    finished: bool,
+}
+
+impl<S: SwarmUsageSource> Stream for MeteredStream<'_, S> {
+    type Item = Result<crate::model::ModelEvent>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return Poll::Ready(None);
+        }
+        if this.deadline.as_mut().poll(cx).is_ready() {
+            this.finished = true;
+            let elapsed_ms =
+                u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let delta = elapsed_ms.saturating_sub(this.charged_ms);
+            return Poll::Ready(Some(match this.meter.admit_execution_time(delta) {
+                Ok(_) => Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                )),
+                Err(error) => Err(error),
+            }));
+        }
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(next) => {
+                let elapsed_ms =
+                    u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let delta = elapsed_ms.saturating_sub(this.charged_ms);
+                this.charged_ms = elapsed_ms;
+                if let Err(error) = this.meter.admit_execution_time(delta) {
+                    this.finished = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+                match next {
+                    Some(Ok(event)) => match this.meter.observe_model_event(&event) {
+                        Ok(_) => Poll::Ready(Some(Ok(event))),
+                        Err(error) => {
+                            this.finished = true;
+                            Poll::Ready(Some(Err(error)))
+                        }
+                    },
+                    Some(Err(error)) => {
+                        this.finished = true;
+                        Poll::Ready(Some(Err(error)))
+                    }
+                    None => {
+                        this.finished = true;
+                        Poll::Ready(None)
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<S: SwarmUsageSource> Drop for MeteredStream<'_, S> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let delta = elapsed_ms.saturating_sub(self.charged_ms);
+        let _ = self.meter.admit_execution_time(delta);
+    }
+}
+
 impl<P, S> MeteredModelProvider<P, S>
 where
     P: crate::model::ModelProvider + ?Sized + 'static,
@@ -900,57 +1011,29 @@ where
         stream: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
         meter: SwarmProviderMeter<S>,
     ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
-        Box::pin(futures::stream::unfold(
-            (Some(stream), meter, Instant::now(), 0_u64),
-            |(mut stream, meter, started, charged_ms)| async move {
-                let mut stream = stream.take()?;
-                let remaining_ms = match meter.remaining_execution_time_ms() {
-                    Ok(remaining_ms) if remaining_ms > 0 => remaining_ms,
-                    Ok(_) => {
-                        return Some((
-                            Err(Error::Conflict(
-                                "provider execution time ceiling exhausted".into(),
-                            )),
-                            (None, meter, started, charged_ms),
-                        ));
-                    }
-                    Err(error) => return Some((Err(error), (None, meter, started, charged_ms))),
-                };
-                let next = match tokio::time::timeout(
-                    tokio::time::Duration::from_millis(remaining_ms),
-                    stream.next(),
-                )
-                .await
-                {
-                    Ok(next) => next,
-                    Err(_) => {
-                        let elapsed_ms =
-                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                        let delta = elapsed_ms.saturating_sub(charged_ms);
-                        let _ = meter.admit_execution_time(delta);
-                        return Some((
-                            Err(Error::Conflict(
-                                "provider execution time ceiling exhausted".into(),
-                            )),
-                            (None, meter, started, elapsed_ms),
-                        ));
-                    }
-                };
-                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-                let delta = elapsed_ms.saturating_sub(charged_ms);
-                if let Err(error) = meter.admit_execution_time(delta) {
-                    return Some((Err(error), (None, meter, started, elapsed_ms)));
-                }
-                match next {
-                    Some(Ok(event)) => match meter.observe_model_event(&event) {
-                        Ok(_) => Some((Ok(event), (Some(stream), meter, started, elapsed_ms))),
-                        Err(error) => Some((Err(error), (None, meter, started, elapsed_ms))),
-                    },
-                    Some(Err(error)) => Some((Err(error), (None, meter, started, elapsed_ms))),
-                    None => None,
-                }
-            },
-        ))
+        let remaining_ms = match meter.remaining_execution_time_ms() {
+            Ok(remaining_ms) => remaining_ms,
+            Err(error) => {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
+            }
+        };
+        if remaining_ms == 0 {
+            return Box::pin(futures::stream::once(async {
+                Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                ))
+            }));
+        }
+        Box::pin(MeteredStream {
+            inner: stream,
+            meter,
+            started: Instant::now(),
+            charged_ms: 0,
+            deadline: Box::pin(tokio::time::sleep(tokio::time::Duration::from_millis(
+                remaining_ms,
+            ))),
+            finished: false,
+        })
     }
 }
 
@@ -986,10 +1069,28 @@ where
         let meter = self.meter.clone();
         Box::pin(async move {
             meter.admit_model_step()?;
+            let remaining_ms = meter.remaining_execution_time_ms()?;
+            if remaining_ms == 0 {
+                return Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                ));
+            }
             let started = Instant::now();
-            let events = provider.reconcile(attempt).await?;
+            let reconciled = tokio::time::timeout(
+                tokio::time::Duration::from_millis(remaining_ms),
+                provider.reconcile(attempt),
+            )
+            .await;
             let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
             meter.admit_execution_time(elapsed_ms)?;
+            let events = match reconciled {
+                Ok(events) => events?,
+                Err(_) => {
+                    return Err(Error::Conflict(
+                        "provider execution time ceiling exhausted".into(),
+                    ));
+                }
+            };
             if let Some(events) = &events {
                 for event in events {
                     meter.observe_model_event(event)?;
@@ -1900,6 +2001,46 @@ impl SwarmBudget {
             workspace_generation_digest: publication.workspace_generation_digest,
             dispatch_id,
             resources,
+        })
+    }
+
+    /// Reconstructs the dispatch token for an already active reservation.
+    ///
+    /// Activation is persisted before provider work begins.  After a process
+    /// restart the in-memory token is gone, so recovery must rebuild it from
+    /// the durable publication and dispatch identity instead of admitting the
+    /// child a second time.
+    pub(crate) fn resume_active_with_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let state = self.lock()?;
+        require_owner(&state, &owner)?;
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        let dispatch_id = reservation.dispatch_id.clone().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no provider dispatch identity".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: Some(dispatch_id),
+            resources: reservation.resources,
         })
     }
 

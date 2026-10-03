@@ -127,6 +127,8 @@ async fn metered_provider_rejects_host_receipt_behind_measured_counters() -> Res
 
     let prepared = PreparedModelInput::prepare(request(), Limits::default())?;
     let _ = metered.generate(prepared).collect::<Vec<_>>().await;
+    let cursor = meter.receipt_cursor()?;
     assert!(matches!(meter.issue_usage_receipt(), Err(Error::Conflict(_))));
+    assert_eq!(meter.receipt_cursor()?, cursor);
     Ok(())
 }

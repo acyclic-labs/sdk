@@ -400,6 +400,20 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         token.resume_usage_context(source, cursor)
     }
 
+    /// Reconstructs an active child token after a process restart.
+    ///
+    /// The activation event already owns the reservation and publication;
+    /// replaying it as a new admission would double count active and total
+    /// capacity.  Recovery therefore rebuilds the token from the durable
+    /// projection and resumes its receipt cursor through [`Self::usage_context`].
+    pub fn resume_dispatch_token(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        self.budget.resume_active_with_dispatch(operation_id, owner)
+    }
+
     /// Activates verified publication evidence and invokes the production dispatcher.
     ///
     /// Activation is durably committed before `dispatch` is called. If the
@@ -1079,6 +1093,12 @@ mod tests {
                 publication,
             )
             .await?;
+        let resumed = journal.resume_dispatch_token(child, owner.clone())?;
+        assert_eq!(resumed.operation_id(), child);
+        assert_eq!(
+            resumed.dispatch_id(),
+            Some(&IdempotencyKey::new("receipt-dispatch")?)
+        );
         let mut issuer = SwarmUsageReceiptIssuer::new(
             ZeroSource,
             child,
