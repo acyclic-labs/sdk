@@ -1,5 +1,5 @@
 {
-  "created_utc": "2026-10-03T09:43:49.031596+00:00",
+  "created_utc": "2026-10-03T10:43:49.031596+01:00",
   "complete": false,
   "source_commit": "002f2da5e1710a3931519829c7d6846dac761955",
   "source_dirty": "Filesystem generated TS bindings/test owned worker edits pending; native Rust source committed at71c641fe",
@@ -484,6 +484,93 @@
       "command": "bun test typescript/packages/harness/test/opaque-host-capabilities.test.ts",
       "suite_sha256": "fe5e3a8fdd8f0558bf109529bc982cf93d47fba52ab86072e0ef5771544152c5",
       "contract_scope": "negative public declaration/export surface scans only; does not prove credential-free arbitrary model options or fresh native/WASM serialization"
+    },
+    {
+      "suite": "local_swarm_recovery",
+      "source": "464a666e",
+      "source_bound": true,
+      "passed": 4,
+      "failed": 2,
+      "skipped": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --test root_writeback_acceptance --test swarm_budget_contracts_v2 --test swarm_budget_usage_contracts_v2 --test model_fork_boundary -j2 --no-fail-fast -- --nocapture",
+      "terminal_handle": 15928,
+      "suite_sha256": "670b4e0e0f302f8106e094379c62d0fa4b40a7dc22c2b7354848dd7e230029f6",
+      "artifact": "target/debug/deps/local_swarm_recovery-ec634dcd9baf397f.exe",
+      "artifact_sha256": "e24d3d63a0e5937e6f17c54376a3055a77b88fb5c884b9be277bd42e75993e69",
+      "contract_scope": "Two concurrent handle cases fail with LocalStream root is already open; replay, cancellation restart, uncertain reply, changed input cases pass"
+    },
+    {
+      "suite": "model_fork_boundary",
+      "source": "464a666e",
+      "source_bound": true,
+      "passed": 1,
+      "failed": 1,
+      "skipped": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --test root_writeback_acceptance --test swarm_budget_contracts_v2 --test swarm_budget_usage_contracts_v2 --test model_fork_boundary -j2 --no-fail-fast -- --nocapture",
+      "terminal_handle": 15928,
+      "suite_sha256": "2de503c69f9028574a66f1f56cd37c6d51472d3e657262bbad5a67884f3573b2",
+      "artifact": "target/debug/deps/model_fork_boundary-6a2b9ef46d1107ad.exe",
+      "artifact_sha256": "cc22cdfff38c5dc24810f090c813b59d2058d4e7734b33f9f356cc3489598987",
+      "contract_scope": "Positive recursive scenario fails child completed before recursive boundary handoff; stale boundary rejection passes"
+    },
+    {
+      "suite": "root_writeback_acceptance",
+      "source": "464a666e",
+      "source_bound": true,
+      "passed": 1,
+      "failed": 1,
+      "skipped": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --test root_writeback_acceptance --test swarm_budget_contracts_v2 --test swarm_budget_usage_contracts_v2 --test model_fork_boundary -j2 --no-fail-fast -- --nocapture",
+      "terminal_handle": 15928,
+      "suite_sha256": "95b45c07ce00f1f82dbf98acb6ce1921bc91bcc5d1e7139511f78542e2f78637",
+      "artifact": "target/debug/deps/root_writeback_acceptance-8586d7e6ad4f9bf5.exe",
+      "artifact_sha256": "d175a91af464b8629f7094eee35e73f96563fdddac7aa2f79dc63b34374ad77c",
+      "contract_scope": "Approved writeback passes; concurrent user edit reports immutable plan mismatch instead of typed conflict; fixed in later c1bae943, rerun required"
+    },
+    {
+      "suite": "swarm_budget_contracts_v2",
+      "source": "464a666e",
+      "source_bound": true,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --test root_writeback_acceptance --test swarm_budget_contracts_v2 --test swarm_budget_usage_contracts_v2 --test model_fork_boundary -j2 --no-fail-fast -- --nocapture",
+      "terminal_handle": 15928,
+      "suite_sha256": "8e24969be51c2b6901c2184716edabec06a9cc24b2bb221415c7f0871d1be9c5",
+      "artifact": "target/debug/deps/swarm_budget_contracts_v2-24e789d9760463f8.exe",
+      "artifact_sha256": "4fdaad49ee8a447ebbac2dd5f75298e9a433465bd7a090620868f6eb2b417b49",
+      "contract_scope": "Public budget dimensions, concurrent admission, replay/takeover"
+    },
+    {
+      "suite": "swarm_budget_usage_contracts_v2",
+      "source": "464a666e",
+      "source_bound": true,
+      "passed": 3,
+      "failed": 0,
+      "skipped": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --test root_writeback_acceptance --test swarm_budget_contracts_v2 --test swarm_budget_usage_contracts_v2 --test model_fork_boundary -j2 --no-fail-fast -- --nocapture",
+      "terminal_handle": 15928,
+      "suite_sha256": "ce79241cd3270afd350ab34d1468bc5ec84beeaac466e1db4e70d8e4f8aae4f5",
+      "artifact": "target/debug/deps/swarm_budget_usage_contracts_v2-828bfcead27f58a9.exe",
+      "artifact_sha256": "5f199d0374d32a491bf166af0ccf05fdddaa90b187446bc3d1f210bc42a713a8",
+      "contract_scope": "Provider limiter, resumed bounds, measured receipt cursor"
+    },
+    {
+      "suite": "root_writeback_acceptance compile",
+      "source": "before a3e4a699",
+      "passed": 0,
+      "failed": 1,
+      "terminal_handle": 62415,
+      "contract_scope": "Compile errors: Debug bound on expect_err and Option byte slice coercions; fixed by a3e4a699 before subsequent native run"
+    },
+    {
+      "suite": "GraphCoder terminal TypeScript contracts",
+      "source": "464a666e",
+      "passed": 48,
+      "failed": 0,
+      "assertions": 149,
+      "command": "bun test typescript/packages/graphcoder/test",
+      "contract_scope": "Source terminal contracts only; installed native interactive PTY and artifact qualification remain required"
     }
   ],
   "input_digests": {
