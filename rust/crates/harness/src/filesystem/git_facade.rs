@@ -642,7 +642,10 @@ impl<S> FilesystemGitFacade<S> {
                 "root writeback plan is not bound to this direct child".into(),
             ));
         };
-        if lineage.child() != child || lineage.child_project() == &self.volume {
+        if lineage.child() != child
+            || lineage.child_project() == &self.volume
+            || lineage.target_project() != &self.volume
+        {
             return Err(Error::Unauthorized(
                 "root writeback plan is not bound to this direct child".into(),
             ));
