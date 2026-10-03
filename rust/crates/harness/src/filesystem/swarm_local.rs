@@ -185,6 +185,8 @@ enum StoredEvent {
         child: TaskId,
         child_operation: OperationId,
         task: String,
+        #[serde(default)]
+        prompt: String,
     },
     ForkCompleted {
         child: TaskId,
@@ -249,6 +251,7 @@ pub struct PersistentLocalSwarm {
     provider: Arc<dyn ModelProvider>,
     registry: StreamClient<LocalStream>,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
+    requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
 }
 
@@ -272,8 +275,9 @@ impl PersistentLocalSwarm {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let records = load_records(&stream).await?;
         let mut sessions = BTreeMap::new();
+        let mut requests = BTreeMap::new();
         for record in records {
-            apply_record(&mut sessions, record)?;
+            apply_record(&mut sessions, &mut requests, record)?;
         }
         if sessions.is_empty() {
             let root_task = TaskId::new();
@@ -315,6 +319,7 @@ impl PersistentLocalSwarm {
             provider,
             registry,
             records: Mutex::new(sessions),
+            requests: Mutex::new(requests),
             sessions: Mutex::new(opened),
         })
     }
@@ -397,12 +402,15 @@ impl PersistentLocalSwarm {
         if parent.depth >= self.config.maximum_depth {
             return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
         }
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
         let child_count = self
             .records
             .lock()
             .await
             .values()
-            .filter(|session| session.parent == Some(request.parent))
+            .filter(|session| {
+                session.parent == Some(request.parent) && session.task != child
+            })
             .count();
         if child_count >= self.config.maximum_children {
             return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
@@ -417,9 +425,32 @@ impl PersistentLocalSwarm {
             )
             .await?
             .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
-        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
         if self.records.lock().await.contains_key(&child) {
-            return Err(Error::Conflict("child operation is already a session".into()));
+            let known = self.requests.lock().await.get(&child).cloned();
+            if known.as_ref() != Some(&request) {
+                return Err(Error::Conflict("child operation is already a session".into()));
+            }
+            let phase = self
+                .records
+                .lock()
+                .await
+                .get(&child)
+                .map(|session| session.phase.clone())
+                .ok_or_else(|| Error::NotFound(format!("local swarm task {child}")))?;
+            if phase == LocalSessionPhase::Completed {
+                return Err(Error::Conflict("child operation is already complete".into()));
+            }
+            self.update_session(child, |session| {
+                session.phase = LocalSessionPhase::Activating;
+            })
+            .await?;
+            return self
+                .activate_child(request, child, stream, boundary)
+                .await;
         }
         let child_session = LocalSwarmSession {
             task: child,
@@ -429,10 +460,6 @@ impl PersistentLocalSwarm {
             operation: Some(request.child_operation),
             phase: LocalSessionPhase::Activating,
         };
-        let stream = self
-            .registry
-            .stream(REGISTRY_STREAM)
-            .map_err(|error| Error::Storage(error.to_string()))?;
         append_record(
             &stream,
             StoredEvent::ForkAdmitted {
@@ -442,11 +469,23 @@ impl PersistentLocalSwarm {
                 child,
                 child_operation: request.child_operation,
                 task: request.task.clone(),
+                prompt: request.prompt.clone(),
             },
         )
         .await?;
         self.records.lock().await.insert(child, child_session);
+        self.requests.lock().await.insert(child, request.clone());
 
+        self.activate_child(request, child, stream, boundary).await
+    }
+
+    async fn activate_child(
+        &self,
+        request: LocalForkRequest,
+        child: TaskId,
+        stream: acyclic_stream::Stream<LocalStream>,
+        boundary: crate::model_input::CompletedModelBoundary,
+    ) -> Result<LocalForkOutcome> {
         let harness = match self.open_session(child).await {
             Ok(harness) => harness,
             Err(error) => {
@@ -542,6 +581,18 @@ impl PersistentLocalSwarm {
             .await
     }
 
+    /// Replays the exact admitted request after a process interruption.
+    pub async fn retry(&self, task: TaskId) -> Result<LocalForkOutcome> {
+        let request = self
+            .requests
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm fork request {task}")))?;
+        self.fork(request).await
+    }
+
     /// Reopens a child lazily after recovery. No child is dispatched merely
     /// because it has an activating registry record.
     pub async fn resume(&self, task: TaskId) -> Result<LocalSwarmSession> {
@@ -625,6 +676,9 @@ async fn load_records(
         Err(StreamError::NotFound) => 0,
         Err(error) => return Err(Error::Storage(error.to_string())),
     };
+    if tail == 0 {
+        return Ok(Vec::new());
+    }
     let mut records = stream
         .read(0, u32::try_from(tail).map_err(|_| Error::Storage("swarm registry is too large".into()))?)
         .await
@@ -669,6 +723,7 @@ async fn append_record(
 
 fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
+    requests: &mut BTreeMap<TaskId, LocalForkRequest>,
     record: StoredRecord,
 ) -> Result<()> {
     match record.event {
@@ -680,9 +735,12 @@ fn apply_record(
         }
         StoredEvent::ForkAdmitted {
             parent,
+            parent_operation,
+            parent_step,
             child,
             child_operation,
             task,
+            prompt,
             ..
         } => {
             let parent_session = sessions
@@ -697,6 +755,17 @@ fn apply_record(
                     task_description: task,
                     operation: Some(child_operation),
                     phase: LocalSessionPhase::Activating,
+                },
+            );
+            requests.insert(
+                child,
+                LocalForkRequest {
+                    parent,
+                    parent_operation,
+                    parent_step,
+                    child_operation,
+                    task,
+                    prompt,
                 },
             );
         }
