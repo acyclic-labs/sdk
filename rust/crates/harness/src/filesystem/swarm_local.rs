@@ -565,6 +565,7 @@ impl PersistentLocalSwarm {
             },
         );
         self.requests.lock().await.insert(child, request.clone());
+        self.seeds.lock().await.insert(child, seed.clone());
         let harness = match PersistentLocalHarness::from_published_fork(
             self.config.model.clone(),
             self.provider.clone(),
