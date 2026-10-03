@@ -25,6 +25,8 @@ pub const MAX_WAIT_TASKS: usize = 64;
 /// request from becoming an effectively unbounded durable record while still
 /// allowing long-running coding agents to wait for children.
 pub const MAX_WAIT_DURATION_MS: u64 = 7 * 24 * 60 * 60 * 1_000;
+const MESSAGE_CONTRACT: &str = "harness.message.v1";
+const WAIT_CONTRACT: &str = "harness.wait.v1";
 
 fn nonzero_task(task: TaskId, label: &str) -> Result<()> {
     if task.into_bytes() == [0; 16] {
@@ -112,6 +114,51 @@ impl MessageRequest {
         self.target.validate(self.recipient, self.sender)?;
         nonzero_operation(self.message_id, "message")?;
         self.payload.validate()
+    }
+
+    /// Returns the versioned canonical request retained by an admission
+    /// journal. The host may store only a content reference to these bytes.
+    #[must_use]
+    pub fn canonical_value(&self) -> Value {
+        serde_json::json!({
+            "contract": MESSAGE_CONTRACT,
+            "sender": self.sender,
+            "recipient": self.recipient,
+            "message_id": self.message_id,
+            "target": self.target,
+            "payload": self.payload,
+        })
+    }
+
+    /// Encodes the exact canonical request bytes.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
+        self.validate()?;
+        crate::contract::canonical_json_bytes(&self.canonical_value())
+    }
+
+    /// Decodes and validates a versioned canonical request.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
+        let value: Value =
+            serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+        let canonical = value.clone();
+        let mut body = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("message request must be an object".into()))?;
+        if body.remove("contract") != Some(Value::String(MESSAGE_CONTRACT.into())) {
+            return Err(Error::Invalid(
+                "unsupported message request contract".into(),
+            ));
+        }
+        let request: Self = serde_json::from_value(Value::Object(body))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        request.validate()?;
+        if request.canonical_value() != canonical
+            || crate::contract::canonical_json_bytes(&canonical)? != bytes
+        {
+            return Err(Error::Invalid("message request is not canonical".into()));
+        }
+        Ok(request)
     }
 
     /// Returns a stable operation key that includes both endpoint identities.
@@ -512,19 +559,36 @@ impl WaitRecord {
 
     /// Returns canonical bytes suitable for a durable content record.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        let value =
-            serde_json::to_value(self).map_err(|error| Error::Invalid(error.to_string()))?;
-        crate::contract::canonical_json_bytes(&value)
+        crate::contract::canonical_json_bytes(&self.canonical_value())
+    }
+
+    /// Returns the versioned canonical record envelope.
+    #[must_use]
+    pub fn canonical_value(&self) -> Value {
+        serde_json::json!({
+            "contract": WAIT_CONTRACT,
+            "request": self.request,
+            "status": self.status,
+        })
     }
 
     /// Reconstructs a persisted wait record and rejects noncanonical bytes.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self> {
         let value: Value =
             serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
-        let record: Self = serde_json::from_value(value.clone())
+        let mut body = value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| Error::Invalid("wait record must be an object".into()))?;
+        if body.remove("contract") != Some(Value::String(WAIT_CONTRACT.into())) {
+            return Err(Error::Invalid("unsupported wait record contract".into()));
+        }
+        let record: Self = serde_json::from_value(Value::Object(body))
             .map_err(|error| Error::Invalid(error.to_string()))?;
         record.request.validate(None)?;
-        if crate::contract::canonical_json_bytes(&value)? != bytes {
+        if record.canonical_value() != value
+            || crate::contract::canonical_json_bytes(&value)? != bytes
+        {
             return Err(Error::Invalid("wait record is not canonical".into()));
         }
         Ok(record)
@@ -735,6 +799,9 @@ mod tests {
         let mut record = WaitRecord::pending(request, Some(1_000))?;
         let bytes = record.canonical_bytes()?;
         assert_eq!(WaitRecord::from_canonical_bytes(&bytes)?, record);
+        let mut tampered: Value = serde_json::from_slice(&bytes).expect("canonical wait");
+        tampered["contract"] = Value::String("harness.wait.v0".into());
+        assert!(WaitRecord::from_canonical_bytes(&serde_json::to_vec(&tampered).unwrap()).is_err());
         record.finish(WaitStatus::TimedOut)?;
         assert!(record.finish(WaitStatus::Cancelled).is_err());
         Ok(())
@@ -779,6 +846,13 @@ mod tests {
         second.recipient = task(4);
         assert_ne!(first.endpoint_digest(), second.endpoint_digest());
         first.validate()?;
+        let bytes = first.canonical_bytes()?;
+        assert_eq!(MessageRequest::from_canonical_bytes(&bytes)?, first);
+        let mut tampered: Value = serde_json::from_slice(&bytes).expect("canonical message");
+        tampered["contract"] = Value::String("harness.message.v0".into());
+        assert!(
+            MessageRequest::from_canonical_bytes(&serde_json::to_vec(&tampered).unwrap()).is_err()
+        );
         Ok(())
     }
 
