@@ -268,6 +268,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
                 manifest, request, ..
             } => vec![manifest, request],
             ExecutionEvent::ToolBatchCompleted { boundary, .. } => vec![boundary],
+            ExecutionEvent::BatchPublicationStarted { publication, .. } => vec![publication],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. }
             | ExecutionEvent::ToolAdmissionRejected { invocation, .. } => vec![invocation],
@@ -276,7 +277,8 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             } => vec![result, projection],
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ModelStarted { .. }
-            | ExecutionEvent::ToolFailed { .. } => Vec::new(),
+            | ExecutionEvent::ToolFailed { .. }
+            | ExecutionEvent::BatchPublicationCompleted { .. } => Vec::new(),
         };
         for reference in refs {
             if reference.volume() != &self.volume {

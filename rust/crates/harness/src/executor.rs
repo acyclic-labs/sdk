@@ -2,8 +2,10 @@
 
 use crate::{
     Error, InteractionId, OperationId, Result,
+    batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
+    core::EffectGuarantee,
     interaction::{Interaction, InteractionOutcome},
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
@@ -108,6 +110,20 @@ pub enum ExecutionEvent {
         boundary: FileRef,
     },
 
+    /// Publication admission persisted before child activation.
+    BatchPublicationStarted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Complete immutable publication request.
+        publication: FileRef,
+    },
+    /// Publication outcome persisted before a later parent model request.
+    BatchPublicationCompleted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Identity of the exact admitted publication.
+        publication_digest: [u8; 32],
+    },
     /// A model request identity committed before provider dispatch.
     ModelStarted {
         /// Zero-based executor step.
@@ -325,6 +341,9 @@ pub struct StockExecutor {
     tool_scope: RuntimeScope,
     policy: Option<Arc<dyn ToolPolicy>>,
     policy_identity: Option<ComponentIdentity>,
+    batch_publisher: Option<Arc<dyn ModelBatchPublisher>>,
+    batch_identity: Option<ComponentIdentity>,
+    batch_guarantee: Option<EffectGuarantee>,
 }
 
 impl StockExecutor {
@@ -345,6 +364,9 @@ impl StockExecutor {
             tool_scope: RuntimeScope::default(),
             policy: None,
             policy_identity: None,
+            batch_publisher: None,
+            batch_identity: None,
+            batch_guarantee: None,
         }
     }
 
@@ -370,6 +392,33 @@ impl StockExecutor {
         Ok(self)
     }
 
+    /// Binds durable completed-batch publication independently of model content.
+    pub fn with_batch_publisher(
+        mut self,
+        publisher: Option<Arc<dyn ModelBatchPublisher>>,
+    ) -> Result<Self> {
+        if let Some(provider) = &publisher {
+            let identity = provider.identity();
+            crate::contract::validate_component_label(&identity.name, "batch publisher name")?;
+            crate::contract::validate_component_label(
+                &identity.version,
+                "batch publisher version",
+            )?;
+            if identity.digest == [0; 32]
+                || (provider.guarantee() == EffectGuarantee::ExactlyOnce
+                    && !provider.linearizable_reconciliation())
+            {
+                return Err(Error::Invalid(
+                    "batch publisher must pin a supported guarantee and implementation".into(),
+                ));
+            }
+            self.batch_identity = Some(identity);
+            self.batch_guarantee = Some(provider.guarantee());
+        }
+        self.batch_publisher = publisher;
+        Ok(self)
+    }
+
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
         crate::contract::canonical_json_digest(&json!({
             "executor": "acyclic.stock.v2",
@@ -380,6 +429,7 @@ impl StockExecutor {
             "limits": self.limits,
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
+            "batch_publisher": (&self.batch_identity, self.batch_guarantee),
         }))
     }
 
@@ -679,7 +729,126 @@ impl StockExecutor {
                 key,
                 ExecutionEvent::ToolBatchCompleted {
                     step,
-                    boundary: reference,
+                    boundary: reference.clone(),
+                },
+            )
+            .await?;
+        self.publish_completed_batch(journal, operation, step, request_file.clone(), reference)
+            .await
+    }
+
+    fn validate_batch_publisher(&self, publisher: &dyn ModelBatchPublisher) -> Result<()> {
+        if self.batch_identity.as_ref() != Some(&publisher.identity())
+            || self.batch_guarantee != Some(publisher.guarantee())
+        {
+            return Err(Error::Conflict(
+                "batch publisher changed after binding".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn publish_completed_batch(
+        &self,
+        journal: &dyn ExecutionJournal,
+        operation: OperationId,
+        step: u32,
+        request: FileRef,
+        boundary: FileRef,
+    ) -> Result<()> {
+        let Some(publisher) = &self.batch_publisher else {
+            return Ok(());
+        };
+        self.validate_batch_publisher(publisher.as_ref())?;
+        let identity = publisher.identity();
+        let guarantee = publisher.guarantee();
+        let publication = ModelBatchPublication {
+            operation_id: ToolInvocation::for_model_call(
+                operation,
+                step,
+                "publication".into(),
+                "acyclic.batch".into(),
+                Value::Null,
+            )
+            .operation_id,
+            parent_operation: operation,
+            step,
+            request,
+            boundary,
+            publisher: identity,
+            guarantee,
+        };
+        let digest = crate::contract::canonical_json_digest(&publication)?;
+        let records = journal.replay(operation).await?;
+        let started = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::BatchPublicationStarted {
+                step: recorded,
+                publication,
+            } if *recorded == step => Some(publication),
+            _ => None,
+        });
+        if let Some(file) = started
+            && load_json::<ModelBatchPublication>(journal, file).await? != publication
+        {
+            return Err(Error::Conflict(
+                "batch publication admission changed".into(),
+            ));
+        }
+        if let Some(completed) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::BatchPublicationCompleted {
+                step: recorded,
+                publication_digest,
+            } if *recorded == step => Some(publication_digest),
+            _ => None,
+        }) {
+            return if started.is_some() && completed == &digest {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "batch publication result has no matching admission".into(),
+                ))
+            };
+        }
+        if started.is_some() {
+            if publisher.reconcile(publication.clone()).await?.is_none() {
+                if guarantee != EffectGuarantee::IdempotentRetry {
+                    return Err(Error::Indeterminate(publication.operation_id));
+                }
+                publisher.publish(publication.clone()).await?;
+            }
+        } else {
+            let key = format!("model:{step}:publication");
+            let file = stage_json(journal, operation, &key, &publication).await?;
+            if !journal
+                .append_if_tail(
+                    operation,
+                    records.len() as u64,
+                    key,
+                    ExecutionEvent::BatchPublicationStarted {
+                        step,
+                        publication: file,
+                    },
+                )
+                .await?
+            {
+                return Err(Error::Indeterminate(publication.operation_id));
+            }
+            publisher.publish(publication.clone()).await?;
+        }
+        if publisher.identity() != publication.publisher
+            || publisher.guarantee() != publication.guarantee
+        {
+            return Err(Error::Conflict(
+                "batch publisher changed during publication".into(),
+            ));
+        }
+        journal
+            .append(
+                operation,
+                format!("model:{step}:publication-complete"),
+                ExecutionEvent::BatchPublicationCompleted {
+                    step,
+                    publication_digest: digest,
                 },
             )
             .await
@@ -1794,6 +1963,224 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
             async { Ok(None) }.boxed()
         }
+    }
+
+    struct InterruptedPublisher {
+        guarantee: EffectGuarantee,
+        observed: bool,
+        dispatches: AtomicUsize,
+        reconciliations: AtomicUsize,
+        admissions: Mutex<Vec<ModelBatchPublication>>,
+    }
+
+    impl ModelBatchPublisher for InterruptedPublisher {
+        fn identity(&self) -> ComponentIdentity {
+            ComponentIdentity {
+                name: "test.completed-batch".into(),
+                version: "1".into(),
+                digest: [27; 32],
+            }
+        }
+        fn guarantee(&self) -> EffectGuarantee {
+            self.guarantee
+        }
+        fn linearizable_reconciliation(&self) -> bool {
+            self.guarantee == EffectGuarantee::ExactlyOnce
+        }
+        fn publish<'a>(&'a self, request: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
+            async move {
+                self.admissions.lock().unwrap().push(request);
+                if self.dispatches.fetch_add(1, Ordering::SeqCst) == 0 {
+                    Err(Error::Storage("lost publication response".into()))
+                } else {
+                    Ok(())
+                }
+            }
+            .boxed()
+        }
+        fn reconcile<'a>(
+            &'a self,
+            request: ModelBatchPublication,
+        ) -> BoxFuture<'a, Result<Option<()>>> {
+            async move {
+                self.reconciliations.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(self.admissions.lock().unwrap()[0], request);
+                Ok(self.observed.then_some(()))
+            }
+            .boxed()
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_publication_recovery_preserves_admission_and_retry_guarantee() -> Result<()> {
+        for (guarantee, observed, expected_dispatches, success) in [
+            (EffectGuarantee::AtMostOnce, true, 1, true),
+            (EffectGuarantee::ExactlyOnce, true, 1, true),
+            (EffectGuarantee::AtMostOnce, false, 1, false),
+            (EffectGuarantee::ExactlyOnce, false, 1, false),
+            (EffectGuarantee::IdempotentRetry, false, 2, true),
+        ] {
+            let publisher = Arc::new(InterruptedPublisher {
+                guarantee,
+                observed,
+                dispatches: AtomicUsize::new(0),
+                reconciliations: AtomicUsize::new(0),
+                admissions: Mutex::new(Vec::new()),
+            });
+            let executor = StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                Arc::new(FakeModel {
+                    calls: AtomicUsize::new(0),
+                    requests: Mutex::new(Vec::new()),
+                }),
+                ContextPipeline::default(),
+                ToolRegistry::new(),
+            )
+            .with_batch_publisher(Some(publisher.clone()))?;
+            let journal = Journal::default();
+            let operation = OperationId::new();
+            let request =
+                stage_json(&journal, operation, "request", &json!({"request": 1})).await?;
+            let boundary =
+                stage_json(&journal, operation, "boundary", &json!({"boundary": 1})).await?;
+            assert!(matches!(
+                executor
+                    .publish_completed_batch(
+                        &journal,
+                        operation,
+                        0,
+                        request.clone(),
+                        boundary.clone()
+                    )
+                    .await,
+                Err(Error::Storage(_))
+            ));
+            let records = journal.replay(operation).await?;
+            assert_eq!(records.len(), 1);
+            assert!(matches!(
+                records[0].event,
+                ExecutionEvent::BatchPublicationStarted { .. }
+            ));
+            let result = executor
+                .publish_completed_batch(&journal, operation, 0, request.clone(), boundary.clone())
+                .await;
+            if success {
+                result?;
+                executor
+                    .publish_completed_batch(
+                        &journal,
+                        operation,
+                        0,
+                        request.clone(),
+                        boundary.clone(),
+                    )
+                    .await?;
+                assert_eq!(journal.replay(operation).await?.len(), 2);
+            } else {
+                assert!(matches!(result, Err(Error::Indeterminate(_))));
+                assert_eq!(journal.replay(operation).await?.len(), 1);
+            }
+            assert_eq!(
+                publisher.dispatches.load(Ordering::SeqCst),
+                expected_dispatches
+            );
+            assert_eq!(publisher.reconciliations.load(Ordering::SeqCst), 1);
+            let changed =
+                stage_json(&journal, operation, "changed", &json!({"boundary": 2})).await?;
+            assert!(matches!(
+                executor
+                    .publish_completed_batch(&journal, operation, 0, request, changed)
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+            assert_eq!(
+                publisher.dispatches.load(Ordering::SeqCst),
+                expected_dispatches
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_batch_publication_blocks_next_request_until_reconciled() -> Result<()> {
+        let model = Arc::new(FakeModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let publisher = Arc::new(InterruptedPublisher {
+            guarantee: EffectGuarantee::AtMostOnce,
+            observed: true,
+            dispatches: AtomicUsize::new(0),
+            reconciliations: AtomicUsize::new(0),
+            admissions: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.echo".into(),
+                revision: "1".into(),
+                description: "Echo".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({"type": "object"}),
+            },
+            executor: tool.clone(),
+            projection: Arc::new(Projection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.echo"]),
+                Limits::default(),
+            )?,
+            None,
+        )?
+        .with_batch_publisher(Some(publisher.clone()))?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::new(),
+            input: ModelContent::Text("publish".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+        let publication = publisher.admissions.lock().unwrap()[0].clone();
+        let original: ModelRequest = load_json(&journal, &publication.request).await?;
+        let boundary: crate::model_input::CompletedModelBoundary =
+            load_json(&journal, &publication.boundary).await?;
+        boundary.verify(Limits::default())?;
+        assert_eq!(
+            &boundary.request.messages[..original.messages.len()],
+            original.messages
+        );
+        assert_eq!(boundary.request.messages.len(), original.messages.len() + 2);
+        assert!(
+            matches!(&boundary.request.messages[original.messages.len()].content,
+            ModelContent::Part(ModelContentPart::ToolCall { call_id, .. }) if call_id == "call-1")
+        );
+        assert!(
+            matches!(&boundary.request.messages[original.messages.len() + 1].content,
+            ModelContent::Part(ModelContentPart::ToolResult { call_id, .. }) if call_id == "call-1")
+        );
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "done");
+        assert_eq!(model.requests.lock().unwrap()[1], boundary.request);
+        executor.execute(input, &journal).await?;
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(tool.0.load(Ordering::SeqCst), 1);
+        assert_eq!(publisher.dispatches.load(Ordering::SeqCst), 1);
+        assert_eq!(publisher.reconciliations.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     #[tokio::test]

@@ -41,3 +41,15 @@ filesystem operations, subprocesses, journals and terminal interaction must be r
 Existing Harness library suite: 176 passed before dispatch-path changes.
 After canonical admission integration: 181 passed.
 Filesystems, installed artifacts and terminal are not qualified by those results.
+
+## Publication recovery subcontracts
+
+These refine EFFECT-01/EFFECT-02 and FORK-04; the parent rows remain pending
+until concrete recursive fork activation and fault scenarios pass.
+
+| ID | Contract | Verification | Evidence/status |
+|---|---|---|---|
+| EFFECT-01-A | Persist completed-batch publication admission before dispatch and result before next request | completed_batch_publication_blocks_next_request_until_reconciled | checkpoint-publication.json; TESTED stock executor |
+| EFFECT-02-A | Reconcile original admission; repeat dispatch only for idempotent guarantee | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED three guarantees |
+| EFFECT-02-B | Reject altered completed boundary on replay without dispatch | batch_publication_recovery_preserves_admission_and_retry_guarantee | checkpoint-publication.json; TESTED |
+| FORK-04-A | Typed fork adapter activates children only after the shared completed boundary | concrete swarm fault E2E | PENDING |

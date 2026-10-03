@@ -50,3 +50,23 @@ recovery-admission/refusal changes and is not a final-source qualification claim
 Recovery tests reject identity-only prefix reconciliation, corrupt request
 digests and changed inherited content. Tool refusal replay retains the same
 journal, invokes no executor and sends no additional model request.
+
+## Publication admission checkpoint
+
+See checkpoint-publication.json for hashes and exact gates.
+Final-source Windows native library: 200 passed; journal integration: 6 passed;
+zero ignored. Native library lint passed. WASM compilation passed; no WASM
+execution or serialization parity is claimed.
+
+completed_batch_publication_blocks_next_request_until_reconciled exercises the
+stock executor: lost publication response blocks the second model request, exact
+completed call/result bytes survive recovery, and neither tool execution nor
+publication is duplicated on replay. The second request equals the pinned boundary.
+
+batch_publication_recovery_preserves_admission_and_retry_guarantee covers all
+three effect guarantees, observed/unresolved outcomes, original admission identity,
+and altered-boundary refusal. Unknown at-most-once/exactly-once outcomes remain
+indeterminate; only the declared idempotent guarantee allows redispatch.
+
+The concrete adapter to existing workspace forks and child task admission is
+still pending. This checkpoint does not qualify the recursive swarm or terminal.

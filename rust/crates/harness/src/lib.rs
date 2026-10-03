@@ -10,6 +10,7 @@
 #![doc = include_str!("../README.md")]
 
 pub mod agent_loop;
+pub mod batch_publication;
 pub mod bundle;
 pub mod context;
 mod contract;

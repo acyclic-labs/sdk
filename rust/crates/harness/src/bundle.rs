@@ -204,6 +204,7 @@ pub struct HarnessBuilder {
     bindings: Bindings,
     capabilities: Vec<String>,
     limits: Limits,
+    batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
     bound_scope: Option<RuntimeScope>,
     extensions: Option<ExtensionAdmission>,
     extension_runtime: Option<Arc<ExtensionRuntime>>,
@@ -264,6 +265,16 @@ impl HarnessBuilder {
     pub fn model(mut self, model: Model, provider: Arc<dyn ModelProvider>) -> Self {
         self.model = Some(model);
         self.provider = Some(provider);
+        self
+    }
+
+    /// Publishes completed tool batches through a pinned Harness-owned adapter.
+    #[must_use]
+    pub fn batch_publisher(
+        mut self,
+        value: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
+    ) -> Self {
+        self.batch_publisher = Some(value);
         self
     }
 
@@ -446,9 +457,20 @@ impl HarnessBuilder {
         Ok(self)
     }
 
+    fn validate_batch_binding(&self) -> Result<()> {
+        if self.batch_publisher.is_some() && (self.executor.is_some() || self.agent_loop.is_some())
+        {
+            return Err(Error::Invalid(
+                "completed-batch publication requires the stock executor".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates dependency exclusivity and constructs the immutable runtime binding.
     pub fn build(self) -> Result<HarnessBundle> {
         self.limits.validate()?;
+        self.validate_batch_binding()?;
         let journal = self.journal;
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
@@ -522,7 +544,8 @@ impl HarnessBuilder {
             Some(Arc::new(
                 StockExecutor::new(model, provider, self.context, tools)
                     .with_limits(self.limits)
-                    .with_tool_authority(scope, policy)?,
+                    .with_tool_authority(scope, policy)?
+                    .with_batch_publisher(self.batch_publisher)?,
             ) as Arc<dyn Executor>)
         };
         if executor.is_some() && journal.is_none() {

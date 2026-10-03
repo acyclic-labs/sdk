@@ -21,6 +21,9 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Assistant text in tool-bearing responses now reaches the next model request.
 - Reconciliation verifies the original admitted request and its digest; guarded providers refuse identity-only recovery.
 - Pre-dispatch refusals are durable, scoped, non-secret observations distinct from dispatched failures.
+- Completed-batch publication has a pinned implementation/guarantee and immutable admission.
+- Publication uncertainty prevents the next parent request; reconciliation uses the original admission.
+- Publication retry is permitted only for the declared idempotent guarantee.
 
 ## Verification
 - Existing Harness baseline: 176 passed.
@@ -33,11 +36,14 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Full native Harness regression at f2fc0f4c: 215 passed, zero ignored.
 - Latest request-bound recovery/refusal changes: 198 library + 6 journal tests passed.
 - Native library lint gate passed; WASM compilation passed (execution not tested).
-- Source-bound checkpoint receipt: checkpoint-recovery.json.
+- Completed publication recovery: 200 library + 6 persistent-journal tests passed.
+- Final publication source: native lint and WASM compilation passed.
+- Source-bound checkpoint receipts: checkpoint-recovery.json and checkpoint-publication.json.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
-Connect prefix enforcement to child execution and existing fork publication.
+Connect the completed-batch publisher to existing typed workspace fork publication
+and child task admission. The publisher seam alone does not create or run children.
 Extend durable composition with scoped swarm communication and git integration,
 effect recovery, terminal app, and installed-artifact acceptance evidence.
 
