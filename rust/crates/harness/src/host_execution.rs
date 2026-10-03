@@ -421,6 +421,17 @@ pub struct ExecutionReceiptRecord {
     pub receipt: ExecutionReceipt,
 }
 
+/// Result of an atomic host-journal claim before a process is spawned.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ExecutionClaim {
+    /// This caller owns the first dispatch reservation.
+    Acquired,
+    /// Another process or provider instance already owns the reservation.
+    Pending,
+    /// A durable terminal receipt already exists for this exact key.
+    Completed(ExecutionReceiptRecord),
+}
+
 impl ExecutionReceiptRecord {
     /// Validates the record independently of a dispatch lookup.
     pub fn validate(&self) -> Result<()> {
@@ -460,6 +471,19 @@ impl ExecutionReceiptRecord {
 /// Native integrations should implement this with a private system journal
 /// whose records bind the full key and are inaccessible to model tools.
 pub trait ExecutionReceiptStore: Send + Sync {
+    /// Atomically reserves this exact attempt before any host process starts.
+    /// Implementations must persist `Pending` before returning `Acquired` and
+    /// return `Pending` after restart until a receipt is published or an
+    /// operator explicitly resolves the claim.
+    fn claim<'a>(&'a self, _key: &'a ExecutionReceiptKey) -> BoxFuture<'a, Result<ExecutionClaim>> {
+        async {
+            Err(Error::Unsupported(
+                "atomic host execution claim is unavailable".into(),
+            ))
+        }
+        .boxed()
+    }
+
     /// Resolves an existing immutable receipt for exactly this dispatch.
     fn load<'a>(
         &'a self,
@@ -983,20 +1007,24 @@ impl NativeExecutionProvider {
         Ok(())
     }
 
+    fn receipt_key(request: &EffectDispatch, operation_id: OperationId) -> ExecutionReceiptKey {
+        ExecutionReceiptKey {
+            operation_id,
+            effect_id: request.effect_id,
+            attempt_id: request.attempt_id,
+            provider: request.provider.clone(),
+            effect_kind: request.effect_kind.clone(),
+            guarantee: request.guarantee,
+            request_digest: request.request_digest,
+        }
+    }
+
     async fn persisted_receipt(
         &self,
         dispatch: &EffectDispatch,
         operation_id: OperationId,
     ) -> Result<Option<(FileRef, ExecutionReceipt)>> {
-        let key = ExecutionReceiptKey {
-            operation_id,
-            effect_id: dispatch.effect_id,
-            attempt_id: dispatch.attempt_id,
-            provider: dispatch.provider.clone(),
-            effect_kind: dispatch.effect_kind.clone(),
-            guarantee: dispatch.guarantee,
-            request_digest: dispatch.request_digest,
-        };
+        let key = Self::receipt_key(dispatch, operation_id);
         if let Some(store) = &self.receipt_store {
             let record = store.load(&key).await?;
             if let Some(record) = record {
@@ -1160,25 +1188,52 @@ impl NativeExecutionProvider {
         // Reserve before looking up the receipt so two concurrent dispatches
         // cannot both observe a miss and run the same host command.
         let cancellation = self.reserve_attempt(approval.operation_id, request.attempt_id)?;
-        match self
-            .persisted_receipt(&request, approval.operation_id)
-            .await
-        {
-            Ok(Some((result, receipt))) => {
-                self.release_attempt(approval.operation_id, request.attempt_id)?;
-                return Ok(EffectObservation {
-                    provider: request.provider,
-                    effect_id: request.effect_id,
-                    attempt_id: request.attempt_id,
-                    request_digest: request.request_digest,
-                    guarantee: request.guarantee,
-                    status: Self::status_for_receipt(receipt, result),
-                });
+        if let Some(store) = &self.receipt_store {
+            let key = Self::receipt_key(&request, approval.operation_id);
+            match store.claim(&key).await {
+                Ok(ExecutionClaim::Acquired) => {}
+                Ok(ExecutionClaim::Pending) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Err(Error::Indeterminate(approval.operation_id));
+                }
+                Ok(ExecutionClaim::Completed(record)) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    record.validate_for(&request)?;
+                    return Ok(EffectObservation {
+                        provider: request.provider,
+                        effect_id: request.effect_id,
+                        attempt_id: request.attempt_id,
+                        request_digest: request.request_digest,
+                        guarantee: request.guarantee,
+                        status: Self::status_for_receipt(record.receipt, record.result),
+                    });
+                }
+                Err(error) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Err(error);
+                }
             }
-            Ok(None) => {}
-            Err(error) => {
-                self.release_attempt(approval.operation_id, request.attempt_id)?;
-                return Err(error);
+        } else {
+            match self
+                .persisted_receipt(&request, approval.operation_id)
+                .await
+            {
+                Ok(Some((result, receipt))) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Ok(EffectObservation {
+                        provider: request.provider,
+                        effect_id: request.effect_id,
+                        attempt_id: request.attempt_id,
+                        request_digest: request.request_digest,
+                        guarantee: request.guarantee,
+                        status: Self::status_for_receipt(receipt, result),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    return Err(error);
+                }
             }
         }
         let receipt = if approval.approved {
@@ -1241,15 +1296,7 @@ impl NativeExecutionProvider {
                 return Err(Error::Invalid(error.to_string()));
             }
         };
-        let key = ExecutionReceiptKey {
-            operation_id: approval.operation_id,
-            effect_id: request.effect_id,
-            attempt_id: request.attempt_id,
-            provider: request.provider.clone(),
-            effect_kind: request.effect_kind.clone(),
-            guarantee: request.guarantee,
-            request_digest: request.request_digest,
-        };
+        let key = Self::receipt_key(&request, approval.operation_id);
         let result = if let Some(store) = &self.receipt_store {
             match store.publish(&key, &receipt).await {
                 Ok(result) => result,
@@ -1443,9 +1490,37 @@ mod tests {
     struct MemoryReceiptStore {
         volume: Option<VolumeRef>,
         records: Mutex<Vec<ExecutionReceiptRecord>>,
+        pending: Mutex<Vec<ExecutionReceiptKey>>,
     }
 
     impl ExecutionReceiptStore for MemoryReceiptStore {
+        fn claim<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
+            Box::pin(async move {
+                if let Some(record) = self
+                    .records
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .iter()
+                    .find(|record| record.key == *key)
+                    .cloned()
+                {
+                    return Ok(ExecutionClaim::Completed(record));
+                }
+                let mut pending = self
+                    .pending
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
+                if pending.iter().any(|candidate| candidate == key) {
+                    return Ok(ExecutionClaim::Pending);
+                }
+                pending.push(key.clone());
+                Ok(ExecutionClaim::Acquired)
+            })
+        }
+
         fn load<'a>(
             &'a self,
             key: &'a ExecutionReceiptKey,
@@ -1491,6 +1566,10 @@ mod tests {
                         result: result.clone(),
                         receipt: receipt.clone(),
                     });
+                self.pending
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .retain(|candidate| candidate != key);
                 Ok(result)
             })
         }
@@ -2074,6 +2153,7 @@ mod tests {
         let store = Arc::new(MemoryReceiptStore {
             volume: Some(content.volume.clone()),
             records: Mutex::new(Vec::new()),
+            pending: Mutex::new(Vec::new()),
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = NativeExecutionProvider::new_with_receipt_store(
@@ -2132,6 +2212,78 @@ mod tests {
         let replay = restarted.dispatch(dispatch).await?;
         assert!(matches!(replay.status, EffectStatus::Succeeded { .. }));
         assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn typed_store_claim_blocks_cross_provider_redispatch() -> Result<()> {
+        let operation = OperationId::from_bytes([57; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let store = Arc::new(MemoryReceiptStore {
+            volume: Some(content.volume.clone()),
+            records: Mutex::new(Vec::new()),
+            pending: Mutex::new(Vec::new()),
+        });
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let first = Arc::new(NativeExecutionProvider::new_with_receipt_store(
+            content.clone(),
+            store.clone(),
+            Arc::new(BlockingRunner {
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            }),
+            approval_verifier(),
+        )?);
+        let second = NativeExecutionProvider::new_with_receipt_store(
+            content,
+            store,
+            Arc::new(FixedRunner(RunnerOutcome::Exited {
+                status_code: Some(0),
+                stdout: b"must not rerun".to_vec(),
+                stderr: Vec::new(),
+            })),
+            approval_verifier(),
+        )?;
+        let request_digest = crate::core::effect_request_digest(
+            first.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: first.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([58; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let first = Arc::clone(&first);
+            let dispatch = dispatch.clone();
+            async move { first.dispatch(dispatch).await }
+        });
+        for _ in 0..2_000 {
+            if started.load(Ordering::Acquire) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(started.load(Ordering::Acquire));
+        assert!(matches!(
+            second.dispatch(dispatch).await,
+            Err(Error::Indeterminate(_))
+        ));
+        release.store(true, Ordering::Release);
+        assert!(matches!(
+            task.await
+                .map_err(|error| Error::Storage(error.to_string()))??
+                .status,
+            EffectStatus::Succeeded { .. }
+        ));
         Ok(())
     }
 
