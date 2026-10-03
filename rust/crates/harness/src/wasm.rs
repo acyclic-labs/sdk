@@ -2514,13 +2514,21 @@ pub fn prepare_model_request(
     prepared.validate_complete_exchange().map_err(js_error)?;
     let request_json = std::str::from_utf8(prepared.bytes())
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    let manifest_json = serde_json::to_string(prepared.manifest())
+    let manifest_bytes =
+        crate::contract::canonical_json_bytes(prepared.manifest()).map_err(js_error)?;
+    let manifest_json = std::str::from_utf8(&manifest_bytes)
         .map_err(|error| JsValue::from_str(&error.to_string()))?;
-    to_js(&serde_json::json!({
-        "request_json": request_json,
-        "manifest_json": manifest_json,
-        "request_digest": prepared.manifest().request_digest,
-    }))
+    #[derive(Serialize)]
+    struct PreparedRequestWire<'a> {
+        request_json: &'a str,
+        manifest_json: &'a str,
+        request_digest: [u8; 32],
+    }
+    to_js(&PreparedRequestWire {
+        request_json,
+        manifest_json,
+        request_digest: prepared.manifest().request_digest,
+    })
 }
 
 /// Validates one human-authored model input using the native content rules.
