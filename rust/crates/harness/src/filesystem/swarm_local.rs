@@ -2866,6 +2866,13 @@ impl PersistentLocalSwarm {
             }
             return self.outcome(task).await;
         }
+        if session.operation.is_none() {
+            self.reserve_session_operation(task, operation).await?;
+        } else if session.operation != Some(operation) {
+            return Err(Error::Conflict(
+                "local swarm task is bound to another operation".into(),
+            ));
+        }
         let parent = session.parent;
         self.verify_admitted_task(task, parent).await?;
         let harness = self.open_session(task).await?;
@@ -3627,6 +3634,34 @@ impl PersistentLocalSwarm {
             });
         }
         let observed_tail = self.refresh_registry_state_with_tail().await?;
+        // The tail and projection above form one admission snapshot. Recheck
+        // terminal state immediately before the CAS append so a cancellation
+        // or completion that won the preceding refresh cannot be overwritten
+        // by this worker's terminal event.
+        let terminal = self.records.lock().await.get(&child).cloned();
+        if terminal
+            .as_ref()
+            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+        {
+            return Err(Error::Conflict(
+                "child operation was cancelled before completion acknowledgement".into(),
+            ));
+        }
+        if terminal
+            .as_ref()
+            .is_some_and(|session| session.phase == LocalSessionPhase::Completed)
+        {
+            if terminal.and_then(|session| session.operation) != Some(request.child_operation) {
+                return Err(Error::Conflict(
+                    "completed child operation differs from the completion binding".into(),
+                ));
+            }
+            return Ok(LocalForkOutcome {
+                child,
+                operation: request.child_operation,
+                output: self.outcome(child).await?,
+            });
+        }
         let completion = StoredEvent::ForkCompleted {
             child,
             operation: request.child_operation,
@@ -3912,6 +3947,46 @@ impl PersistentLocalSwarm {
     {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         self.update_session_at(observed_tail, task, update).await
+    }
+
+    /// Reserves the first operation for a root session before opening the
+    /// model harness. The registry append is the cross-handle fence; a stale
+    /// caller cannot dispatch under a different operation after another
+    /// handle has claimed the task.
+    async fn reserve_session_operation(
+        &self,
+        task: TaskId,
+        operation: OperationId,
+    ) -> Result<()> {
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let current = self.session(task).await?;
+        if let Some(existing) = current.operation {
+            return if existing == operation {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "local swarm task is bound to another operation".into(),
+                ))
+            };
+        }
+        match self
+            .update_session_at(observed_tail, task, |session| {
+                session.operation = Some(operation);
+            })
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.refresh_registry_state().await?;
+                match self.session(task).await?.operation {
+                    Some(existing) if existing == operation => Ok(()),
+                    Some(_) => Err(Error::Conflict(
+                        "local swarm task is bound to another operation".into(),
+                    )),
+                    None => Err(error),
+                }
+            }
+        }
     }
 
     async fn update_session_at<F>(
@@ -4219,6 +4294,11 @@ fn apply_record(
             }
             let next: LocalSwarmSession = session.into();
             if let Some(existing) = sessions.get(&next.task) {
+                if existing.operation.is_some() && existing.operation != next.operation {
+                    return Err(Error::Conflict(
+                        "persisted session operation binding changed".into(),
+                    ));
+                }
                 if existing.phase == LocalSessionPhase::Cancelled
                     && next.phase != LocalSessionPhase::Cancelled
                 {
@@ -4226,12 +4306,18 @@ fn apply_record(
                         "persisted session completion follows terminal cancellation".into(),
                     ));
                 }
-                if existing.phase == LocalSessionPhase::Completed
-                    && next.phase == LocalSessionPhase::Cancelled
-                {
-                    return Err(Error::Conflict(
-                        "persisted session cancellation follows terminal completion".into(),
-                    ));
+                match (&existing.phase, &next.phase) {
+                    (LocalSessionPhase::Completed, LocalSessionPhase::Completed)
+                    | (LocalSessionPhase::Cancelled, LocalSessionPhase::Cancelled)
+                    | (LocalSessionPhase::Failed(_), LocalSessionPhase::Failed(_)) => {}
+                    (LocalSessionPhase::Completed, _)
+                    | (LocalSessionPhase::Cancelled, _)
+                    | (LocalSessionPhase::Failed(_), _) => {
+                        return Err(Error::Conflict(
+                            "persisted session moved backwards from a terminal state".into(),
+                        ));
+                    }
+                    _ => {}
                 }
             }
             sessions.insert(next.task, next);
