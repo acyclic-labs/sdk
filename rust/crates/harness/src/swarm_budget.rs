@@ -810,6 +810,8 @@ pub struct SwarmDispatchToken {
     workspace_generation_digest: [u8; 32],
     /// Provider dispatch identity bound to this activation, when available.
     dispatch_id: Option<IdempotencyKey>,
+    /// Exact per-child provider ceiling carried into the dispatcher.
+    resources: SwarmResourceRequest,
 }
 
 impl SwarmDispatchToken {
@@ -829,6 +831,13 @@ impl SwarmDispatchToken {
     #[must_use]
     pub const fn dispatch_id(&self) -> Option<&IdempotencyKey> {
         self.dispatch_id.as_ref()
+    }
+
+    /// Returns the exact resource ceiling the provider must enforce before
+    /// doing additional model work.
+    #[must_use]
+    pub const fn resources(&self) -> SwarmResourceRequest {
+        self.resources
     }
 
     /// Returns the owner fence bound to this dispatch authorization.
@@ -1171,6 +1180,7 @@ impl SwarmBudget {
             }
         }
         let parent_operation_id = reservation.parent_operation_id;
+        let resources = reservation.resources;
         state.reservations.insert(operation_id, reservation);
         Ok(SwarmDispatchToken {
             operation_id,
@@ -1179,6 +1189,7 @@ impl SwarmBudget {
             completed_boundary_digest: publication.completed_boundary_digest,
             workspace_generation_digest: publication.workspace_generation_digest,
             dispatch_id,
+            resources,
         })
     }
 
@@ -2122,6 +2133,7 @@ mod tests {
             publication(child.operation_id, None),
         )?;
         assert_eq!(token.operation_id, child.operation_id);
+        assert_eq!(token.resources(), child.resources);
         budget.report_usage(
             child.operation_id,
             &owner(0),
