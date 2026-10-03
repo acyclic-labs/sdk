@@ -327,6 +327,20 @@
       "artifact_sha256": "58dac2a97b15e19cad94a323c0ac878da3917b81a9157e26f77f11a686117c20",
       "suite_sha256": "ad8403675bea861841e245ed4544ec92fcc92c79e5c2e814be0446a889752461",
       "contract_scope": "actual native compatibility transitions, exact source/target fencing, typed recovery fixtures; does not qualify real plugin lazy abort or full swarming"
+    },
+    {
+      "suite": "production local model swarm",
+      "source": "c421e3d7",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_model_swarm -j 2 -- --nocapture",
+      "artifact_sha256": "d4576e139ab9871de2f122d78774cb527af9f83cedf14cd53b823e441bc8f529",
+      "suite_sha256": "98ee9aeb687593e5d50289f84248649fb5e4643a406467cc9dce39b9675228fe",
+      "failures": [
+        "Invalid volume belongs to another Filesystem provider"
+      ],
+      "contract_scope": "actual production provider ownership check; recursive positive scenario still unqualified; fixture provider mismatch diagnosed and isolated fix pending"
     }
   ],
   "input_digests": {
