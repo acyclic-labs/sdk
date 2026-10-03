@@ -1,0 +1,20 @@
+[package]
+name = "acyclic-sdk-embedded-filesystem"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+description = "Bounded Rust-owned Filesystem and Harness embedded behavior proof"
+
+[workspace]
+
+[features]
+default = ["filesystem"]
+filesystem = ["dep:acyclic-fs"]
+harness = ["dep:acyclic-harness"]
+
+[dependencies]
+acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["memory"], optional = true }
+acyclic-harness = { version = "=0.2.0", path = "../harness", default-features = false, optional = true }
+bytes = "1.10.1"
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "sync"] }
