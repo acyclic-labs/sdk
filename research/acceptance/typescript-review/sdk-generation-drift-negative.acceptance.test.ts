@@ -324,3 +324,10 @@ test("check and drift bind the manifest generator identity to this executable", 
     expect(operation).toContain("CARGO_PKG_VERSION");
   }
 });
+
+test("Rust authority validation requires the complete registered eight-family matrix", async () => {
+  const main = await source("rust/crates/sdk-generation/src/main.rs");
+  const authority = functionBody(main, "verify_authority_manifest", "artifact_digest");
+  expect(authority).toMatch(/openapi_family_names|explicit_http_family_views/);
+  expect(authority).toMatch(/families.*len|families.*all|missing.*family/i);
+});
