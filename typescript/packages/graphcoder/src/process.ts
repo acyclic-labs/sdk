@@ -116,7 +116,6 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (pending === undefined) return false;
     this.#pending.delete(requestId);
     this.#cancelled.add(requestId);
-    while (this.#cancelled.size > 4_096) this.#cancelled.delete(this.#cancelled.values().next().value!);
     try {
       const control = this.#cancelMessage?.(requestId);
       if (control !== undefined) this.#writeCancelControl(requestId, control);
