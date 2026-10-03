@@ -557,6 +557,12 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         .ok_or_else(|| Error::Invalid("malformed writeback notice was accepted".into()))?;
     assert!(matches!(error, Error::Invalid(_)));
     let error = facade
+        .apply_root_writeback(&valid_request, &plan, &authority, &notice, &[])
+        .await
+        .err()
+        .ok_or_else(|| Error::Invalid("unbound writeback plan was accepted".into()))?;
+    assert!(matches!(error, Error::Unauthorized(_)));
+    let error = facade
         .apply_root_writeback(&request, &plan, &authority, &notice, &[])
         .await
         .err()

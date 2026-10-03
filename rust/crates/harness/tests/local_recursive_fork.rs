@@ -6,8 +6,8 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions, MemoryGitCompatStore, WorkspaceId,
 };
 use acyclic_harness::conversation::{
-    Attachment, ContentGrant, ConversationMessage, FileRef, MessageKind, ReferencedAttachments,
-    VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
+    Attachment, ContentGrant, ConversationMessage, FileDescriptor, FileRef, MessageKind,
+    ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
 };
 use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
@@ -654,6 +654,45 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .await
                 .is_err(),
                 "invalid merge receipt intent must not publish a workspace change"
+            );
+            let forged_notice_file = FileRef::new(
+                project.clone(),
+                merge_message.content.path(),
+                merge_message.content.version().to_owned(),
+                FileDescriptor::from_bytes(b"forged notice", "text/plain")?,
+                merge_message.content.display_name(),
+            )?;
+            let forged_notice = ConversationMessage {
+                content: forged_notice_file,
+                ..merge_message.clone()
+            };
+            let content_error = parent_facade
+                .apply_project_merge_for_child_with_notice(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                    &plan,
+                    operation_id,
+                    &forged_notice,
+                )
+                .await
+                .err()
+                .ok_or_else(|| Error::Invalid("unresident merge notice was accepted".into()))?;
+            assert!(matches!(
+                content_error,
+                Error::Conflict(_) | Error::Unauthorized(_)
+            ));
+            assert!(
+                host.read(
+                    &project_head.workspace,
+                    None,
+                    &format!("/level-{level}.txt"),
+                    1_024,
+                )
+                .await
+                .is_err(),
+                "unresident merge notice must fail before provider publication"
             );
             let journal = Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),

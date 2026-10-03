@@ -16,7 +16,10 @@ use super::{
 };
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
-    conversation::{ConversationMessage, VolumeClass, VolumeOperation, VolumeRef},
+    conversation::{
+        Attachment, ContentGrant, ConversationMessage, ReferencedAttachments, VolumeClass,
+        VolumeOperation, VolumeRef, decode_attachment_manifest,
+    },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     resources::GenerationRef,
 };
@@ -396,6 +399,7 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         validate_merge_receipt_inputs(child, notice)?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, notice).await?;
         self.apply_project_merge(host, parent, plan, operation_id)
             .await
     }
@@ -424,6 +428,7 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         validate_merge_receipt_inputs(child, &notice)?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
         let outcome = self
             .apply_project_merge(host, parent, plan, operation_id)
             .await?;
@@ -458,6 +463,8 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
+        self.authorize_direct_child(parent, &child, plan.child_project())?;
+        validate_merge_receipt_inputs(&child, &notice)?;
         let controller = ParentProjectController::new(
             host,
             parent,
@@ -630,6 +637,17 @@ impl<S> FilesystemGitFacade<S> {
             ));
         }
         validate_merge_receipt_inputs(child, notice)?;
+        let Some(lineage) = plan.lineage() else {
+            return Err(Error::Unauthorized(
+                "root writeback plan is not bound to this direct child".into(),
+            ));
+        };
+        if lineage.child() != child || lineage.child_project() == &self.volume {
+            return Err(Error::Unauthorized(
+                "root writeback plan is not bound to this direct child".into(),
+            ));
+        }
+        plan.validate_notice_content(notice).await?;
         plan.apply(
             &request.scope,
             request.approval.operation_id,
@@ -720,6 +738,12 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         validate_merge_receipt_inputs(child, notice)?;
+        self.verify_root_writeback(
+            request,
+            &host.generation_ref_id(plan.source_head())?,
+            &host.generation_ref_id(plan.target_head())?,
+        )?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, notice).await?;
         self.apply_root_writeback_plan(request, host, parent, plan, selections)
             .await
     }
@@ -749,6 +773,12 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
+        self.verify_root_writeback(
+            request,
+            &host.generation_ref_id(plan.source_head())?,
+            &host.generation_ref_id(plan.target_head())?,
+        )?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
         let outcome = self
             .apply_root_writeback_plan(request, host, parent, plan, selections)
             .await?;
@@ -790,14 +820,15 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
-        // Authenticate the approval before claiming durable recovery state.
-        // Otherwise a forged or stale request could leave an intent behind
-        // that recovery would later launder into a synthetic approval.
         self.verify_root_writeback(
             request,
             &host.generation_ref_id(plan.source_head())?,
             &host.generation_ref_id(plan.target_head())?,
         )?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
+        // The approval was authenticated before content residency and before
+        // claiming durable recovery state. Otherwise a forged or stale request
+        // could leave an intent behind that recovery later launders.
         let intent = super::ProjectMergeIntent {
             operation_id: request.approval.operation_id,
             child: child.clone(),
@@ -865,6 +896,8 @@ impl<S> FilesystemGitFacade<S> {
             &entry.intent.expected_target_generation,
         )?;
         self.authorize_direct_child(parent, &entry.intent.child, &entry.intent.source_project)?;
+        validate_merge_notice_content(host, &self.verifier, &self.scope, &entry.intent.notice)
+            .await?;
         let controller = ParentProjectController::new(
             host,
             parent,
@@ -1092,6 +1125,93 @@ fn validate_merge_receipt_inputs(child: &Authority, notice: &ConversationMessage
         return Err(Error::Invalid("project join notice is not a merge".into()));
     }
     Ok(())
+}
+
+/// Resolves every file reference in a merge notice through the authenticated
+/// Filesystem host before a provider join or recovery intent is admitted.
+/// Metadata validation alone is insufficient: a forged descriptor or a
+/// reclaimed generation must fail before any workspace mutation is attempted.
+pub(crate) async fn validate_merge_notice_content<A, O>(
+    host: &super::FilesystemHost<A, O>,
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    notice: &ConversationMessage,
+) -> Result<()>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let maximum_bytes = crate::conversation::MAX_LIMIT_FILE_BYTES;
+    verify_notice_file(host, verifier, scope, &notice.content, maximum_bytes).await?;
+    match &notice.attachments {
+        ReferencedAttachments::Inline { items } => {
+            for attachment in items {
+                verify_notice_attachment(host, verifier, scope, attachment, maximum_bytes).await?;
+            }
+        }
+        ReferencedAttachments::Manifest {
+            manifest,
+            item_count,
+        } => {
+            let bytes = read_notice_file(host, verifier, scope, manifest, maximum_bytes).await?;
+            let items = decode_attachment_manifest(manifest, &bytes, *item_count)?;
+            for attachment in &items {
+                verify_notice_attachment(host, verifier, scope, attachment, maximum_bytes).await?;
+            }
+        }
+    }
+    for reference in notice.extensions.values() {
+        verify_notice_file(host, verifier, scope, reference, maximum_bytes).await?;
+    }
+    Ok(())
+}
+
+async fn verify_notice_attachment<A, O>(
+    host: &super::FilesystemHost<A, O>,
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    attachment: &Attachment,
+    maximum_bytes: u64,
+) -> Result<()>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    attachment.validate()?;
+    verify_notice_file(host, verifier, scope, &attachment.file, maximum_bytes).await
+}
+
+async fn verify_notice_file<A, O>(
+    host: &super::FilesystemHost<A, O>,
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    reference: &crate::conversation::FileRef,
+    maximum_bytes: u64,
+) -> Result<()>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let _ = read_notice_file(host, verifier, scope, reference, maximum_bytes).await?;
+    Ok(())
+}
+
+async fn read_notice_file<A, O>(
+    host: &super::FilesystemHost<A, O>,
+    verifier: &AuthorityVerifier,
+    scope: &Scope,
+    reference: &crate::conversation::FileRef,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    let grant = ContentGrant::verify_read(verifier, scope, reference)?;
+    let bytes = host.read_content(reference, &grant, maximum_bytes).await?;
+    let owned = bytes.to_vec();
+    reference.descriptor().verify(&owned)?;
+    Ok(owned)
 }
 
 fn map_run_error<S, E>(error: &GitCompatRunError<S, E>) -> Error
