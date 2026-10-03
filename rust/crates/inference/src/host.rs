@@ -1741,13 +1741,13 @@ mod tests {
             .await?;
         let mut events = run.watch(0).await?;
         assert_eq!(
-            events.next().await?.and_then(|event| event.event),
+            events.next().await?.and_then(|event| event.event.clone()),
             Some(wire::run_event::Event::Progress(wire::RunProgress {
                 kind: "cancellation-requested".to_owned(),
             }))
         );
         assert_eq!(
-            events.next().await?.and_then(|event| event.event),
+            events.next().await?.and_then(|event| event.event.clone()),
             Some(wire::run_event::Event::Terminal(
                 wire::RunTerminal::Cancelled.into(),
             ))
