@@ -214,6 +214,10 @@ WASM/package/platform lanes, and production terminal qualification remain requir
 
 checkpoint-canonical-fork-terminal.json binds focused Windows native, actual WASM, captured TypeScript model-dispatch, and GraphCoder package checks to listed source/suite/artifact digests. It does not qualify the full production swarm or final packaged matrix.
 
+## Exact-input and facade followup
+
+[checkpoint-input-facade-followup-2026-10-03.json](checkpoint-input-facade-followup-2026-10-03.json) records 24 passing native executor tests, 242 passing TypeScript tests with type checks, and a passing real recursive facade integration fixture. It also retains the broader facade rebase failure and held fork compile failure. Existing WASM was used for this TypeScript run; no fresh distributable qualification is claimed.
+
 ## Projection, execution, and regenerated bindings checkpoint
 
 See checkpoint-projection-execution-bindings.json for scoped digests, actual pass counts, required failures, and limitations. Fresh WASM admission: 12 passed; focused TypeScript runtime: 8 passed; TypeScript contracts pass after generating the Objects dependency; qualification validation: 21 passed. Native receipt reopen and actual subprocess fault checks each passed one case. These do not qualify the full recursive runtime or production approval recovery.

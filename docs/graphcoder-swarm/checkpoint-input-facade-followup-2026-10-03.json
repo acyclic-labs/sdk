@@ -1,0 +1,63 @@
+{
+  "qualification": "incomplete",
+  "runs": [
+    {
+      "source": "2b89c3d27",
+      "handle": 95413,
+      "command": "cargo test -p acyclic-harness --lib executor::tests -j2",
+      "exit_code": 0,
+      "passed": 24,
+      "failed": 0,
+      "filtered": 265,
+      "artifact_sha256": "80CE0E3262E1B8ADFAE79C5F00CDF51DA346F58A1E6BD8DD9358140B6E89EA10",
+      "suite_sha256": "FE8DC1456B5EFC69816D0E74E12A9AA7BA27EF6CD3E5472448D6C66088145730",
+      "scope": "Default-feature executor unit tests, including cumulative output before staging and exact fresh-provider reconciliation. In-memory journal; not process-crash qualification."
+    },
+    {
+      "source": "ffb8f2dad",
+      "handle": 50319,
+      "command": "cargo test -p acyclic-harness --features filesystem --test recursive_fork facade_two_children_grandchild_integrates_upward_with_approval -j2",
+      "exit_code": 0,
+      "passed": 1,
+      "failed": 0,
+      "filtered": 2,
+      "artifact_sha256": "D1E06C366D765868596DEF98D0FBB969F112C503C863C73647CE9A981053F328",
+      "suite_sha256": "88CBEFD5B70A5A0D72CB6B6DC202D59147DEF21211DE222A1FD1465E2175E5F3",
+      "scope": "Real Filesystem facade recursive integration fixture, after legitimate notice write before plan capture. Not model-selected swarm or installed terminal."
+    },
+    {
+      "source": "1090c653d",
+      "handle": 71868,
+      "command": "bun x tsc -p tsconfig.json --noEmit; bun x tsc -p tsconfig.type-tests.json; bun test test",
+      "exit_code": 0,
+      "passed": 242,
+      "failed": 0,
+      "assertions": 1218,
+      "files": 19,
+      "wasm_sha256": "C90E8C3416283A51EF8A504BD9887CC8DF6913B63A4608C0E515E009BE6E5163",
+      "runtime_suite_sha256": "DFD7CB8B47FABB14D68401DCEC3F5A999FC2D8AF85F9B1C78D5DF3297CB5D175",
+      "scope": "Source and test type checks plus all Harness TypeScript suites using existing WASM artifact. No fresh WASM build in this run; no installed native qualification."
+    },
+    {
+      "source": "9098eb645",
+      "handle": 34728,
+      "command": "cargo test -p acyclic-harness --features filesystem --test recursive_fork --test git_facade -j2",
+      "exit_code": 1,
+      "passed": 8,
+      "failed": 1,
+      "artifact_sha256": "98C88C56B9ECFC8C10601A575B1D0EF948450495D21926D1A76C8C29E1E36B18",
+      "suite_sha256": "A495E35A9D638525578D6F06826A1ECF571161974EC6319EE2FD4A58DBD2B32E",
+      "failure": "recovery_rebase_and_hard_reset_use_the_facade_identity: pending rebase was not recoverable",
+      "scope": "git_facade ran; Cargo stopped before recursive_fork suite."
+    },
+    {
+      "source": "5b9c6efdf",
+      "handle": 72733,
+      "exit_code": 1,
+      "tests_executed": 0,
+      "scope": "Held fork worker no-run compilation, not root branch",
+      "failure": "E0382 invocation.arguments moved before invocation.validate",
+      "artifact_sha256": null
+    }
+  ]
+}
