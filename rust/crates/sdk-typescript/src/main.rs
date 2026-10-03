@@ -418,147 +418,122 @@ fn proto_import_path(family: &str) -> String {
     }
 }
 
-fn model() -> Result<Manifest, Error> {
-    let services = vec![
-        service_metadata(RustService {
-            family: "actors",
-            rust_crate: "acyclic-actors",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::actors_descriptor",
-            source_content: model_source_content(&[include_bytes!(concat!(
+fn source_content_for_family(family: &str) -> Vec<u8> {
+    let lib = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sdk-contract-wire/src/lib.rs"
+    ));
+    let registry = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../sdk-contract-wire/src/family_registry.rs"
+    ));
+    match family {
+        "actors" => model_source_content(&[lib, registry]),
+        "workers" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../sdk-contract-wire/src/lib.rs"
-            ))]),
-            descriptor: acyclic_sdk_contract_wire::actors_descriptor(),
-            routes: contract_routes(acyclic_sdk_contract_wire::ACTORS.routes),
-        })?,
-        service_metadata(RustService {
-            family: "workers",
-            rust_crate: "acyclic-workers",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::workers::workers_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/workers.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::workers::workers_descriptor(),
-            routes: contract_routes(acyclic_sdk_contract_wire::workers::WORKERS.routes),
-        })?,
-        service_metadata(RustService {
-            family: "objects",
-            rust_crate: "acyclic-objects",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::objects::objects_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/objects.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::objects_descriptor(),
-            routes: contract_routes(acyclic_sdk_contract_wire::OBJECTS_V2.routes),
-        })?,
-        service_metadata(RustService {
-            family: "stream",
-            rust_crate: "acyclic-stream",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::stream::stream_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/stream.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::stream_descriptor(),
-            routes: contract_routes(acyclic_sdk_contract_wire::STREAM.routes),
-        })?,
-        service_metadata(RustService {
-            family: "inference",
-            rust_crate: "acyclic-inference",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::inference::inference_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/inference.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::inference::inference_descriptor(),
-            routes: contract_routes(acyclic_sdk_contract_wire::INFERENCE.routes),
-        })?,
-        service_metadata(RustService {
-            family: "machines",
-            rust_crate: "acyclic-machines",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::machines::machines_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/machines.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::machines::machines_descriptor(),
-            routes: Vec::new(),
-        })?,
-        service_metadata(RustService {
-            family: "filesystem",
-            rust_crate: "acyclic-filesystem",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/filesystem.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::filesystem::filesystem_descriptor(),
-            routes: Vec::new(),
-        })?,
-        service_metadata(RustService {
-            family: "harness",
-            rust_crate: "acyclic-harness",
-            source_kind: "rust-model",
-            source_artifact: "acyclic_sdk_contract_wire::harness::harness_descriptor",
-            source_content: model_source_content(&[
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/lib.rs"
-                )),
-                include_bytes!(concat!(
-                    env!("CARGO_MANIFEST_DIR"),
-                    "/../sdk-contract-wire/src/harness.rs"
-                )),
-            ]),
-            descriptor: acyclic_sdk_contract_wire::harness::harness_descriptor(),
-            routes: Vec::new(),
-        })?,
-    ];
+                "/../sdk-contract-wire/src/workers.rs"
+            )),
+        ]),
+        "objects" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/objects.rs"
+            )),
+        ]),
+        "stream" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/stream.rs"
+            )),
+        ]),
+        "inference" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/inference.rs"
+            )),
+        ]),
+        "machines" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/machines.rs"
+            )),
+        ]),
+        "filesystem" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/filesystem.rs"
+            )),
+        ]),
+        "harness" => model_source_content(&[
+            lib,
+            registry,
+            include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../sdk-contract-wire/src/harness.rs"
+            )),
+        ]),
+        other => panic!("unknown Rust-owned family {other}"),
+    }
+}
+
+fn source_artifact_for_family(family: &str) -> &'static str {
+    match family {
+        "actors" => "acyclic_sdk_contract_wire::actors_descriptor",
+        "workers" => "acyclic_sdk_contract_wire::workers::workers_descriptor",
+        "objects" => "acyclic_sdk_contract_wire::objects::objects_descriptor",
+        "stream" => "acyclic_sdk_contract_wire::stream::stream_descriptor",
+        "inference" => "acyclic_sdk_contract_wire::inference::inference_descriptor",
+        "machines" => "acyclic_sdk_contract_wire::machines::machines_descriptor",
+        "filesystem" => "acyclic_sdk_contract_wire::filesystem::filesystem_descriptor",
+        "harness" => "acyclic_sdk_contract_wire::harness::harness_descriptor",
+        other => panic!("unknown Rust-owned family {other}"),
+    }
+}
+
+fn rust_crate_for_family(family: &str) -> &'static str {
+    match family {
+        "actors" => "acyclic-actors",
+        "workers" => "acyclic-workers",
+        "objects" => "acyclic-objects",
+        "stream" => "acyclic-stream",
+        "inference" => "acyclic-inference",
+        "machines" => "acyclic-machines",
+        "filesystem" => "acyclic-filesystem",
+        "harness" => "acyclic-harness",
+        other => panic!("unknown Rust-owned family {other}"),
+    }
+}
+
+fn rust_service(view: &'static acyclic_sdk_contract_wire::FamilyView) -> RustService<'static> {
+    RustService {
+        family: view.name,
+        rust_crate: rust_crate_for_family(view.name),
+        source_kind: "rust-model",
+        source_artifact: source_artifact_for_family(view.name),
+        source_content: source_content_for_family(view.name),
+        descriptor: view.model.descriptor(),
+        routes: contract_routes(view.routes()),
+    }
+}
+
+fn model() -> Result<Manifest, Error> {
+    let services = acyclic_sdk_contract_wire::FAMILY_VIEWS
+        .iter()
+        .map(|view| service_metadata(rust_service(view)))
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(Manifest {
         generator: "sdk-typescript".to_owned(),
         generator_version: env!("CARGO_PKG_VERSION").to_owned(),
@@ -901,12 +876,10 @@ mod tests {
             assert!(service.methods.is_empty());
             assert!(!service.http_projection);
         }
-        assert!(
-            manifest
-                .services
-                .iter()
-                .all(|service| { service.source_content_sha256 == service.source_model_sha256 })
-        );
+        assert!(manifest
+            .services
+            .iter()
+            .all(|service| { service.source_content_sha256 == service.source_model_sha256 }));
     }
 
     #[test]
