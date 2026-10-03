@@ -24,12 +24,15 @@ use serde::{Deserialize, Serialize};
 use std::future::Future;
 
 const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
+const BUDGET_EVENT_VERSION: u16 = 1;
 const MAX_RECORDS: u64 = 1_000_000;
 const MAX_ADMISSION_RETRIES: u8 = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BudgetRecord {
+    /// Explicitly fences records written before receipt-backed usage events.
+    version: u16,
     revision: u64,
     event_digest: [u8; 32],
     event: SwarmBudgetEvent,
@@ -578,6 +581,12 @@ async fn read_events<P: StreamProvider>(stream: &Stream<P>) -> Result<Vec<SwarmB
         for record in page {
             let envelope: BudgetRecord = serde_json::from_slice(&record.value)
                 .map_err(|error| Error::Storage(error.to_string()))?;
+            if envelope.version != BUDGET_EVENT_VERSION {
+                return Err(Error::Conflict(format!(
+                    "unsupported swarm budget event version {}",
+                    envelope.version
+                )));
+            }
             let prior = event_count(events.len())?;
             if envelope.revision != record.sequence.saturating_add(1)
                 || envelope.revision != prior.saturating_add(1)
@@ -609,6 +618,7 @@ async fn append_record<P: StreamProvider>(
 ) -> Result<()> {
     let digest = event_digest(event)?;
     let envelope = BudgetRecord {
+        version: BUDGET_EVENT_VERSION,
         revision: expected_tail.saturating_add(1),
         event_digest: digest,
         event: event.clone(),

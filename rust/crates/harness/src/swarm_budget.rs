@@ -349,8 +349,10 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
 
     /// Returns the next sequence expected from this issuer.
     #[must_use]
-    pub const fn next_sequence(&self) -> u64 {
-        self.sequence.saturating_add(1)
+    pub fn next_sequence(&self) -> Result<u64> {
+        self.sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))
     }
 }
 
@@ -1509,9 +1511,13 @@ fn validate_child_receipt(
     receipt: &SwarmUsageReceipt,
 ) -> Result<()> {
     receipt.validate()?;
+    let expected_sequence = reservation
+        .usage_sequence
+        .checked_add(1)
+        .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
     if receipt.operation_id != operation_id
         || receipt.usage != usage
-        || receipt.sequence != reservation.usage_sequence.saturating_add(1)
+        || receipt.sequence != expected_sequence
     {
         return Err(Error::Conflict(
             "swarm child usage receipt is stale or mismatched".into(),
@@ -1528,9 +1534,13 @@ fn update_root_usage(
 ) -> Result<SwarmUsage> {
     if let Some(receipt) = receipt {
         receipt.validate()?;
+        let expected_sequence = state
+            .root_usage_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm root usage receipt sequence exhausted".into()))?;
         if receipt.operation_id != state.session_id
             || receipt.usage != usage
-            || receipt.sequence != state.root_usage_sequence.saturating_add(1)
+            || receipt.sequence != expected_sequence
         {
             return Err(Error::Conflict(
                 "swarm root usage receipt is stale or mismatched".into(),
@@ -1776,7 +1786,7 @@ mod tests {
                 execution_time_ms: 120,
             }
         );
-        assert_eq!(issuer.next_sequence(), 3);
+        assert_eq!(issuer.next_sequence()?, 3);
         Ok(())
     }
 

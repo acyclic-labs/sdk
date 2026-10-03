@@ -1294,6 +1294,13 @@ impl Scheduler {
                 "terminal or cancelled swarm session cannot admit children".into(),
             ));
         }
+        if session_operation.phase != OperationPhase::Running
+            || session_operation.reservation.is_none()
+        {
+            return Err(Error::Conflict(
+                "swarm child admission requires a running root lease".into(),
+            ));
+        }
         let budget = if first {
             SwarmBudget::new(session_id, owner.clone(), limits)?
         } else {
@@ -1891,9 +1898,13 @@ impl Scheduler {
             .operations
             .get(&operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        let expected_sequence = operation
+            .swarm_usage_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
         if receipt.operation_id != operation_id
             || receipt.usage != usage
-            || receipt.sequence != operation.swarm_usage_sequence.saturating_add(1)
+            || receipt.sequence != expected_sequence
             || operation.swarm_dispatch_id.as_ref() != Some(&receipt.dispatch_id)
         {
             return Err(Error::Conflict(
@@ -1918,9 +1929,13 @@ impl Scheduler {
             .operations
             .get(&operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {operation_id}")))?;
+        let expected_sequence = operation
+            .swarm_usage_sequence
+            .checked_add(1)
+            .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
         if receipt.operation_id != operation_id
             || receipt.usage != usage
-            || receipt.sequence != operation.swarm_usage_sequence.saturating_add(1)
+            || receipt.sequence != expected_sequence
             || receipt.dispatch_id.as_str() != fence.reservation_id
         {
             return Err(Error::Conflict(
@@ -2467,6 +2482,19 @@ mod tests {
         };
         let mut scheduler = Scheduler::new();
         scheduler.apply(scheduler.declare(spec(session, Orchestration::Leaf)?)?)?;
+        let root_lease = Reservation {
+            id: "lease-root".into(),
+            placement: "worker".into(),
+            admitted: ResourceRequest::default(),
+        };
+        scheduler.apply(SchedulerEvent::Admitted {
+            operation_id: session,
+            reservation: root_lease.clone(),
+        })?;
+        scheduler.apply(SchedulerEvent::Started {
+            operation_id: session,
+            fence: LeaseFence::from(&root_lease),
+        })?;
         let mut child_spec = spec(child, Orchestration::Leaf)?;
         child_spec.resources = canonical_swarm_resources(SwarmResourceRequest {
             model_steps: 4,
