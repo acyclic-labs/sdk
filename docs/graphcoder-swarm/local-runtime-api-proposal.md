@@ -80,3 +80,18 @@ conversation and installs only the seed's exact `reference_capabilities`; the
 swarm registry must not treat an empty child bundle plus
 `InheritedModelContext` as a substitute. A recursive child therefore carries
 its authoritative aggregate and seed provenance into the next activation.
+
+The local production constructor consequently needs one shared local Stream
+client and Filesystem host for the registry, parent aggregate, and child
+aggregate. Per-session isolated providers cannot publish a child seed that the
+next descendant can reopen. Its activation sequence is:
+
+1. verify the parent's admitted completed boundary;
+2. prepare the exact `ForkRequest` with `FilesystemForkPreparer`;
+3. publish and bind it with `StreamAggregate::spawn_from_report`;
+4. create the child storage with `HarnessStorage::from_published_fork`;
+5. append the child task suffix and execute its fresh operation.
+
+The task registry retains the typed seed, parent aggregate identity, child
+issuer descriptor, and original request so recovery can repeat the same
+operation without widening workspace or reference scope.
