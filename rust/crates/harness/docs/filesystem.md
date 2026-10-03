@@ -84,7 +84,11 @@ merge-receipt construction. Each method creates a `ParentProjectController`
 against the caller's reducer and exact project volume, so direct-parent
 lineage, signed scope ownership, generation pinning, and provider CAS checks
 remain in Filesystem. Applications do not need a second model-facing schema
-for these operations.
+for these operations. When a publication will carry a merge notice, use the
+notice-bound child publication method; it validates the child and notice at the
+same boundary immediately before the provider join. When the caller also
+needs the authenticated receipt, the receipt variant consumes the exact child
+and notice values used for that publication.
 
 Use the `*_for_child` variants when a model-facing request carries a child
 conversation identity. They revalidate that the current parent reducer has a
