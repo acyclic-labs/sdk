@@ -615,7 +615,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
                 CheckoutMode::read_only_pinned(),
             )
             .await?;
-        let mut transaction = self.begin_transaction(idempotency_key).await?;
+        // Keep the transaction pinned to the generation that passed the
+        // caller's compare-and-swap check. A fresh `begin_transaction` here
+        // could silently move the operation onto a newer head if another
+        // writer interleaved after `head()`.
+        let mut transaction = self
+            .begin_transaction_if_current(&current, idempotency_key)
+            .await?;
         let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
@@ -786,7 +792,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             ),
             None => None,
         };
-        let mut transaction = self.begin_transaction(idempotency_key).await?;
+        // Keep the transaction pinned to the generation that passed the
+        // caller's compare-and-swap check. A fresh `begin_transaction` here
+        // could silently move the operation onto a newer head if another
+        // writer interleaved after `head()`.
+        let mut transaction = self
+            .begin_transaction_if_current(&current, idempotency_key)
+            .await?;
         let config = self.volume.config;
         let cancellation = crate::CancellationToken::new();
         let parsed = paths
@@ -890,6 +902,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
             return Ok(WorkspacePathApply::Conflicted(conflicts));
         }
         if operations.is_empty() {
+            let latest = self.head().await?;
+            if latest.id != current.id {
+                return Ok(WorkspacePathApply::Stale(latest));
+            }
             return Ok(WorkspacePathApply::NoChanges(current));
         }
         // Parents are restored before their children, and children removed

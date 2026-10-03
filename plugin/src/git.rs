@@ -409,6 +409,11 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 paths,
                 expected_workspace_tree,
             } => {
+                if paths.is_none() && matches!(tree, GitTreeRef::Lazy(_)) {
+                    return Err(Self::error(
+                        "Git exact workspace restore requires an exact same-workspace tree",
+                    ));
+                }
                 let current_id = self
                     .expected_workspace_generation(*expected_workspace_tree)
                     .await?;
@@ -530,6 +535,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
             }
             GitFilesystemAction::Join {
                 source_workspace,
+                source_tree,
                 target_tree,
                 rebase,
                 tracked_paths,
@@ -539,6 +545,16 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     .expected_workspace_generation(Some(*target_tree))
                     .await?;
                 let source = self.workspace(*source_workspace).await?;
+                if let Some(source_tree) = source_tree {
+                    let source_reference = self.exact(*source_tree, "git join source").await?;
+                    if source_reference.workspace_id != *source_workspace
+                        || source.head().await.map_err(display)?.id != source_reference.generation
+                    {
+                        return Err(Self::error(
+                            "Git join source changed while preparing the provider plan",
+                        ));
+                    }
+                }
                 let mut builder = source.join_into(&self.current);
                 if *rebase {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);

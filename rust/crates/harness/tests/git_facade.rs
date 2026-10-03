@@ -191,6 +191,12 @@ impl GitFilesystemExecutor for FaultExecutor {
             GitFilesystemAction::ForkBranch { .. } => GitFilesystemResult::Forked {
                 workspace_id: WorkspaceId::from_bytes([31; 16]),
             },
+            GitFilesystemAction::Join { .. } | GitFilesystemAction::ApplyCommit { .. } => {
+                GitFilesystemResult::Applied {
+                    tree: Some(live_tree(self.workspace_id)),
+                    tracked_paths: Some(BTreeSet::new()),
+                }
+            }
             _ => GitFilesystemResult::Applied {
                 tree: Some(live_tree(self.workspace_id)),
                 tracked_paths: None,

@@ -1134,6 +1134,9 @@ pub enum GitFilesystemAction {
         target_tree: GitTreeRef,
         /// Workspace owning the source branch.
         source_workspace: WorkspaceId,
+        /// Exact source working tree captured before the join began.
+        #[serde(default)]
+        source_tree: Option<GitTreeRef>,
         /// Whether to record rebase rather than merge ancestry.
         rebase: bool,
         /// Complete set of paths that may remain tracked after the join.
@@ -1603,7 +1606,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "Join",
-        r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
+        r#"{ readonly Join: { readonly target_tree: GitTreeRef; readonly source_workspace: WorkspaceIdentity; readonly source_tree: GitTreeRef | undefined; readonly rebase: boolean; readonly tracked_paths: readonly string[] } }"#,
     ),
     (
         "ApplyCommit",
@@ -2083,15 +2086,6 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
             .map_err(GitCompatRunError::Executor)?;
         validate_action_result::<S::Error>(&action, &result).map_err(GitCompatRunError::Compat)?;
-        if !matches!(
-            &result,
-            GitFilesystemResult::Applied {
-                tree: Some(tree),
-                ..
-            } if *tree == target_tree
-        ) {
-            return Err(GitCompatRunError::Compat(GitCompatError::InvalidState));
-        }
         self.abort_transition(pending.id).await?;
         Ok(GitCommandOutput::Filesystem(result))
     }
@@ -3130,6 +3124,7 @@ fn validate_pending_transition(
         (
             GitFilesystemAction::Join {
                 source_workspace,
+                source_tree,
                 rebase,
                 ..
             },
@@ -3142,6 +3137,13 @@ fn validate_pending_transition(
             source.workspace_id == *source_workspace
                 && source.head == *source_head
                 && rebase == mutation_rebase
+                && match (source.head, *source_tree) {
+                    (None, None) => true,
+                    (Some(head), Some(tree)) => state.commits.get(&head).is_some_and(|commit| {
+                        commit.tree == tree && tree.workspace_id() == *source_workspace
+                    }),
+                    _ => false,
+                }
         }),
         (
             GitFilesystemAction::ApplyCommit {
@@ -3399,6 +3401,12 @@ fn execute_command(
                 GitFilesystemAction::Join {
                     target_tree: workspace,
                     source_workspace: source.workspace_id,
+                    source_tree: source.head.and_then(|head| {
+                        state
+                            .commits
+                            .get(&head)
+                            .map(|commit| commit_generation_ref(commit, source.workspace_id))
+                    }),
                     rebase: false,
                     tracked_paths,
                 },
@@ -3424,6 +3432,12 @@ fn execute_command(
                 GitFilesystemAction::Join {
                     target_tree: workspace,
                     source_workspace: source.workspace_id,
+                    source_tree: source.head.and_then(|head| {
+                        state
+                            .commits
+                            .get(&head)
+                            .map(|commit| commit_generation_ref(commit, source.workspace_id))
+                    }),
                     rebase: true,
                     tracked_paths,
                 },
@@ -7043,6 +7057,7 @@ mod tests {
             GitFilesystemAction::Join {
                 target_tree: tree(1),
                 source_workspace: workspace(),
+                source_tree: Some(tree(2)),
                 rebase: false,
                 tracked_paths: BTreeSet::new(),
             },
@@ -7584,7 +7599,7 @@ mod tests {
             .expect("pending transition")
             .expect("durable pending transition");
         let executor = TestExecutor::returning(GitFilesystemResult::Applied {
-            tree: Some(tree(1)),
+            tree: Some(GitTreeRef::exact(child, generation(1))),
             tracked_paths: None,
         });
         assert!(
@@ -9367,7 +9382,13 @@ mod tests {
             Err(GitCompatError::TransitionPending(id)) if id == transition
         ));
         repository
-            .complete_transition(transition, None)
+            .complete_transition_result(
+                transition,
+                &GitFilesystemResult::Applied {
+                    tree: Some(tree(2)),
+                    tracked_paths: None,
+                },
+            )
             .await
             .expect("complete switch");
         let GitCommandOutput::Status(status) = repository

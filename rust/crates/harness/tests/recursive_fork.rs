@@ -1507,6 +1507,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             .is_err()
     );
     let mut siblings = Vec::new();
+    let stream_provider = ProviderRef::new("qualification", "stream", "2")?;
     for index in 1..=32_u8 {
         let child = volume(
             &provider,
@@ -1557,6 +1558,69 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             &IdempotencyKey::new(format!("wide-write-{index}"))?,
         )
         .await?;
+        // The parent reducer is the direct-child authority used by the
+        // workspace provider. Register each real fork before inspecting it;
+        // a project capability alone must not make an unpublished sibling
+        // appear mergeable.
+        let child_authority = Authority {
+            kind: AggregateKind::Conversation,
+            id: format!("wide-child-{index}"),
+        };
+        let child_agent = AgentId::from_bytes([index; 16]);
+        let child_private = volume(
+            &provider,
+            VolumeClass::AgentPrivate,
+            format!("wide-child-private-{index}"),
+            VolumeOwner::Agent(child_agent),
+        )?;
+        let child_private_head = host.create_volume(&child_private).await?;
+        let parent_revision = parent_reducer.revision();
+        let seed = ForkSeed {
+            operation_id: OperationId::from_bytes(identity(1_000 + u16::from(index))),
+            parent: parent_authority.clone(),
+            parent_revision,
+            child: child_authority,
+            child_agent,
+            resources: vec![
+                CapturedResource {
+                    source: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent_authority.stream_path()?.into_bytes(),
+                        Some(parent_revision.to_string()),
+                    )?),
+                    revision: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent_authority.stream_path()?.into_bytes(),
+                        Some(parent_revision.to_string()),
+                    )?),
+                },
+                CapturedResource {
+                    source: ResourceRevision::Project {
+                        volume: root.clone(),
+                        generation: root_head.generation.clone(),
+                    },
+                    revision: ResourceRevision::Project {
+                        volume: child.clone(),
+                        generation: fork.generation.clone(),
+                    },
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: child_private,
+            child_private_generation: child_private_head.generation,
+            inherited_context: Vec::new(),
+            inherited_through_sequence: 0,
+            shared_grants: Vec::new(),
+            reference_grants: Vec::new(),
+            attachment_manifests: Vec::new(),
+            boundary: None,
+        };
+        parent_reducer.apply(fork_command(
+            1_000 + u16::from(index),
+            parent_revision,
+            &parent_scope,
+            seed,
+        )?)?;
         siblings.push(child);
     }
     assert_eq!(
