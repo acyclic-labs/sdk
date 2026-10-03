@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.acyclic.dev/generation-targets.v1.json",
+  "title": "Acyclic SDK generation targets",
+  "description": "Evidence-backed language and non-language projections from the Rust-owned contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "catalogued_at", "source_of_truth", "qualification_gates", "targets"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "catalogued_at": { "type": "string", "format": "date" },
+    "source_of_truth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "descriptor", "wire_semantics"],
+      "properties": {
+        "contract": { "const": "rust" },
+        "descriptor": { "type": "string", "minLength": 1 },
+        "wire_semantics": { "type": "array", "items": { "type": "string", "minLength": 1 }, "minItems": 1 }
+      }
+    },
+    "qualification_gates": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "targets": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/target" },
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "language_family", "status", "remote", "embedded", "maturity", "generator", "package", "evidence", "outstanding"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "kind": { "enum": ["language", "platform", "tooling"] },
+        "language_family": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["qualified", "baseline-supported", "strong-candidate", "candidate", "experimental", "http-only", "adapter-only", "not-qualifiable"] },
+        "remote": { "$ref": "#/$defs/capability" },
+        "embedded": { "$ref": "#/$defs/embedded" },
+        "maturity": { "enum": ["stable", "beta", "experimental", "unknown"] },
+        "generator": { "$ref": "#/$defs/tool" },
+        "package": { "$ref": "#/$defs/package" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" }, "minItems": 1 },
+        "outstanding": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "streaming", "wire"],
+      "properties": {
+        "level": { "enum": ["full-grpc", "http-projection", "none"] },
+        "qualification": { "enum": ["unqualified", "prototype", "qualified", "blocked"] },
+        "streaming": { "type": "array", "items": { "enum": ["unary", "client", "server", "bidi"] }, "uniqueItems": true },
+        "wire": { "enum": ["protobuf-grpc", "json-http", "none"] },
+        "notes": { "type": "string" }
+      }
+    },
+    "embedded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level", "notes"],
+      "properties": {
+        "level": { "enum": ["rust-native", "ffi-or-wasm", "none", "unknown"] },
+        "qualification": { "enum": ["unqualified", "prototype", "qualified", "blocked"] },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "source", "license"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "format": "uri" },
+        "license": { "type": "string", "minLength": 1 },
+        "pin": { "type": "string" }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ecosystem", "artifact", "installable"],
+      "properties": {
+        "ecosystem": { "type": "string", "minLength": 1 },
+        "artifact": { "type": "string", "minLength": 1 },
+        "installable": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "claim"],
+      "properties": {
+        "url": { "type": "string", "format": "uri" },
+        "claim": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

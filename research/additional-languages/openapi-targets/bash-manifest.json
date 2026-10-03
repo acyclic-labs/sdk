@@ -1,0 +1,54 @@
+{
+  "receipt_version": 1,
+  "recorded_at": "2026-10-03",
+  "target": "bash",
+  "qualification": "Rust-owned Actors OpenAPI HTTP projection prototype",
+  "source": {
+    "contract": "Rust sdk-openapi-prototype Actors document",
+    "projection_sha256": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
+    "fixture_sha256": "34B9EA4DA9D269B4AF51ACFA133254446B09802CA4E21FEBC506734B995DF0BF",
+    "generator_script": "research/additional-languages/openapi-targets/qualify-bash.ps1"
+  },
+  "generator": {
+    "name": "OpenAPI Generator bash client",
+    "version": "7.25.0",
+    "source": "https://openapi-generator.tech/docs/generators/bash/",
+    "license": "Apache-2.0",
+    "jar_sha256": "41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE"
+  },
+  "runtime": {
+    "name": "Git for Windows Bash",
+    "version": "5.2.26",
+    "license": "GPL-3.0-or-later",
+    "scope": "qualification runtime only"
+  },
+  "artifact": {
+    "name": "acyclic-actors-bash-0.1.0.zip",
+    "sha256": "9BE2593626D34BBF352A72489FC7F869F82FD69D7BA422C05AE1A21076BEFD65",
+    "publication": "local-only ignored output",
+    "install": "unzip and invoke client.sh with Bash 4.3+ and curl"
+  },
+  "tests": {
+    "fixture": "research/additional-languages/openapi-targets/bash-fixture.py",
+    "status": "passed",
+    "operations": [
+      "invokeActor bearer header and bytes/base64 AQID",
+      "checkpointActor max uint64 represented as the textual value 18446744073709551615",
+      "invokeActor canonical unauthenticated 401 body"
+    ],
+    "ci_policy": "release-or-explicit-qualification only"
+  },
+  "license_scope": {
+    "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
+    "runtime": "Git for Windows Bash GPL-3.0-or-later, used only for the local qualification",
+    "transport": "curl license remains a separate runtime dependency"
+  },
+  "limits": [
+    "HTTP/JSON projection only; this does not qualify protobuf/gRPC or embedded SDK behavior",
+    "Actors projection has no streaming route, so streaming and cancellation remain unqualified",
+    "The generated Bash client does not implement SDK retry policy; the fixture does not claim automatic recovery",
+    "shellcheck is not installed on this host and remains an explicit follow-up"
+  ],
+  "publication": "local-only"
+}
+
