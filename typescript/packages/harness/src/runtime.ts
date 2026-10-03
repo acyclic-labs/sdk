@@ -141,6 +141,8 @@ function freezeSchema<Value>(value: Value): Value {
 }
 interface BoundModel { readonly identity: Model; readonly provider: ModelProvider }
 type BoundModelOptions = ModelProvider["modelOptions"];
+type ScopeModelBinding = Readonly<{ identity: Model; provider: ModelProvider }>;
+const boundExecutionScope = Symbol("bound execution scope");
 function captureModelOptions(provider: ModelProvider): BoundModelOptions {
   const modelOptions = provider.modelOptions;
   return modelOptions === undefined
@@ -539,12 +541,13 @@ interface PolicyApproval { readonly prompt: string; readonly policy: PolicyIdent
 type EffectivePolicyDecision = PolicyDecision | Readonly<{ kind: "require-approvals"; approvals: readonly PolicyApproval[] }>;
 
 export class ExecutionScope {
+  readonly modelBinding?: BoundModel;
   readonly grants: readonly string[];
   readonly #concurrency: number | undefined;
   readonly #maxSteps: number | undefined;
   readonly #deadlineEpochMs: number | undefined;
   constructor(
-    readonly modelBinding?: BoundModel,
+    modelBinding?: ScopeModelBinding,
     readonly contextBuilder?: ContextBuilder,
     readonly interactionHandler?: InteractionHandler,
     readonly policyProvider?: EffectivePolicy,
@@ -552,7 +555,15 @@ export class ExecutionScope {
     limits: EffectiveScope["limits"] = {},
     readonly grantsExplicit = false,
     readonly executionProvider?: HarnessExecutionProvider,
+    construction?: typeof boundExecutionScope,
   ) {
+    // The constructor is public for structural scope composition, so callers
+    // can supply a model binding without going through `.model()`. Normalize
+    // that path through the same detached option snapshot and identity freeze
+    // used by the builder before retaining it in a scope.
+    const pinnedModelBinding = modelBinding === undefined || construction === boundExecutionScope
+      ? modelBinding
+      : bindModel(modelBinding.identity, modelBinding.provider, captureModelOptions(modelBinding.provider));
     if (grants.some(value => !value.trim())) throw new TypeError("capability grant is empty");
     if (limits.concurrency !== undefined && (!Number.isSafeInteger(limits.concurrency) || limits.concurrency <= 0)) throw new RangeError("scope concurrency must be a positive safe integer");
     if (limits.maxSteps !== undefined && (!Number.isSafeInteger(limits.maxSteps) || limits.maxSteps <= 0)) throw new RangeError("scope maxSteps must be a positive safe integer");
@@ -561,6 +572,7 @@ export class ExecutionScope {
     this.#concurrency = limits.concurrency;
     this.#maxSteps = limits.maxSteps;
     this.#deadlineEpochMs = limits.deadline?.getTime();
+    this.modelBinding = pinnedModelBinding;
     Object.freeze(this);
   }
   get limits(): EffectiveScope["limits"] {
@@ -572,17 +584,16 @@ export class ExecutionScope {
   }
   static create(): ExecutionScope { return new ExecutionScope(); }
   model(identity: Model, provider: ModelProvider): ExecutionScope {
-    const modelOptions = captureModelOptions(provider);
-    return new ExecutionScope(bindModel(identity, provider, modelOptions), this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider);
+    return new ExecutionScope({ identity, provider }, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider);
   }
-  context(value: ContextBuilder): ExecutionScope { return new ExecutionScope(this.modelBinding, value, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
-  interactions(value: InteractionHandler): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, value, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
-  policy(value: Policy): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, value, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
-  execution(value: HarnessExecutionProvider): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, value); }
+  context(value: ContextBuilder): ExecutionScope { return new ExecutionScope(this.modelBinding, value, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider, boundExecutionScope); }
+  interactions(value: InteractionHandler): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, value, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider, boundExecutionScope); }
+  policy(value: Policy): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, value, this.grants, this.limits, this.grantsExplicit, this.executionProvider, boundExecutionScope); }
+  execution(value: HarnessExecutionProvider): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, value, boundExecutionScope); }
   /** Select a subset of the parent's grants; an empty selection removes all. */
-  onlyGrants(...values: readonly string[]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, [...new Set(values)], this.limits, true, this.executionProvider); }
+  onlyGrants(...values: readonly string[]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, [...new Set(values)], this.limits, true, this.executionProvider, boundExecutionScope); }
   grant(...values: readonly string[]): ExecutionScope { return this.onlyGrants(...this.grants, ...values); }
-  withLimits(value: EffectiveScope["limits"]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, value, this.grantsExplicit, this.executionProvider); }
+  withLimits(value: EffectiveScope["limits"]): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, value, this.grantsExplicit, this.executionProvider, boundExecutionScope); }
 }
 
 export const GroupPolicies = groupPolicies;
@@ -2331,6 +2342,7 @@ export class AgentHarness {
       limits,
       true,
       scope.executionProvider ?? this.scope.executionProvider,
+      boundExecutionScope,
     );
     const components: AgentHarnessComponents = { ...this.components };
     delete components.forkPreparer;

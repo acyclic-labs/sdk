@@ -2134,6 +2134,41 @@ describe("typed agent runtime", () => {
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
   });
 
+  test("direct ExecutionScope model bindings are pinned before scoped reuse", async () => {
+    const childIdentity = { provider: "direct", name: "model", revision: "7", options: { mode: "original" } };
+    const policyA = {
+      schema: { type: "object", additionalProperties: false, properties: { mode: { type: "string" } } },
+    } as const;
+    const policyB = {
+      schema: { type: "object", additionalProperties: false, properties: { mode: { type: "string" }, other: { type: "string" } } },
+    } as const;
+    const seen: unknown[] = [];
+    const manifests: string[] = [];
+    const provider: ModelProvider = {
+      modelOptions: policyA,
+      async *generate(request) {
+        seen.push(request.model);
+        manifests.push(request.canonical.manifestJson);
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    };
+    const direct = new ExecutionScope({ identity: childIdentity, provider });
+    childIdentity.options.mode = "mutated";
+    (provider as { modelOptions?: unknown }).modelOptions = policyB;
+
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build().scoped(direct);
+    await runtime.run("direct scope");
+
+    expect(seen[0]).toEqual({ provider: "direct", name: "model", revision: "7", options: { mode: "original" } });
+    expect(JSON.parse(manifests[0]!).model_option_policy.digest).toEqual(
+      Array.from(contracts.digestCanonicalJson(policyA.schema)),
+    );
+  });
+
   test("undeclared model options fail before provider dispatch", () => {
     let dispatched = 0;
     const provider = {
