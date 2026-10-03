@@ -214,13 +214,17 @@ impl<S> FilesystemGitFacade<S> {
             match pending.mutation {
                 GitPendingMutation::ForkBranch { .. } => self.require_fork()?,
                 GitPendingMutation::Join { .. } => self.require_capability("project:merge")?,
+                GitPendingMutation::SwitchWorkspace { .. } => self.require_fork()?,
                 _ => {}
             }
+            return self
+                .repository
+                .resume_pending(pending, executor)
+                .await
+                .map(Some)
+                .map_err(|error| map_run_error(&error));
         }
-        self.repository
-            .resume(executor)
-            .await
-            .map_err(|error| map_run_error(&error))
+        Ok(None)
     }
 
     /// Returns whether the exact scope can publish root changes.
@@ -597,6 +601,7 @@ impl<S> FilesystemGitFacade<S> {
             plan.source_generation(),
             plan.expected_target_generation(),
         )?;
+        validate_merge_receipt_inputs(child, notice)?;
         plan.apply(
             &request.scope,
             request.approval.operation_id,
@@ -658,6 +663,35 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore,
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        self.apply_root_writeback_plan(request, host, parent, plan, selections)
+            .await
+    }
+
+    /// Approved native writeback whose child and merge notice are validated at
+    /// the same boundary immediately before the provider join. Callers that
+    /// will publish a conversation receipt should use this method so an
+    /// invalid notice cannot follow a successful workspace mutation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "writeback keeps request, parent, child, plan, selections, and notice explicit"
+    )]
+    pub async fn apply_root_writeback_plan_for_child_with_notice<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+        notice: &ConversationMessage,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        validate_merge_receipt_inputs(child, notice)?;
         self.apply_root_writeback_plan(request, host, parent, plan, selections)
             .await
     }

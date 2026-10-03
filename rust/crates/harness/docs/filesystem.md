@@ -75,7 +75,7 @@ process or copies directories. Read commands require the exact project read
 capability. Mutating commands require project write, and merge/rebase
 transitions additionally require `project:merge`. `resume` rechecks the
 pending transition kind, requiring `fork:publish` for a retained branch fork
-and `project:merge` for a retained merge or rebase, then uses the same durable
+or workspace switch and `project:merge` for a retained merge or rebase, then uses the same durable
 transition and executor identity after restart.
 
 The same facade exposes typed project lifecycle methods for fork, merge-plan
@@ -89,6 +89,8 @@ notice-bound child publication method; it validates the child and notice at the
 same boundary immediately before the provider join. When the caller also
 needs the authenticated receipt, the receipt variant consumes the exact child
 and notice values used for that publication.
+Native root writeback has a corresponding notice-bound method for the same
+pre-join validation requirement.
 
 Use the `*_for_child` variants when a model-facing request carries a child
 conversation identity. They revalidate that the current parent reducer has a
