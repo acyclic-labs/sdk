@@ -776,6 +776,7 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             drop(journal);
             drop(plan);
             drop(parent_facade);
+            drop(child_aggregate);
             drop(aggregate);
             drop(stream);
             drop(host);
@@ -790,6 +791,15 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     .await
                     .map_err(|error| Error::Storage(error.to_string()))?,
             ));
+            child_aggregate = open_aggregate(
+                &stream,
+                child_authority.clone(),
+                &child_issuer,
+                host.clone(),
+                child_scope.clone(),
+                stream_provider.clone(),
+            )
+            .await?;
             aggregate = open_aggregate(
                 &stream,
                 authority.clone(),
