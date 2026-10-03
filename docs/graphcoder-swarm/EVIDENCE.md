@@ -150,3 +150,39 @@ assistant completion made it reach the intended omitted-selection assertion. One
 reported a 7.03-second timeout for the 1,030-attachment fixture under its 5-second default. Its explicit
 15-second fixture budget retains all semantic assertions. A subsequent full run passed (2.09 seconds
 for that case). Final reliability and packaged qualification remain pending. See checkpoint-input-omission.json.
+
+## Admitted model fork boundary checkpoint
+
+HarnessStorage now verifies the exact persisted batch publication admission, original
+request, completed exchange, and authoritative conversation before entering the existing
+typed workspace fork engine. Identity, request-reference, and publisher substitutions
+are rejected before workspace preparation. The two native real-filesystem boundary
+scenarios pass. This remains a checkpoint: production recursive activation, persisted
+child suffix/replay consistency, and exact inherited content grants remain unqualified.
+
+Seven persistent implementation owners and two independent reviewers now cover the
+slices. The installed terminal PTY demo passed in its worker branch, but its fake
+transport does not qualify the production swarm. The qualification owner's installed
+Harness baseline passed npm/WASM checks; its Rust package phase failed and provider
+conformance did not run. Worker changes remain separate until reviewed integration.
+
+## Published fork exact-grant checkpoint
+
+HarnessStorage::from_published_fork verifies the existing typed published parent seed and
+child binding, then signs only the seed's immutable read capabilities in the child's scope.
+Its journal, content reader, and builder share those exact grants. Ordinary provider
+composition remains owner-private. Limits and provider mismatches are checked before binding.
+The inherited-conversation namespace permits exact reads; journal internals still require
+owner volume authority.
+
+The native two-child boundary suite passed 2/2 (11.78 seconds) after the final source change,
+and strict library/test lint passed. Assertions cover inherited primary bytes, unchanged
+historical reads after parent mutation, denied later parent files, forged seed rejection,
+reopened child grants, attached-reader inherited-prefix access, denied missing grants,
+denied private scratch, and denied internal request files. Helpers separate these security
+checks from publication setup. A refactor initially lost iteration borrows and was repaired;
+strict complexity checks prompted the helper separation.
+
+This is not full recursive qualification. Ancestor grant propagation at deeper levels,
+declared suffix/authoritative replay consistency, real swarm integration, fault injection,
+WASM/package/platform lanes, and production terminal qualification remain required.

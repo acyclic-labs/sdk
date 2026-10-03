@@ -353,8 +353,14 @@ where
         // the owner's internal namespace. They are not public exact-file
         // references, but the owning scope still needs to resolve them while
         // replaying a model context. A whole-volume grant is required here so
-        // delegated exact-file scopes cannot use this escape hatch.
-        if reference.path().starts_with(".system/") {
+        // delegated exact-file scopes cannot use this escape hatch. Published
+        // inherited conversation files are explicitly public pinned references
+        // and use their exact grants, including for attached readers.
+        if reference.path().starts_with(".system/")
+            && !reference
+                .path()
+                .starts_with(".system/inherited-conversation/")
+        {
             ContentGrant::verify(
                 &self.verifier,
                 &self.scope,
