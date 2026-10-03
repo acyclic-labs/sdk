@@ -405,6 +405,11 @@ impl CommunicationExecutor {
                 })
             }
             CommunicationToolKind::Wait => {
+                if self.waits.is_none() {
+                    return Err(Error::Unsupported(
+                        "wait tools require an owner-retained durable wait store".into(),
+                    ));
+                }
                 let input: WaitToolInput = serde_json::from_value(invocation.arguments)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 let timeout_epoch_ms = wait_timeout(&input);

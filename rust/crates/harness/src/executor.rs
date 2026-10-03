@@ -764,7 +764,7 @@ impl StockExecutor {
         let mut rejections = Vec::new();
         for record in &records {
             let ExecutionEvent::ToolAdmissionRejected {
-                step: rejected_step,
+                step: _,
                 reason: ToolRejectionKind::InvalidArguments,
                 feedback: Some(feedback),
                 ..
@@ -772,9 +772,7 @@ impl StockExecutor {
             else {
                 continue;
             };
-            if *rejected_step == step {
-                rejections.push(load_json(journal, feedback).await?);
-            }
+            rejections.push(load_json(journal, feedback).await?);
         }
         let boundary = crate::model_input::CompletedModelBoundary::capture_with_rejections(
             request,

@@ -363,6 +363,17 @@ impl DurableToolRunner {
                 ));
             }
             validate_value(&definition.output_schema, &result.value, "tool output")?;
+            let recomputed = tool
+                .projection
+                .project(&invocation, &result)
+                .map_err(|_| Error::Conflict("durable tool projection changed".into()))?;
+            if crate::contract::canonical_json_bytes(&recomputed)?
+                != crate::contract::canonical_json_bytes(&projection)?
+            {
+                return Err(Error::Conflict(
+                    "durable tool projection differs from the pinned implementation".into(),
+                ));
+            }
             validate_value(
                 &definition.model_output_schema,
                 &projection,

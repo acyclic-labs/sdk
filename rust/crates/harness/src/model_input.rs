@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Canonical model-input encoding version.
-pub const MODEL_INPUT_VERSION: u32 = 1;
+pub const MODEL_INPUT_VERSION: u32 = 2;
 
 /// An ordered message's exact content identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -157,8 +157,12 @@ impl FrozenModelPrefix {
     }
     /// Checks persisted integrity and the actual dispatch input.
     pub fn verify(&self, input: &PreparedModelInput) -> Result<()> {
-        if self.version != MODEL_INPUT_VERSION
-            || self.message_bytes.is_empty()
+        if self.version != MODEL_INPUT_VERSION {
+            return Err(Error::Conflict(
+                "frozen model prefix version is unsupported; re-admission is required".into(),
+            ));
+        }
+        if self.message_bytes.is_empty()
             || self.digest != prefix_digest(self.binding_digest, &self.message_bytes)?
         {
             return Err(Error::Invalid(
@@ -415,7 +419,14 @@ fn validate_rejection_evidence(
             if crate::tool::validate_value(&definition.input_schema, arguments, "tool input")
                 .is_err()
             {
-                malformed.insert(call_id.as_str(), (name.as_str(), arguments));
+                if malformed
+                    .insert(call_id.as_str(), (name.as_str(), arguments))
+                    .is_some()
+                {
+                    return Err(Error::Conflict(
+                        "rejection evidence contains a duplicate malformed call identity".into(),
+                    ));
+                }
             }
         }
     }
@@ -470,12 +481,12 @@ fn validate_rejection_evidence(
             observed.push(feedback);
         }
     }
-    if observed
-        .iter()
-        .any(|feedback| !rejections.contains(feedback))
+    if observed.len() != malformed.len()
+        || rejections.len() != malformed.len()
+        || observed != rejections
     {
         return Err(Error::Conflict(
-            "rejection feedback lacks durable admission evidence".into(),
+            "rejection feedback does not exactly match the pinned malformed calls".into(),
         ));
     }
     Ok(())

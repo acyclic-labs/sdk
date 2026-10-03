@@ -58,6 +58,7 @@ impl ToolRejectionFeedback {
         }
         Self::validate_identity(&self.call_id, &self.name)?;
         Ok(serde_json::json!({
+            "kind": "tool_rejection",
             "error": error,
             "rejection": self,
         }))
@@ -68,10 +69,10 @@ impl ToolRejectionFeedback {
         let Some(object) = value.as_object() else {
             return Ok(None);
         };
-        if !object.contains_key("rejection") {
+        if object.get("kind") != Some(&Value::String("tool_rejection".into())) {
             return Ok(None);
         }
-        if object.len() != 2 || !object.contains_key("error") || !object.contains_key("rejection") {
+        if object.len() != 3 || !object.contains_key("error") || !object.contains_key("rejection") {
             return Err(Error::Invalid(
                 "tool rejection feedback envelope has unexpected fields".into(),
             ));
@@ -579,9 +580,16 @@ mod tests {
             Err(Error::Invalid(_))
         ));
         assert!(matches!(
-            ToolRejectionFeedback::from_model_value(&json!({"rejection": value["rejection"]})),
+            ToolRejectionFeedback::from_model_value(&json!({
+                "kind": "tool_rejection",
+                "rejection": value["rejection"]
+            })),
             Err(Error::Invalid(_))
         ));
+        assert_eq!(
+            ToolRejectionFeedback::from_model_value(&json!({"rejection": "business-value"}))?,
+            None
+        );
         assert!(matches!(
             feedback.to_model_value(&"x".repeat(2_049)),
             Err(Error::Invalid(_))

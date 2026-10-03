@@ -2237,13 +2237,19 @@ export class AgentHarness {
     if (registered.machine) throw new Error("resumable tool requires callDurable and its owner host");
     if (registered.definition.handler) {
       const value = await registered.definition.handler(new ToolContext(this, signal, callId, taskId, false, invocation.operationId), parsedInput);
-      this.contracts.validateToolProjection(registered.definition, { value });
-      return publishOutput(value);
+      const published = publishOutput(value);
+      this.contracts.validateToolProjection(registered.definition, {
+        value: registered.definition.projectOutput?.(published) ?? published,
+      });
+      return published;
     }
     if (!registered.executor) throw new Error(`tool has no executable binding: ${tool.definition.name}`);
     const result = await registered.executor.execute(invocation);
-    this.contracts.validateToolProjection(registered.definition, result);
-    return publishOutput(result.value);
+    const published = publishOutput(result.value);
+    this.contracts.validateToolProjection(registered.definition, {
+      value: registered.definition.projectOutput?.(published) ?? published,
+    });
+    return published;
   }
   async callDurable<Input, Output>(operationId: OperationId, tool: ToolRef<Input, Output>, input: Input,
     taskId: RuntimeTaskId, signal = new AbortController().signal): Promise<Outcome<Output, OperationId>> {
@@ -2255,8 +2261,11 @@ export class AgentHarness {
     // exact-action approval through its journal; a caller-side decision grants nothing.
     const outcome = await this.state.executeTool(taskId, operationId, tool, parsedInput, this);
     if (outcome.kind !== "succeeded") return outcome;
-    this.contracts.validateToolProjection(tool.definition, { value: outcome.value });
-    return { kind: "succeeded", value: publishOutput(outcome.value) };
+    const published = publishOutput(outcome.value);
+    this.contracts.validateToolProjection(tool.definition, {
+      value: this.#projectToolOutput(tool, published),
+    });
+    return { kind: "succeeded", value: published };
   }
   canReconcileSelectedTurn(): boolean { return this.host?.executeSelectedTurn !== undefined; }
   async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {
@@ -2370,8 +2379,11 @@ export class AgentHarness {
             domain: "harness:tool-call:v2", task_id: context.taskId, step,
             call_id: call.callId,
           }), "operation");
-          const value = await context.call(this.tool(call.name), call.arguments, toolOperationId, call.callId);
-          const projection = await boundedToolValue(value, this.limits.render_bytes, this.contracts);
+          const tool = this.tool(call.name);
+          const value = await context.call(tool, call.arguments, toolOperationId, call.callId);
+          const projected = this.#projectToolOutput(tool, value);
+          const projection = await boundedToolValue(projected, this.limits.render_bytes, this.contracts);
+          this.contracts.validateToolProjection(tool.definition, { value: projection });
           receipts.push({ kind: "tool", step, callId: call.callId, name: call.name, arguments: call.arguments, value, projection });
           messages.push({ role: "assistant", content: call }, { role: "tool", content: { kind: "tool_result", callId: call.callId, name: call.name, value: projection } });
         }
@@ -2457,6 +2469,13 @@ export class AgentHarness {
       const { revision, description, inputSchema, outputSchema, modelOutputSchema } = tool.definition;
       return { name, revision, description, inputSchema, outputSchema, modelOutputSchema: modelOutputSchema ?? outputSchema };
     });
+  }
+  #projectToolOutput<Input, Output>(tool: ToolRef<Input, Output>, value: Output): unknown {
+    const erased = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
+    if (erased === undefined) throw new Error("tool definition is not registered or no longer active");
+    const registered = restoreRegisteredTool<Input, Output>(erased);
+    if (publicToolHandle(registered) !== tool) throw new Error("tool definition is not registered or no longer active");
+    return registered.definition.projectOutput?.(value) ?? value;
   }
 }
 export class TaskRunError extends Error { constructor(readonly taskId: RuntimeTaskId, readonly outcome: Exclude<Outcome<unknown>, { kind: "succeeded" }>) { super(outcome.kind === "failed" ? outcome.error.message : `task ${outcome.kind}`); } }

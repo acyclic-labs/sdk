@@ -52,6 +52,8 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
   readonly outputSchema: OutputSchema;
   /** JSON Schema for the model-visible value after projection. Defaults to outputSchema. */
   readonly modelOutputSchema?: OutputSchema;
+  /** Converts the typed owner result into the model-visible projection. */
+  readonly projectOutput?: (value: Output) => unknown;
   /** Converts only schema-admitted JSON into the handler's input type. */
   readonly parseInput: (value: unknown) => Input;
   /** Verifies the executor's schema-admitted output before typed publication. */

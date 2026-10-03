@@ -1838,6 +1838,48 @@ describe("typed agent runtime", () => {
     expect(await (await runtime.attach(output.taskId)).result()).toMatchObject({ kind: "succeeded", value: { text: "done" } });
   });
 
+  test("projects raw tool output before model capture and replay", async () => {
+    type Raw = { readonly private: string; readonly public: string };
+    let modelStep = 0;
+    const observed: ModelMessage[] = [];
+    const tool = defineTool<null, Raw>({
+      name: "private-result", revision: "1", description: "private result",
+      inputSchema: { type: "null" },
+      outputSchema: {
+        type: "object", required: ["private", "public"],
+        properties: { private: { type: "string" }, public: { type: "string" } }, additionalProperties: false,
+      },
+      modelOutputSchema: {
+        type: "object", required: ["public"],
+        properties: { public: { type: "string" } }, additionalProperties: false,
+      },
+      parseInput: parseNull,
+      parseOutput: value => value as Raw,
+      projectOutput: value => ({ public: value.public }),
+    }, async () => ({ private: "secret", public: "shown" }));
+    const runtime = Harness.builder(contracts).tool(tool).grant("tool:call:private-result")
+      .model(testModel, {
+        async *generate(request) {
+          observed.push(...request.messages);
+          if (modelStep++ === 0) {
+            yield { kind: "tool_call" as const, callId: "private-call", name: "private-result", arguments: null };
+            yield { kind: "completed" as const, metadata: {} };
+          } else {
+            yield { kind: "content" as const, delta: "done" };
+            yield { kind: "completed" as const, metadata: {} };
+          }
+        },
+        async reconcile() { return undefined; },
+      }).build();
+    const output = await runtime.run("project");
+    expect(output.text).toBe("done");
+    expect(output.receipts?.find(receipt => receipt.kind === "tool")).toMatchObject({
+      projection: { public: "shown" }, value: { private: "secret", public: "shown" },
+    });
+    expect(observed[3]?.content).toEqual({ kind: "tool_result", callId: "private-call", name: "private-result", value: { public: "shown" } });
+    expect(JSON.stringify(observed[3]?.content)).not.toContain("secret");
+  });
+
   test("typed run input carries attachment refs into the model context", async () => {
     let observed: readonly ModelMessage[] = [];
     const file = {

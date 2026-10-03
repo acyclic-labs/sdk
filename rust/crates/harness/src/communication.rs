@@ -395,6 +395,50 @@ pub enum WaitCompletion {
     TimedOut,
 }
 
+impl WaitRequest {
+    /// Validates that a retained terminal result belongs to this exact wait
+    /// declaration.  Replay must not reinterpret a completion from another
+    /// target, cursor, or page shape merely because it has the same operation
+    /// identity.
+    pub fn validate_completion(&self, completion: &WaitCompletion) -> Result<()> {
+        match (&self.target, completion) {
+            (WaitTarget::Tasks { task_ids }, WaitCompletion::Tasks { outcomes }) => {
+                if outcomes.len() != task_ids.len()
+                    || outcomes
+                        .iter()
+                        .zip(task_ids)
+                        .any(|((actual, _), expected)| actual != expected)
+                {
+                    return Err(Error::Conflict(
+                        "wait task completion does not match its requested task order".into(),
+                    ));
+                }
+            }
+            (
+                WaitTarget::Messages {
+                    task_id,
+                    after,
+                    limit,
+                },
+                WaitCompletion::Messages { items },
+            ) => {
+                validate_inbox_page(*task_id, *after, *limit, items)?;
+            }
+            (WaitTarget::Deadline { .. }, WaitCompletion::Deadline)
+            | (_, WaitCompletion::Cancelled)
+            | (_, WaitCompletion::TimedOut) => {}
+            (WaitTarget::Tasks { .. }, _)
+            | (WaitTarget::Messages { .. }, _)
+            | (WaitTarget::Deadline { .. }, _) => {
+                return Err(Error::Conflict(
+                    "wait completion kind does not match its requested target".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Host-backed communication and wait adapter.
 ///
 /// This adapter only composes the existing durable host boundary.  It does
@@ -573,6 +617,7 @@ impl<P: StreamProvider> StreamWaitStore<P> {
                             "wait journal has duplicate completion".into(),
                         ));
                     }
+                    request.validate_completion(completion)?;
                     current.completion = Some(completion.clone());
                 }
             }
@@ -650,6 +695,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
     ) -> BoxFuture<'a, Result<WaitCompletion>> {
         Box::pin(async move {
             request.validate(None)?;
+            request.validate_completion(&completion)?;
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
             if let Some(retained) = Self::retained(&events, &request)? {
@@ -776,6 +822,7 @@ impl DurableCommunication {
         self.authorize_wait(&request).await?;
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {
+                request.validate_completion(&completion)?;
                 return Ok(completion);
             }
         }
@@ -834,7 +881,12 @@ impl DurableCommunication {
         completion: WaitCompletion,
     ) -> Result<WaitCompletion> {
         match &self.waits {
-            Some(waits) => waits.complete(request, completion).await,
+            Some(waits) => {
+                request.validate_completion(&completion)?;
+                let retained = waits.complete(request.clone(), completion).await?;
+                request.validate_completion(&retained)?;
+                Ok(retained)
+            }
             None => Ok(completion),
         }
     }
@@ -1258,6 +1310,47 @@ mod tests {
             task_ids: (1..=MAX_WAIT_TASKS as u8 + 1).map(task).collect(),
         };
         assert!(oversized.validate(None).is_err());
+    }
+
+    #[test]
+    fn retained_wait_completion_is_bound_to_target_shape() -> Result<()> {
+        let request = WaitRequest {
+            operation_id: operation(22),
+            waiter: task(1),
+            target: WaitTarget::Tasks {
+                task_ids: vec![task(2), task(3)],
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        let reversed = WaitCompletion::Tasks {
+            outcomes: vec![
+                (task(3), Outcome::Succeeded(json!(3))),
+                (task(2), Outcome::Succeeded(json!(2))),
+            ],
+        };
+        assert!(matches!(
+            request.validate_completion(&reversed),
+            Err(Error::Conflict(message)) if message.contains("task order")
+        ));
+        assert!(matches!(
+            request.validate_completion(&WaitCompletion::Deadline),
+            Err(Error::Conflict(message)) if message.contains("kind")
+        ));
+        let inbox = WaitRequest {
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 2,
+                limit: 1,
+            },
+            ..request
+        };
+        assert!(inbox
+            .validate_completion(&WaitCompletion::Messages {
+                items: vec![item(1, 23)?],
+            })
+            .is_err());
+        Ok(())
     }
 
     #[test]
