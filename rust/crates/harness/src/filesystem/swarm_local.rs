@@ -2038,9 +2038,9 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
-    /// Live provider source handle. Retaining it keeps native watcher
-    /// continuity attached for the lifetime of this swarm.
-    external_project: Option<HostCheckout<LocalAuthorityBackend, LocalObjectBackend>>,
+    /// Lazily attached provider source handle. Retaining it after first use
+    /// keeps native watcher continuity for the lifetime of this swarm.
+    external_project: Mutex<Option<HostCheckout<LocalAuthorityBackend, LocalObjectBackend>>>,
 }
 
 impl PersistentLocalSwarm {
@@ -2107,27 +2107,6 @@ impl PersistentLocalSwarm {
                 let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
             };
-        let attached_project = if let Some(external) = bindings.external_project.as_ref() {
-            let project = config.project.as_ref().ok_or_else(|| {
-                Error::Invalid("external checkout requires a project binding".into())
-            })?;
-            if project != &external.project {
-                return Err(Error::Conflict(
-                    "external checkout project differs from swarm project".into(),
-                ));
-            }
-            Some(
-                filesystem_host
-                    .attach_directory(
-                        project.storage_name()?,
-                        &external.path,
-                        external.options.clone(),
-                    )
-                    .await?,
-            )
-        } else {
-            None
-        };
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -2226,7 +2205,7 @@ impl PersistentLocalSwarm {
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
-            external_project: attached_project,
+            external_project: Mutex::new(None),
         })
     }
 
@@ -2433,10 +2412,42 @@ impl PersistentLocalSwarm {
     /// this swarm. Callers persist this binding with an approval record and
     /// compare it again immediately before provider publication.
     pub async fn external_checkout_binding(&self) -> Result<Option<acyclic_fs::SourceBinding>> {
-        match &self.external_project {
-            Some(checkout) => Ok(Some(checkout.binding().await)),
-            None => Ok(None),
+        let checkout = self.external_project.lock().await;
+        Ok(match checkout.as_ref() {
+            Some(checkout) => Some(checkout.binding().await),
+            None => None,
+        })
+    }
+
+    /// Attaches the configured checkout only when a session operation needs
+    /// the project source. Session listing and descriptor recovery stay
+    /// metadata-only and never touch the caller's checkout.
+    async fn ensure_external_checkout(&self) -> Result<()> {
+        let mut checkout = self.external_project.lock().await;
+        if checkout.is_some() {
+            return Ok(());
         }
+        let Some(external) = self.bindings.external_project.as_ref() else {
+            return Ok(());
+        };
+        let project = self.config.project.as_ref().ok_or_else(|| {
+            Error::Invalid("external checkout requires a project binding".into())
+        })?;
+        if project != &external.project {
+            return Err(Error::Conflict(
+                "external checkout project differs from swarm project".into(),
+            ));
+        }
+        *checkout = Some(
+            self.filesystem_host
+                .attach_directory(
+                    project.storage_name()?,
+                    &external.path,
+                    external.options.clone(),
+                )
+                .await?,
+        );
+        Ok(())
     }
 
     /// Returns the host-only signer bound to one task's durable interaction
@@ -3087,6 +3098,7 @@ impl PersistentLocalSwarm {
         operation: OperationId,
         prompt: &str,
     ) -> Result<TurnOutput> {
+        self.ensure_external_checkout().await?;
         let gate = self.task_gate(task).await;
         let _completion_guard = gate.lock().await;
         self.refresh_registry_state().await?;

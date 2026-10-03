@@ -26,9 +26,10 @@ use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    fs,
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc,
     },
 };
@@ -291,10 +292,103 @@ impl WireResponse {
     }
 }
 
+#[derive(Default)]
+struct LazyCounters {
+    worker_starts: AtomicU64,
+    workspace_reads: AtomicU64,
+    model_dispatches: AtomicU64,
+}
+
+struct LazyObservation {
+    path: Option<PathBuf>,
+    executable: Option<PathBuf>,
+    active: AtomicBool,
+    counters: LazyCounters,
+}
+
+impl LazyObservation {
+    fn from_environment() -> Result<Self, HarnessError> {
+        let path = std::env::var_os("GRAPHCODER_LAZY_OBSERVATION_PATH").map(PathBuf::from);
+        if path.is_none() && std::env::var("GRAPHCODER_REQUIRE_LAZY_COUNTERS").ok().as_deref() == Some("1") {
+            return Err(HarnessError::Invalid(
+                "GRAPHCODER_LAZY_OBSERVATION_PATH is required when lazy counters are required".into(),
+            ));
+        }
+        let executable = path
+            .as_ref()
+            .map(|_| std::env::current_exe())
+            .transpose()
+            .map_err(|error| HarnessError::Storage(error.to_string()))?;
+        Ok(Self {
+            path,
+            executable,
+            active: AtomicBool::new(false),
+            counters: LazyCounters::default(),
+        })
+    }
+
+    fn begin(&self) {
+        if self.path.is_none() {
+            return;
+        }
+        self.counters.worker_starts.store(0, Ordering::SeqCst);
+        self.counters.workspace_reads.store(0, Ordering::SeqCst);
+        self.counters.model_dispatches.store(0, Ordering::SeqCst);
+        self.active.store(true, Ordering::SeqCst);
+    }
+
+    fn record_worker_start(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.worker_starts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn record_workspace_read(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.workspace_reads.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn record_model_dispatch(&self) {
+        if self.active.load(Ordering::SeqCst) {
+            self.counters.model_dispatches.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    fn finish(&self, request_id: &str, method: &str) -> std::io::Result<()> {
+        self.active.store(false, Ordering::SeqCst);
+        let Some(path) = self.path.as_ref() else {
+            return Ok(());
+        };
+        let executable = self.executable.as_ref().ok_or_else(|| {
+            std::io::Error::other("lazy observation executable is not configured")
+        })?;
+        let value = json!({
+            "schema": "graphcoder.lazy-observation.v1",
+            "runtime": {
+                "pid": std::process::id(),
+                "executable": executable,
+            },
+            "request": {
+                "request_id": request_id,
+                "method": method,
+            },
+            "during_list_sessions": {
+                "worker_starts": self.counters.worker_starts.load(Ordering::SeqCst),
+                "workspace_reads": self.counters.workspace_reads.load(Ordering::SeqCst),
+                "model_dispatches": self.counters.model_dispatches.load(Ordering::SeqCst),
+            },
+        });
+        let bytes = serde_json::to_vec(&value).map_err(std::io::Error::other)?;
+        fs::write(path, bytes)
+    }
+}
+
 struct Runtime {
     swarm: Arc<PersistentLocalSwarm>,
     model_fixture: String,
     operator_token: Option<String>,
+    lazy_observation: LazyObservation,
 }
 
 impl Runtime {
@@ -367,10 +461,12 @@ impl Runtime {
                 .await?
             }
         };
+        let lazy_observation = LazyObservation::from_environment()?;
         Ok(Self {
             swarm,
             model_fixture: fixture,
             operator_token: args.operator_token.clone(),
+            lazy_observation,
         })
     }
 
@@ -383,7 +479,7 @@ impl Runtime {
             );
         }
         let result = match request.method.as_str() {
-            "list_sessions" => self.list_sessions(&request.params).await,
+            "list_sessions" => self.list_sessions(&request.request_id, &request.params).await,
             "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.resume_session(&request.params).await,
@@ -411,7 +507,28 @@ impl Runtime {
         }
     }
 
-    async fn list_sessions(&self, params: &Value) -> Result<Value, DispatchError> {
+    async fn list_sessions(
+        &self,
+        request_id: &str,
+        params: &Value,
+    ) -> Result<Value, DispatchError> {
+        self.lazy_observation.begin();
+        let result = self.list_sessions_page(params).await;
+        let observation = self
+            .lazy_observation
+            .finish(request_id, "list_sessions")
+            .map_err(|error| DispatchError {
+                code: "transport",
+                message: format!("lazy observation could not be recorded: {error}"),
+            });
+        match (result, observation) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), _) => Err(error),
+            (_, Err(error)) => Err(error),
+        }
+    }
+
+    async fn list_sessions_page(&self, params: &Value) -> Result<Value, DispatchError> {
         let (after, limit) = page_bounds(params)?;
         let mut summaries = self
             .swarm
@@ -455,6 +572,8 @@ impl Runtime {
         let params = object(params)?;
         let (prompt, operation_id) = self.run_inputs(params)?;
         let operation = operation_for(operation_id);
+        self.lazy_observation.record_worker_start();
+        self.lazy_observation.record_model_dispatch();
         let output = self
             .swarm
             .run_root(operation, prompt)
@@ -491,6 +610,8 @@ impl Runtime {
             return self.snapshot_from_session(session).await;
         }
         let (prompt, operation_id) = self.run_inputs(params)?;
+        self.lazy_observation.record_worker_start();
+        self.lazy_observation.record_model_dispatch();
         let output = self
             .swarm
             .run(task, operation_for(operation_id), prompt)
@@ -771,6 +892,7 @@ impl Runtime {
         &self,
         session: acyclic_harness::filesystem::LocalSwarmSession,
     ) -> Result<Value, DispatchError> {
+        self.lazy_observation.record_workspace_read();
         let sessions = self.swarm.sessions().await;
         let agents = sessions
             .iter()
