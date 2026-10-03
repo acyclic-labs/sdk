@@ -24,6 +24,10 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
+export interface RustOwnedTransportOption { readonly kind: "grpc" | "grpc-web" | "http"; readonly streaming: boolean; readonly bearerAuth: boolean; }
+export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
+
+export const MACHINES_REMOTE_POLICY: RustOwnedRemotePolicy = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: true }], browser: [] } };
 export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
 
 export const MACHINES_OPERATIONS = {
@@ -78,6 +82,8 @@ export const MACHINES_GRPC_METHODS = {
   WatchOperation: { rpcName: "WatchOperation", rpc: "acyclic.machines.v1.MachinesService/WatchOperation", requestType: "acyclic.machines.v1.OperationRequest", responseType: "acyclic.machines.v1.OperationState", clientStreaming: false, serverStreaming: true, requestFields: [{ name: "protocol", jsonName: "protocol", number: 1, wireType: "message", repeated: false, optional: false, oneof: undefined, proto3Optional: false }, { name: "operation", jsonName: "operation", number: 2, wireType: "message", repeated: false, optional: false, oneof: undefined, proto3Optional: false }], responseFields: [{ name: "operation", jsonName: "operation", number: 1, wireType: "message", repeated: false, optional: false, oneof: undefined, proto3Optional: false }, { name: "status", jsonName: "status", number: 2, wireType: "enum", repeated: false, optional: false, oneof: undefined, proto3Optional: false }] }
 } as const satisfies Record<string, RustOwnedGrpcMethodMetadata>;
 
+export const MACHINES_ROUTES = MACHINES_METHODS;
+
 export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, request: unknown): string {
   let path = method.path;
   for (const parameter of method.pathParameters) {
@@ -90,7 +96,7 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
-export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+export const RUST_OWNED_CREDENTIAL_POLICY = "mtls-files" as const;
 
 export function validateRustOwnedCredentialPolicy(token: string): void {
   if (RUST_OWNED_CREDENTIAL_POLICY === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");

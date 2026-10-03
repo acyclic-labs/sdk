@@ -521,6 +521,16 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
                 behavior_binding: "generated-client".to_owned(),
                 transport: inference_transport_policy_metadata(spec.transport),
             }),
+            "machines" => Some(RemotePolicyMetadata {
+                protocol: "https".to_owned(),
+                auth: "mtls".to_owned(),
+                credential_policy: "mtls-files".to_owned(),
+                request_encoding: "protobuf".to_owned(),
+                response_encoding: "protobuf".to_owned(),
+                response_limit_policy: "bounded-cumulative-protobuf".to_owned(),
+                behavior_binding: "rust-native-grpc".to_owned(),
+                transport: transport_policy_metadata(spec.transport),
+            }),
             _ => None,
         },
         operations,
@@ -867,7 +877,12 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         ));
     }
     output.push_str("export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, request: unknown): string {\n  let path = method.path;\n  for (const parameter of method.pathParameters) {\n    const key = parameter === \"sha256hex\" ? \"versionSha256\" : parameter;\n    const value = (request as Record<string, unknown>)[key];\n    if (value === undefined || value === null) throw new TypeError(`missing path parameter ${key}`);\n    const rendered = value instanceof Uint8Array ? Array.from(value, byte => byte.toString(16).padStart(2, \"0\")).join(\"\") : typeof value === \"bigint\" ? value.toString() : encodeURIComponent(String(value));\n    path = path.replace(`{${parameter}}`, rendered);\n  }\n  return path;\n}\n\n");
-    output.push_str("export const RUST_OWNED_CREDENTIAL_POLICY = \"bearer-no-crlf\" as const;\n\n");
+    let credential_policy = service
+        .remote_policy
+        .as_ref()
+        .map(|policy| policy.credential_policy.as_str())
+        .unwrap_or("bearer-no-crlf");
+    output.push_str(&format!("export const RUST_OWNED_CREDENTIAL_POLICY = {:?} as const;\n\n", credential_policy));
     output.push_str("export function validateRustOwnedCredentialPolicy(token: string): void {\n  if (RUST_OWNED_CREDENTIAL_POLICY === \"bearer-no-crlf\" && (!token.trim() || /[\\r\\n]/.test(token))) throw new TypeError(\"invalid bearer credential\");\n}\n\n");
     output.push_str("export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {\n  if (method.credentialPolicy === RUST_OWNED_CREDENTIAL_POLICY) validateRustOwnedCredentialPolicy(token);\n}\n\n");
     output.push_str(&format!(
