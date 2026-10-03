@@ -1,4 +1,5 @@
 import { arch, platform } from "node:process";
+import { createRequire } from "node:module";
 import type {
   EngineCapabilities,
   FsChangeSet,
@@ -146,6 +147,7 @@ const TARGETS = new Set([
 ]);
 
 let bindingPromise: Promise<NativeBindings> | undefined;
+const requireNative = createRequire(import.meta.url);
 
 type NativeModuleNamespace = NativeBindings & {
   readonly default?: NativeBindings;
@@ -156,7 +158,7 @@ async function bindings(): Promise<NativeBindings> {
   if (!TARGETS.has(target)) {
     throw new Error(`@acyclic-labs/fs has no native companion for ${target}`);
   }
-  bindingPromise ??= import(`@acyclic-labs/fs-${target}`).then((module): NativeBindings => {
+  bindingPromise ??= Promise.resolve().then(() => requireNative(`@acyclic-labs/fs-${target}`) as NativeModuleNamespace).then((module): NativeBindings => {
     const namespace = module as NativeModuleNamespace;
     const candidate =
       typeof namespace.nativeCapabilities === "function" ? namespace : namespace.default;
