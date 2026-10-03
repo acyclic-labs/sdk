@@ -5,8 +5,10 @@ use crate::{
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer},
     executor::TurnOutput,
+    fork::ForkSeed,
     model::{Model, ModelProvider},
     resources::ProviderRef,
+    store::StreamAggregate,
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
@@ -77,6 +79,82 @@ pub struct PersistentLocalHarness {
     bundle: crate::Harness,
 }
 impl PersistentLocalHarness {
+    /// Composes a durable harness from provider and identity descriptors that
+    /// the application has already persisted.
+    pub async fn from_providers(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        agent: AgentId,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let storage = DurableHarnessStorage::from_providers(
+            agent,
+            limits.file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+        )
+        .await?;
+        let tools = storage.default_tools(limits)?;
+        let bundle = storage
+            .builder()
+            .model(model, provider)
+            .tools(tools)
+            .grant("model:generate")
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(limits)
+            .build()?;
+        Ok(Self { storage, bundle })
+    }
+
+    /// Composes a child harness from an already published typed fork. The
+    /// caller owns the shared local providers and must retain the parent
+    /// aggregate used by `spawn_from_report`; this constructor only binds the
+    /// exact child seed and its immutable reference grants.
+    pub async fn from_published_fork(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let storage = DurableHarnessStorage::from_published_fork(
+            limits.file_bytes,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+        )
+        .await?;
+        let tools = storage.default_tools(limits)?;
+        let bundle = storage
+            .builder()
+            .model(model, provider)
+            .tools(tools)
+            .grant("model:generate")
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(limits)
+            .build()?;
+        Ok(Self { storage, bundle })
+    }
+
     /// Opens an exclusive session root, preserving stable identities and configuration.
     pub async fn open(
         root: impl AsRef<Path>,

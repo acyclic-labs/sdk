@@ -6,14 +6,18 @@
 //! task identities and activation outcomes; each task's journal and private
 //! files are still owned by [`PersistentLocalHarness`].
 
-use super::PersistentLocalHarness;
+use super::{FilesystemHost, PersistentLocalHarness};
 use crate::{
     Error, OperationId, Result, TaskId,
     conversation::Limits,
+    core::{AuthorityIssuer, Capabilities, SchemaRegistry},
     executor::TurnOutput,
+    fork::{ForkReport, ForkSeed},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     runtime::TaskRunLimits,
+    store::StreamAggregate,
 };
+use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
@@ -187,6 +191,8 @@ enum StoredEvent {
         task: String,
         #[serde(default)]
         prompt: String,
+        #[serde(default)]
+        seed: Option<ForkSeed>,
     },
     ForkCompleted {
         child: TaskId,
@@ -252,6 +258,7 @@ pub struct PersistentLocalSwarm {
     registry: StreamClient<LocalStream>,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
+    seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
 }
 
@@ -276,8 +283,9 @@ impl PersistentLocalSwarm {
         let records = load_records(&stream).await?;
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
+        let mut seeds = BTreeMap::new();
         for record in records {
-            apply_record(&mut sessions, &mut requests, record)?;
+            apply_record(&mut sessions, &mut requests, &mut seeds, record)?;
         }
         if sessions.is_empty() {
             let root_task = TaskId::new();
@@ -320,6 +328,7 @@ impl PersistentLocalSwarm {
             registry,
             records: Mutex::new(sessions),
             requests: Mutex::new(requests),
+            seeds: Mutex::new(seeds),
             sessions: Mutex::new(opened),
         })
     }
@@ -359,6 +368,16 @@ impl PersistentLocalSwarm {
             .get(&task)
             .cloned()
             .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))
+    }
+
+    /// Returns the exact typed seed recorded for a published child.
+    pub async fn published_seed(&self, task: TaskId) -> Result<ForkSeed> {
+        self.seeds
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm seed {task}")))
     }
 
     /// Runs a root prompt under the shared durable local harness.
@@ -470,6 +489,7 @@ impl PersistentLocalSwarm {
                 child_operation: request.child_operation,
                 task: request.task.clone(),
                 prompt: request.prompt.clone(),
+                seed: None,
             },
         )
         .await?;
@@ -477,6 +497,140 @@ impl PersistentLocalSwarm {
         self.requests.lock().await.insert(child, request.clone());
 
         self.activate_child(request, child, stream, boundary).await
+    }
+
+    /// Activates a child after the caller has prepared and published the exact
+    /// typed fork seed. The child harness is created only through
+    /// `HarnessStorage::from_published_fork`, so its conversation binding and
+    /// inherited reference grants come from the committed seed.
+    pub async fn activate_published_child(
+        &self,
+        request: LocalForkRequest,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+    ) -> Result<LocalForkOutcome> {
+        request.validate()?;
+        seed.validate()?;
+        if issuer.verifier().audience() != &seed.child {
+            return Err(Error::Unauthorized(
+                "published fork issuer targets another child authority".into(),
+            ));
+        }
+        let parent_session = self.session(request.parent).await?;
+        let boundary = self
+            .open_session(request.parent)
+            .await?
+            .storage()
+            .completed_model_boundary(
+                request.parent_operation,
+                request.parent_step,
+                self.config.limits,
+            )
+            .await?
+            .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        if self.records.lock().await.contains_key(&child) {
+            return Err(Error::Conflict("child operation is already a session".into()));
+        }
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::ForkAdmitted {
+                parent: request.parent,
+                parent_operation: request.parent_operation,
+                parent_step: request.parent_step,
+                child,
+                child_operation: request.child_operation,
+                task: request.task.clone(),
+                prompt: request.prompt.clone(),
+                seed: Some(seed.clone()),
+            },
+        )
+        .await?;
+        self.records.lock().await.insert(
+            child,
+            LocalSwarmSession {
+                task: child,
+                parent: Some(request.parent),
+                depth: parent_session.depth + 1,
+                task_description: request.task.clone(),
+                operation: Some(request.child_operation),
+                phase: LocalSessionPhase::Activating,
+            },
+        );
+        self.requests.lock().await.insert(child, request.clone());
+        let harness = match PersistentLocalHarness::from_published_fork(
+            self.config.model.clone(),
+            self.provider.clone(),
+            self.config.limits,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+        )
+        .await
+        {
+            Ok(harness) => Arc::new(harness),
+            Err(error) => {
+                self.mark_failed(child, error.to_string()).await?;
+                return Err(error);
+            }
+        };
+        self.sessions.lock().await.insert(child, harness.clone());
+        self.activate_child_with_harness(request, child, registry, boundary, harness)
+            .await
+    }
+
+    /// Publishes a prepared report through the typed parent/child aggregates,
+    /// then activates the child from the resulting immutable seed.
+    pub async fn publish_and_activate_child(
+        &self,
+        request: LocalForkRequest,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &mut StreamAggregate<LocalStream>,
+        report: ForkReport,
+    ) -> Result<LocalForkOutcome> {
+        request.validate()?;
+        let preview = report.clone().into_seed()?;
+        let mut child = StreamAggregate::open(
+            &stream,
+            preview.child.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        let parent_scope = self
+            .open_session(request.parent)
+            .await?
+            .storage()
+            .owner_scope()
+            .clone();
+        let child_scope = issuer.root_for_agent(
+            preview.child_agent,
+            "fork-bind",
+            Capabilities::new(["conversation:bind".to_owned()]),
+        );
+        let seed = child
+            .spawn_from_report(parent, report, parent_scope, child_scope)
+            .await?;
+        self.activate_published_child(
+            request,
+            host,
+            stream,
+            issuer,
+            parent,
+            &seed,
+        )
+        .await
     }
 
     async fn activate_child(
@@ -493,6 +647,18 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
+        self.activate_child_with_harness(request, child, stream, boundary, harness)
+            .await
+    }
+
+    async fn activate_child_with_harness(
+        &self,
+        request: LocalForkRequest,
+        child: TaskId,
+        stream: acyclic_stream::Stream<LocalStream>,
+        boundary: crate::model_input::CompletedModelBoundary,
+        harness: Arc<PersistentLocalHarness>,
+    ) -> Result<LocalForkOutcome> {
         let suffix = vec![ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(format!(
@@ -724,6 +890,7 @@ async fn append_record(
 fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
     requests: &mut BTreeMap<TaskId, LocalForkRequest>,
+    seeds: &mut BTreeMap<TaskId, ForkSeed>,
     record: StoredRecord,
 ) -> Result<()> {
     match record.event {
@@ -741,6 +908,7 @@ fn apply_record(
             child_operation,
             task,
             prompt,
+            seed,
             ..
         } => {
             let parent_session = sessions
@@ -768,6 +936,9 @@ fn apply_record(
                     prompt,
                 },
             );
+            if let Some(seed) = seed {
+                seeds.insert(child, seed);
+            }
         }
         StoredEvent::ForkCompleted { child, operation } => {
             let session = sessions
