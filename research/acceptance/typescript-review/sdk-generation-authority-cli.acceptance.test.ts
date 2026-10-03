@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -227,6 +227,21 @@ test("real drift rejects a source mutation after the coherent authority baseline
     const mutated = runDrift(fixture.sourceRoot, fixture.output);
     expect(mutated.status).not.toBe(0);
     expect(`${mutated.stdout}\n${mutated.stderr}`).toContain("source identity differs");
+  } finally {
+    await rm(fixture.scratch, { recursive: true, force: true });
+  }
+});
+
+test("real drift rejects an output symlink before writing a drift report", { timeout: 120_000 }, async () => {
+  const fixture = await makeFixture();
+  try {
+    const linkPath = join(fixture.output, "wire-alias");
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    await symlink(join(fixture.output, "wire"), linkPath, linkType);
+    const result = runDrift(fixture.sourceRoot, fixture.output);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stdout}\n${result.stderr}`).toMatch(/symlink|link/i);
+    await expect(readFile(join(fixture.output, "sdk-generation-drift.json"), "utf8")).rejects.toThrow();
   } finally {
     await rm(fixture.scratch, { recursive: true, force: true });
   }
