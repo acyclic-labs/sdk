@@ -2250,7 +2250,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         )
     }
 
-    fn generation_ref_id(&self, id: GenerationId) -> Result<GenerationRef> {
+    /// Converts a provider generation identity into its immutable Harness ref.
+    pub fn generation_ref_id(&self, id: GenerationId) -> Result<GenerationRef> {
         GenerationRef::new(self.provider.clone(), id.digest().into_bytes(), None)
     }
 

@@ -6,7 +6,7 @@
     clippy::indexing_slicing
 )]
 
-use acyclic_fs::{ConflictSide, Fs, JoinOutcome};
+use acyclic_fs::{ConflictSide, Fs, JoinOutcome, MemoryGitCompatStore, WorkspaceId};
 use acyclic_harness::conversation::{
     Attachment, ContentGrant, ContentResidencyVerifier, ConversationMessage, FileDescriptor,
     FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass, VolumeOperation, VolumeOwner,
@@ -16,9 +16,9 @@ use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, Reducer, SchemaRegistry, Scope,
 };
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemForkVerifier, FilesystemHost,
+    FilesystemContentVerifier, FilesystemForkVerifier, FilesystemGitFacade, FilesystemHost,
     FilesystemProjectMergeVerifier, FilesystemProjectWorkspaces, ParentProjectController,
-    WorkspaceMutation,
+    RootWritebackApproval, RootWritebackRequest, WorkspaceMutation,
 };
 use acyclic_harness::fork::{
     Capture, CapturedResource, CompositeForkVerifier, ForkPreparation, ForkReport, ForkRequest,
@@ -27,7 +27,7 @@ use acyclic_harness::fork::{
 use acyclic_harness::merge::{ProjectJoinOutcome, ProjectMergeVerifier, ProjectWorkspaceProvider};
 use acyclic_harness::model::{FileProjectionPolicy, ModelContent, ModelContentPart};
 use acyclic_harness::projection::{ModelContextSelection, select_model_context};
-use acyclic_harness::resources::{ProviderRef, StreamRef};
+use acyclic_harness::resources::{GenerationRef, ProviderRef, StreamRef};
 use acyclic_harness::store::StreamAggregate;
 use acyclic_harness::{AgentId, Capabilities, IdempotencyKey, OperationId, Result};
 use acyclic_stream::{MemoryStream, StreamClient};
@@ -72,6 +72,7 @@ fn scope(
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
+            "project:writeback".to_owned(),
             project.capability(VolumeOperation::Read)?,
             project.capability(VolumeOperation::Write)?,
             private.capability(VolumeOperation::Read)?,
@@ -1411,6 +1412,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             "conversation:bind".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
+            "project:writeback".to_owned(),
             root.capability(VolumeOperation::Read)?,
             root.capability(VolumeOperation::Write)?,
         ]),
@@ -1434,6 +1436,13 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_issuer.verifier(),
         &parent_scope,
         root.clone(),
+    )?;
+    let facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([33; 16]),
+        MemoryGitCompatStore::new(),
+        root.clone(),
+        parent_issuer.verifier(),
+        parent_scope.clone(),
     )?;
     let workspaces = FilesystemProjectWorkspaces::new(
         &host,
@@ -1471,6 +1480,13 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_issuer.verifier(),
         &ungranted,
         root.clone(),
+    )?;
+    let ungranted_facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([34; 16]),
+        MemoryGitCompatStore::new(),
+        root.clone(),
+        parent_issuer.verifier(),
+        ungranted.clone(),
     )?;
     let foreign_project = volume(
         &provider,
@@ -1520,8 +1536,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                 .is_err()
             );
         }
-        let fork = controller
+        let fork = facade
             .fork_project(
+                host.as_ref(),
+                &parent_reducer,
                 &root_head.generation,
                 &child,
                 &IdempotencyKey::new(format!("wide-fork-{index}"))?,
@@ -1569,25 +1587,51 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.resolve(&root_head.workspace).await?.generation,
         root_head.generation
     );
-    let first = controller.prepare_project_merge(&siblings[0]).await?;
-    let stale = controller.prepare_project_merge(&siblings[1]).await?;
+    let first = facade
+        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[0])
+        .await?;
+    let stale = facade
+        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[1])
+        .await?;
     assert!(
-        ungranted_controller
-            .apply_project_merge(&first, OperationId::from_bytes([100; 16]))
+        ungranted_facade
+            .apply_project_merge(
+                host.as_ref(),
+                &parent_reducer,
+                &first,
+                OperationId::from_bytes([100; 16]),
+            )
             .await
             .is_err()
     );
-    let first_outcome = controller
-        .apply_project_merge(&first, OperationId::from_bytes([101; 16]))
+    let first_outcome = facade
+        .apply_project_merge(
+            host.as_ref(),
+            &parent_reducer,
+            &first,
+            OperationId::from_bytes([101; 16]),
+        )
         .await?;
     assert!(matches!(first_outcome, JoinOutcome::Applied(_)));
-    let stale_outcome = controller
-        .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
+    let stale_outcome = facade
+        .apply_project_merge(
+            host.as_ref(),
+            &parent_reducer,
+            &stale,
+            OperationId::from_bytes([102; 16]),
+        )
         .await?;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
-    let inspected = controller.prepare_project_merge(&siblings[1]).await?;
-    let conflict = controller
-        .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
+    let inspected = facade
+        .prepare_project_merge(host.as_ref(), &parent_reducer, &siblings[1])
+        .await?;
+    let conflict = facade
+        .apply_project_merge(
+            host.as_ref(),
+            &parent_reducer,
+            &inspected,
+            OperationId::from_bytes([103; 16]),
+        )
         .await?;
     let JoinOutcome::Conflicted {
         conflicts,
@@ -1599,13 +1643,25 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         ));
     };
     assert!(!truncated);
-    let described = controller
-        .describe_project_merge_conflicts(&inspected, &conflicts, truncated)
+    let described = facade
+        .describe_project_merge_conflicts(
+            host.as_ref(),
+            &parent_reducer,
+            &inspected,
+            &conflicts,
+            truncated,
+        )
         .await?;
     assert_eq!(described.conflicts.len(), conflicts.len());
     assert!(
-        ungranted_controller
-            .describe_project_merge_conflicts(&inspected, &conflicts, truncated)
+        ungranted_facade
+            .describe_project_merge_conflicts(
+                host.as_ref(),
+                &parent_reducer,
+                &inspected,
+                &conflicts,
+                truncated,
+            )
             .await
             .is_err()
     );
@@ -1619,8 +1675,10 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .map(|conflict| (conflict, ConflictSide::Theirs))
         .collect();
     assert!(
-        ungranted_controller
+        ungranted_facade
             .apply_project_merge_sides(
+                host.as_ref(),
+                &parent_reducer,
                 &inspected,
                 OperationId::from_bytes([104; 16]),
                 selections.clone(),
@@ -1629,8 +1687,22 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             .is_err()
     );
     let resolved_operation = OperationId::from_bytes([106; 16]);
-    let resolved = controller
-        .apply_project_merge_sides(&inspected, resolved_operation, selections)
+    let approval = RootWritebackApproval::issue(
+        &parent_issuer.verifier(),
+        &parent_scope,
+        resolved_operation,
+        host.generation_ref_id(inspected.source_head())?,
+        host.generation_ref_id(inspected.target_head())?,
+    )?;
+    let request = RootWritebackRequest::new(approval, parent_scope.clone());
+    let resolved = facade
+        .apply_root_writeback_plan(
+            &request,
+            host.as_ref(),
+            &parent_reducer,
+            &inspected,
+            selections,
+        )
         .await?;
     assert!(matches!(&resolved, JoinOutcome::Applied(_)));
     let write = ContentGrant::verify(
@@ -1651,7 +1723,9 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             &IdempotencyKey::new("wide-resolved-notice")?,
         )
         .await?;
-    let receipt = controller.merge_receipt(
+    let receipt = facade.merge_receipt(
+        host.as_ref(),
+        &parent_reducer,
         &inspected,
         &resolved,
         Authority {
@@ -1677,6 +1751,414 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         host.read(&root_head.workspace, None, "/shared.txt", 32)
             .await?,
         bytes::Bytes::from_static(b"sibling 2"),
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Result<()> {
+    let provider = ProviderRef::new("facade-recursive", "filesystem", "2")?;
+    let stream_provider = ProviderRef::new("facade-recursive", "stream", "2")?;
+    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let root_project = volume(
+        &provider,
+        VolumeClass::Project,
+        "root-project".into(),
+        VolumeOwner::Project("swarm".into()),
+    )?;
+    let child_a_project = volume(
+        &provider,
+        VolumeClass::Project,
+        "child-a-project".into(),
+        VolumeOwner::Project("swarm".into()),
+    )?;
+    let child_b_project = volume(
+        &provider,
+        VolumeClass::Project,
+        "child-b-project".into(),
+        VolumeOwner::Project("swarm".into()),
+    )?;
+    let grandchild_project = volume(
+        &provider,
+        VolumeClass::Project,
+        "grandchild-project".into(),
+        VolumeOwner::Project("swarm".into()),
+    )?;
+    let root_agent = AgentId::from_bytes([41; 16]);
+    let child_agent = AgentId::from_bytes([42; 16]);
+    let grandchild_agent = AgentId::from_bytes([43; 16]);
+    let child_private = volume(
+        &provider,
+        VolumeClass::AgentPrivate,
+        "child-private".into(),
+        VolumeOwner::Agent(child_agent),
+    )?;
+    let grandchild_private = volume(
+        &provider,
+        VolumeClass::AgentPrivate,
+        "grandchild-private".into(),
+        VolumeOwner::Agent(grandchild_agent),
+    )?;
+    let child_b_agent = AgentId::from_bytes([44; 16]);
+    let child_b_private = volume(
+        &provider,
+        VolumeClass::AgentPrivate,
+        "child-b-private".into(),
+        VolumeOwner::Agent(child_b_agent),
+    )?;
+    let root_head = host.create_volume(&root_project).await?;
+    let child_a_private_head = host.create_volume(&child_private).await?;
+    let child_b_private_head = host.create_volume(&child_b_private).await?;
+    let grandchild_private_head = host.create_volume(&grandchild_private).await?;
+    let root_authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "facade-root".into(),
+    };
+    let child_authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "facade-child-a".into(),
+    };
+    let child_b_authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "facade-child-b".into(),
+    };
+    let grandchild_authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "facade-grandchild".into(),
+    };
+    let root_issuer = AuthorityIssuer::new("facade-recursive", [51; 32], root_authority.clone());
+    let child_issuer = AuthorityIssuer::new("facade-recursive", [52; 32], child_authority.clone());
+    let root_scope = root_issuer.root_for_agent(
+        root_agent,
+        "root",
+        Capabilities::new([
+            "conversation:bind".into(),
+            "fork:publish".into(),
+            "project:merge".into(),
+            "project:writeback".into(),
+            root_project.capability(VolumeOperation::Read)?,
+            root_project.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let child_scope = child_issuer.root_for_agent(
+        child_agent,
+        "child",
+        Capabilities::new([
+            "conversation:bind".into(),
+            "fork:publish".into(),
+            "project:merge".into(),
+            child_a_project.capability(VolumeOperation::Read)?,
+            child_a_project.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let mut root_reducer = Reducer::new(
+        root_authority.clone(),
+        root_issuer.verifier(),
+        SchemaRegistry::new(),
+    );
+    root_reducer.apply(command(
+        180,
+        0,
+        &root_scope,
+        Action::BindConversation { agent: root_agent },
+    )?)?;
+    let mut child_reducer = Reducer::new(
+        child_authority.clone(),
+        child_issuer.verifier(),
+        SchemaRegistry::new(),
+    );
+    child_reducer.apply(command(
+        181,
+        0,
+        &child_scope,
+        Action::BindConversation { agent: child_agent },
+    )?)?;
+    let root_facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([61; 16]),
+        MemoryGitCompatStore::new(),
+        root_project.clone(),
+        root_issuer.verifier(),
+        root_scope.clone(),
+    )?;
+    let child_facade = FilesystemGitFacade::new(
+        WorkspaceId::from_bytes([62; 16]),
+        MemoryGitCompatStore::new(),
+        child_a_project.clone(),
+        child_issuer.verifier(),
+        child_scope.clone(),
+    )?;
+    let child_a_head = root_facade
+        .fork_project(
+            host.as_ref(),
+            &root_reducer,
+            &root_head.generation,
+            &child_a_project,
+            &IdempotencyKey::new("facade-child-a-fork")?,
+        )
+        .await?;
+    let child_b_head = root_facade
+        .fork_project(
+            host.as_ref(),
+            &root_reducer,
+            &root_head.generation,
+            &child_b_project,
+            &IdempotencyKey::new("facade-child-b-fork")?,
+        )
+        .await?;
+    let grandchild_head = child_facade
+        .fork_project(
+            host.as_ref(),
+            &child_reducer,
+            &child_a_head.generation,
+            &grandchild_project,
+            &IdempotencyKey::new("facade-grandchild-fork")?,
+        )
+        .await?;
+    host.apply(
+        &grandchild_head.workspace,
+        Some(&grandchild_head.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/grandchild.txt".into(),
+            bytes: b"grandchild change".to_vec(),
+        }],
+        &IdempotencyKey::new("facade-grandchild-edit")?,
+    )
+    .await?;
+    #[allow(clippy::too_many_arguments)]
+    let seed = |operation: u16,
+                parent: &Authority,
+                parent_revision: u64,
+                child: &Authority,
+                child_agent: AgentId,
+                source_project: &VolumeRef,
+                source_generation: &GenerationRef,
+                child_project: &VolumeRef,
+                child_generation: &GenerationRef,
+                private: &VolumeRef,
+                private_generation: &GenerationRef|
+     -> Result<ForkSeed> {
+        Ok(ForkSeed {
+            operation_id: OperationId::from_bytes(identity(operation)),
+            parent: parent.clone(),
+            parent_revision,
+            child: child.clone(),
+            child_agent,
+            attached_agents: Vec::new(),
+            resources: vec![
+                CapturedResource {
+                    source: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent.stream_path()?.into_bytes(),
+                        Some(parent_revision.to_string()),
+                    )?),
+                    revision: ResourceRevision::History(StreamRef::new(
+                        stream_provider.clone(),
+                        parent.stream_path()?.into_bytes(),
+                        Some(parent_revision.to_string()),
+                    )?),
+                },
+                CapturedResource {
+                    source: ResourceRevision::Project {
+                        volume: source_project.clone(),
+                        generation: source_generation.clone(),
+                    },
+                    revision: ResourceRevision::Project {
+                        volume: child_project.clone(),
+                        generation: child_generation.clone(),
+                    },
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: private.clone(),
+            child_private_generation: private_generation.clone(),
+            inherited_context: Vec::new(),
+            inherited_through_sequence: 0,
+            shared_grants: Vec::new(),
+            reference_grants: Vec::new(),
+            attachment_manifests: Vec::new(),
+            boundary: None,
+        })
+    };
+    let child_a_seed = seed(
+        190,
+        &root_authority,
+        root_reducer.revision(),
+        &child_authority,
+        child_agent,
+        &root_project,
+        &root_head.generation,
+        &child_a_project,
+        &child_a_head.generation,
+        &child_private,
+        &child_a_private_head.generation,
+    )?;
+    root_reducer.apply(fork_command(190, 1, &root_scope, child_a_seed)?)?;
+    let child_b_seed = seed(
+        191,
+        &root_authority,
+        root_reducer.revision(),
+        &child_b_authority,
+        child_b_agent,
+        &root_project,
+        &root_head.generation,
+        &child_b_project,
+        &child_b_head.generation,
+        &child_b_private,
+        &child_b_private_head.generation,
+    )?;
+    root_reducer.apply(fork_command(191, 2, &root_scope, child_b_seed)?)?;
+    let grandchild_seed = seed(
+        192,
+        &child_authority,
+        child_reducer.revision(),
+        &grandchild_authority,
+        grandchild_agent,
+        &child_a_project,
+        &child_a_head.generation,
+        &grandchild_project,
+        &grandchild_head.generation,
+        &grandchild_private,
+        &grandchild_private_head.generation,
+    )?;
+    child_reducer.apply(fork_command(192, 1, &child_scope, grandchild_seed)?)?;
+    assert!(
+        child_facade
+            .prepare_project_merge_for_child(
+                host.as_ref(),
+                &child_reducer,
+                &child_b_authority,
+                &child_b_project,
+            )
+            .await
+            .is_err(),
+        "a direct child cannot merge a sibling project"
+    );
+    assert!(
+        root_facade
+            .prepare_project_merge_for_child(
+                host.as_ref(),
+                &root_reducer,
+                &grandchild_authority,
+                &grandchild_project,
+            )
+            .await
+            .is_err(),
+        "the root cannot merge a grandchild directly"
+    );
+    let grandchild_plan = child_facade
+        .prepare_project_merge_for_child(
+            host.as_ref(),
+            &child_reducer,
+            &grandchild_authority,
+            &grandchild_project,
+        )
+        .await?;
+    let grandchild_outcome = child_facade
+        .apply_project_merge_for_child(
+            host.as_ref(),
+            &child_reducer,
+            &grandchild_authority,
+            &grandchild_project,
+            &grandchild_plan,
+            OperationId::from_bytes([193; 16]),
+        )
+        .await?;
+    assert!(matches!(grandchild_outcome, JoinOutcome::Applied(_)));
+    let root_before_user_edit = host.resolve(&root_head.workspace).await?;
+    host.apply(
+        &root_before_user_edit.workspace,
+        Some(&root_before_user_edit.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/user.txt".into(),
+            bytes: b"user edit".to_vec(),
+        }],
+        &IdempotencyKey::new("facade-user-edit")?,
+    )
+    .await?;
+    let root_plan = root_facade
+        .prepare_project_merge_for_child(
+            host.as_ref(),
+            &root_reducer,
+            &child_authority,
+            &child_a_project,
+        )
+        .await?;
+    assert!(
+        host.read(&root_head.workspace, None, "/grandchild.txt", 128)
+            .await
+            .is_err(),
+        "root remains unchanged before explicit approved writeback"
+    );
+    let operation_id = OperationId::from_bytes([194; 16]);
+    let approval = RootWritebackApproval::issue(
+        &root_issuer.verifier(),
+        &root_scope,
+        operation_id,
+        host.generation_ref_id(root_plan.source_head())?,
+        host.generation_ref_id(root_plan.target_head())?,
+    )?;
+    let request = RootWritebackRequest::new(approval, root_scope.clone());
+    let mismatched_approval = RootWritebackApproval::issue(
+        &root_issuer.verifier(),
+        &root_scope,
+        OperationId::from_bytes([195; 16]),
+        host.generation_ref_id(root_plan.source_head())?,
+        GenerationRef::new(provider.clone(), [199; 32], Some("stale-target".into()))?,
+    )?;
+    let mismatched_request = RootWritebackRequest::new(mismatched_approval, root_scope.clone());
+    assert!(matches!(
+        root_facade
+            .apply_root_writeback_plan_for_child(
+                &mismatched_request,
+                host.as_ref(),
+                &root_reducer,
+                &child_authority,
+                &child_a_project,
+                &root_plan,
+                BTreeMap::new(),
+            )
+            .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    let root_outcome = root_facade
+        .apply_root_writeback_plan_for_child(
+            &request,
+            host.as_ref(),
+            &root_reducer,
+            &child_authority,
+            &child_a_project,
+            &root_plan,
+            BTreeMap::new(),
+        )
+        .await?;
+    assert!(matches!(root_outcome, JoinOutcome::Applied(_)));
+    let replayed = root_facade
+        .apply_root_writeback_plan_for_child(
+            &request,
+            host.as_ref(),
+            &root_reducer,
+            &child_authority,
+            &child_a_project,
+            &root_plan,
+            BTreeMap::new(),
+        )
+        .await?;
+    assert!(matches!(replayed, JoinOutcome::AlreadyApplied(_)));
+    assert_eq!(
+        host.read(&root_head.workspace, None, "/grandchild.txt", 128)
+            .await?,
+        bytes::Bytes::from_static(b"grandchild change")
+    );
+    assert_eq!(
+        host.read(&root_head.workspace, None, "/user.txt", 128)
+            .await?,
+        bytes::Bytes::from_static(b"user edit")
+    );
+    assert!(
+        host.read(&child_b_head.workspace, None, "/grandchild.txt", 128)
+            .await
+            .is_err(),
+        "the sibling remains isolated"
     );
     Ok(())
 }
