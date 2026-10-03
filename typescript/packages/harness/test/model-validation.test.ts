@@ -100,14 +100,15 @@ test("generated WASM model admission captures canonical request bytes and manife
     version: number;
     binding_digest: readonly number[];
     request_digest: readonly number[];
-    messages: readonly { position: number; role: string; digest: readonly number[] }[];
+    messages: readonly { position: number; role: string; digest: readonly number[]; files: readonly unknown[] }[];
   };
-  expect(manifest.version).toBe(1);
+  expect(manifest.version).toBe(3);
   expect(manifest.binding_digest).toHaveLength(32);
   expect(manifest.request_digest).toEqual(prepared.request_digest);
   expect(manifest.messages.map(message => ({ position: message.position, role: message.role })))
     .toEqual(request.messages.map((message, position) => ({ position, role: message.role })));
   expect(manifest.messages.every(message => message.digest.length === 32)).toBe(true);
+  expect(manifest.messages.every(message => message.files.length === 0)).toBe(true);
 
   const throughFacade = contracts.prepareModelRequest(request, {
     file_bytes: BigInt(DEFAULT_LIMITS.file_bytes),
@@ -121,6 +122,68 @@ test("generated WASM model admission captures canonical request bytes and manife
   } satisfies NativeLimitsWire);
   expect(throughFacade.requestJson).toBe(prepared.request_json);
   expect(throughFacade.requestDigest).toEqual(prepared.request_digest);
+
+  const schema = { type: "object", additionalProperties: false, properties: { mode: { type: "string" } } } as const;
+  const policy = {
+    name: "model-options",
+    version: "1",
+    digest: Array.from({ length: 32 }, (_, index) => index + 1),
+    schema,
+  };
+  const withPolicy = contracts.prepareModelRequest(request, {
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes),
+    path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments),
+    render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps),
+    model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step),
+    context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  } satisfies NativeLimitsWire, policy);
+  const policyManifest = JSON.parse(withPolicy.manifestJson) as Record<string, unknown>;
+  expect(policyManifest.model_option_policy).toEqual({ name: policy.name, version: policy.version, digest: policy.digest });
+  expect(policyManifest.model_option_schema_digest).toEqual(Array.from(contracts.digestCanonicalJson(schema)));
+});
+
+test("native facade refuses forged model-input manifest fields and binding identity", () => {
+  const request = modelRequest();
+  const limits = {
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes),
+    path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments),
+    render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps),
+    model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step),
+    context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  } satisfies NativeLimitsWire;
+  const nativeSlot = contracts as unknown as { native: Record<string, unknown> };
+  const originalNative = nativeSlot.native;
+  const admitted = harnessWasm.prepareModelRequest(request, modelLimits(), null) as {
+    request_json: string; manifest_json: string; request_digest: readonly number[];
+  };
+  try {
+    const manifest = JSON.parse(admitted.manifest_json) as Record<string, unknown>;
+    nativeSlot.native = {
+      ...originalNative,
+      prepareModelRequest: () => ({
+        ...admitted,
+        manifest_json: new TextDecoder().decode(encodeCanonicalJson({ ...manifest, unexpected: true })),
+      }),
+    };
+    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow("unexpected fields");
+
+    nativeSlot.native = {
+      ...originalNative,
+      prepareModelRequest: () => ({
+        ...admitted,
+        manifest_json: new TextDecoder().decode(encodeCanonicalJson({ ...manifest, binding_digest: Array(32).fill(0) })),
+      }),
+    };
+    expect(() => contracts.prepareModelRequest(request, limits, null)).toThrow("binding digest");
+  } finally {
+    nativeSlot.native = originalNative;
+  }
 });
 
 async function file(): Promise<FileRef> {

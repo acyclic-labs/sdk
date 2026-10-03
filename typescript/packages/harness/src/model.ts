@@ -85,6 +85,17 @@ export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
     /** Transport metadata; adapters must keep it out of model-visible content. */
     canonical?: ModelRequestEvidence;
   }>;
+/**
+ * Provider input after native admission.  A provider receives the detached
+ * structured projection for its protocol adapter, together with the exact
+ * canonical bytes and manifest that admitted that projection.  The evidence
+ * is required at this boundary so an adapter cannot accidentally be called
+ * with an unadmitted ModelRequest.
+ */
+export type PreparedModelRequest<ModelOptions = unknown, Content = ModelContent> =
+  Readonly<Omit<ModelRequest<ModelOptions, Content>, "canonical"> & {
+    canonical: ModelRequestEvidence;
+  }>;
 type PublicModelEvent<Event extends WasmModelEvent, Arguments, Metadata> =
   Event extends Readonly<{ kind: "tool_call" }>
     ? Readonly<Omit<Event, "call_id" | "arguments"> & { callId: string; arguments: Arguments }>
@@ -99,7 +110,7 @@ export type ModelAttempt<Event extends ModelEvent = ModelEvent> =
     requestDigest: Uint8Array;
     observed: readonly Event[];
   }>;
-export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> {
+export interface ModelProvider<Request extends PreparedModelRequest = PreparedModelRequest, Event extends ModelEvent = ModelEvent> {
   /** Registered schema for model-visible options; credentials stay in host transport bindings. */
   readonly modelOptions?: ModelOptionPolicy;
   generate(request: Request): AsyncIterable<Event>;

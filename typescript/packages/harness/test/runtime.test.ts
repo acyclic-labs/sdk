@@ -1811,6 +1811,7 @@ describe("typed agent runtime", () => {
   test("executes model tool calls with durable task ownership and typed receipts", async () => {
     let modelStep = 0; let sender: RuntimeTaskId | undefined; let toolOperationId: string | undefined;
     const canonicalRequests: string[] = [];
+    const canonicalManifests: string[] = [];
     const payload = await mailboxFile(3);
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
@@ -1826,7 +1827,15 @@ describe("typed agent runtime", () => {
       return effect.state === "succeeded" ? input * 4 : 0;
     });
     const runtime = Harness.builder(contracts).host(host).tool(tool).grant("tool:call:double").model(testModel, {
-      async *generate(request) { canonicalRequests.push(request.canonical?.requestJson ?? ""); if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
+      async *generate(request) {
+        expect(request.canonical).toBeDefined();
+        expect(Object.isFrozen(request.canonical)).toBe(true);
+        expect(Object.isFrozen(request.canonical.requestDigest)).toBe(true);
+        canonicalRequests.push(request.canonical.requestJson);
+        canonicalManifests.push(request.canonical.manifestJson);
+        expect(() => { (request.canonical as { requestJson: string }).requestJson = "mutated"; }).toThrow();
+        if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; }
+      },
       async reconcile() { return undefined; },
     }).build();
     const output = await runtime.run("go");
@@ -1835,6 +1844,8 @@ describe("typed agent runtime", () => {
     expect(canonicalRequests[0]).toBeTruthy();
     expect(canonicalRequests[1]).toBeTruthy();
     expect(canonicalRequests[1]).not.toBe(canonicalRequests[0]);
+    expect(canonicalManifests).toHaveLength(2);
+    expect(canonicalManifests.every(value => value.length > 0)).toBe(true);
     expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", revision: "1", arguments: 3, value: 12, projection: 12 }, { kind: "model-completed", metadata: { tokens: 1 } }]);
     expect(sender).toBe(output.taskId);
     expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -1981,8 +1992,9 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
+    const manifests: string[] = [];
     const policy = { schema: { type: "object", additionalProperties: false, properties: { mode: { type: "string" } } } } as const;
-    const provider = { modelOptions: policy, async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+    const provider = { modelOptions: policy, async *generate(request: { model: unknown; canonical: { manifestJson: string } }) { seen.push(request.model); manifests.push(request.canonical.manifestJson); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
     const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
     const childIdentity = { provider: "child", name: "model", revision: "4", options: { mode: "scoped" } };
@@ -1993,6 +2005,7 @@ describe("typed agent runtime", () => {
     };
     await runtime.run("root");
     expect(seen[0]).toEqual({ provider: "root", name: "model", revision: "3", options: { mode: "original" } });
+    expect(JSON.parse(manifests[0]!).model_option_policy).toEqual({ name: "model-options", version: "3", digest: expect.any(Array) });
     childIdentity.options.mode = "mutated";
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
@@ -2008,6 +2021,24 @@ describe("typed agent runtime", () => {
     };
     expect(() => Harness.builder(contracts).model({ provider: "fixture", name: "fixture", revision: "1", options: { hidden: true } }, provider).build()).toThrow();
     expect(dispatched).toBe(0);
+  });
+
+  test("absence of a provider option policy is pinned at model binding", async () => {
+    const manifests: string[] = [];
+    const provider = {
+      async *generate(request: { readonly canonical: { readonly manifestJson: string } }) {
+        manifests.push(request.canonical.manifestJson);
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, provider).build();
+    (provider as { modelOptions?: unknown }).modelOptions = {
+      schema: { type: "object", additionalProperties: false, properties: { hidden: { type: "string" } } },
+    };
+    await runtime.run("absence");
+    expect(manifests).toHaveLength(1);
+    expect(JSON.parse(manifests[0]!).model_option_policy).toBeUndefined();
   });
 
   test("selected context preserves canonical roles without a synthetic user duplicate", async () => {
