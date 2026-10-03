@@ -67,6 +67,21 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     expect(JSON.parse(lines.join("").trim())).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
   });
 
+  test("continues after an invalid UTF-8 chunk and accepts a following Uint8Array request", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const lines: string[] = [];
+    output.on("data", chunk => lines.push(String(chunk)));
+    const serving = runNodeGraphCoderDispatcher({ transport: createMockTransport(), input, output });
+    input.write(Uint8Array.from([0xc3, 0x28, 0x0a]));
+    input.write(new TextEncoder().encode(JSON.stringify({ request_id: "r9", method: "list_sessions", params: {} }) + "\n"));
+    input.end();
+    await serving;
+    const responses = lines.join("").trim().split("\n").map(line => JSON.parse(line) as Record<string, unknown>);
+    expect(responses[0]).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
+    expect(responses[1]).toEqual({ request_id: "r9", ok: true, result: { items: [] } });
+  });
+
   test("node entrypoint keeps reading control requests while a model request waits", async () => {
     const input = new PassThrough();
     const lines: string[] = [];
@@ -78,7 +93,7 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
       return { items: [] };
     };
     transport.cancelSession = async id => ({ summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1" }, agents: [], workspaceGeneration: 0n });
-    const serving = runNodeGraphCoderDispatcher({ transport, input, output });
+    const serving = runNodeGraphCoderDispatcher({ transport, input, output, maximumInFlight: 1 });
     input.write(JSON.stringify({ request_id: "model-1", method: "list_sessions", params: {} }) + "\n");
     input.write(JSON.stringify({ request_id: "cancel-1", method: "cancel_session", params: { session_id: "session-1" } }) + "\n");
     const deadline = Date.now() + 500;
@@ -94,5 +109,17 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     const dispatcher = new GraphCoderWireDispatcher(createMockTransport());
     const response = JSON.parse(await dispatcher.dispatchLine(JSON.stringify({ request_id: "é".repeat(129), method: "unknown", params: {} }))) as { request_id: string; ok: boolean; error: { code: string } };
     expect(response).toMatchObject({ request_id: "unknown", ok: false, error: { code: "invalid_input" } });
+  });
+
+  test("enforces public text and path bounds before calling the transport", async () => {
+    const transport = createMockTransport();
+    const dispatcher = new GraphCoderWireDispatcher(transport);
+    const hugePrompt = await dispatcher.dispatch({ request_id: "r10", method: "start_session", params: { prompt: "x".repeat(64 * 1024 + 1), operation_id: "op" } });
+    expect(hugePrompt).toMatchObject({ request_id: "r10", ok: false, error: { code: "invalid_input" } });
+    const hugeBody = await dispatcher.dispatch({ request_id: "r11", method: "send_message", params: { session_id: "session-1", sender_id: "agent-1", recipient_id: "agent-1", body: "x".repeat(64 * 1024 + 1) } });
+    expect(hugeBody).toMatchObject({ request_id: "r11", ok: false, error: { code: "invalid_input" } });
+    const unsafePath = await dispatcher.dispatch({ request_id: "r12", method: "read_file", params: { session_id: "session-1", path: "../secret", generation: "1" } });
+    expect(unsafePath).toMatchObject({ request_id: "r12", ok: false, error: { code: "invalid_input" } });
+    expect(transport.calls.some(call => call.method === "readFile")).toBe(false);
   });
 });

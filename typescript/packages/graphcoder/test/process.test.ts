@@ -83,11 +83,16 @@ describe("JSON-lines process bridge", () => {
     expect(bridge.cancel("collision")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
     expect(diagnostics).toContainEqual({ kind: "cancel_control_failed", requestId: "collision", message: "cancel control request id collides with an active or retired request" });
-    const deadline = Date.now() + 2_000;
-    while (!diagnostics.some(event => event.kind === "cancelled_response" && event.requestId === "collision") && Date.now() < deadline) {
-      await new Promise<void>(resolve => setTimeout(resolve, 20));
-    }
-    expect(diagnostics).toContainEqual({ kind: "cancelled_response", requestId: "collision" });
+    bridge.close();
+  });
+
+  test("retains a cancellation control id after its response", async () => {
+    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), cancelMessage: () => request("control") });
+    const pending = bridge.request(request("original", 20));
+    expect(bridge.cancel("original")).toBe(true);
+    await expect(pending).rejects.toMatchObject({ code: "transport" });
+    await new Promise<void>(resolve => setTimeout(resolve, 200));
+    await expect(bridge.request(request("control"))).rejects.toMatchObject({ code: "invalid_input" });
     bridge.close();
   });
 

@@ -217,10 +217,11 @@ const initialState: GraphCoderUiState = {
 
 function checkedId(value: string, label: string): string {
   if (typeof value !== "string" || value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must not be empty`);
+  if (new TextEncoder().encode(value).byteLength > MAX_OPERATION_ID_BYTES) throw new GraphCoderError("invalid_input", `${label} must be at most 256 UTF-8 bytes`);
   return value;
 }
 
-function checkedPath(value: string): string {
+export function checkedPath(value: string): string {
   const bytes = new TextEncoder().encode(value);
   if (bytes.byteLength === 0 || bytes.byteLength > 4_096) throw new GraphCoderError("invalid_input", "path must be between 1 and 4096 UTF-8 bytes");
   if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
@@ -255,6 +256,7 @@ function pageQuery(after: string | undefined, limit: number | undefined): PageQu
 export class GraphCoderUi {
   #state: GraphCoderUiState = initialState;
   #queue: Promise<void> = Promise.resolve();
+  #queueGeneration = 0;
   #commandEpoch = 0;
 
   constructor(readonly transport: GraphCoderTransport) {}
@@ -266,7 +268,14 @@ export class GraphCoderUi {
     // model request is waiting. It is deliberately the only command that may
     // bypass the presentation queue; stale work is fenced below.
     if (command.kind === "cancel_session") return this.#cancelNow();
-    const run = this.#queue.then(() => this.#dispatchOne(command), () => this.#dispatchOne(command));
+    const queueGeneration = this.#queueGeneration;
+    const run = this.#queue.then(() => {
+      if (queueGeneration !== this.#queueGeneration) return;
+      return this.#dispatchOne(command);
+    }, () => {
+      if (queueGeneration !== this.#queueGeneration) return;
+      return this.#dispatchOne(command);
+    });
     this.#queue = run.then(() => undefined, () => undefined);
     await run;
     // Never hand the private projection graph to a host.  In particular,
@@ -280,6 +289,7 @@ export class GraphCoderUi {
     // Detach queued presentation work immediately. The durable owner still
     // receives the cancellation below, while commands submitted after the
     // cancellation are never chained behind a request that may not resolve.
+    this.#queueGeneration += 1;
     this.#queue = Promise.resolve();
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {

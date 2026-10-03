@@ -84,6 +84,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     try { checkedRequestId(request.request_id); }
     catch (error) { return Promise.reject(error instanceof GraphCoderError ? error : new GraphCoderError("invalid_input", String(error))); }
     if (this.#cancelled.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `request id ${request.request_id} is retired after cancellation`));
+    if (this.#cancelControls.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `request id ${request.request_id} is reserved for a cancellation control`));
     if (this.#pending.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `duplicate bridge request id ${request.request_id}`));
     if (this.#pending.size >= this.#maximumPendingRequests) return Promise.reject(new GraphCoderError("transport", "bridge pending request limit reached"));
     let line: string;
@@ -190,7 +191,6 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (pending === undefined) {
       const cancelledRequestId = this.#cancelControls.get(requestId);
       if (cancelledRequestId !== undefined) {
-        this.#cancelControls.delete(requestId);
         this.#onDiagnostic({ kind: "cancelled_response", requestId: cancelledRequestId });
         return;
       }
@@ -229,7 +229,6 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       return;
     }
     this.#cancelControls.set(request.request_id, requestId);
-    while (this.#cancelControls.size > 4_096) this.#cancelControls.delete(this.#cancelControls.keys().next().value!);
     let line: string;
     try { line = `${JSON.stringify(request)}\n`; }
     catch (error) {

@@ -272,6 +272,24 @@ describe("GraphCoder UI transport boundary", () => {
     void stuck;
   });
 
+  test("cancellation fences commands that were already queued behind a stuck request", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", operationId: "op-queued", prompt: "inspect" });
+    let release!: () => void;
+    transport.readActivity = async () => await new Promise<void>(resolve => { release = resolve; });
+    const stuck = ui.dispatch({ kind: "load_activity" });
+    await Promise.resolve();
+    const queued = ui.dispatch({ kind: "load_messages" });
+    await Promise.resolve();
+    await ui.dispatch({ kind: "cancel_session" });
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "cancelSession"]);
+    release();
+    await stuck;
+    await queued;
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "cancelSession"]);
+  });
+
   test("a newer open wins if cancellation finishes later", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);

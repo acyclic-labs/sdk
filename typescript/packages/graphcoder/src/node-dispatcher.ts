@@ -26,7 +26,9 @@ export async function runNodeGraphCoderDispatcher(options: NodeGraphCoderDispatc
   const dispatcher = new GraphCoderWireDispatcher(options.transport);
   const pending = new Set<Promise<void>>();
   for await (const frame of boundedFrames(input, maximumLineBytes)) {
-    while (pending.size >= maximumInFlight) await Promise.race(pending);
+    // A cancellation is a reserved control path. It must be admitted even
+    // when all ordinary model requests are waiting on the durable owner.
+    while (pending.size >= maximumInFlight && !isControlFrame(frame)) await Promise.race(pending);
     const response = frame.kind === "too_long"
       ? Promise.resolve(JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line exceeds the configured size" } }))
       : frame.kind === "invalid_utf8"
@@ -44,7 +46,7 @@ async function* boundedFrames(input: Readable, maximumLineBytes: number): AsyncG
   let buffer = Buffer.alloc(0);
   let tooLong = false;
   for await (const chunk of input) {
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    const bytes = Buffer.isBuffer(chunk) ? chunk : typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk as Uint8Array);
     let offset = 0;
     while (offset < bytes.length) {
       const newline = bytes.indexOf(0x0a, offset);
@@ -90,6 +92,16 @@ async function* boundedFrames(input: Readable, maximumLineBytes: number): AsyncG
   else if (buffer.length > 0) {
     const value = decodeUtf8(buffer);
     yield value === undefined ? { kind: "invalid_utf8" } : { kind: "line", value };
+  }
+}
+
+function isControlFrame(frame: NodeFrame): boolean {
+  if (frame.kind !== "line") return false;
+  try {
+    const value = JSON.parse(frame.value) as unknown;
+    return typeof value === "object" && value !== null && !Array.isArray(value) && (value as { method?: unknown }).method === "cancel_session";
+  } catch {
+    return false;
   }
 }
 
