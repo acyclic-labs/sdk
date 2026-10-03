@@ -308,7 +308,10 @@ async fn local_project(
     StreamClient<LocalStream>,
     VolumeRef,
 )> {
-    let provider = ProviderRef::new("local-model-swarm", "filesystem", "2")?;
+    // PersistentLocalHarness pins private volumes to the production local
+    // filesystem provider identity. The fixture host and project must use the
+    // same identity so strict FilesystemHost ownership checks remain active.
+    let provider = ProviderRef::new("local", "filesystem", "2")?;
     let host = Arc::new(FilesystemHost::new(
         LocalFs::local(LocalOptions::new(root.join("filesystem")))
             .await
@@ -350,7 +353,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
 {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (host, stream, project) = local_project(directory.path()).await?;
-    let stream_provider = ProviderRef::new("local-model-swarm", "stream", "2")?;
+    let stream_provider = ProviderRef::new("local", "stream", "2")?;
     let child_a = id(0xA1);
     let child_b = id(0xB1);
     let grandchild = id(0xC1);
@@ -453,7 +456,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         LocalFilesystemForkResolver::new(
             host,
             stream,
-            ProviderRef::new("local-model-swarm", "stream", "2")?,
+            ProviderRef::new("local", "stream", "2")?,
             project,
         )?
         .with_host_secret([0x5A; 32])?,
