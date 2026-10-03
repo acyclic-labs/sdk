@@ -19,8 +19,8 @@ node scripts/graphcoder-qualification.mjs receipt-check docs/graphcoder-swarm/re
 The template is deliberately incomplete. It records every matrix ID as
 `pending` and cannot pass the final gate. A qualification run replaces those
 records with evidence that names the suite, its on-disk descriptor and
-transcript digests, the execution kind, and the exact artifacts consumed by that
-suite. The receipt also records the source
+transcript digests, the execution kind, the execution window, and the exact
+artifacts consumed by that suite. The receipt also records the source
 commit, worktree, branch, pinned base, clean/unmerged state, suite transcript
 digests, and distributable build provenance. The validator compares those claims
 with the current Git checkout and hashes the referenced files itself.
