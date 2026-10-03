@@ -7,12 +7,12 @@
 //! lifecycle and integration effects still go through typed SDK operations.
 
 use super::super::merge::{
-    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan, ProjectMergeReceipt,
-    ProjectMergeVerifier,
+    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan,
+    ProjectMergeReceipt, ProjectMergeVerifier,
 };
 use super::{
     ParentMergePlan, ParentProjectController, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
-    WorkspaceObservation,
+    ProjectMergeTerminal, ProjectMergeTerminalConflict, WorkspaceObservation,
 };
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -829,6 +829,56 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore + Send + Sync + 'static,
         O: AsyncObjectStore + Send + Sync + 'static,
     {
+        let outcome = self
+            .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                request,
+                host,
+                parent,
+                child,
+                child_project,
+                plan,
+                selections,
+                notice,
+                recovery,
+            )
+            .await?;
+        match outcome {
+            ProjectJoinOutcome::Applied(receipt)
+            | ProjectJoinOutcome::AlreadyApplied(receipt) => Ok(receipt),
+            ProjectJoinOutcome::NoChanges(_)
+            | ProjectJoinOutcome::StaleTarget(_)
+            | ProjectJoinOutcome::Conflicted { .. }
+            | ProjectJoinOutcome::Fenced
+            | ProjectJoinOutcome::IdempotencyConflict => Err(Error::Conflict(
+                "project join completed without a receipt".into(),
+            )),
+        }
+    }
+
+    /// Applies the recovery-bound writeback and returns every typed provider
+    /// result. Known non-applied results are recorded before they are returned;
+    /// a retry with the same operation identity reopens that exact terminal
+    /// result without dispatching the provider again.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "recovery-bound writeback keeps approval, parent, child, plan, selections, notice, and journal explicit"
+    )]
+    pub async fn apply_root_writeback_plan_for_child_with_recovery_outcome<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+        notice: ConversationMessage,
+        recovery: &ProjectMergeRecovery<'_>,
+    ) -> Result<ProjectJoinOutcome>
+    where
+        A: AsyncAuthorityStore + Send + Sync + 'static,
+        O: AsyncObjectStore + Send + Sync + 'static,
+    {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
         self.verify_root_writeback(
@@ -853,21 +903,42 @@ impl<S> FilesystemGitFacade<S> {
             notice: notice.clone(),
         };
         recovery.prepare(intent).await?;
+        if let Some(entry) = recovery.reopen().await? {
+            if let Some(terminal) = entry.terminal {
+                return Ok(terminal.outcome());
+            }
+            if let Some(receipt) = entry.receipt {
+                return Ok(ProjectJoinOutcome::AlreadyApplied(receipt));
+            }
+        }
         let outcome = self
             .apply_root_writeback_plan(request, host, parent, plan, selections)
             .await?;
-        let receipt = self.merge_receipt(
-            host,
-            parent,
-            plan,
-            &outcome,
-            child,
-            request.approval.operation_id,
-            notice,
-        )?;
-        let verifier = super::FilesystemProjectMergeVerifier::new(Arc::new(host.clone()));
-        recovery.record_applied(receipt.clone(), &verifier).await?;
-        Ok(receipt)
+        match &outcome {
+            JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
+                let receipt = self.merge_receipt(
+                    host,
+                    parent,
+                    plan,
+                    &outcome,
+                    child,
+                    request.approval.operation_id,
+                    notice,
+                )?;
+                let verifier = super::FilesystemProjectMergeVerifier::new(Arc::new(host.clone()));
+                recovery.record_applied(receipt.clone(), &verifier).await?;
+                Ok(if matches!(&outcome, JoinOutcome::AlreadyApplied(_)) {
+                    ProjectJoinOutcome::AlreadyApplied(receipt)
+                } else {
+                    ProjectJoinOutcome::Applied(receipt)
+                })
+            }
+            _ => {
+                let terminal = terminal_from_join_outcome(host, &outcome)?;
+                recovery.record_terminal(terminal.clone()).await?;
+                Ok(terminal.outcome())
+            }
+        }
     }
 
     /// Reconstructs the provider receipt after a crash between the provider
@@ -893,6 +964,14 @@ impl<S> FilesystemGitFacade<S> {
             return Err(Error::Unauthorized(
                 "recovery approval belongs to another scope".into(),
             ));
+        }
+        if entry.terminal.is_some() {
+            return Err(Error::Conflict(
+                "project provider result is a durable terminal outcome".into(),
+            ));
+        }
+        if let Some(receipt) = &entry.receipt {
+            return Ok(receipt.clone());
         }
         let approval = RootWritebackApproval {
             operation_id: entry.intent.operation_id,
@@ -1121,6 +1200,63 @@ impl<S> FilesystemGitFacade<S> {
     fn require_fork(&self) -> Result<()> {
         self.require_write()?;
         self.require_capability("fork:publish")
+    }
+}
+
+fn terminal_from_join_outcome<A, O>(
+    host: &super::FilesystemHost<A, O>,
+    outcome: &JoinOutcome<A, O>,
+) -> Result<ProjectMergeTerminal>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+{
+    match outcome {
+        JoinOutcome::NoChanges(generation) => Ok(ProjectMergeTerminal::NoChanges {
+            generation: host.generation_ref(generation)?,
+        }),
+        JoinOutcome::StaleTarget(generation) => Ok(ProjectMergeTerminal::StaleTarget {
+            generation: host.generation_ref(generation)?,
+        }),
+        JoinOutcome::Conflicted {
+            conflicts,
+            truncated,
+        } => Ok(ProjectMergeTerminal::Conflicted {
+            conflicts: conflicts
+                .iter()
+                .map(|conflict| ProjectMergeTerminalConflict {
+                    provider: host.provider().clone(),
+                    key: encode_merge_conflict(conflict),
+                })
+                .collect(),
+            truncated: *truncated,
+        }),
+        JoinOutcome::Fenced => Ok(ProjectMergeTerminal::Fenced),
+        JoinOutcome::IdempotencyConflict => Ok(ProjectMergeTerminal::IdempotencyConflict),
+        JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => Err(Error::Invalid(
+            "applied provider result cannot be a terminal recovery result".into(),
+        )),
+    }
+}
+
+fn encode_merge_conflict(conflict: &MergeConflict) -> Vec<u8> {
+    match conflict {
+        MergeConflict::File(id) => {
+            let mut key = vec![1];
+            key.extend_from_slice(&id.into_bytes());
+            key
+        }
+        MergeConflict::Binding { directory_id, name } => {
+            let mut key = vec![2];
+            key.extend_from_slice(&directory_id.into_bytes());
+            key.push(match name.encoding() {
+                acyclic_fs::kernel::NameEncoding::Utf8 => 1,
+                acyclic_fs::kernel::NameEncoding::PosixBytes => 2,
+                acyclic_fs::kernel::NameEncoding::WindowsUtf16Le => 3,
+            });
+            key.extend_from_slice(name.as_bytes());
+            key
+        }
     }
 }
 

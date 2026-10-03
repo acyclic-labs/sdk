@@ -65,7 +65,8 @@ mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod project_merge_recovery;
 pub use project_merge_recovery::{
-    ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry,
+    ProjectMergeIntent, ProjectMergeRecovery, ProjectMergeRecoveryEntry, ProjectMergeTerminal,
+    ProjectMergeTerminalConflict,
 };
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;

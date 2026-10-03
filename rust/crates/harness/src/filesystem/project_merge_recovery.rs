@@ -6,7 +6,8 @@ use crate::{
     conversation::{ConversationMessage, VolumeRef},
     core::Authority,
     executor::{ExecutionEvent, ExecutionJournal, load_json, stage_json},
-    merge::ProjectMergeReceipt,
+    merge::{ProjectConflict, ProjectJoinOutcome, ProjectMergeReceipt},
+    resources::ProviderRef,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
@@ -80,6 +81,126 @@ impl ProjectMergeIntent {
     }
 }
 
+/// A provider result which is known to have published no target generation.
+/// An absent result remains reserved for an unknown crash before the provider
+/// reply was observed and must still be reconciled with the stable operation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, tag = "kind", rename_all = "snake_case")]
+pub enum ProjectMergeTerminal {
+    /// The source is already represented by the target.
+    NoChanges {
+        /// Provider generation observed as the unchanged target.
+        generation: crate::resources::GenerationRef,
+    },
+    /// The target compare-and-swap no longer matches the inspected target.
+    StaleTarget {
+        /// Provider generation observed after the stale-target rejection.
+        generation: crate::resources::GenerationRef,
+    },
+    /// Explicit conflicts prevented candidate publication.
+    Conflicted {
+        /// Provider-owned conflict identities retained for the next plan.
+        conflicts: Vec<ProjectMergeTerminalConflict>,
+        /// Whether the provider omitted additional conflicts due to a bound.
+        truncated: bool,
+    },
+    /// The provider writer fence changed before publication.
+    Fenced,
+    /// The retry identity was bound to different immutable inputs.
+    IdempotencyConflict,
+}
+
+/// Serializable provider conflict identity retained inside a terminal record.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProjectMergeTerminalConflict {
+    /// Provider that owns interpretation of the key.
+    pub provider: ProviderRef,
+    /// Bounded opaque provider conflict key.
+    pub key: Vec<u8>,
+}
+
+impl ProjectMergeTerminalConflict {
+    fn validate(&self) -> Result<()> {
+        self.provider.validate()?;
+        if self.key.is_empty() || self.key.len() > 4_096 {
+            return Err(Error::Invalid("project conflict key is invalid".into()));
+        }
+        Ok(())
+    }
+}
+
+impl ProjectMergeTerminal {
+    /// Converts the durable terminal value to the model-facing typed result.
+    #[must_use]
+    pub fn outcome(&self) -> ProjectJoinOutcome {
+        match self {
+            Self::NoChanges { generation } => ProjectJoinOutcome::NoChanges(generation.clone()),
+            Self::StaleTarget { generation } => {
+                ProjectJoinOutcome::StaleTarget(generation.clone())
+            }
+            Self::Conflicted {
+                conflicts,
+                truncated,
+            } => ProjectJoinOutcome::Conflicted {
+                conflicts: conflicts
+                    .iter()
+                    .map(|conflict| ProjectConflict {
+                        provider: conflict.provider.clone(),
+                        key: conflict.key.clone(),
+                    })
+                    .collect(),
+                truncated: *truncated,
+            },
+            Self::Fenced => ProjectJoinOutcome::Fenced,
+            Self::IdempotencyConflict => ProjectJoinOutcome::IdempotencyConflict,
+        }
+    }
+
+    /// Returns a stable error for receipt-only callers.
+    #[must_use]
+    pub fn error_message(&self) -> &'static str {
+        match self {
+            Self::NoChanges { .. } => "project join made no changes",
+            Self::StaleTarget { .. } => "project join target is stale",
+            Self::Conflicted { .. } => "project join has unresolved conflicts",
+            Self::Fenced => "project join was fenced before publication",
+            Self::IdempotencyConflict => "project join retry identity conflicts",
+        }
+    }
+
+    /// Validates the terminal result against the immutable merge intent.
+    pub fn validate(&self, intent: &ProjectMergeIntent) -> Result<()> {
+        match self {
+            Self::NoChanges { generation } | Self::StaleTarget { generation } => {
+                generation.validate()?;
+                if generation.as_resource().provider() != intent.target_project.provider() {
+                    return Err(Error::Conflict(
+                        "project merge terminal generation belongs to another provider".into(),
+                    ));
+                }
+            }
+            Self::Conflicted { conflicts, .. } => {
+                if conflicts.len() > 4_096 {
+                    return Err(Error::Invalid(
+                        "project merge terminal conflicts are oversized".into(),
+                    ));
+                }
+                for conflict in conflicts {
+                    conflict.validate()?;
+                    if conflict.provider != *intent.target_project.provider() {
+                        return Err(Error::Conflict(
+                            "project merge terminal conflict belongs to another provider".into(),
+                        ));
+                    }
+                }
+            }
+            Self::Fenced | Self::IdempotencyConflict => {}
+        }
+        Ok(())
+    }
+}
+
 /// Durable provider/publication state retained in the private execution
 /// journal. `receipt` is present only after the provider join was observed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -90,12 +211,23 @@ pub struct ProjectMergeRecoveryEntry {
     /// Provider witness and result, once the join is durable.
     #[serde(default)]
     pub receipt: Option<ProjectMergeReceipt>,
+    /// Known provider result which deliberately produced no receipt.
+    #[serde(default)]
+    pub terminal: Option<ProjectMergeTerminal>,
 }
 
 impl ProjectMergeRecoveryEntry {
     /// Validates the entry and ensures the receipt cannot change its intent.
     pub fn validate(&self) -> Result<()> {
         self.intent.validate()?;
+        if self.receipt.is_some() && self.terminal.is_some() {
+            return Err(Error::Conflict(
+                "project merge entry has both receipt and terminal result".into(),
+            ));
+        }
+        if let Some(terminal) = &self.terminal {
+            terminal.validate(&self.intent)?;
+        }
         if let Some(receipt) = &self.receipt {
             receipt.validate_shape()?;
             if receipt.operation_id != self.intent.operation_id
@@ -161,6 +293,7 @@ impl<'a> ProjectMergeRecovery<'a> {
         let entry = ProjectMergeRecoveryEntry {
             intent,
             receipt: None,
+            terminal: None,
         };
         entry.validate()?;
         self.append_entry("project-merge:prepared", 0, &entry).await
@@ -191,6 +324,11 @@ impl<'a> ProjectMergeRecovery<'a> {
                 "project merge receipt operation changed".into(),
             ));
         }
+        if entry.terminal.is_some() {
+            return Err(Error::Conflict(
+                "project merge operation already has a terminal result".into(),
+            ));
+        }
         if let Some(existing) = &entry.receipt {
             if existing != &receipt {
                 return Err(Error::Conflict(
@@ -209,12 +347,40 @@ impl<'a> ProjectMergeRecovery<'a> {
         let candidate = ProjectMergeRecoveryEntry {
             intent: entry.intent.clone(),
             receipt: Some(receipt.clone()),
+            terminal: None,
         };
         candidate.validate()?;
         verifier.verify(&receipt).await?;
         entry.receipt = Some(receipt);
         entry.validate()?;
         self.append_entry("project-merge:applied", 1, &entry).await
+    }
+
+    /// Persists a known non-applied provider result before returning it.
+    pub async fn record_terminal(&self, terminal: ProjectMergeTerminal) -> Result<()> {
+        let records = self.journal.replay(self.operation_id).await?;
+        let Some((_, reference)) = latest_started(&records) else {
+            return Err(Error::Conflict("project merge intent is missing".into()));
+        };
+        let mut entry: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
+        entry.validate()?;
+        terminal.validate(&entry.intent)?;
+        if let Some(existing) = &entry.terminal {
+            if existing == &terminal {
+                return Ok(());
+            }
+            return Err(Error::Conflict(
+                "project merge terminal result changed".into(),
+            ));
+        }
+        if entry.receipt.is_some() {
+            return Err(Error::Conflict(
+                "project merge operation already has an applied receipt".into(),
+            ));
+        }
+        entry.terminal = Some(terminal);
+        entry.validate()?;
+        self.append_entry("project-merge:terminal", 2, &entry).await
     }
 
     /// Returns the retained applied receipt after a restart, if Stream
@@ -242,6 +408,9 @@ impl<'a> ProjectMergeRecovery<'a> {
         };
         let entry: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
         entry.validate()?;
+        if entry.terminal.is_some() {
+            return Ok(());
+        }
         if entry.receipt.is_none() {
             return Err(Error::Conflict(
                 "project provider result is not retained".into(),
@@ -285,6 +454,9 @@ impl<'a> ProjectMergeRecovery<'a> {
         };
         let entry: ProjectMergeRecoveryEntry = load_json(self.journal, reference).await?;
         entry.validate()?;
+        if entry.terminal.is_some() {
+            return Ok(Some(entry));
+        }
         let bytes = crate::contract::canonical_json_bytes(&entry)?;
         let digest = *blake3::hash(&bytes).as_bytes();
         if records.iter().any(|record| {

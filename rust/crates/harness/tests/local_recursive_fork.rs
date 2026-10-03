@@ -874,6 +874,92 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 .as_ref(),
                 format!("project child {level}").as_bytes(),
             );
+
+            // A target edit after the inspected merge makes the original
+            // compare-and-swap stale. The recovery API must durably retain
+            // that known provider result and return the same typed result on
+            // a retry with the same operation identity.
+            let concurrent_target = host
+                .resolve(&workspace_ref(
+                    provider.clone(),
+                    &project.storage_name()?,
+                )?)
+                .await?;
+            host.apply(
+                &concurrent_target.workspace,
+                Some(&concurrent_target.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/concurrent-target-edit.txt".into(),
+                    bytes: b"concurrent target edit".to_vec(),
+                }],
+                &IdempotencyKey::new("concurrent-target-edit")?,
+            )
+            .await?;
+            let terminal_operation = OperationId::from_bytes([93; 16]);
+            let terminal_approval = RootWritebackApproval::issue(
+                &issuer.verifier(),
+                &grant_scope,
+                project.clone(),
+                terminal_operation,
+                host.generation_ref_id(plan.source_head())?,
+                host.generation_ref_id(plan.target_head())?,
+            )?;
+            let terminal_journal = FilesystemExecutionJournal::new(
+                stream.clone(),
+                host.clone(),
+                private.clone(),
+                issuer.verifier(),
+                grant_scope.clone(),
+                64 * 1_024,
+            )?;
+            let terminal_recovery = ProjectMergeRecovery::new(&terminal_journal, terminal_operation);
+            let terminal_request = RootWritebackRequest::new(
+                terminal_approval,
+                grant_scope.clone(),
+            );
+            let terminal_outcome = parent_facade
+                .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                    &terminal_request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority.clone(),
+                    &child_project,
+                    &plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &terminal_recovery,
+                )
+                .await?;
+            assert!(matches!(
+                terminal_outcome,
+                acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_)
+            ));
+            let terminal_entry = terminal_recovery
+                .reopen()
+                .await?
+                .ok_or_else(|| Error::Conflict("stale terminal result was not retained".into()))?;
+            assert!(matches!(
+                terminal_entry.terminal,
+                Some(acyclic_harness::filesystem::ProjectMergeTerminal::StaleTarget { .. })
+            ));
+            assert!(terminal_entry.receipt.is_none());
+            let retried_outcome = parent_facade
+                .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                    &terminal_request,
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    child_authority.clone(),
+                    &child_project,
+                    &plan,
+                    std::collections::BTreeMap::new(),
+                    merge_message.clone(),
+                    &terminal_recovery,
+                )
+                .await?;
+            assert!(matches!(
+                retried_outcome,
+                acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_)
+            ));
         }
 
         final_child_issuer = Some(child_issuer.clone());
