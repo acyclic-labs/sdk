@@ -2404,6 +2404,15 @@ impl PersistentLocalSwarm {
                 if self.requests.lock().await.get(&child) != Some(&request) {
                     return Err(Error::Conflict("child operation is already a different session".into()));
                 }
+                if self.seeds.lock().await.get(&child) != Some(seed)
+                    || self.reports.lock().await.get(&child) != Some(&report)
+                    || self.publications.lock().await.get(&child) != Some(&publication)
+                    || self.declarations.lock().await.get(&child) != Some(&declaration)
+                {
+                    return Err(Error::Conflict(
+                        "existing child publication binding differs from published fork".into(),
+                    ));
+                }
                 if session.phase == LocalSessionPhase::Completed {
                     if session.operation != Some(request.child_operation) {
                         return Err(Error::Conflict(
@@ -2420,17 +2429,6 @@ impl PersistentLocalSwarm {
                 if session.phase == LocalSessionPhase::Cancelled {
                     return Err(Error::Conflict(
                         "cancelled child operation is terminal and cannot be resurrected".into(),
-                    ));
-                }
-                if self.seeds.lock().await.get(&child) != Some(seed) {
-                    return Err(Error::Conflict("existing child seed differs from published fork".into()));
-                }
-                if self.reports.lock().await.get(&child) != Some(&report)
-                    || self.publications.lock().await.get(&child) != Some(&publication)
-                    || self.declarations.lock().await.get(&child) != Some(&declaration)
-                {
-                    return Err(Error::Conflict(
-                        "existing child publication binding differs from published fork".into(),
                     ));
                 }
                 false
