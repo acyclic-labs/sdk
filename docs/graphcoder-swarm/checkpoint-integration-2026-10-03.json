@@ -1,0 +1,69 @@
+{
+  "source": "c44432dc",
+  "handle": 93437,
+  "exit_code": 1,
+  "command": "cargo test -p acyclic-harness --features filesystem-local --test local_recursive_fork --test model_fork_boundary --test local_model_swarm --test local_swarm_recovery --test execution_journal -j2 --no-fail-fast -- --nocapture",
+  "compilation": "passed",
+  "results": {
+    "local_model_swarm": {
+      "failure": "fork manifest not bound to command and parent revision",
+      "failed": 1,
+      "passed": 0
+    },
+    "local_recursive_fork": {
+      "failure": "local Stream root is already open",
+      "failed": 1,
+      "passed": 1
+    },
+    "local_swarm_recovery": {
+      "passed": 7,
+      "failed": 0
+    },
+    "execution_journal": {
+      "failure": "scoped tool install: exact approval operation grant absent",
+      "failed": 1,
+      "passed": 5
+    },
+    "model_fork_boundary": {
+      "failures": [
+        "invalid attestation allocated child project workspace",
+        "positive fork model boundary attestation invalid"
+      ],
+      "failed": 2,
+      "passed": 1
+    }
+  },
+  "digests": [
+    {
+      "suite": "execution_journal",
+      "suite_sha256": "33AB447C1EF7EAC02FA8DA4E8B279A5FB4DDA573B829230EE17C47ACB8BCF4C8",
+      "artifact": "execution_journal-f22b3d025305c991.exe",
+      "artifact_sha256": "E0AFE6AD7D4D238213DC2369C6A249A27675C13DA09467D59039DEFA30AD413F"
+    },
+    {
+      "suite": "local_model_swarm",
+      "suite_sha256": "4102BAC1A6899273BA8909E06A5AEC42A5968F5AC19B2966B953174DDE4420A9",
+      "artifact": "local_model_swarm-609d0f1d2744f17c.exe",
+      "artifact_sha256": "045609F71627F4C5599E6D9E938D3352E8CFC476593D32ADE31D9826AA95DC73"
+    },
+    {
+      "suite": "local_recursive_fork",
+      "suite_sha256": "F2483C9DA91F2DCD551D1D36291B975973520C4406AF3456BB378AEEE01E3A37",
+      "artifact": "local_recursive_fork-b37c89eb3abdb480.exe",
+      "artifact_sha256": "7926779A7A4E0B99CF1D6098B63ABCA8B76537824A2A28AFA4C15ED7CEAD08D2"
+    },
+    {
+      "suite": "local_swarm_recovery",
+      "suite_sha256": "5985F41E34831934A01DB017299BACEBFAF60D1BC7E0640EC8E773AC78EBA918",
+      "artifact": "local_swarm_recovery-ec634dcd9baf397f.exe",
+      "artifact_sha256": "5710074CF33B12BF39F50F665DBA408ED479DEE54A7C6205F17F9EC1C32E973E"
+    },
+    {
+      "suite": "model_fork_boundary",
+      "suite_sha256": "43CCAC8DDD28DCD45C7098EE21DDE60F3F38851A91C79B47B00011651C555207",
+      "artifact": "model_fork_boundary-6a2b9ef46d1107ad.exe",
+      "artifact_sha256": "63601410096080CAEF8C7AB3517FAC5E0F796AD335130C6CDD607A3FC3998972"
+    }
+  ],
+  "qualification": "incomplete"
+}
