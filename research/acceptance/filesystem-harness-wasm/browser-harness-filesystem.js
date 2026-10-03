@@ -6,7 +6,6 @@ import {
 import {
   MemoryConversation,
   NativeContracts,
-  defineTool,
   Harness,
 } from "@acyclic-labs/harness";
 
@@ -63,7 +62,7 @@ async function qualifyHarness() {
   });
   try {
     const contracts = await NativeContracts.create();
-    const tool = defineTool({
+    const tool = {
       name: "write-browser-file",
       revision: "v1",
       description: "Stage one file in the owning conversation store.",
@@ -81,14 +80,21 @@ async function qualifyHarness() {
       },
       parseInput: parseWriteInput,
       parseOutput: parseWriteOutput,
-    }, async (context, input) => {
-      const payload = encoder.encode("harness wasm tool payload");
-      const file = await context.stageFile("browser-tool-operation", input.path, payload, "text/plain", "tool-output.txt");
-      return { path: file.path, bytes: payload.byteLength };
-    });
+    };
+    const executor = {
+      async execute(invocation) {
+        assert(invocation.operationId === "browser-tool-operation", "Harness executor operation identity changed");
+        const payload = encoder.encode("harness wasm tool payload");
+        const file = await host.stage(invocation.arguments.path, payload, "text/plain", "tool-output.txt");
+        return { value: { path: file.path, bytes: payload.byteLength } };
+      },
+      async reconcile() {
+        return undefined;
+      },
+    };
     const runtime = Harness.builder(contracts)
       .content(host.contentBindings())
-      .tool(tool)
+      .tool(tool, executor)
       .agentLoop({
         async run(context) {
           const write = await context.call(
