@@ -865,7 +865,10 @@ async fn write_response<W: AsyncWrite + Unpin>(
 ) -> std::io::Result<()> {
     let bytes = serde_json::to_vec(response).map_err(std::io::Error::other)?;
     output.write_all(&bytes).await?;
-    output.write_all(b"\n").await
+    output.write_all(b"\n").await?;
+    // JSON-lines clients keep stdin open while they await each response.
+    // Flush the complete envelope so interactive callers do not wait for EOF.
+    output.flush().await
 }
 
 #[tokio::main]
@@ -981,6 +984,52 @@ mod tests {
         assert!(started["result"]["workspace_generation"]
             .as_str()
             .is_some_and(|generation| !generation.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn json_lines_flushes_each_response_before_input_eof() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
+        let (response_writer, response_reader) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(serve(runtime, request_reader, response_writer));
+        request_writer
+            .write_all(
+                serde_json::to_string(&json!({
+                    "request_id": "interactive-1",
+                    "method": "list_sessions",
+                    "params": {}
+                }))
+                .expect("request serializes")
+                .as_bytes(),
+            )
+            .await
+            .expect("request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("request newline writes");
+        let mut response_reader = BufReader::new(response_reader);
+        let mut line = String::new();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            response_reader.read_line(&mut line),
+        )
+        .await
+        .expect("response arrives before input closes")
+        .expect("response reads");
+        let response: Value = serde_json::from_str(&line).expect("response JSON");
+        assert_eq!(response["request_id"], "interactive-1");
+        assert_eq!(response["ok"], true);
+        request_writer.shutdown().await.expect("request closes");
+        server
+            .await
+            .expect("server joins")
+            .expect("server succeeds");
     }
 
     #[tokio::test]
