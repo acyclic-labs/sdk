@@ -325,6 +325,15 @@ async fn root_writeback_requires_authenticated_scope_binding() -> Result<()> {
         extensions: Default::default(),
     };
     let plan = ApprovalPlan { source, target };
+    let mut malformed_notice = notice.clone();
+    malformed_notice.kind = MessageKind::User;
+    let valid_request = RootWritebackRequest::new(approval.clone(), scope.clone());
+    let error = facade
+        .apply_root_writeback(&valid_request, &plan, &authority, &malformed_notice, &[])
+        .await
+        .err()
+        .ok_or_else(|| Error::Invalid("malformed writeback notice was accepted".into()))?;
+    assert!(matches!(error, Error::Invalid(_)));
     let error = facade
         .apply_root_writeback(&request, &plan, &authority, &notice, &[])
         .await
@@ -462,7 +471,7 @@ async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()
     ));
     let operations = executor.operations();
     assert_eq!(operations.len(), 3);
-    assert_ne!(operations[1], operations[2]);
+    assert_eq!(operations[1], operations[2]);
 
     let (facade, workspace_id) = transition_facade()?;
     let executor = Arc::new(FaultExecutor::new(workspace_id));

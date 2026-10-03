@@ -2074,6 +2074,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let Some(pending) = self.pending_transition().await? else {
             return Ok(None);
         };
+        self.resume_pending(pending, executor).await.map(Some)
+    }
+
+    /// Completes a transition that the caller has already loaded and
+    /// authorized. Passing the immutable transition through the dispatch
+    /// boundary avoids a second pending-state read and keeps recovery tied to
+    /// the exact operation identity selected by the caller.
+    pub async fn resume_pending<E: GitFilesystemExecutor>(
+        &self,
+        pending: GitPendingTransition,
+        executor: &E,
+    ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         // Recovery is still a fresh effect dispatch. Validate the executor
         // lease before invoking the retained action, then validate it again
         // before publishing the observed result.
@@ -2090,11 +2102,11 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .await
             .map_err(GitCompatRunError::Executor)?;
         let output = self.complete_transition_result(pending.id, &result).await?;
-        Ok(Some(if matches!(output, GitCommandOutput::NoOp) {
+        Ok(if matches!(output, GitCommandOutput::NoOp) {
             GitCommandOutput::Filesystem(result)
         } else {
             output
-        }))
+        })
     }
 
     async fn finish_output<E: GitFilesystemExecutor>(
