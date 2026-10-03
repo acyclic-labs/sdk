@@ -1062,6 +1062,16 @@ where
         )
     }
 
+    /// Returns a host-only signer for an explicitly approved execution
+    /// resolution. The issuer key remains inside the storage composition and
+    /// the returned authorizer can mint only exact session, volume, and
+    /// operation grants.
+    pub fn execution_operator_authorizer(
+        &self,
+    ) -> crate::host_execution::ExecutionOperatorAuthorizer {
+        crate::host_execution::ExecutionOperatorAuthorizer::new(self.issuer.clone())
+    }
+
     /// Starts a runnable local composition with this owner-controlled journal.
     #[must_use]
     pub fn builder(&self) -> crate::bundle::HarnessBuilder {

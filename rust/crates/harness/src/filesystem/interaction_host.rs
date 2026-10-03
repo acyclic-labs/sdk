@@ -560,9 +560,12 @@ where
                         "interaction answer artifact is not canonical JSON".into(),
                     ));
                 };
-                if operation.is_empty()
-                    || expected_operation.is_some_and(|expected| operation != expected.to_string())
-                {
+                let parsed_operation = OperationId::parse(operation).map_err(|_| {
+                    Error::Unauthorized(
+                        "interaction answer artifact has an invalid operation identity".into(),
+                    )
+                })?;
+                if expected_operation.is_some_and(|expected| parsed_operation != expected) {
                     return Err(Error::Unauthorized(
                         "interaction answer artifact has an invalid operation identity".into(),
                     ));
@@ -625,6 +628,23 @@ where
         };
         self.validate_internal_ref(&ticket.request, id, "request", None, None)?;
         resolution.validate(&ticket)?;
+        let request_grant = ContentGrant::verify(
+            &self.verifier,
+            &self.owner_scope,
+            ticket.request.volume(),
+            VolumeOperation::Read,
+        )?;
+        let request_bytes = self
+            .host
+            .read_internal_content(
+                &ticket.request,
+                ticket.request.volume(),
+                &request_grant,
+                InternalContentClass::Interaction,
+                self.maximum_bytes,
+            )
+            .await?;
+        let request = ticket.validate_request_bytes(&request_bytes)?;
         match (&resolution.outcome, &resolution.detail) {
             (InteractionOutcome::Answered { answer }, None) => {
                 self.validate_internal_ref(
@@ -634,6 +654,23 @@ where
                     Some(resolution.expected_version),
                     Some(operation_id),
                 )?;
+                let answer_grant = ContentGrant::verify(
+                    &self.verifier,
+                    &self.owner_scope,
+                    answer.volume(),
+                    VolumeOperation::Read,
+                )?;
+                let answer_bytes = self
+                    .host
+                    .read_internal_content(
+                        answer,
+                        answer.volume(),
+                        &answer_grant,
+                        InternalContentClass::Interaction,
+                        self.maximum_bytes,
+                    )
+                    .await?;
+                ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
             }
             (_, Some(detail)) => {
                 self.validate_internal_ref(
@@ -642,6 +679,28 @@ where
                     "answer",
                     Some(resolution.expected_version),
                     Some(operation_id),
+                )?;
+                let detail_grant = ContentGrant::verify(
+                    &self.verifier,
+                    &self.owner_scope,
+                    detail.volume(),
+                    VolumeOperation::Read,
+                )?;
+                let detail_bytes = self
+                    .host
+                    .read_internal_content(
+                        detail,
+                        detail.volume(),
+                        &detail_grant,
+                        InternalContentClass::Interaction,
+                        self.maximum_bytes,
+                    )
+                    .await?;
+                ticket.validate_decision_bytes(
+                    &request,
+                    &resolution.outcome,
+                    detail,
+                    &detail_bytes,
                 )?;
             }
             _ => {}

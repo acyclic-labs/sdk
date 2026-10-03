@@ -6,9 +6,9 @@
 //! claim that a workspace route confines a process.
 
 use crate::{
-    EffectAttemptId, EffectId, Error, InteractionId, OperationId, Result, SessionId,
+    Capabilities, EffectAttemptId, EffectId, Error, InteractionId, OperationId, Result, SessionId,
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, VolumeRef},
-    core::{EffectGuarantee, EffectStatus},
+    core::{AuthorityIssuer, EffectGuarantee, EffectStatus, Scope},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
@@ -489,6 +489,10 @@ pub struct ExecutionReceiptRecord {
     /// Authenticated principal that resolved an uncertain outcome, when any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operator_principal: Option<String>,
+    /// Whether the terminal unknown outcome was authorized by an external
+    /// operator capability rather than an internal test-only owner path.
+    #[serde(default)]
+    pub operator_authenticated: bool,
 }
 
 /// Opaque owner handle returned for the one caller that acquired a claim.
@@ -502,6 +506,7 @@ pub struct ExecutionClaimHandle {
     generation: u64,
     operator: bool,
     operator_principal: Option<String>,
+    operator_authenticated: bool,
 }
 
 /// Authenticated host capability required to resolve an uncertain native
@@ -514,6 +519,58 @@ pub struct ExecutionResolutionCapability {
     token: [u8; 32],
     principal: String,
     operation_id: Option<OperationId>,
+    operator_authenticated: bool,
+}
+
+/// Host-only signer for one explicitly approved execution resolution.
+///
+/// The configured issuer stays inside the host composition. Callers receive a
+/// narrow, operation-bound scope only after their host-side approval path has
+/// selected the exact session, volume, and operation. Model tools never see
+/// this signer or its key material.
+#[derive(Clone)]
+pub struct ExecutionOperatorAuthorizer {
+    issuer: AuthorityIssuer,
+}
+
+impl ExecutionOperatorAuthorizer {
+    pub(crate) fn new(issuer: AuthorityIssuer) -> Self {
+        Self { issuer }
+    }
+
+    /// Signs the smallest operator scope for one exact execution attempt.
+    pub fn issue_scope(
+        &self,
+        principal: impl Into<String>,
+        session_id: SessionId,
+        volume: &VolumeRef,
+        operation_id: OperationId,
+    ) -> Result<Scope> {
+        let capability =
+            ExecutionResolutionCapability::capability_for(session_id, volume, operation_id)?;
+        Ok(self.issuer.root(
+            principal,
+            Capabilities::new(vec!["execution:resolve".to_owned(), capability]),
+        ))
+    }
+
+    /// Authenticates a host-issued narrow grant into a resolution handle.
+    pub fn authenticate(
+        &self,
+        principal: impl Into<String>,
+        session_id: SessionId,
+        volume: &VolumeRef,
+        operation_id: OperationId,
+    ) -> Result<ExecutionResolutionCapability> {
+        let scope = self.issue_scope(principal, session_id, volume, operation_id)?;
+        ExecutionResolutionCapability::authenticate(
+            &self.issuer.verifier(),
+            &scope,
+            session_id,
+            volume,
+            operation_id,
+        )
+    }
 }
 
 impl std::fmt::Debug for ExecutionResolutionCapability {
@@ -530,43 +587,25 @@ impl std::fmt::Debug for ExecutionResolutionCapability {
 }
 
 impl ExecutionResolutionCapability {
-    /// The generic grant required on every externally issued operator scope.
-    pub const GENERIC_CAPABILITY: &'static str = "execution:resolve";
-
-    /// Returns the canonical capability for one exact execution session.
-    pub fn session_capability(session_id: SessionId) -> String {
-        format!("execution:resolve:session:{session_id}")
-    }
-
-    /// Returns the canonical capability for one exact private volume.
-    pub fn volume_capability(volume: &VolumeRef) -> Result<String> {
-        volume.validate()?;
-        let digest = crate::contract::canonical_json_digest(volume)?;
-        Ok(format!(
-            "execution:resolve:volume:{}",
-            blake3::Hash::from_bytes(digest).to_hex()
-        ))
-    }
-
-    /// Returns the canonical capability for one exact operation.
-    pub fn operation_capability(operation_id: OperationId) -> String {
-        // Keep the original public spelling stable; the session and volume
-        // capabilities added alongside it provide the remaining exact bind.
-        format!("execution:resolve:{operation_id}")
-    }
-
-    /// Returns all exact capabilities required to resolve one native attempt.
-    pub fn capabilities_for(
+    /// Returns the canonical grant name for one exact session, volume, and
+    /// operation tuple. The volume digest covers provider, class, and owner;
+    /// the short provider-owned volume label is not sufficient for a grant.
+    pub fn capability_for(
         session_id: SessionId,
         volume: &VolumeRef,
         operation_id: OperationId,
-    ) -> Result<[String; 4]> {
-        Ok([
-            Self::GENERIC_CAPABILITY.to_owned(),
-            Self::session_capability(session_id),
-            Self::volume_capability(volume)?,
-            Self::operation_capability(operation_id),
-        ])
+    ) -> Result<String> {
+        volume.validate()?;
+        if session_id.into_bytes() == [0; 16] || operation_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid(
+                "execution resolution identity cannot be zero".into(),
+            ));
+        }
+        let volume_digest =
+            blake3::Hash::from_bytes(crate::contract::canonical_json_digest(volume)?).to_hex();
+        Ok(format!(
+            "execution:resolve:{session_id}:{volume_digest}:{operation_id}"
+        ))
     }
 
     pub(crate) fn owner_token(
@@ -602,13 +641,12 @@ impl ExecutionResolutionCapability {
     ) -> Result<Self> {
         volume.validate()?;
         verifier.verify(operator)?;
-        let capabilities = Self::capabilities_for(session_id, volume, operation_id)?;
+        let target_capability = Self::capability_for(session_id, volume, operation_id)?;
         if session_id.into_bytes() == [0; 16]
             || operation_id.into_bytes() == [0; 16]
             || operator.id().is_empty()
-            || capabilities
-                .iter()
-                .any(|capability| !operator.capabilities().contains(capability))
+            || !operator.capabilities().contains("execution:resolve")
+            || !operator.capabilities().contains(&target_capability)
         {
             return Err(Error::Unauthorized(
                 "operator scope lacks the exact execution session, volume, and operation capabilities".into(),
@@ -626,6 +664,7 @@ impl ExecutionResolutionCapability {
             token: *blake3::hash(&input).as_bytes(),
             principal: operator.id().to_owned(),
             operation_id: Some(operation_id),
+            operator_authenticated: true,
         })
     }
 
@@ -659,7 +698,7 @@ impl ExecutionResolutionCapability {
         self.session_id == session_id
             && self.volume == *volume
             && self.operation_id == Some(operation_id)
-            && self.principal != "owner"
+            && self.operator_authenticated
     }
 }
 
@@ -689,6 +728,23 @@ impl ExecutionClaimHandle {
             generation,
             operator: false,
             operator_principal: None,
+            operator_authenticated: false,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_owner_parts(
+        key: ExecutionReceiptKey,
+        token: [u8; 32],
+        generation: u64,
+    ) -> Self {
+        Self {
+            key,
+            token,
+            generation,
+            operator: true,
+            operator_principal: None,
+            operator_authenticated: false,
         }
     }
 
@@ -709,6 +765,7 @@ impl ExecutionClaimHandle {
             generation,
             operator: true,
             operator_principal: Some(principal),
+            operator_authenticated: true,
         })
     }
 
@@ -730,6 +787,10 @@ impl ExecutionClaimHandle {
 
     pub(crate) fn operator_principal(&self) -> Option<&str> {
         self.operator_principal.as_deref()
+    }
+
+    pub(crate) const fn operator_authenticated(&self) -> bool {
+        self.operator_authenticated
     }
 }
 
@@ -761,8 +822,10 @@ impl ExecutionReceiptRecord {
             .operator_principal
             .as_deref()
             .is_some_and(str::is_empty)
-            || self.operator_principal.is_some()
-                != matches!(self.receipt, ExecutionReceipt::Unknown { .. })
+            || (self.operator_authenticated
+                && (!matches!(self.receipt, ExecutionReceipt::Unknown { .. })
+                    || self.operator_principal.is_none()))
+            || (!self.operator_authenticated && self.operator_principal.is_some())
         {
             return Err(Error::Invalid(
                 "execution receipt operator principal does not match its outcome".into(),
@@ -836,6 +899,20 @@ pub trait ExecutionReceiptStore: Send + Sync {
         handle: &'a ExecutionClaimHandle,
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>>;
+
+    /// Durably records cancellation intent for an admitted pending attempt.
+    ///
+    /// A restart must retain this fence even when the process outcome was not
+    /// observed. Implementations should append intent through the same
+    /// compare-and-swap journal used by `claim` and `publish`.
+    fn request_cancel<'a>(&'a self, _key: &'a ExecutionReceiptKey) -> BoxFuture<'a, Result<()>> {
+        async {
+            Err(Error::Unsupported(
+                "durable execution cancellation is unavailable".into(),
+            ))
+        }
+        .boxed()
+    }
 }
 
 /// Provider-neutral runner outcome, useful for deterministic fault injection.
@@ -1026,6 +1103,15 @@ impl ExecutionRunner for NativeExecutionRunner {
                 reason: "process descendants retained output handles".into(),
             });
         };
+        if !child.controls_process_tree()
+            && matches!(termination, Termination::TimedOut | Termination::Cancelled)
+        {
+            return Ok(RunnerOutcome::Unknown {
+                reason:
+                    "native runner cannot prove descendant termination without process-tree support"
+                        .into(),
+            });
+        }
         match termination {
             Termination::TimedOut => Ok(RunnerOutcome::TimedOut { stdout, stderr }),
             Termination::Cancelled => Ok(RunnerOutcome::Cancelled { stdout, stderr }),
@@ -1085,6 +1171,14 @@ impl ManagedChild {
             }
             #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
             Self::Tree(tree) => tree.terminate(),
+        }
+    }
+
+    fn controls_process_tree(&self) -> bool {
+        match self {
+            Self::Direct(_) => false,
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(_) => true,
         }
     }
 }
@@ -1201,7 +1295,8 @@ pub struct NativeExecutionProvider {
     /// one attempt can be dispatched by this provider at a time.  Keeping the
     /// attempt identity with the cancellation signal prevents a late cleanup
     /// from deleting a newer reservation.
-    active: Mutex<BTreeMap<OperationId, (EffectAttemptId, ExecutionCancellation)>>,
+    active:
+        Mutex<BTreeMap<OperationId, (ExecutionReceiptKey, EffectAttemptId, ExecutionCancellation)>>,
     provider_id: String,
 }
 
@@ -1285,24 +1380,56 @@ impl NativeExecutionProvider {
 
     /// Requests cancellation of a currently running operation.
     ///
-    /// Durable cancellation admission remains the Harness owner's job; this
-    /// method only signals the already admitted native attempt.
+    /// This compatibility entry point signals the process immediately and
+    /// schedules the matching durable cancellation intent. Call
+    /// [`Self::cancel_and_persist`] when the caller must observe persistence
+    /// before proceeding.
     pub fn cancel(&self, operation_id: OperationId) -> bool {
         let Ok(active) = self.active.lock() else {
             return false;
         };
-        let Some((_, cancellation)) = active.get(&operation_id).cloned() else {
+        let Some((key, _, cancellation)) = active.get(&operation_id).cloned() else {
             return false;
         };
         cancellation.cancel();
+        if let Some(store) = self.receipt_store.as_ref().map(Arc::clone) {
+            thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                let _ = runtime.block_on(store.request_cancel(&key));
+            });
+        }
         true
     }
 
-    fn reserve_attempt(
-        &self,
-        operation_id: OperationId,
-        attempt_id: EffectAttemptId,
-    ) -> Result<ExecutionCancellation> {
+    /// Signals and durably records cancellation for the currently running
+    /// attempt. A successful return means a restarted provider will retain the
+    /// cancellation fence instead of spawning the operation again.
+    pub async fn cancel_and_persist(&self, operation_id: OperationId) -> Result<bool> {
+        let (key, cancellation) = {
+            let active = self
+                .active
+                .lock()
+                .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?;
+            let Some((key, _, cancellation)) = active.get(&operation_id).cloned() else {
+                return Ok(false);
+            };
+            (key, cancellation)
+        };
+        cancellation.cancel();
+        if let Some(store) = &self.receipt_store {
+            store.request_cancel(&key).await?;
+        }
+        Ok(true)
+    }
+
+    fn reserve_attempt(&self, key: ExecutionReceiptKey) -> Result<ExecutionCancellation> {
+        let operation_id = key.operation_id;
+        let attempt_id = key.attempt_id;
         let mut active = self
             .active
             .lock()
@@ -1313,7 +1440,7 @@ impl NativeExecutionProvider {
             ));
         }
         let cancellation = ExecutionCancellation::new();
-        active.insert(operation_id, (attempt_id, cancellation.clone()));
+        active.insert(operation_id, (key, attempt_id, cancellation.clone()));
         Ok(cancellation)
     }
 
@@ -1328,7 +1455,7 @@ impl NativeExecutionProvider {
             .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?;
         if active
             .get(&operation_id)
-            .is_some_and(|(active_attempt, _)| *active_attempt == attempt_id)
+            .is_some_and(|(_, active_attempt, _)| *active_attempt == attempt_id)
         {
             active.remove(&operation_id);
         }
@@ -1526,11 +1653,11 @@ impl NativeExecutionProvider {
                 &approval,
             )
             .await?;
+        let key = Self::receipt_key(&request, approval.operation_id);
         // Reserve before looking up the receipt so two concurrent dispatches
         // cannot both observe a miss and run the same host command.
-        let cancellation = self.reserve_attempt(approval.operation_id, request.attempt_id)?;
+        let cancellation = self.reserve_attempt(key.clone())?;
         let claim_handle = if let Some(store) = &self.receipt_store {
-            let key = Self::receipt_key(&request, approval.operation_id);
             match store.claim(&key).await {
                 Ok(ExecutionClaim::Acquired { handle }) => handle,
                 Ok(ExecutionClaim::Pending) => {
@@ -1653,7 +1780,6 @@ impl NativeExecutionProvider {
                 return Err(Error::Invalid(error.to_string()));
             }
         };
-        let key = Self::receipt_key(&request, approval.operation_id);
         let result = if let Some(store) = &self.receipt_store {
             match store.publish(&key, &claim_handle, &receipt).await {
                 Ok(result) => result,
@@ -1753,8 +1879,9 @@ impl EffectProvider for NativeExecutionProvider {
 mod tests {
     use super::*;
     use crate::{
-        AgentId,
+        AgentId, Capabilities,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
+        core::{AggregateKind, Authority, AuthorityIssuer},
         resources::ProviderRef,
     };
     use std::sync::Mutex;
@@ -1847,6 +1974,7 @@ mod tests {
     struct MemoryReceiptState {
         records: Vec<ExecutionReceiptRecord>,
         pending: Vec<(ExecutionReceiptKey, ExecutionClaimHandle)>,
+        cancellation_requested: Vec<ExecutionReceiptKey>,
     }
 
     #[derive(Default)]
@@ -1872,6 +2000,13 @@ mod tests {
                     .cloned()
                 {
                     return Ok(ExecutionClaim::Completed(record));
+                }
+                if state
+                    .cancellation_requested
+                    .iter()
+                    .any(|candidate| candidate == key)
+                {
+                    return Ok(ExecutionClaim::Pending);
                 }
                 if state.pending.iter().any(|(candidate, _)| candidate == key) {
                     return Ok(ExecutionClaim::Pending);
@@ -1938,6 +2073,7 @@ mod tests {
                     result: result.clone(),
                     receipt: receipt.clone(),
                     operator_principal: None,
+                    operator_authenticated: false,
                 });
                 state.pending.retain(|(candidate, _)| candidate != key);
                 Ok(result)
@@ -1957,6 +2093,33 @@ mod tests {
                     .iter()
                     .find(|record| record.key.attempt_id == attempt_id)
                     .cloned())
+            })
+        }
+
+        fn request_cancel<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async move {
+                let mut state = self
+                    .state
+                    .lock()
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
+                if state.records.iter().any(|record| record.key == *key)
+                    || state
+                        .cancellation_requested
+                        .iter()
+                        .any(|candidate| candidate == key)
+                {
+                    return Ok(());
+                }
+                if !state.pending.iter().any(|(candidate, _)| candidate == key) {
+                    return Err(Error::Conflict(
+                        "test receipt cancellation claim is missing".into(),
+                    ));
+                }
+                state.cancellation_requested.push(key.clone());
+                Ok(())
             })
         }
     }
@@ -2033,6 +2196,32 @@ mod tests {
         release: Arc<AtomicBool>,
     }
 
+    struct CancellationUnknownRunner {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl ExecutionRunner for CancellationUnknownRunner {
+        fn run(&self, _request: &ExecutionSpec) -> Result<RunnerOutcome> {
+            Ok(RunnerOutcome::Unknown {
+                reason: "cancellation test runner was not admitted with a signal".into(),
+            })
+        }
+
+        fn run_with_cancellation(
+            &self,
+            _request: &ExecutionSpec,
+            cancellation: &ExecutionCancellation,
+        ) -> Result<RunnerOutcome> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            while !cancellation.is_cancelled() {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Ok(RunnerOutcome::Unknown {
+                reason: "cancellation left the external outcome uncertain".into(),
+            })
+        }
+    }
+
     impl ExecutionRunner for BlockingRunner {
         fn run(&self, _request: &ExecutionSpec) -> Result<RunnerOutcome> {
             self.started.store(true, Ordering::Release);
@@ -2074,6 +2263,129 @@ mod tests {
             }),
             reference,
         ))
+    }
+
+    #[test]
+    fn operator_resolution_requires_exact_grant_issuer_audience_and_identity() -> Result<()> {
+        let session_id = SessionId::from_bytes([3; 16]);
+        let operation_id = OperationId::from_bytes([4; 16]);
+        let volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
+        )?;
+        let audience = Authority {
+            kind: AggregateKind::Session,
+            id: "session-audience".into(),
+        };
+        let issuer = AuthorityIssuer::new("configured-issuer", [9; 32], audience.clone());
+        let target =
+            ExecutionResolutionCapability::capability_for(session_id, &volume, operation_id)?;
+        let exact = issuer.root(
+            "operator-exact",
+            Capabilities::new(vec!["execution:resolve".to_owned(), target.clone()]),
+        );
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &exact,
+                session_id,
+                &volume,
+                operation_id,
+            )
+            .is_ok()
+        );
+
+        let missing_capability = issuer.root(
+            "operator-missing-operation",
+            Capabilities::new(["execution:resolve"]),
+        );
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &missing_capability,
+                session_id,
+                &volume,
+                operation_id,
+            )
+            .is_err()
+        );
+
+        let foreign_issuer = AuthorityIssuer::new("foreign-issuer", [10; 32], audience.clone());
+        let foreign_scope = foreign_issuer.root(
+            "operator-foreign-issuer",
+            Capabilities::new(vec!["execution:resolve".to_owned(), target.clone()]),
+        );
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &foreign_scope,
+                session_id,
+                &volume,
+                operation_id,
+            )
+            .is_err()
+        );
+
+        let foreign_audience = AuthorityIssuer::new(
+            "configured-issuer",
+            [9; 32],
+            Authority {
+                kind: AggregateKind::Session,
+                id: "different-session-audience".into(),
+            },
+        );
+        let wrong_audience = foreign_audience.root(
+            "operator-foreign-audience",
+            Capabilities::new(vec!["execution:resolve".to_owned(), target]),
+        );
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &wrong_audience,
+                session_id,
+                &volume,
+                operation_id,
+            )
+            .is_err()
+        );
+
+        let other_session = SessionId::from_bytes([5; 16]);
+        let other_session_target =
+            ExecutionResolutionCapability::capability_for(other_session, &volume, operation_id)?;
+        let other_session_scope = issuer.root(
+            "operator-cross-session",
+            Capabilities::new([other_session_target]),
+        );
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &other_session_scope,
+                session_id,
+                &volume,
+                operation_id,
+            )
+            .is_err()
+        );
+
+        let other_volume = VolumeRef::new(
+            ProviderRef::new("test", "filesystem", "2")?,
+            "other-private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
+        )?;
+        assert!(
+            ExecutionResolutionCapability::authenticate(
+                &issuer.verifier(),
+                &exact,
+                session_id,
+                &other_volume,
+                operation_id,
+            )
+            .is_err()
+        );
+        Ok(())
     }
 
     fn spec() -> ExecutionSpec {
@@ -2235,10 +2547,12 @@ mod tests {
         } else {
             request.arguments = vec!["-c".into(), "sleep 1".into()];
         }
-        assert!(matches!(
-            NativeExecutionRunner.run(&request)?,
-            RunnerOutcome::TimedOut { .. }
-        ));
+        let outcome = NativeExecutionRunner.run(&request)?;
+        assert!(
+            matches!(outcome, RunnerOutcome::TimedOut { .. })
+                || (!cfg!(feature = "native-process-tree")
+                    && matches!(outcome, RunnerOutcome::Unknown { ref reason } if reason.contains("process-tree support")))
+        );
         Ok(())
     }
 
@@ -2333,10 +2647,12 @@ mod tests {
         let handle =
             thread::spawn(move || NativeExecutionRunner.run_with_cancellation(&request, &signal));
         cancellation.cancel();
-        assert!(matches!(
-            handle.join().expect("runner thread panicked")?,
-            RunnerOutcome::Cancelled { .. }
-        ));
+        let outcome = handle.join().expect("runner thread panicked")?;
+        assert!(
+            matches!(outcome, RunnerOutcome::Cancelled { .. })
+                || (!cfg!(feature = "native-process-tree")
+                    && matches!(outcome, RunnerOutcome::Unknown { ref reason } if reason.contains("process-tree support")))
+        );
         Ok(())
     }
 
@@ -2694,6 +3010,81 @@ mod tests {
                 .status,
             EffectStatus::Succeeded { .. }
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_cancellation_intent_blocks_restart_redispatch() -> Result<()> {
+        let operation = OperationId::from_bytes([65; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let store = Arc::new(MemoryReceiptStore {
+            volume: Some(content.volume.clone()),
+            state: Mutex::new(MemoryReceiptState::default()),
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider = Arc::new(NativeExecutionProvider::new_with_receipt_store(
+            content.clone(),
+            store.clone(),
+            Arc::new(CancellationUnknownRunner {
+                calls: Arc::clone(&calls),
+            }),
+            approval_verifier(),
+        )?);
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([66; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file.clone(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        let task = tokio::spawn({
+            let provider = Arc::clone(&provider);
+            let dispatch = dispatch.clone();
+            async move { provider.dispatch(dispatch).await }
+        });
+        for _ in 0..2_000 {
+            if calls.load(Ordering::Acquire) != 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(calls.load(Ordering::Acquire) != 0);
+        assert!(provider.cancel_and_persist(operation).await?);
+        assert_eq!(
+            task.await
+                .map_err(|error| Error::Storage(error.to_string()))??
+                .status,
+            EffectStatus::Indeterminate
+        );
+
+        let replay_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let restarted = NativeExecutionProvider::new_with_receipt_store(
+            content,
+            store,
+            Arc::new(CountingFixedRunner {
+                calls: Arc::clone(&replay_calls),
+                outcome: RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: b"must not rerun".to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+            approval_verifier(),
+        )?;
+        assert!(matches!(
+            restarted.dispatch(dispatch).await,
+            Err(Error::Indeterminate(_))
+        ));
+        assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
 
