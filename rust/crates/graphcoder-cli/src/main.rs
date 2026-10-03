@@ -26,6 +26,7 @@ use std::{
     },
 };
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::Mutex;
 
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -477,28 +478,38 @@ fn agent_state(phase: &LocalSessionPhase) -> &'static str {
     }
 }
 
-async fn serve<R, W>(runtime: &Runtime, input: R, output: W) -> std::io::Result<()>
+async fn serve<R, W>(runtime: Arc<Runtime>, input: R, output: W) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(input).lines();
-    let mut output = tokio::io::BufWriter::new(output);
+    let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
+    let mut jobs = Vec::new();
     while let Some(line) = lines.next_line().await? {
-        if line.len() > MAX_LINE_BYTES {
-            let response = WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
-            write_response(&mut output, &response).await?;
-            continue;
-        }
-        let response = match serde_json::from_str::<WireRequest>(&line) {
-            Ok(request) => runtime.dispatch(request).await,
-            Err(error) => {
-                WireResponse::error("", "invalid_input", format!("invalid request: {error}"))
-            }
-        };
-        write_response(&mut output, &response).await?;
+        let runtime = runtime.clone();
+        let output = output.clone();
+        jobs.push(tokio::spawn(async move {
+            let response = if line.len() > MAX_LINE_BYTES {
+                WireResponse::error("", "invalid_input", "request line exceeds 16 MiB")
+            } else {
+                match serde_json::from_str::<WireRequest>(&line) {
+                    Ok(request) => runtime.dispatch(request).await,
+                    Err(error) => WireResponse::error(
+                        "",
+                        "invalid_input",
+                        format!("invalid request: {error}"),
+                    ),
+                }
+            };
+            let mut output = output.lock().await;
+            write_response(&mut *output, &response).await
+        }));
     }
-    output.flush().await
+    for job in jobs {
+        job.await.map_err(std::io::Error::other)??;
+    }
+    output.lock().await.flush().await
 }
 
 async fn write_response<W: AsyncWrite + Unpin>(
@@ -513,7 +524,7 @@ async fn write_response<W: AsyncWrite + Unpin>(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    let runtime = Runtime::open(&args).await?;
-    serve(&runtime, tokio::io::stdin(), tokio::io::stdout()).await?;
+    let runtime = Arc::new(Runtime::open(&args).await?);
+    serve(runtime, tokio::io::stdin(), tokio::io::stdout()).await?;
     Ok(())
 }
