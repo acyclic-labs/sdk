@@ -38,11 +38,24 @@ export function objectsWasmArtifactUrl(): URL {
  */
 export async function resolveObjectsPlatform(): Promise<ObjectsPlatformResolution> {
   const runtime = detectObjectsRuntime();
-  const wasmAvailable = typeof WebAssembly === "object";
+  let wasmAvailable = typeof WebAssembly === "object";
   const fallbacks: ("grpc-to-http" | "wasm-unavailable")[] = [];
   let transport: ObjectsResolvedTransport = "http";
 
-  if (!wasmAvailable) fallbacks.push("wasm-unavailable");
+  if (wasmAvailable) {
+    try {
+      // Check the artifact shipped by this package, rather than inferring
+      // support from a runtime global alone. This catches incomplete installs
+      // and browser bundles whose WASM asset was omitted.
+      const { ensureObjectsWasm } = await import("./wasm-runtime.js");
+      await ensureObjectsWasm();
+    } catch {
+      wasmAvailable = false;
+      fallbacks.push("wasm-unavailable");
+    }
+  } else {
+    fallbacks.push("wasm-unavailable");
+  }
   if (runtime === "node" || runtime === "bun") {
     try {
       await import("./v2-grpc.js");
