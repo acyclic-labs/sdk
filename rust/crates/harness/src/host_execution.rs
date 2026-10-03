@@ -587,6 +587,22 @@ impl std::fmt::Debug for ExecutionResolutionCapability {
 }
 
 impl ExecutionResolutionCapability {
+    #[cfg(test)]
+    pub(crate) fn for_test_owner(
+        session_id: SessionId,
+        volume: &VolumeRef,
+        owner_scope: &crate::core::Scope,
+    ) -> Result<Self> {
+        Ok(Self {
+            session_id,
+            volume: volume.clone(),
+            token: Self::owner_token(session_id, volume, owner_scope)?,
+            principal: "owner".into(),
+            operation_id: None,
+            operator_authenticated: false,
+        })
+    }
+
     /// Returns the canonical grant name for one exact session, volume, and
     /// operation tuple. The volume digest covers provider, class, and owner;
     /// the short provider-owned volume label is not sufficient for a grant.

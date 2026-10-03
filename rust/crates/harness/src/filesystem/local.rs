@@ -1566,19 +1566,11 @@ impl PersistentLocalHarness {
     /// so model-visible code cannot mint an operator capability.
     #[cfg(test)]
     pub(crate) fn execution_resolution_capability(&self) -> Result<ExecutionResolutionCapability> {
-        let token = ExecutionResolutionCapability::owner_token(
+        ExecutionResolutionCapability::for_test_owner(
             self.storage.session_id(),
             self.storage.volume(),
             self.storage.owner_scope(),
-        )?;
-        Ok(ExecutionResolutionCapability {
-            session_id: self.storage.session_id(),
-            volume: self.storage.volume().clone(),
-            token,
-            principal: "owner".into(),
-            operation_id: None,
-            operator_authenticated: false,
-        })
+        )
     }
 
     /// Resolves one protected pending execution after an authenticated host
