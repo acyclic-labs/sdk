@@ -2647,7 +2647,23 @@ fn rustdoc_public_items(
         let Some((kind, _)) = inner.iter().next() else {
             continue;
         };
-        let Some(name) = item.get("name").and_then(serde_json::Value::as_str) else {
+        // Rustdoc emits public re-export items whose top-level `name` is
+        // null when the target lives in an external crate.  The compiler
+        // still records the public alias in `inner.use.name`; retain that
+        // alias as a graph item instead of dropping the umbrella crate's
+        // complete public surface merely because the external target is not
+        // repeated in this crate's index.
+        let name = item
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                inner
+                    .get("use")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|use_item| use_item.get("name"))
+                    .and_then(serde_json::Value::as_str)
+            });
+        let Some(name) = name else {
             continue;
         };
         let span = item.get("span").and_then(serde_json::Value::as_object);
@@ -3273,6 +3289,50 @@ mod tests {
         assert!(items
             .iter()
             .any(|item| item.name == "NativeThing" && item.conditional));
+    }
+
+    #[test]
+    fn rustdoc_fixture_retains_external_reexport_when_item_name_is_null() {
+        let value = serde_json::json!({
+            "format_version": 60,
+            "root": 1,
+            "index": {
+                "1": {
+                    "crate_id": 0,
+                    "name": "sdk",
+                    "visibility": "public",
+                    "inner": {"module": {"items": [2]}}
+                },
+                "2": {
+                    "crate_id": 0,
+                    "name": null,
+                    "visibility": "public",
+                    "span": {"filename": "rust/crates/sdk/src/lib.rs", "begin": [3, 1]},
+                    "inner": {
+                        "use": {
+                            "id": 999,
+                            "name": "filesystem",
+                            "source": "acyclic_fs"
+                        }
+                    }
+                }
+            }
+        });
+        let mut diagnostics = Vec::new();
+        let items = rustdoc_public_items(
+            &value,
+            Path::new("Q:/sdk"),
+            Path::new("Q:/sdk/rust/crates/sdk"),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "filesystem");
+        assert_eq!(items[0].kind, "use");
+        assert_eq!(
+            items[0].source_path.as_deref(),
+            Some("rust/crates/sdk/src/lib.rs")
+        );
     }
 
     #[test]
