@@ -1108,101 +1108,112 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
             ));
             assert!(conflict_entry.receipt.is_none());
-            drop(conflict_recovery);
-            drop(conflict_journal);
-            drop(reopened_facade);
-            drop(terminal_recovery);
-            drop(terminal_journal);
-            drop(child_aggregate);
-            drop(aggregate);
-            drop(stream);
-            drop(host);
-            host = Arc::new(FilesystemHost::new(
-                Fs::local(fs_options.clone())
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?,
-                provider.clone(),
-            )?);
-            stream = StreamClient::new(Arc::new(
-                LocalStream::open(&stream_root, LocalStreamLimits::default())
-                    .await
-                    .map_err(|error| Error::Storage(error.to_string()))?,
-            ));
-            child_aggregate = open_aggregate(
-                &stream,
-                child_authority.clone(),
-                &child_issuer,
-                host.clone(),
-                child_scope.clone(),
-                stream_provider.clone(),
-            )
-            .await?;
-            aggregate = open_aggregate(
-                &stream,
-                authority.clone(),
-                &issuer,
-                host.clone(),
-                grant_scope.clone(),
-                stream_provider.clone(),
-            )
-            .await?;
-            let reopened_facade = FilesystemGitFacade::new(
-                WorkspaceId::from_bytes(identity(100 + level)),
-                MemoryGitCompatStore::new(),
-                project.clone(),
-                issuer.verifier(),
-                grant_scope.clone(),
-            )?;
-            let reopened_controller = ParentProjectController::new(
-                host.as_ref(),
-                aggregate.reducer(),
-                &issuer.verifier(),
-                &grant_scope,
-                project.clone(),
-            )?;
-            let conflict_plan = reopened_controller
-                .prepare_project_merge_at(
-                    &child_project,
-                    &conflict_source_generation,
-                    &conflict_target_generation,
-                    conflict_target_authority_head,
-                )
+            let (reopened_host, reopened_stream, reopened_child_aggregate, reopened_aggregate) =
+                std::pin::Pin::from(Box::new(async move {
+                    drop(conflict_recovery);
+                    drop(conflict_journal);
+                    drop(reopened_facade);
+                    drop(terminal_recovery);
+                    drop(terminal_journal);
+                    drop(child_aggregate);
+                    drop(aggregate);
+                    drop(stream);
+                    drop(host);
+                    let host = Arc::new(FilesystemHost::new(
+                        Fs::local(fs_options.clone())
+                            .await
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                        provider.clone(),
+                    )?);
+                    let stream = StreamClient::new(Arc::new(
+                        LocalStream::open(&stream_root, LocalStreamLimits::default())
+                            .await
+                            .map_err(|error| Error::Storage(error.to_string()))?,
+                    ));
+                    let child_aggregate = open_aggregate(
+                        &stream,
+                        child_authority.clone(),
+                        &child_issuer,
+                        host.clone(),
+                        child_scope.clone(),
+                        stream_provider.clone(),
+                    )
+                    .await?;
+                    let aggregate = open_aggregate(
+                        &stream,
+                        authority.clone(),
+                        &issuer,
+                        host.clone(),
+                        grant_scope.clone(),
+                        stream_provider.clone(),
+                    )
+                    .await?;
+                    let reopened_facade = FilesystemGitFacade::new(
+                        WorkspaceId::from_bytes(identity(100 + level)),
+                        MemoryGitCompatStore::new(),
+                        project.clone(),
+                        issuer.verifier(),
+                        grant_scope.clone(),
+                    )?;
+                    let reopened_controller = ParentProjectController::new(
+                        host.as_ref(),
+                        aggregate.reducer(),
+                        &issuer.verifier(),
+                        &grant_scope,
+                        project.clone(),
+                    )?;
+                    let conflict_plan = reopened_controller
+                        .prepare_project_merge_at(
+                            &child_project,
+                            &conflict_source_generation,
+                            &conflict_target_generation,
+                            conflict_target_authority_head,
+                        )
+                        .await?;
+                    let conflict_journal = FilesystemExecutionJournal::new(
+                        stream.clone(),
+                        host.clone(),
+                        private.clone(),
+                        issuer.verifier(),
+                        grant_scope.clone(),
+                        64 * 1_024,
+                    )?;
+                    let conflict_recovery =
+                        ProjectMergeRecovery::new(&conflict_journal, conflict_operation);
+                    let conflict_entry = conflict_recovery
+                        .reopen()
+                        .await?
+                        .ok_or_else(|| {
+                            Error::Conflict("cold conflict terminal result was lost".into())
+                        })?;
+                    assert!(matches!(
+                        conflict_entry.terminal,
+                        Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
+                    ));
+                    let retried_conflict = reopened_facade
+                        .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                            &conflict_request,
+                            host.as_ref(),
+                            aggregate.reducer(),
+                            child_authority.clone(),
+                            &child_project,
+                            &conflict_plan,
+                            std::collections::BTreeMap::new(),
+                            merge_message.clone(),
+                            &conflict_recovery,
+                        )
+                        .await?;
+                    assert!(matches!(
+                        retried_conflict,
+                        acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. }
+                    ));
+                    Ok::<_, Error>((host, stream, child_aggregate, aggregate))
+                }))
                 .await?;
-            let conflict_journal = FilesystemExecutionJournal::new(
-                stream.clone(),
-                host.clone(),
-                private.clone(),
-                issuer.verifier(),
-                grant_scope.clone(),
-                64 * 1_024,
-            )?;
-            let conflict_recovery =
-                ProjectMergeRecovery::new(&conflict_journal, conflict_operation);
-            let conflict_entry = conflict_recovery
-                .reopen()
-                .await?
-                .ok_or_else(|| Error::Conflict("cold conflict terminal result was lost".into()))?;
-            assert!(matches!(
-                conflict_entry.terminal,
-                Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
-            ));
-            let retried_conflict = reopened_facade
-                .apply_root_writeback_plan_for_child_with_recovery_outcome(
-                    &conflict_request,
-                    host.as_ref(),
-                    aggregate.reducer(),
-                    child_authority.clone(),
-                    &child_project,
-                    &conflict_plan,
-                    std::collections::BTreeMap::new(),
-                    merge_message.clone(),
-                    &conflict_recovery,
-                )
-                .await?;
-            assert!(matches!(
-                retried_conflict,
-                acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. }
-            ));
+            host = reopened_host;
+            stream = reopened_stream;
+            child_aggregate = reopened_child_aggregate;
+            aggregate = reopened_aggregate;
         }
 
         final_child_issuer = Some(child_issuer.clone());
