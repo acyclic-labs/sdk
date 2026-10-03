@@ -392,6 +392,15 @@
         "reservation usage/request type mismatch"
       ],
       "contract_scope": "compile-only failures repaired in d87db363; subsequent executions listed separately"
+    },
+    {
+      "suite": "Rust-generated Filesystem Git contract",
+      "source": "65bfbde7",
+      "exit_code": 0,
+      "command": "node scripts/generate-filesystem-git-compat-contract.mjs check",
+      "suite_sha256": "06cd87a57525f1a267f8baa5800a0abf66ab9abb36c5f0da5d0dc3f656273575",
+      "declaration_sha256": "a8b45ed85feb5fe1c7e62b08f7c1b5c23cb94b45f7939ebcfdda0cb6f593d4ee",
+      "contract_scope": "authoritative native Rust generator matches checked-in declarations including Join.source_tree; separate TS consumer/native-WASM tests still required"
     }
   ],
   "input_digests": {

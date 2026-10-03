@@ -3,7 +3,7 @@
 Base: 31b9ff52d63c91f2b9bf87e16b78ad682d26546f.
 Branch: codex/graphcoder-sdk. No merge/publication.
 
-## Completed foundation
+## Implemented foundation (historical checkpoints; current qualification pending)
 - Shared versioned model-input admission in stock executor and live task dispatch.
 - Ordered manifests bind message bytes, roles, file references, model and tool revisions.
 - Aggregate input bounds reject overflow without truncation.
@@ -63,16 +63,25 @@ qualification. Production project grants, per-child fork identities, durable
 operator principals, and receipt preflight are committed on the isolated branch.
 
 Latest scoped results (see checkpoint-integrated-native-fork-budget.json):
-- Terminal TypeScript transport and UI: 40 passed, zero failed.
-- Durable LocalStream swarm budget: 8 passed, one replay-classification failure.
-  A subsequent CAS repair is committed and requires a new run.
+- Terminal TypeScript transport and UI: 44 passed, zero failed (c8dd2c45).
+- Durable LocalStream swarm budget journal: 11 passed, zero failed (d87db363),
+  including concurrent reservations and receipt bounds before append.
+- Native budget units: 23 passed, zero failed (18aeec63).
 - Harness TypeScript runtime/memory: 95 passed, three failed; WASM is stale.
-- Model fork boundary: one passed, one stale-boundary fixture failure.
+- Native executor: 19 passed, two failed; inherited rejection evidence and
+  duplicate preparation classification remain under repair.
+- Model fork boundary: one passed, one failed with an already allocated child
+  volume (d87db363). Recursive prefix qualification remains incomplete.
+- Production model swarm: zero passed, one failed at tool-result projection
+  (d87db363). Provider fixture identities have been corrected.
 - Typed recursive fork suite: the 1024-level fixture passed; two facade cases failed.
-- Filesystem Git compatibility: 40 passed, two fixture failures.
-- Recovery tests are committed, but current native compilation exposed approval
-  wrappers still calling a removed unauthenticated method. These callers must
-  carry explicit operator authority before the recovery suite can execute.
+- Filesystem Git compatibility: 42 passed, zero failed (657b1309).
+- Rust-generated Git bindings now include Join.source_tree; generator check
+  passed at 65bfbde7. Consumer checks remain separate.
+- Real plugin conflict/abort fixes are integrated; native verification is running.
+- Recovery tests are being updated for shared provider composition and remain
+  unqualified. Scoped approval wrappers compile; exact operator grants and
+  native terminal callers still need qualification.
 
 ## Next
 
