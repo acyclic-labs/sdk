@@ -23,3 +23,14 @@ host should construct the UI with a Harness-backed transport. Listing sessions
 returns summaries only; activity, messages, approvals, change metadata, and
 diff bodies are requested separately and lazily. Root writeback requires an
 operation-bound approval and the expected workspace generation.
+
+After building, the Windows PTY qualification can be run when Python's
+`winpty` binding is installed:
+
+```sh
+python typescript/packages/graphcoder/test/pty_smoke.py
+```
+
+It drives the same command sequence through the headless and interactive
+artifact paths and checks the visible lifecycle, approval, lazy file/diff,
+and cancellation markers in both transcripts.
