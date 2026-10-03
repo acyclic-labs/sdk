@@ -313,6 +313,16 @@ impl WaitRequest {
         nonzero_operation(self.operation_id, "wait")?;
         nonzero_task(self.waiter, "waiter")?;
         self.target.validate(self.waiter)?;
+        if let WaitTarget::Deadline { deadline_epoch_ms } = &self.target {
+            if let Some(now) = now_epoch_ms {
+                let duration = deadline_epoch_ms.saturating_sub(now);
+                if *deadline_epoch_ms > now && duration > MAX_WAIT_DURATION_MS {
+                    return Err(Error::Invalid(
+                        "wait deadline is outside the permitted window".into(),
+                    ));
+                }
+            }
+        }
         if self.cancellation_id == Some(self.operation_id) {
             return Err(Error::Invalid(
                 "wait cancellation identity must differ from wait".into(),
@@ -754,7 +764,11 @@ impl DurableCommunication {
         let expired = request
             .timeout_epoch_ms
             .is_some_and(|deadline| deadline <= now);
-        if expired {
+        let deadline_expired = matches!(
+            &request.target,
+            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= now
+        );
+        if expired || deadline_expired {
             request.validate(None)?;
         } else {
             request.validate(Some(now))?;
@@ -767,6 +781,9 @@ impl DurableCommunication {
         }
         if expired {
             return self.finish(request, WaitCompletion::TimedOut).await;
+        }
+        if deadline_expired {
+            return self.finish(request, WaitCompletion::Deadline).await;
         }
         if cancellation
             .as_ref()
@@ -1392,6 +1409,47 @@ mod tests {
             )
             .await?;
         assert_eq!(completion, WaitCompletion::TimedOut);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_deadline_is_typed_and_does_not_dispatch_a_timer() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let now = unix_millis()?;
+        let completion = DurableCommunication::new(host)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(40),
+                    waiter: task(1),
+                    target: WaitTarget::Deadline {
+                        deadline_epoch_ms: now.saturating_sub(1),
+                    },
+                    timeout_epoch_ms: None,
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::Deadline);
+        Ok(())
+    }
+
+    #[test]
+    fn future_deadline_must_fit_the_wait_horizon() -> Result<()> {
+        let now = unix_millis()?;
+        let request = WaitRequest {
+            operation_id: operation(41),
+            waiter: task(1),
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: now + MAX_WAIT_DURATION_MS + 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        assert!(matches!(
+            request.validate(Some(now)),
+            Err(Error::Invalid(message)) if message.contains("deadline")
+        ));
         Ok(())
     }
 
