@@ -95,6 +95,23 @@ pub struct SourceFile {
     pub contents: String,
 }
 
+/// The compiler-resolved target of a public re-export whose declaration lives
+/// in another crate graph.  Rustdoc does not repeat the external declaration
+/// in the exporting crate's index, so this stable path lets consumers resolve
+/// the alias to the target family instead of treating the alias as a local
+/// declaration.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReexportTarget {
+    /// Cargo package namespace from the first segment of the rustdoc path.
+    pub package: String,
+    /// Target item path after the package namespace.  A crate-root export has
+    /// no path component.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Exact rustdoc `use.source` path, retained for diagnostics and links.
+    pub source: String,
+}
+
 /// A public declaration discovered by rustdoc JSON or conservative source
 /// scanning.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,6 +134,10 @@ pub struct PublicItem {
     pub conditional: bool,
     /// `true` when the item came from a generated source path.
     pub generated: bool,
+    /// External target when this item is a public re-export from another
+    /// crate graph.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reexport: Option<ReexportTarget>,
 }
 
 /// Optional rustdoc JSON provenance.
@@ -746,6 +767,7 @@ pub fn to_website_json(
                         "sourceLine": item.source_line,
                         "conditional": item.conditional,
                         "generated": item.generated,
+                        "reexport": item.reexport,
                     })
                 })
                 .collect::<Vec<_>>();
@@ -2666,6 +2688,10 @@ fn rustdoc_public_items(
         let Some(name) = name else {
             continue;
         };
+        let reexport = inner
+            .get("use")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|use_item| external_reexport_target(use_item, index));
         let span = item.get("span").and_then(serde_json::Value::as_object);
         let source_path = span
             .and_then(|span| span.get("filename"))
@@ -2716,9 +2742,39 @@ fn rustdoc_public_items(
             docs,
             conditional,
             generated,
+            reexport,
         });
     }
     items
+}
+
+fn external_reexport_target(
+    use_item: &serde_json::Map<String, serde_json::Value>,
+    index: &serde_json::Map<String, serde_json::Value>,
+) -> Option<ReexportTarget> {
+    // A target id present in this index is an in-crate declaration and is
+    // already traversed above.  A missing target id is how rustdoc represents
+    // a re-export whose definition belongs to another crate graph.  Keep the
+    // original path so a renderer can resolve the item in that graph.
+    let target_id = use_item.get("id").and_then(serde_json::Value::as_u64);
+    if target_id.is_some_and(|id| index.contains_key(&id.to_string())) {
+        return None;
+    }
+    let source = use_item
+        .get("source")
+        .and_then(serde_json::Value::as_str)?
+        .trim();
+    let mut segments = source.split("::");
+    let package = segments.next()?.trim();
+    if package.is_empty() {
+        return None;
+    }
+    let path = segments.collect::<Vec<_>>().join("::");
+    Some(ReexportTarget {
+        package: package.replace('_', "-"),
+        path: (!path.is_empty()).then_some(path),
+        source: source.to_owned(),
+    })
 }
 
 fn enqueue_rustdoc_ids(
@@ -2817,6 +2873,7 @@ fn scan_rust_file(
                     docs: (!docs.is_empty()).then(|| docs.join("\n")),
                     conditional,
                     generated: path.split('/').any(|part| part == "generated"),
+                    reexport: None,
                 });
             }
             docs.clear();
@@ -3333,6 +3390,55 @@ mod tests {
             items[0].source_path.as_deref(),
             Some("rust/crates/sdk/src/lib.rs")
         );
+        let target = items[0]
+            .reexport
+            .as_ref()
+            .expect("external re-export target should be retained");
+        assert_eq!(target.package, "acyclic-fs");
+        assert_eq!(target.path, None);
+        assert_eq!(target.source, "acyclic_fs");
+    }
+
+    #[test]
+    fn rustdoc_fixture_resolves_external_reexport_item_path() {
+        let value = serde_json::json!({
+            "format_version": 60,
+            "root": 1,
+            "index": {
+                "1": {
+                    "crate_id": 0,
+                    "name": "sdk",
+                    "visibility": "public",
+                    "inner": {"module": {"items": [2]}}
+                },
+                "2": {
+                    "crate_id": 0,
+                    "name": "Filesystem",
+                    "visibility": "public",
+                    "inner": {
+                        "use": {
+                            "name": "Filesystem",
+                            "source": "acyclic_fs::Filesystem"
+                        }
+                    }
+                }
+            }
+        });
+        let mut diagnostics = Vec::new();
+        let items = rustdoc_public_items(
+            &value,
+            Path::new("Q:/sdk"),
+            Path::new("Q:/sdk/rust/crates/sdk"),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        let target = items[0]
+            .reexport
+            .as_ref()
+            .expect("external re-export item path should be retained");
+        assert_eq!(target.package, "acyclic-fs");
+        assert_eq!(target.path.as_deref(), Some("Filesystem"));
+        assert_eq!(target.source, "acyclic_fs::Filesystem");
     }
 
     #[test]
@@ -3418,6 +3524,7 @@ mod tests {
             docs: Some("A stream provider.".to_owned()),
             conditional: false,
             generated: false,
+            reexport: None,
         };
         let mut second = item.clone();
         second.source_line = Some(527);
