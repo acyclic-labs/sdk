@@ -80,6 +80,10 @@ export function validateStrictDocsBundle(value, manifest, label = "sdk-docs outp
         || !isBlake3Digest(graph.rustdoc.source_blake3)
         || graph.rustdoc.source_revision !== bundle.source_revision
         || !isBlake3Digest(graph.rustdoc.profile_blake3)
+        || !isNonEmptyString(graph.rustdoc.target)
+        || graph.rustdoc.target !== graph.target
+        || !Array.isArray(graph.rustdoc.features)
+        || JSON.stringify(normalizedFeatures(graph.rustdoc.features)) !== JSON.stringify(normalizedFeatures(graph.features))
         || graph.profile_blake3 !== graph.rustdoc.profile_blake3) {
         assertionFailure(`${label}: ${packageName}/${profile.name} has incomplete rustdoc source binding`);
       }

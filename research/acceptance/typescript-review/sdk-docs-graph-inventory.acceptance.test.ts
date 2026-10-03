@@ -44,6 +44,8 @@ type Graph = {
     blake3?: string;
     source_blake3?: string;
     source_revision?: string;
+    target?: string;
+    features?: string[];
     profile_blake3?: string;
   };
 };
@@ -95,6 +97,8 @@ function syntheticStrictBundle(manifest: ProfileManifest): DocsBundle {
           blake3: "d".repeat(64),
           source_blake3: "c".repeat(64),
           source_revision: sourceRevision,
+          target: entry.target === "host" ? "synthetic-host" : entry.target,
+          features: normalizedFeatures(entry.features),
           profile_blake3: profileBlake3,
         },
       } satisfies Graph;
