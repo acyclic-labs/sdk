@@ -57,7 +57,9 @@ jobs:
           persist-credentials: false
       - name: Verify qualification policy
         # Measured locally at 2.7 seconds; no downstream runtimes or packages.
-        run: node scripts/test-plan-qualification.mjs
+        run: |
+          node scripts/test-plan-qualification.mjs
+          node --test scripts/test-platform-qualification.mjs
 
   qualify:
     # Full source and downstream qualification runs on releases or explicit requests.
@@ -242,8 +244,15 @@ jobs:
               fi
             fi
           fi
-          python -c 'import json,os,sys; json.dump({"schema":"acyclic.sdk.platform-qualification.v1","package":sys.argv[1],"status":sys.argv[3],"pins":json.loads(sys.argv[2]),"publishes":False},open(os.path.join(os.environ["RUNNER_TEMP"],"platform-package",sys.argv[1],"qualification.json"),"w"),indent=2)' '${{ matrix.package }}' "$pins" "$status"
+          python -c 'import json,os,sys; json.dump({"schema":"acyclic.sdk.platform-qualification.v1","package":sys.argv[1],"status":sys.argv[3],"source_revision":os.environ["GITHUB_SHA"],"pins":json.loads(sys.argv[2]),"publishes":False},open(os.path.join(os.environ["RUNNER_TEMP"],"platform-package",sys.argv[1],"qualification.json"),"w"),indent=2)' '${{ matrix.package }}' "$pins" "$status"
 
+      - name: Require completed platform qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/verify-platform-qualification.mjs \
+            "$RUNNER_TEMP/platform-package/${{ matrix.package }}/qualification.json" \
+            '${{ matrix.package }}' "$GITHUB_SHA"
       - name: Upload internal platform package evidence
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
