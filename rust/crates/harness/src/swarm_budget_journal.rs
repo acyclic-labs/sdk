@@ -23,7 +23,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 
 const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
 const BUDGET_EVENT_VERSION: u16 = 1;
@@ -219,6 +219,46 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         source: S,
     ) -> Result<SwarmRootDispatchContext<S>> {
         self.budget.root_usage_context(source)
+    }
+
+    /// Wraps a real provider with the complete root admission and measurement
+    /// boundary derived from this durable projection.
+    pub fn metered_root_provider<M, S>(
+        &self,
+        provider: Arc<M>,
+        source: S,
+    ) -> Result<(
+        Arc<crate::swarm_budget::MeteredModelProvider<M, S>>,
+        crate::swarm_budget::SwarmProviderMeter<S>,
+    )>
+    where
+        M: crate::model::ModelProvider + ?Sized + 'static,
+        S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
+    {
+        let context = self.root_usage_context(source)?;
+        Ok(crate::swarm_budget::MeteredModelProvider::new_root(
+            provider, context,
+        ))
+    }
+
+    /// Wraps a real child provider with the admitted reservation boundary.
+    pub fn metered_provider<M, S>(
+        &self,
+        token: &SwarmDispatchToken,
+        provider: Arc<M>,
+        source: S,
+    ) -> Result<(
+        Arc<crate::swarm_budget::MeteredModelProvider<M, S>>,
+        crate::swarm_budget::SwarmProviderMeter<S>,
+    )>
+    where
+        M: crate::model::ModelProvider + ?Sized + 'static,
+        S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
+    {
+        let context = self.usage_context(token, source)?;
+        Ok(crate::swarm_budget::MeteredModelProvider::new(
+            provider, context,
+        ))
     }
 
     /// Reloads all committed records from the provider's current tail.

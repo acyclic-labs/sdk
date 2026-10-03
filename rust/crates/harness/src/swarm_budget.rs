@@ -11,9 +11,13 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result, contract::canonical_json_bytes,
     runtime::TaskAdmissionRecord,
 };
+use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
 /// Maximum number of agents one budget projection may retain.
 pub const MAX_SWARM_AGENTS: u64 = 1_000_000;
@@ -690,6 +694,320 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     #[must_use]
     pub fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
         self.issuer.cursor()
+    }
+}
+
+enum SwarmProviderBoundary<S> {
+    Child(SwarmDispatchContext<S>),
+    Root(SwarmRootDispatchContext<S>),
+}
+
+impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
+    fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => context.limiter_mut().admit_model_step(),
+            Self::Root(context) => context.limiter_mut().admit_model_step(),
+        }
+    }
+
+    fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => context.limiter_mut().admit_output(bytes),
+            Self::Root(context) => context.limiter_mut().admit_output(bytes),
+        }
+    }
+
+    fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => context.limiter_mut().admit_execution_time(elapsed_ms),
+            Self::Root(context) => context.limiter_mut().admit_execution_time(elapsed_ms),
+        }
+    }
+
+    fn remaining_execution_time_ms(&self) -> u64 {
+        let (limits, usage) = match self {
+            Self::Child(context) => (context.limiter.limits(), context.limiter.usage()),
+            Self::Root(context) => (context.limiter.limits(), context.limiter.usage()),
+        };
+        limits
+            .execution_time_ms
+            .saturating_sub(usage.execution_time_ms)
+    }
+
+    fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        let local = self.usage();
+        let receipt = match self {
+            Self::Child(context) => context.issue_usage_receipt()?,
+            Self::Root(context) => context.issue_usage_receipt()?,
+        };
+        let measured = receipt.0.usage;
+        if measured.model_steps < local.model_steps
+            || measured.output_bytes < local.output_bytes
+            || measured.execution_time_ms < local.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "host usage source is behind metered provider usage".into(),
+            ));
+        }
+        Ok(receipt)
+    }
+
+    fn usage(&self) -> SwarmUsage {
+        match self {
+            Self::Child(context) => context.usage(),
+            Self::Root(context) => context.usage(),
+        }
+    }
+
+    fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
+        match self {
+            Self::Child(context) => context.receipt_cursor(),
+            Self::Root(context) => context.receipt_cursor(),
+        }
+    }
+}
+
+/// Shared metering handle for one concrete model dispatch.
+pub struct SwarmProviderMeter<S> {
+    context: Arc<Mutex<SwarmProviderBoundary<S>>>,
+}
+
+impl<S> Clone for SwarmProviderMeter<S> {
+    fn clone(&self) -> Self {
+        Self {
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
+    /// Admits one model provider request before invoking the provider.
+    pub fn admit_model_step(&self) -> Result<SwarmUsage> {
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_model_step()
+    }
+
+    /// Admits bytes before accepting model output from the provider.
+    pub fn admit_output(&self, bytes: u64) -> Result<SwarmUsage> {
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_output(bytes)
+    }
+
+    /// Admits one measured elapsed execution slice.
+    pub fn admit_execution_time(&self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_execution_time(elapsed_ms)
+    }
+
+    fn remaining_execution_time_ms(&self) -> Result<u64> {
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .remaining_execution_time_ms())
+    }
+
+    /// Accounts one provider event using its canonical serialized output size.
+    pub fn observe_model_event(&self, event: &crate::model::ModelEvent) -> Result<SwarmUsage> {
+        let bytes = u64::try_from(canonical_json_bytes(event)?.len())
+            .map_err(|_| Error::Invalid("model event output size exceeds u64".into()))?;
+        self.admit_output(bytes)
+    }
+
+    /// Issues the next receipt from the host-bound cumulative measurement source.
+    pub fn issue_usage_receipt(&self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .issue_usage_receipt()
+    }
+
+    /// Returns the latest guarded usage admitted by this runtime.
+    pub fn usage(&self) -> Result<SwarmUsage> {
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .usage())
+    }
+
+    /// Returns the cursor that must be persisted with the next receipt.
+    pub fn receipt_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .receipt_cursor())
+    }
+}
+
+/// Model provider adapter that enforces a dispatch's step, output, and
+/// elapsed-time ceilings around the real provider stream.
+pub struct MeteredModelProvider<P: ?Sized, S> {
+    provider: Arc<P>,
+    meter: SwarmProviderMeter<S>,
+}
+
+impl<P, S> MeteredModelProvider<P, S>
+where
+    P: crate::model::ModelProvider + ?Sized + 'static,
+    S: SwarmUsageSource + Send + Sync + 'static,
+{
+    /// Wraps one real provider with an admitted dispatch context.
+    pub fn new(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let meter = SwarmProviderMeter {
+            context: Arc::new(Mutex::new(SwarmProviderBoundary::Child(context))),
+        };
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps one real provider with an admitted root dispatch context.
+    pub fn new_root(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let meter = SwarmProviderMeter {
+            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(context))),
+        };
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+        });
+        (wrapped, meter)
+    }
+
+    /// Returns the handle used to publish the dispatch receipt after the
+    /// provider stream has been consumed.
+    #[must_use]
+    pub fn meter(&self) -> SwarmProviderMeter<S> {
+        self.meter.clone()
+    }
+
+    fn wrap_stream<'a>(
+        stream: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
+        meter: SwarmProviderMeter<S>,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        Box::pin(futures::stream::unfold(
+            (Some(stream), meter, Instant::now(), 0_u64),
+            |(mut stream, meter, started, charged_ms)| async move {
+                let mut stream = stream.take()?;
+                let remaining_ms = match meter.remaining_execution_time_ms() {
+                    Ok(remaining_ms) if remaining_ms > 0 => remaining_ms,
+                    Ok(_) => {
+                        return Some((
+                            Err(Error::Conflict(
+                                "provider execution time ceiling exhausted".into(),
+                            )),
+                            (None, meter, started, charged_ms),
+                        ));
+                    }
+                    Err(error) => return Some((Err(error), (None, meter, started, charged_ms))),
+                };
+                let next = match tokio::time::timeout(
+                    tokio::time::Duration::from_millis(remaining_ms),
+                    stream.next(),
+                )
+                .await
+                {
+                    Ok(next) => next,
+                    Err(_) => {
+                        let elapsed_ms =
+                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                        let delta = elapsed_ms.saturating_sub(charged_ms);
+                        let _ = meter.admit_execution_time(delta);
+                        return Some((
+                            Err(Error::Conflict(
+                                "provider execution time ceiling exhausted".into(),
+                            )),
+                            (None, meter, started, elapsed_ms),
+                        ));
+                    }
+                };
+                let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let delta = elapsed_ms.saturating_sub(charged_ms);
+                if let Err(error) = meter.admit_execution_time(delta) {
+                    return Some((Err(error), (None, meter, started, elapsed_ms)));
+                }
+                match next {
+                    Some(Ok(event)) => match meter.observe_model_event(&event) {
+                        Ok(_) => Some((Ok(event), (Some(stream), meter, started, elapsed_ms))),
+                        Err(error) => Some((Err(error), (None, meter, started, elapsed_ms))),
+                    },
+                    Some(Err(error)) => Some((Err(error), (None, meter, started, elapsed_ms))),
+                    None => None,
+                }
+            },
+        ))
+    }
+}
+
+impl<P, S> crate::model::ModelProvider for MeteredModelProvider<P, S>
+where
+    P: crate::model::ModelProvider + ?Sized + 'static,
+    S: SwarmUsageSource + Send + Sync + 'static,
+{
+    fn model_option_policy(&self) -> Option<&crate::model::ModelOptionPolicy> {
+        self.provider.model_option_policy()
+    }
+
+    fn admit(&self, request: &crate::model::ModelRequest) -> Result<()> {
+        self.provider.admit(request)
+    }
+
+    fn generate_prepared<'a>(
+        &'a self,
+        prepared: crate::model_input::PreparedModelInput,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        if let Err(error) = self.meter.admit_model_step() {
+            return Box::pin(futures::stream::once(async move { Err(error) }));
+        }
+        let stream = self.provider.generate_prepared(prepared);
+        Self::wrap_stream(stream, self.meter.clone())
+    }
+
+    fn generate<'a>(
+        &'a self,
+        request: crate::model::ModelRequest,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        if let Err(error) = self.meter.admit_model_step() {
+            return Box::pin(futures::stream::once(async move { Err(error) }));
+        }
+        let stream = self.provider.generate(request);
+        Self::wrap_stream(stream, self.meter.clone())
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        attempt: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        let provider = self.provider.clone();
+        let meter = self.meter.clone();
+        Box::pin(async move {
+            meter.admit_model_step()?;
+            let started = Instant::now();
+            let events = provider.reconcile(attempt).await?;
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            meter.admit_execution_time(elapsed_ms)?;
+            if let Some(events) = &events {
+                for event in events {
+                    meter.observe_model_event(event)?;
+                }
+            }
+            Ok(events)
+        })
     }
 }
 
