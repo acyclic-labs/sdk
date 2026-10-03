@@ -256,6 +256,28 @@ impl ForkPublication {
     }
 }
 
+/// Publication evidence that has crossed the model/workspace verification
+/// boundary owned by the Harness composition layer.
+///
+/// The constructor is crate-visible so a local runtime must obtain this value
+/// from the verified model-fork helper before it can authorize dispatch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedForkPublication(ForkPublication);
+
+impl VerifiedForkPublication {
+    /// Binds publication evidence after the authoritative helper verifies it.
+    pub(crate) fn from_verified(publication: ForkPublication) -> Result<Self> {
+        publication.validate()?;
+        Ok(Self(publication))
+    }
+
+    /// Returns the verified evidence for durable activation.
+    #[must_use]
+    pub(crate) fn into_publication(self) -> ForkPublication {
+        self.0
+    }
+}
+
 /// Lifecycle of an admitted child reservation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

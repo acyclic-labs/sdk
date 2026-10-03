@@ -11,7 +11,7 @@ use crate::{
     swarm_budget::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
-        SwarmOwnerFence, SwarmUsage,
+        SwarmOwnerFence, SwarmUsage, VerifiedForkPublication,
     },
 };
 use acyclic_stream::{
@@ -77,7 +77,12 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if tail != 0 {
-            return Self::open(client, session_id).await;
+            let reopened = Self::open(client, session_id).await?;
+            let (_, observed_owner, observed_limits) = reopened.descriptor()?;
+            if observed_owner == owner && observed_limits == limits {
+                return Ok(reopened);
+            }
+            return Err(Error::Conflict("swarm session descriptor differs".into()));
         }
         let event = SwarmBudgetEvent::Started {
             session_id,
@@ -172,7 +177,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(token)
     }
 
-    /// Activates a published child and invokes the production dispatcher.
+    /// Activates verified publication evidence and invokes the production dispatcher.
     ///
     /// Activation is durably committed before `dispatch` is called. If the
     /// dispatcher rejects the token, the active reservation is cancelled and
@@ -182,7 +187,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         &mut self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
-        publication: ForkPublication,
+        publication: VerifiedForkPublication,
         dispatch: F,
     ) -> Result<T>
     where
@@ -190,7 +195,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Fut: Future<Output = Result<T>>,
     {
         let token = self
-            .activate(operation_id, owner.clone(), publication)
+            .activate(operation_id, owner.clone(), publication.into_publication())
             .await?;
         match dispatch(token).await {
             Ok(value) => Ok(value),
