@@ -957,11 +957,15 @@ where
         Arc<FilesystemHost<A, O>>,
         StreamClient<P>,
         ContentGrant,
+        ContentGrant,
         u64,
     ) {
         (
             Arc::clone(&self.host),
             self.stream.clone(),
+            self.content_verifier
+                .owner_read_grant(&self.volume)
+                .expect("storage owner read grant remains valid"),
             self.write.clone(),
             self.maximum_file_bytes,
         )

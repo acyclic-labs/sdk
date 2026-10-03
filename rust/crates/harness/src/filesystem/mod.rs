@@ -36,6 +36,18 @@ use std::{
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
+pub(crate) fn is_host_owned_internal_path(path: &str) -> bool {
+    [
+        ".system/execution/",
+        ".system/interactions/",
+        ".system/workflows/",
+        ".system/harness-uploads/",
+        ".system/harness-file-metadata/",
+    ]
+    .iter()
+    .any(|prefix| path == prefix.trim_end_matches('/') || path.starts_with(prefix))
+}
+
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod git_facade;
@@ -297,6 +309,10 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
+    pub(crate) fn owner_read_grant(&self, volume: &VolumeRef) -> Result<ContentGrant> {
+        ContentGrant::verify(&self.verifier, &self.scope, volume, VolumeOperation::Read)
+    }
+
     /// Lazily lists another agent's private directory under this reader's
     /// signed, owner-delegated subtree grant. Pagination pins one generation.
     pub async fn list_private_directory(
@@ -359,16 +375,7 @@ where
         // model content, even when the model's owner scope has whole-volume
         // read capability. The inherited conversation prefix is deliberately
         // model-visible and remains governed by its exact reference grant.
-        if [
-            ".system/execution/",
-            ".system/interactions/",
-            ".system/workflows/",
-            ".system/harness-uploads/",
-            ".system/harness-file-metadata/",
-        ]
-        .iter()
-        .any(|prefix| reference.path().starts_with(prefix))
-        {
+        if is_host_owned_internal_path(reference.path()) {
             return Err(Error::Unauthorized(
                 "host-owned internal content is not model-readable".into(),
             ));

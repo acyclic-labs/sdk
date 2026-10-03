@@ -423,11 +423,84 @@ pub struct ExecutionReceiptRecord {
     pub receipt: ExecutionReceipt,
 }
 
+/// Opaque owner handle returned for the one caller that acquired a claim.
+///
+/// The handle binds the full receipt key, a journal generation, and a secret
+/// owner token. It is deliberately not serializable or model-visible.
+#[derive(Clone, Eq, PartialEq)]
+pub struct ExecutionClaimHandle {
+    key: ExecutionReceiptKey,
+    token: [u8; 32],
+    generation: u64,
+    operator: bool,
+}
+
+impl std::fmt::Debug for ExecutionClaimHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecutionClaimHandle")
+            .field("key", &self.key)
+            .field("generation", &self.generation)
+            .field("operator", &self.operator)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
+impl ExecutionClaimHandle {
+    pub(crate) fn issue(key: ExecutionReceiptKey, generation: u64, operator: bool) -> Self {
+        let nonce = OperationId::new().into_bytes();
+        let mut input = Vec::with_capacity(32 + 16 + 8);
+        input.extend_from_slice(&nonce);
+        input.extend_from_slice(&key.attempt_id.into_bytes());
+        input.extend_from_slice(&generation.to_le_bytes());
+        Self {
+            key,
+            token: *blake3::hash(&input).as_bytes(),
+            generation,
+            operator,
+        }
+    }
+
+    pub(crate) fn from_parts(
+        key: ExecutionReceiptKey,
+        token: [u8; 32],
+        generation: u64,
+        operator: bool,
+    ) -> Self {
+        Self {
+            key,
+            token,
+            generation,
+            operator,
+        }
+    }
+
+    pub(crate) fn matches(&self, key: &ExecutionReceiptKey) -> bool {
+        self.key == *key
+    }
+
+    pub(crate) const fn token(&self) -> &[u8; 32] {
+        &self.token
+    }
+
+    pub(crate) const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub(crate) const fn is_operator(&self) -> bool {
+        self.operator
+    }
+}
+
 /// Result of an atomic host-journal claim before a process is spawned.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ExecutionClaim {
     /// This caller owns the first dispatch reservation.
-    Acquired,
+    Acquired {
+        /// Opaque owner handle required to publish the terminal receipt.
+        handle: ExecutionClaimHandle,
+    },
     /// Another process or provider instance already owns the reservation.
     Pending,
     /// A durable terminal receipt already exists for this exact key.
@@ -511,6 +584,7 @@ pub trait ExecutionReceiptStore: Send + Sync {
     fn publish<'a>(
         &'a self,
         key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>>;
 }
@@ -1190,10 +1264,10 @@ impl NativeExecutionProvider {
         // Reserve before looking up the receipt so two concurrent dispatches
         // cannot both observe a miss and run the same host command.
         let cancellation = self.reserve_attempt(approval.operation_id, request.attempt_id)?;
-        if let Some(store) = &self.receipt_store {
+        let claim_handle = if let Some(store) = &self.receipt_store {
             let key = Self::receipt_key(&request, approval.operation_id);
             match store.claim(&key).await {
-                Ok(ExecutionClaim::Acquired) => {}
+                Ok(ExecutionClaim::Acquired { handle }) => handle,
                 Ok(ExecutionClaim::Pending) => {
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
                     return Err(Error::Indeterminate(approval.operation_id));
@@ -1237,7 +1311,12 @@ impl NativeExecutionProvider {
                     return Err(error);
                 }
             }
-        }
+            ExecutionClaimHandle::issue(
+                Self::receipt_key(&request, approval.operation_id),
+                0,
+                false,
+            )
+        };
         let receipt = if approval.approved {
             let runner = Arc::clone(&self.runner);
             let execution_request = approval.request.clone();
@@ -1300,7 +1379,7 @@ impl NativeExecutionProvider {
         };
         let key = Self::receipt_key(&request, approval.operation_id);
         let result = if let Some(store) = &self.receipt_store {
-            match store.publish(&key, &receipt).await {
+            match store.publish(&key, &claim_handle, &receipt).await {
                 Ok(result) => result,
                 Err(error) => {
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
@@ -1489,10 +1568,15 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct MemoryReceiptState {
+        records: Vec<ExecutionReceiptRecord>,
+        pending: Vec<(ExecutionReceiptKey, ExecutionClaimHandle)>,
+    }
+
+    #[derive(Default)]
     struct MemoryReceiptStore {
         volume: Option<VolumeRef>,
-        records: Mutex<Vec<ExecutionReceiptRecord>>,
-        pending: Mutex<Vec<ExecutionReceiptKey>>,
+        state: Mutex<MemoryReceiptState>,
     }
 
     impl ExecutionReceiptStore for MemoryReceiptStore {
@@ -1501,25 +1585,25 @@ mod tests {
             key: &'a ExecutionReceiptKey,
         ) -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
             Box::pin(async move {
-                if let Some(record) = self
-                    .records
+                let mut state = self
+                    .state
                     .lock()
-                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
+                if let Some(record) = state
+                    .records
                     .iter()
                     .find(|record| record.key == *key)
                     .cloned()
                 {
                     return Ok(ExecutionClaim::Completed(record));
                 }
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
-                if pending.iter().any(|candidate| candidate == key) {
+                if state.pending.iter().any(|(candidate, _)| candidate == key) {
                     return Ok(ExecutionClaim::Pending);
                 }
-                pending.push(key.clone());
-                Ok(ExecutionClaim::Acquired)
+                let handle =
+                    ExecutionClaimHandle::issue(key.clone(), state.pending.len() as u64, false);
+                state.pending.push((key.clone(), handle.clone()));
+                Ok(ExecutionClaim::Acquired { handle })
             })
         }
 
@@ -1529,9 +1613,10 @@ mod tests {
         ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
             Box::pin(async move {
                 Ok(self
-                    .records
+                    .state
                     .lock()
                     .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .records
                     .iter()
                     .find(|record| record.key == *key)
                     .cloned())
@@ -1541,6 +1626,7 @@ mod tests {
         fn publish<'a>(
             &'a self,
             key: &'a ExecutionReceiptKey,
+            handle: &'a ExecutionClaimHandle,
             receipt: &'a ExecutionReceipt,
         ) -> futures::future::BoxFuture<'a, Result<FileRef>> {
             Box::pin(async move {
@@ -1560,18 +1646,24 @@ mod tests {
                     descriptor,
                     "execution-result.json",
                 )?;
-                self.records
+                let mut state = self
+                    .state
                     .lock()
-                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
-                    .push(ExecutionReceiptRecord {
-                        key: key.clone(),
-                        result: result.clone(),
-                        receipt: receipt.clone(),
-                    });
-                self.pending
-                    .lock()
-                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
-                    .retain(|candidate| candidate != key);
+                    .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?;
+                let Some((_, pending_handle)) =
+                    state.pending.iter().find(|(candidate, _)| candidate == key)
+                else {
+                    return Err(Error::Conflict("test receipt claim is missing".into()));
+                };
+                if pending_handle != handle {
+                    return Err(Error::Conflict("test receipt claim handle is stale".into()));
+                }
+                state.records.push(ExecutionReceiptRecord {
+                    key: key.clone(),
+                    result: result.clone(),
+                    receipt: receipt.clone(),
+                });
+                state.pending.retain(|(candidate, _)| candidate != key);
                 Ok(result)
             })
         }
@@ -1582,9 +1674,10 @@ mod tests {
         ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
             Box::pin(async move {
                 Ok(self
-                    .records
+                    .state
                     .lock()
                     .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+                    .records
                     .iter()
                     .find(|record| record.key.attempt_id == attempt_id)
                     .cloned())
@@ -2154,8 +2247,7 @@ mod tests {
         let (content, request_file) = content_fixture(&approval)?;
         let store = Arc::new(MemoryReceiptStore {
             volume: Some(content.volume.clone()),
-            records: Mutex::new(Vec::new()),
-            pending: Mutex::new(Vec::new()),
+            state: Mutex::new(MemoryReceiptState::default()),
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let provider = NativeExecutionProvider::new_with_receipt_store(
@@ -2224,8 +2316,7 @@ mod tests {
         let (content, request_file) = content_fixture(&approval)?;
         let store = Arc::new(MemoryReceiptStore {
             volume: Some(content.volume.clone()),
-            records: Mutex::new(Vec::new()),
-            pending: Mutex::new(Vec::new()),
+            state: Mutex::new(MemoryReceiptState::default()),
         });
         let started = Arc::new(AtomicBool::new(false));
         let release = Arc::new(AtomicBool::new(false));

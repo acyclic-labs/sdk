@@ -10,8 +10,8 @@ use crate::{
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     host_execution::{
-        ExecutionApprovalVerifier, ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey,
-        ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
+        ExecutionApprovalVerifier, ExecutionClaim, ExecutionClaimHandle, ExecutionReceipt,
+        ExecutionReceiptKey, ExecutionReceiptRecord, ExecutionReceiptStore, NativeExecutionProvider,
     },
     model::{Model, ModelProvider},
     resources::ProviderRef,
@@ -37,8 +37,18 @@ const EXECUTION_RECEIPT_MAX_BYTES: u64 = 4 * 1024 * 1024;
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ExecutionReceiptEvent {
-    Pending { key: ExecutionReceiptKey },
-    Completed { record: ExecutionReceiptRecord },
+    Pending {
+        key: ExecutionReceiptKey,
+        owner_token: [u8; 32],
+        generation: u64,
+    },
+    Completed {
+        key: ExecutionReceiptKey,
+        result: FileRef,
+        owner_token: [u8; 32],
+        generation: u64,
+        operator_resolution: bool,
+    },
 }
 
 /// Host-owned receipt journal for approved local process execution.
@@ -53,6 +63,7 @@ pub struct FilesystemExecutionReceiptStore<A, O> {
     stream: Stream<LocalStream>,
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
+    read: ContentGrant,
     write: ContentGrant,
     maximum_bytes: u64,
 }
@@ -67,6 +78,7 @@ where
         stream: StreamClient<LocalStream>,
         host: Arc<FilesystemHost<A, O>>,
         volume: VolumeRef,
+        read: ContentGrant,
         write: ContentGrant,
         maximum_bytes: u64,
     ) -> Result<Self> {
@@ -79,6 +91,7 @@ where
             ));
         }
         write.require(&volume, VolumeOperation::Write)?;
+        read.require(&volume, VolumeOperation::Read)?;
         let stream = stream
             .stream(EXECUTION_RECEIPT_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -86,6 +99,7 @@ where
             stream,
             host,
             volume,
+            read,
             write,
             maximum_bytes: maximum_bytes.min(EXECUTION_RECEIPT_MAX_BYTES),
         })
@@ -107,7 +121,45 @@ where
                 events.push(event);
             }
         }
+        Self::validate_events(&events)?;
         Ok((replay.cursor(), events))
+    }
+
+    fn validate_events(events: &[ExecutionReceiptEvent]) -> Result<()> {
+        let mut pending = Vec::<ExecutionReceiptKey>::new();
+        let mut finalized = Vec::<ExecutionReceiptKey>::new();
+        for event in events {
+            match event {
+                ExecutionReceiptEvent::Pending { key, .. } => {
+                    if finalized.iter().any(|candidate| candidate == key)
+                        || pending.iter().any(|candidate| candidate == key)
+                    {
+                        return Err(Error::Storage(
+                            "execution receipt journal contains a duplicate claim".into(),
+                        ));
+                    }
+                    pending.push(key.clone());
+                }
+                ExecutionReceiptEvent::Completed { key, result, .. } => {
+                    result.validate()?;
+                    if result.descriptor().media_type() != "application/json" {
+                        return Err(Error::Storage(
+                            "execution receipt result is not JSON content".into(),
+                        ));
+                    }
+                    if finalized.iter().any(|candidate| candidate == key)
+                        || !pending.iter().any(|candidate| candidate == key)
+                    {
+                        return Err(Error::Storage(
+                            "execution receipt terminal record is orphaned or duplicated".into(),
+                        ));
+                    }
+                    pending.retain(|candidate| candidate != key);
+                    finalized.push(key.clone());
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn append_at_tail(&self, tail: u64, event: &ExecutionReceiptEvent) -> Result<bool> {
@@ -124,19 +176,30 @@ where
     }
 
     /// Lists claims that remain unresolved after a provider restart.
-    pub async fn pending_claims(&self) -> Result<Vec<ExecutionReceiptKey>> {
+    pub async fn pending_claims(
+        &self,
+        resolver: &ContentGrant,
+    ) -> Result<Vec<(ExecutionReceiptKey, ExecutionClaimHandle)>> {
+        resolver.require(&self.volume, VolumeOperation::Write)?;
         let (_, events) = self.events().await?;
-        let mut pending = Vec::new();
+        let mut pending: Vec<(ExecutionReceiptKey, ExecutionClaimHandle)> = Vec::new();
         for event in events {
             match event {
-                ExecutionReceiptEvent::Pending { key } => {
-                    if !pending.iter().any(|candidate| candidate == &key) {
-                        pending.push(key);
+                ExecutionReceiptEvent::Pending {
+                    key,
+                    owner_token,
+                    generation,
+                } => {
+                    if !pending.iter().any(|(candidate, _)| candidate == &key) {
+                        pending.push((
+                            key.clone(),
+                            ExecutionClaimHandle::from_parts(key, owner_token, generation, true),
+                        ));
                     }
                 }
-                ExecutionReceiptEvent::Completed { record } => {
-                    record.validate()?;
-                    pending.retain(|candidate| candidate != &record.key);
+                ExecutionReceiptEvent::Completed { key, result, .. } => {
+                    result.validate()?;
+                    pending.retain(|(candidate, _)| candidate != key);
                 }
             }
         }
@@ -149,10 +212,19 @@ where
     pub async fn resolve_unknown(
         &self,
         key: &ExecutionReceiptKey,
+        resolver: &ContentGrant,
+        handle: &ExecutionClaimHandle,
         reason: impl Into<String>,
     ) -> Result<FileRef> {
+        resolver.require(&self.volume, VolumeOperation::Write)?;
+        if !handle.is_operator() {
+            return Err(Error::Unauthorized(
+                "pending execution resolution requires an operator handle".into(),
+            ));
+        }
         self.publish(
             key,
+            handle,
             &ExecutionReceipt::Unknown {
                 reason: reason.into(),
             },
@@ -160,7 +232,8 @@ where
         .await
     }
 
-    fn terminal_for(
+    async fn terminal_for(
+        &self,
         events: &[ExecutionReceiptEvent],
         key: &ExecutionReceiptKey,
     ) -> Result<Option<ExecutionReceiptRecord>> {
@@ -168,11 +241,28 @@ where
         let mut terminal = None;
         for event in events {
             match event {
-                ExecutionReceiptEvent::Pending { key: candidate } if candidate == key => {
+                ExecutionReceiptEvent::Pending { key: candidate, .. } if candidate == key => {
                     pending = true;
                 }
-                ExecutionReceiptEvent::Completed { record } if record.key == *key => {
-                    record.validate()?;
+                ExecutionReceiptEvent::Completed {
+                    key: candidate,
+                    result,
+                    ..
+                } if candidate == key => {
+                    let bytes = self
+                        .host
+                        .read_content(result, &self.read, self.maximum_bytes)
+                        .await?
+                        .to_vec();
+                    result.descriptor().verify(&bytes)?;
+                    let receipt: ExecutionReceipt = serde_json::from_slice(&bytes)
+                        .map_err(|error| Error::Storage(error.to_string()))?;
+                    receipt.validate()?;
+                    let record = ExecutionReceiptRecord {
+                        key: candidate.clone(),
+                        result: result.clone(),
+                        receipt,
+                    };
                     if !pending {
                         return Err(Error::Storage(
                             "execution receipt completed without a durable claim".into(),
@@ -180,14 +270,14 @@ where
                     }
                     if terminal
                         .as_ref()
-                        .is_some_and(|prior: &ExecutionReceiptRecord| prior != record)
+                        .is_some_and(|prior: &ExecutionReceiptRecord| prior != &record)
                     {
                         return Err(Error::Conflict(
                             "execution receipt journal contains conflicting terminal records"
                                 .into(),
                         ));
                     }
-                    terminal = Some(record.clone());
+                    terminal = Some(record);
                 }
                 _ => {}
             }
@@ -208,19 +298,27 @@ where
             }
             loop {
                 let (tail, events) = self.events().await?;
-                if let Some(record) = Self::terminal_for(&events, key)? {
+                if let Some(record) = self.terminal_for(&events, key).await? {
                     return Ok(ExecutionClaim::Completed(record));
                 }
                 if events.iter().any(|event| {
-                    matches!(event, ExecutionReceiptEvent::Pending { key: candidate } if candidate == key)
+                    matches!(event, ExecutionReceiptEvent::Pending { key: candidate, .. } if candidate == key)
                 }) {
                     return Ok(ExecutionClaim::Pending);
                 }
+                let handle = ExecutionClaimHandle::issue(key.clone(), tail, false);
                 if self
-                    .append_at_tail(tail, &ExecutionReceiptEvent::Pending { key: key.clone() })
+                    .append_at_tail(
+                        tail,
+                        &ExecutionReceiptEvent::Pending {
+                            key: key.clone(),
+                            owner_token: *handle.token(),
+                            generation: handle.generation(),
+                        },
+                    )
                     .await?
                 {
-                    return Ok(ExecutionClaim::Acquired);
+                    return Ok(ExecutionClaim::Acquired { handle });
                 }
             }
         })
@@ -232,7 +330,7 @@ where
     ) -> BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
         Box::pin(async move {
             let (_, events) = self.events().await?;
-            Self::terminal_for(&events, key)
+            self.terminal_for(&events, key).await
         })
     }
 
@@ -243,15 +341,14 @@ where
         Box::pin(async move {
             let (_, events) = self.events().await?;
             let mut record = None;
-            for event in events {
-                if let ExecutionReceiptEvent::Completed { record: candidate } = event
-                    && candidate.key.attempt_id == attempt_id
+            for event in &events {
+                if let ExecutionReceiptEvent::Completed { key: candidate, .. } = event
+                    && candidate.attempt_id == attempt_id
                 {
-                    candidate.validate()?;
-                    if record
-                        .as_ref()
-                        .is_some_and(|prior: &ExecutionReceiptRecord| prior != &candidate)
-                    {
+                    let Some(candidate) = self.terminal_for(&events, candidate).await? else {
+                        continue;
+                    };
+                    if record.as_ref().is_some_and(|prior| prior != &candidate) {
                         return Err(Error::Conflict(
                             "execution receipt attempt has conflicting terminal records".into(),
                         ));
@@ -266,6 +363,7 @@ where
     fn publish<'a>(
         &'a self,
         key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
         receipt: &'a ExecutionReceipt,
     ) -> BoxFuture<'a, Result<FileRef>> {
         Box::pin(async move {
@@ -275,22 +373,42 @@ where
             if bytes.len() as u64 > self.maximum_bytes {
                 return Err(Error::Invalid("execution receipt exceeds its bound".into()));
             }
+            if !handle.matches(key) {
+                return Err(Error::Unauthorized(
+                    "execution receipt handle is bound to another key".into(),
+                ));
+            }
+            if handle.is_operator() && !matches!(receipt, ExecutionReceipt::Unknown { .. }) {
+                return Err(Error::Unauthorized(
+                    "operator handles may only resolve execution as unknown".into(),
+                ));
+            }
             loop {
                 let (tail, events) = self.events().await?;
-                if let Some(record) = Self::terminal_for(&events, key)? {
-                    if record.receipt != *receipt {
-                        return Err(Error::Conflict(
-                            "execution receipt publication conflicts with the durable result"
-                                .into(),
-                        ));
-                    }
-                    return Ok(record.result);
+                if let Some(record) = self.terminal_for(&events, key).await? {
+                    let _ = record;
+                    return Err(Error::Conflict(
+                        "execution receipt claim was already finalized".into(),
+                    ));
                 }
-                if !events.iter().any(|event| {
-                    matches!(event, ExecutionReceiptEvent::Pending { key: candidate } if candidate == key)
-                }) {
+                let Some((owner_token, generation)) = events.iter().find_map(|event| {
+                    let ExecutionReceiptEvent::Pending {
+                        key: candidate,
+                        owner_token,
+                        generation,
+                    } = event
+                    else {
+                        return None;
+                    };
+                    (candidate == key).then_some((*owner_token, *generation))
+                }) else {
                     return Err(Error::Conflict(
                         "execution receipt publication has no durable claim".into(),
+                    ));
+                };
+                if owner_token != *handle.token() || generation != handle.generation() {
+                    return Err(Error::Conflict(
+                        "execution receipt handle is stale or owned by another dispatcher".into(),
                     ));
                 }
                 let result = self
@@ -298,14 +416,23 @@ where
                     .put_internal_content(
                         &self.volume,
                         &self.write,
-                        &format!(".system/execution/{}.json", key.attempt_id),
+                        &format!(
+                            ".system/execution/{}/{}.json",
+                            key.attempt_id,
+                            if handle.is_operator() {
+                                format!("resolve-{}", hex::encode(handle.token()))
+                            } else {
+                                "dispatch".into()
+                            }
+                        ),
                         &bytes,
                         "application/json",
                         "execution-result.json",
                         self.maximum_bytes,
                         &crate::IdempotencyKey::new(format!(
-                            "execution-receipt:{}",
-                            key.attempt_id
+                            "execution-receipt:{}:{}",
+                            key.attempt_id,
+                            hex::encode(handle.token())
                         ))?,
                         super::InternalContentClass::Execution,
                     )
@@ -318,7 +445,16 @@ where
                 record.validate()?;
                 let published = record.result.clone();
                 if self
-                    .append_at_tail(tail, &ExecutionReceiptEvent::Completed { record })
+                    .append_at_tail(
+                        tail,
+                        &ExecutionReceiptEvent::Completed {
+                            key: record.key,
+                            result: record.result,
+                            owner_token: *handle.token(),
+                            generation: handle.generation(),
+                            operator_resolution: handle.is_operator(),
+                        },
+                    )
                     .await?
                 {
                     return Ok(published);
@@ -721,11 +857,12 @@ impl PersistentLocalHarness {
         &self,
     ) -> Result<Arc<FilesystemExecutionReceiptStore<LocalAuthorityBackend, LocalObjectBackend>>>
     {
-        let (host, stream, write, maximum_bytes) = self.storage.execution_binding();
+        let (host, stream, read, write, maximum_bytes) = self.storage.execution_binding();
         Ok(Arc::new(FilesystemExecutionReceiptStore::new(
             stream,
             host,
             self.storage.volume().clone(),
+            read,
             write,
             maximum_bytes,
         )?))
@@ -903,11 +1040,6 @@ mod tests {
             guarantee: EffectGuarantee::AtMostOnce,
             request_digest: [64; 32],
         };
-        let receipt = ExecutionReceipt::Succeeded {
-            status_code: 0,
-            stdout: b"ok".to_vec(),
-            stderr: Vec::new(),
-        };
         {
             let session = PersistentLocalHarness::open(
                 &root,
@@ -917,7 +1049,10 @@ mod tests {
             )
             .await?;
             let store = session.execution_receipt_store()?;
-            assert_eq!(store.claim(&key).await?, ExecutionClaim::Acquired);
+            assert!(matches!(
+                store.claim(&key).await?,
+                ExecutionClaim::Acquired { .. }
+            ));
         }
         let first = {
             let session = PersistentLocalHarness::open(
@@ -929,8 +1064,18 @@ mod tests {
             .await?;
             let store = session.execution_receipt_store()?;
             assert_eq!(store.claim(&key).await?, ExecutionClaim::Pending);
-            assert_eq!(store.pending_claims().await?, vec![key.clone()]);
-            store.publish(&key, &receipt).await?
+            let (_, _, _, resolver, _) = session.storage().execution_binding();
+            let pending = store.pending_claims(&resolver).await?;
+            assert_eq!(pending.len(), 1);
+            let (_, operator) = pending.into_iter().next().unwrap();
+            store
+                .resolve_unknown(
+                    &key,
+                    &resolver,
+                    &operator,
+                    "operator resolved after restart",
+                )
+                .await?
         };
         {
             let session = PersistentLocalHarness::open(
@@ -946,7 +1091,7 @@ mod tests {
                 return Err(Error::Storage("reopened receipt was not terminal".into()));
             };
             assert_eq!(record.result, first);
-            assert_eq!(record.receipt, receipt);
+            assert!(matches!(record.receipt, ExecutionReceipt::Unknown { .. }));
             assert_eq!(store.load_attempt(key.attempt_id).await?, Some(record));
             assert!(
                 session
@@ -957,6 +1102,60 @@ mod tests {
                     .is_err()
             );
         }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopened_local_receipt_provider_replays_success_ack() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("harness-receipt-success-{}", OperationId::new()));
+        let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
+        let key = ExecutionReceiptKey {
+            operation_id: OperationId::from_bytes([71; 16]),
+            effect_id: EffectId::from_bytes([72; 16]),
+            attempt_id: EffectAttemptId::from_bytes([73; 16]),
+            provider: "harness.native-execution.v1".into(),
+            effect_kind: "host.process".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: [74; 32],
+        };
+        let result = {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            )
+            .await?;
+            let store = session.execution_receipt_store()?;
+            let ExecutionClaim::Acquired { handle } = store.claim(&key).await? else {
+                return Err(Error::Conflict(
+                    "local receipt claim was not acquired".into(),
+                ));
+            };
+            let receipt = ExecutionReceipt::Succeeded {
+                status_code: 0,
+                stdout: b"ack".to_vec(),
+                stderr: Vec::new(),
+            };
+            store.publish(&key, &handle, &receipt).await?
+        };
+        let session = PersistentLocalHarness::open(
+            &root,
+            model,
+            Arc::new(Mock(AtomicUsize::new(0))),
+            Limits::default(),
+        )
+        .await?;
+        let store = session.execution_receipt_store()?;
+        let ExecutionClaim::Completed(record) = store.claim(&key).await? else {
+            return Err(Error::Storage(
+                "reopened success receipt was not terminal".into(),
+            ));
+        };
+        assert_eq!(record.result, result);
+        assert!(matches!(record.receipt, ExecutionReceipt::Succeeded { .. }));
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
