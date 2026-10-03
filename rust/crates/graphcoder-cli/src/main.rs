@@ -9,6 +9,7 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
+use futures::StreamExt;
 use acyclic_harness::{
     conversation::Limits,
     filesystem::{LocalSessionPhase, LocalSwarmConfig, PersistentLocalSwarm},
