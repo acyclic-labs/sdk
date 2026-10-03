@@ -15,6 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -88,12 +89,17 @@ function loadConfig(path) {
     if (seen.has(pathValue.toLowerCase())) fail(`duplicate artifact path: ${pathValue}`);
     seen.add(pathValue.toLowerCase());
     regularFile(pathValue, `artifact ${index}`);
+    const declaredDigest = nonemptyText(item.sha256, `artifact ${index}.sha256`);
+    if (!HEX64.test(declaredDigest)) fail(`artifact ${index}.sha256 must be a lowercase SHA-256 digest`);
+    const observedDigest = hash(readFileSync(pathValue));
+    if (declaredDigest !== observedDigest) fail(`artifact ${index} digest does not match its bytes: ${pathValue}`);
     const sourceCommit = nonemptyText(item.source_commit, `artifact ${index}.source_commit`);
     const sourceTree = nonemptyText(item.source_tree, `artifact ${index}.source_tree`);
     if (!/^[0-9a-f]{7,64}$/.test(sourceCommit) || !HEX40.test(sourceTree)) fail(`artifact ${index} source provenance is invalid`);
     const builtAt = iso(item.built_at, `artifact ${index}.built_at`);
     return {
       path: pathValue,
+      sha256: declaredDigest,
       source_commit: sourceCommit,
       source_tree: sourceTree,
       built_at: builtAt,
@@ -193,11 +199,15 @@ function capture(configPath) {
   process.exitCode = status === "passed" ? 0 : 1;
 }
 
-try {
-  const [command, configPath] = process.argv.slice(2);
-  if (command !== "capture" || configPath === undefined || process.argv.length !== 4) fail("usage: graphcoder-qualification-suite.mjs capture CONFIG.json");
-  capture(configPath);
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
+export { loadConfig };
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const [command, configPath] = process.argv.slice(2);
+    if (command !== "capture" || configPath === undefined || process.argv.length !== 4) fail("usage: graphcoder-qualification-suite.mjs capture CONFIG.json");
+    capture(configPath);
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  }
 }
