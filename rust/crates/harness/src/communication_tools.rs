@@ -365,9 +365,9 @@ impl CommunicationExecutor {
             ));
         }
         // Admission observation is the owner-authenticated boundary for the
-        // model batch path.  ModelToolContext carries only turn provenance;
-        // deriving the durable task identity is safe here because the host
-        // must reject an uncommitted or mismatched task before any effect.
+        // model batch path. ModelToolContext carries the task identity only
+        // when the host bound it while admitting this turn; it is never
+        // derived from the operation identity or model content.
         self.host.observe_admission(waiter).await?;
         match self.kind {
             CommunicationToolKind::Message => {
@@ -461,7 +461,9 @@ impl ToolExecutor for CommunicationExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let waiter = TaskId::from_bytes(context.parent_operation.into_bytes());
+            let waiter = context.task_id.ok_or_else(|| {
+                Error::Unsupported("communication tools require authenticated task context".into())
+            })?;
             self.execute_for_task(waiter, invocation.operation_id, invocation)
                 .await
         })
@@ -474,7 +476,9 @@ impl ToolExecutor for CommunicationExecutor {
     ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let waiter = TaskId::from_bytes(context.parent_operation.into_bytes());
+            let waiter = context.task_id.ok_or_else(|| {
+                Error::Unsupported("communication tools require authenticated task context".into())
+            })?;
             self.execute_for_task(waiter, invocation.operation_id, invocation)
                 .await
                 .map(Some)
@@ -657,8 +661,14 @@ fn wait_output_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::OperationId;
+    use crate::{
+        OperationId,
+        runtime::{DurableTaskHost, TaskAdmissionRecord},
+        tool::ModelToolContext,
+    };
+    use futures::future::BoxFuture;
     use serde_json::json;
+    use std::sync::{Arc, Mutex};
 
     fn task(value: u8) -> TaskId {
         TaskId::from_bytes([value; 16])
@@ -724,5 +734,61 @@ mod tests {
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
         assert!(matches!(source.cancel(task(10)), Err(Error::NotFound(_))));
         Ok(())
+    }
+
+    struct RecordingHost(Mutex<Option<TaskId>>);
+
+    impl DurableTaskHost for RecordingHost {
+        fn observe_admission<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            *self.0.lock().expect("recording host lock") = Some(task_id);
+            Box::pin(async { Err(Error::Unsupported("test host is unbound".into())) })
+        }
+    }
+
+    #[tokio::test]
+    async fn model_batch_communication_requires_and_uses_authenticated_task_identity() {
+        let host = Arc::new(RecordingHost(Mutex::new(None)));
+        let executor = CommunicationExecutor {
+            host: host.clone(),
+            waits: None,
+            cancellation: None,
+            kind: CommunicationToolKind::Message,
+        };
+        let parent_operation = operation(12);
+        let invocation = ToolInvocation::for_model_call(
+            parent_operation,
+            0,
+            "message-call".into(),
+            MESSAGE_TOOL_NAME.into(),
+            json!({"recipient": task(2).to_string(), "target": "parent", "payload": "missing"}),
+        );
+        let unauthenticated = ModelToolContext {
+            parent_operation,
+            step: 0,
+            task_id: None,
+        };
+        assert!(matches!(
+            executor
+                .execute_in_model_batch(unauthenticated, invocation.clone())
+                .await,
+            Err(Error::Unsupported(message)) if message.contains("authenticated task context")
+        ));
+        assert_eq!(*host.0.lock().expect("recording host lock"), None);
+
+        let authenticated = ModelToolContext {
+            parent_operation,
+            step: 0,
+            task_id: Some(task(7)),
+        };
+        assert!(matches!(
+            executor
+                .execute_in_model_batch(authenticated, invocation)
+                .await,
+            Err(Error::Unsupported(message)) if message.contains("test host")
+        ));
+        assert_eq!(*host.0.lock().expect("recording host lock"), Some(task(7)));
     }
 }

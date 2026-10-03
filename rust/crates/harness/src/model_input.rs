@@ -347,6 +347,11 @@ pub struct CompletedModelBoundary {
     pub request: ModelRequest,
     /// Immutable inherited prefix binding every message and definition.
     pub prefix: FrozenModelPrefix,
+    /// Typed durable evidence for every recoverable invalid-call exchange in
+    /// the request. Keeping this with the boundary prevents a child fork from
+    /// reinterpreting a model-visible rejection after restart.
+    #[serde(default)]
+    pub rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
 }
 impl CompletedModelBoundary {
     /// Refuses incomplete exchanges; does not regenerate the original context.
@@ -368,12 +373,14 @@ impl CompletedModelBoundary {
         Ok(Self {
             request: prepared.into_request(),
             prefix,
+            rejection_evidence: rejections.to_vec(),
         })
     }
     /// Validates a persisted boundary before admitting any child.
     pub fn verify(&self, limits: Limits) -> Result<()> {
-        self.prefix
-            .verify(&PreparedModelInput::prepare(self.request.clone(), limits)?)
+        let prepared = PreparedModelInput::prepare(self.request.clone(), limits)?;
+        validate_rejection_evidence(prepared.request(), &self.rejection_evidence)?;
+        self.prefix.verify(&prepared)
     }
 }
 
@@ -825,11 +832,32 @@ mod tests {
         };
         PreparedModelInput::prepare(malformed.clone(), Limits::default())?;
         assert!(CompletedModelBoundary::capture(malformed.clone(), Limits::default()).is_err());
-        CompletedModelBoundary::capture_with_rejections(
+        let boundary = CompletedModelBoundary::capture_with_rejections(
             malformed.clone(),
             Limits::default(),
             std::slice::from_ref(&feedback),
         )?;
+        let inherited = InheritedModelContext::new(
+            boundary.clone(),
+            vec![text("child task; fresh scratch")],
+            Limits::default(),
+        )?;
+        let mut composed = boundary.request.clone();
+        composed.messages.push(text("child task; fresh scratch"));
+        inherited.verify_composition(&composed, &[], Limits::default())?;
+
+        // A fork cannot make the model-visible rejection self-authenticating
+        // by dropping the durable evidence from the inherited boundary.
+        let mut forged_boundary = boundary;
+        forged_boundary.rejection_evidence.clear();
+        assert!(
+            InheritedModelContext::new(
+                forged_boundary,
+                vec![text("child task; fresh scratch")],
+                Limits::default(),
+            )
+            .is_err()
+        );
 
         if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
             &mut malformed.messages[3].content

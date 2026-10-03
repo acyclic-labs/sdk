@@ -1,7 +1,7 @@
 //! Fully replaceable turn execution and the stock streaming model/tool loop.
 
 use crate::{
-    Error, InteractionId, OperationId, Result,
+    Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     context::{ContextInput, ContextPipeline},
     conversation::{Attachment, FileRef, Limits, VolumeClass},
@@ -352,6 +352,7 @@ pub struct StockExecutor {
     batch_publisher: Option<Arc<dyn ModelBatchPublisher>>,
     batch_identity: Option<ComponentIdentity>,
     batch_guarantee: Option<EffectGuarantee>,
+    authenticated_task: Option<TaskId>,
 }
 
 impl StockExecutor {
@@ -375,6 +376,7 @@ impl StockExecutor {
             batch_publisher: None,
             batch_identity: None,
             batch_guarantee: None,
+            authenticated_task: None,
         }
     }
 
@@ -382,6 +384,15 @@ impl StockExecutor {
     #[must_use]
     pub fn with_limits(mut self, limits: Limits) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// Binds model-batch communication to the durable task admitted by the
+    /// host. The task identity is transport provenance and cannot be supplied
+    /// or changed by a model invocation.
+    #[must_use]
+    pub fn with_authenticated_task(mut self, task_id: TaskId) -> Self {
+        self.authenticated_task = Some(task_id);
         self
     }
 
@@ -438,6 +449,7 @@ impl StockExecutor {
             "tool_scope": (self.tool_scope.grants(), self.tool_scope.limits()),
             "policy": self.policy_identity.as_ref(),
             "batch_publisher": (&self.batch_identity, self.batch_guarantee),
+            "authenticated_task": self.authenticated_task,
         }))
     }
 
@@ -814,6 +826,7 @@ impl StockExecutor {
             operation_id: ModelToolContext {
                 parent_operation: operation,
                 step,
+                task_id: None,
             }
             .publication_operation(),
             parent_operation: operation,
@@ -1195,6 +1208,7 @@ impl StockExecutor {
             let tool_context = ModelToolContext {
                 parent_operation: operation_id,
                 step,
+                task_id: self.authenticated_task,
             };
             tool_context.validate_invocation(&invocation)?;
             let result = if claimed {
@@ -1686,8 +1700,9 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits the slip seen in production — `parameters` where the pinned schema says `arguments`
-    /// — then a well-formed call once it has been told what was wrong.
+    /// Emits two malformed calls — including `parameters` where the pinned
+    /// schema expects a direct argument — then a well-formed call after both
+    /// durable rejection envelopes have been returned.
     struct SlippingModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
@@ -1708,6 +1723,11 @@ mod tests {
                         call_id: "call-1".into(),
                         name: "example.echo".into(),
                         arguments: json!({"parameters": {"value": "hello"}}),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "call-2".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({"unexpected": true}),
                     }),
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
@@ -1762,6 +1782,52 @@ mod tests {
                     Ok(ModelEvent::ToolCall {
                         call_id: "call-1".into(),
                         name: "example.echo".into(),
+                        arguments: json!({"value": "hello"}),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]
+            } else {
+                vec![
+                    Ok(ModelEvent::Content {
+                        delta: "done".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: json!({"finish": "stop"}),
+                    }),
+                ]
+            };
+            Box::pin(stream::iter(events))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    struct ProjectionModel {
+        calls: AtomicUsize,
+        requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    impl ModelProvider for ProjectionModel {
+        fn generate<'a>(
+            &'a self,
+            request: ModelRequest,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Ok(mut requests) = self.requests.lock() {
+                requests.push(request);
+            }
+            let events = if call == 0 {
+                vec![
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "private-call".into(),
+                        name: "example.private".into(),
                         arguments: json!({"value": "hello"}),
                     }),
                     Ok(ModelEvent::Completed {
@@ -1849,6 +1915,31 @@ mod tests {
 
         fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
             async { Ok(None) }.boxed()
+        }
+    }
+
+    struct PrivateResultTool;
+
+    impl crate::tool::ToolExecutor for PrivateResultTool {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            async {
+                Ok(ToolResult {
+                    value: json!({"private": "secret", "public": "shown"}),
+                })
+            }
+            .boxed()
+        }
+
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    struct NarrowProjection;
+
+    impl crate::tool::ToolProjection for NarrowProjection {
+        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+            Ok(json!({"public": result.value["public"]}))
         }
     }
 
@@ -1990,6 +2081,7 @@ mod tests {
             )?,
             None,
         )?
+        .with_authenticated_task(TaskId::from_bytes([33; 16]))
         .with_batch_publisher(Some(publisher.clone()))?;
         let journal = Journal::default();
         let input = TurnInput {
@@ -2007,7 +2099,8 @@ mod tests {
             first.0,
             ModelToolContext {
                 parent_operation: input.operation_id,
-                step: 0
+                step: 0,
+                task_id: Some(TaskId::from_bytes([33; 16])),
             }
         );
         // Publication itself loses its response on the recovery run.
@@ -2722,13 +2815,15 @@ mod tests {
                 .replay(OperationId::from_bytes([79; 16]))
                 .await?
                 .iter()
-                .any(|record| matches!(
+                .filter(|record| matches!(
                     record.event,
                     ExecutionEvent::ToolAdmissionRejected {
                         reason: ToolRejectionKind::InvalidArguments,
                         ..
                     }
                 ))
+                .count()
+                == 2
         );
 
         // The rejected call was never admitted, so only the corrected one reached the executor.
@@ -2739,27 +2834,152 @@ mod tests {
             .requests
             .lock()
             .map_err(|_| Error::Storage("model lock poisoned".into()))?;
-        let rejection = requests.get(1).and_then(|request| {
-            request
-                .messages
+        let rejections = requests
+            .get(1)
+            .map(|request| {
+                request
+                    .messages
+                    .iter()
+                    .filter_map(|message| match (&message.role, &message.content) {
+                        (
+                            ModelRole::Tool,
+                            ModelContent::Part(ModelContentPart::ToolResult {
+                                call_id, value, ..
+                            }),
+                        ) if call_id == "call-1" || call_id == "call-2" => {
+                            Some((call_id.clone(), value.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .ok_or_else(|| Error::Storage("no rejection request".into()))?;
+        assert_eq!(
+            rejections
                 .iter()
-                .find_map(|message| match (&message.role, &message.content) {
-                    (
-                        ModelRole::Tool,
-                        ModelContent::Part(ModelContentPart::ToolResult { call_id, value, .. }),
-                    ) if call_id == "call-1" => Some(value.clone()),
-                    _ => None,
-                })
-        });
-        let rejection = rejection.ok_or_else(|| Error::Storage("no rejection message".into()))?;
-        let text = rejection
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        assert!(
-            text.contains("tool input failed validation"),
-            "expected the validation message, got {text:?}"
+                .map(|(call_id, _)| call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["call-1", "call-2"]
         );
+        for (call_id, rejection) in &rejections {
+            let text = rejection
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                text.contains("tool input failed validation"),
+                "expected the validation message for {call_id}, got {text:?}"
+            );
+        }
+
+        // A replay uses the committed completed request and its two durable
+        // rejection envelopes; it does not ask the provider to regenerate.
+        let replay = executor.execute(input, &journal).await?;
+        assert_eq!(replay.text, "done");
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_receives_narrow_projection_and_replay_rejects_stale_projection() -> Result<()>
+    {
+        let model = Arc::new(ProjectionModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let mut tools = ToolRegistry::new();
+        tools.register(crate::tool::Tool {
+            definition: crate::tool::ToolDefinition {
+                name: "example.private".into(),
+                revision: "1".into(),
+                description: "Private result".into(),
+                input_schema: json!({"type": "object"}),
+                output_schema: json!({
+                    "type": "object",
+                    "required": ["private", "public"],
+                    "additionalProperties": false,
+                }),
+                model_output_schema: json!({
+                    "type": "object",
+                    "required": ["public"],
+                    "properties": {"public": {"type": "string"}},
+                    "additionalProperties": false,
+                }),
+            },
+            executor: Arc::new(PrivateResultTool),
+            projection: Arc::new(NarrowProjection),
+        })?;
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            tools,
+        )
+        .with_tool_authority(
+            RuntimeScope::new(
+                Capabilities::new(["tool:call:example.private"]),
+                Limits::default(),
+            )?,
+            None,
+        )?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([81; 16]),
+            input: ModelContent::Text("show public result".into()),
+            selected_context: None,
+            max_steps: 2,
+        };
+
+        let output = executor.execute(input.clone(), &journal).await?;
+        assert_eq!(output.text, "done");
+        let requests = model
+            .requests
+            .lock()
+            .map_err(|_| Error::Storage("model lock poisoned".into()))?;
+        let projected = requests[1]
+            .messages
+            .iter()
+            .find_map(|message| match &message.content {
+                ModelContent::Part(ModelContentPart::ToolResult { call_id, value, .. })
+                    if call_id == "private-call" =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("provider did not receive projection".into()))?;
+        assert_eq!(projected, json!({"public": "shown"}));
+        assert!(!projected.to_string().contains("secret"));
+        drop(requests);
+
+        // Replacing the pinned projection with another schema-valid value is
+        // still rejected: replay derives the projection from the raw result
+        // and compares the bytes before allowing the provider request.
+        let stale = journal
+            .stage(
+                input.operation_id,
+                "stale-projection".into(),
+                crate::contract::canonical_json_bytes(&json!({"public": "stale"}))?,
+                "application/json",
+            )
+            .await?;
+        {
+            let mut records = journal
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+            for record in &mut *records {
+                if let ExecutionEvent::ToolCompleted { projection, .. } = &mut record.event {
+                    *projection = stale.clone();
+                    break;
+                }
+            }
+        }
+        assert!(matches!(
+            executor.execute(input, &journal).await,
+            Err(Error::Conflict(_) | Error::Storage(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
 

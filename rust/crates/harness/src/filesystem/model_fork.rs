@@ -127,6 +127,7 @@ where
         let expected = ModelToolContext {
             parent_operation: publication.parent_operation,
             step: publication.step,
+            task_id: None,
         }
         .publication_operation();
         if publication.operation_id != expected {

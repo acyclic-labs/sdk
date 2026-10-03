@@ -243,6 +243,11 @@ pub struct ModelToolContext {
     pub parent_operation: OperationId,
     /// Zero-based step whose complete exchange admits child activation.
     pub step: u32,
+    /// Authenticated durable task that owns this model turn, when the host
+    /// admitted the turn as part of a task. This is runtime provenance only;
+    /// it is never accepted from model-visible content.
+    #[serde(default)]
+    pub task_id: Option<crate::TaskId>,
 }
 
 impl ModelToolContext {
@@ -589,6 +594,7 @@ mod tests {
         let context = ModelToolContext {
             parent_operation: OperationId::new(),
             step: 2,
+            task_id: None,
         };
         let make = |parent, step, call: &str| {
             ToolInvocation::for_model_call(
@@ -636,6 +642,30 @@ mod tests {
                 ..context
             }
             .publication_operation()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn model_tool_context_task_binding_is_optional_for_legacy_data_and_round_trips() -> Result<()> {
+        let operation = OperationId::from_bytes([21; 16]);
+        let legacy = serde_json::json!({
+            "parent_operation": operation,
+            "step": 3,
+        });
+        let decoded: ModelToolContext = serde_json::from_value(legacy)?;
+        assert_eq!(decoded.task_id, None);
+
+        let bound = ModelToolContext {
+            parent_operation: operation,
+            step: 3,
+            task_id: Some(crate::TaskId::from_bytes([22; 16])),
+        };
+        let round_trip: ModelToolContext = serde_json::from_value(serde_json::to_value(bound)?)?;
+        assert_eq!(round_trip, bound);
+        assert_eq!(
+            round_trip.publication_operation(),
+            decoded.publication_operation()
         );
         Ok(())
     }
