@@ -53,7 +53,7 @@
   "remaining_required_gates": [
     "Actual recursive root/two children/grandchild production runtime and exact published grants",
     "Scheduler trusted measured receipts, budget hard limits, activation/cancellation ownership races",
-    "Authenticated subprocess approval/recovery latest worker chain not integrated",
+    "Full subprocess fault-window and execution-provider conformance matrix beyond focused native cases",
     "Direct-parent integration and concurrent-user root writeback latest chain not integrated",
     "Fresh single-source installed artifacts, PTY, WASM/bindings and full locked matrix",
     "Native dead-code lint warning remains"
@@ -79,11 +79,52 @@
         "sha256": "9a9604cd31b7dbf1038f45163c7d8e1377774a2d240bc1f5baa7bfb61be8ec31"
       },
       "scope": "Pinned preparation duplicate/corruption rejection, future-step rejection filtering and wrong-call feedback identity plus prior seventeen regressions. Actual cross-operation filesystem artifact injection still requires dedicated fixture."
+    },
+    {
+      "suite": "cargo test -p acyclic-harness --features filesystem-local --test communication_local -j 2 -- --nocapture",
+      "source_commit": "63513211",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.72,
+      "artifact": {
+        "path": "target/debug/deps/communication_local-d9352d9a34fbadf7.exe",
+        "sha256": "152d83e4e0d919e1302a4498b136f870124cb923bc15f9c30e494f66e21dae54"
+      },
+      "scope": "Real LocalStream/Filesystem mail identity and delivery reopening, typed cancellation and timeout."
+    },
+    {
+      "suite": "host_execution::tests --features filesystem-local --lib",
+      "source_commit": "edf718ce",
+      "passed": 16,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.95,
+      "scope": "Approved native subprocess environment clearing, output and time limits, cancellation, effect claims and unknown no-redispatch. Excludes separate local_provider_tests module."
+    },
+    {
+      "suite": "host_execution::local_provider_tests --features filesystem-local --lib",
+      "source_commit": "cdf28fe01d20111530f4211f5f820b3e33ba19b2",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.52,
+      "artifact": {
+        "path": "target/debug/deps/acyclic_harness-0a8588af6047f55e.exe",
+        "sha256": "a8205dc392b7e606588fcf76ff1c7d19eafa3d8a6a810d9f06acec433f464de7"
+      },
+      "source_digests": {
+        "rust/crates/harness/src/host_execution.rs": "72ead172ae912a92acdeb016a9b0ba28609f2c87aa2b669c37732fe7eb53f2cb",
+        "rust/crates/harness/src/filesystem/local.rs": "a5ebe47e03a76c216bd467af729225c85d0dae0b237f634148ffdf47d6c72d00",
+        "rust/crates/harness/src/filesystem/interaction_host.rs": "56a51dcd01cc121b97aa5b03239000ed804a00eb0115dc3d469efa900eb18dd9"
+      },
+      "scope": "Actual durable receipt reopening; authenticated approved and denied process execution with immutable request version binding; protected Unknown claim reopen/operator resolution, zero replay runner calls. Host interaction admission uses private class verifier; model reader remains unchanged."
     }
   ],
   "repaired_verification_failures": [
     "Local-feature compile exposed moved communication payload; clone repaired in d5f1df10.",
     "Duplicate-input classification and corrupt descriptor classification each produced 19/20 pass runs; repaired in 3f0ab878 and 63513211. Final expanded run passes20/20.",
-    "Actual native driver blocked because responses were not flushed until EOF; flush and persistent-stdin regression repaired in4d0a9e92. Confirmed owned hung process/driver terminated, temporary storage retained."
+    "Actual native driver blocked because responses were not flushed until EOF; flush and persistent-stdin regression repaired in4d0a9e92. Confirmed owned hung process/driver terminated, temporary storage retained.",
+    "Protected local approval cases initially failed1/3 because receipt/interaction records used model readers and aggregate admission verifier; repaired with internal exact-class readers/private interaction verifier. Unknown fixture then failed2/3 due to mismatched approved operation; exact binding corrected. Final3/3."
   ]
 }
