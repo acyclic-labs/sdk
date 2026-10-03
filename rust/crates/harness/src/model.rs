@@ -1,6 +1,10 @@
 //! Provider-neutral immutable model values and streaming host contract.
 
-use crate::{Error, OperationId, Result, conversation::FileRef};
+use crate::{
+    Error, OperationId, Result,
+    conversation::FileRef,
+    registry::ComponentIdentity,
+};
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,8 +19,47 @@ pub struct Model {
     pub name: String,
     /// Immutable model revision or digest.
     pub revision: String,
-    /// Provider-specific options retained as typed JSON.
+    /// Provider-specific model-visible options admitted by a registered policy.
+    /// Credentials remain provider-owned transport state.
     pub options: Value,
+}
+
+/// Registered schema and immutable identity for model-visible options.
+///
+/// Transport credentials belong to the provider implementation and are never
+/// represented by this value. The identity is carried into model-input
+/// admission so a policy revision cannot silently drift across a fork.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelOptionPolicy {
+    /// Stable policy implementation and schema identity.
+    pub identity: ComponentIdentity,
+    /// JSON Schema for the model-visible options object.
+    pub schema: Value,
+}
+
+impl ModelOptionPolicy {
+    /// Registers one immutable option schema and its non-empty identity.
+    pub fn new(identity: ComponentIdentity, schema: Value) -> Result<Self> {
+        crate::registry::validate_component_label(&identity.name, "model option policy name")?;
+        crate::registry::validate_component_label(
+            &identity.version,
+            "model option policy revision",
+        )?;
+        if identity.digest == [0; 32] {
+            return Err(Error::Invalid(
+                "model option policy digest is empty".into(),
+            ));
+        }
+        jsonschema::validator_for(&schema)
+            .map_err(|error| Error::Invalid(format!("invalid model option schema: {error}")))?;
+        Ok(Self { identity, schema })
+    }
+
+    /// Validates only the model-visible option value against the pinned schema.
+    pub fn validate(&self, options: &Value) -> Result<()> {
+        crate::tool::validate_value(&self.schema, options, "model options")
+    }
 }
 
 impl Model {
@@ -318,10 +361,43 @@ pub struct ModelAttempt {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
+    /// Returns the registered model-visible option policy for this provider.
+    /// Provider credentials remain implementation state and are never returned.
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        None
+    }
+
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
-    fn admit(&self, _request: &ModelRequest) -> Result<()> {
-        Ok(())
+    fn admit(&self, request: &ModelRequest) -> Result<()> {
+        if let Some(policy) = self.model_option_policy() {
+            return policy.validate(&request.model.options);
+        }
+        let empty = request.model.options.is_null()
+            || request
+                .model
+                .options
+                .as_object()
+                .is_some_and(|value| value.is_empty());
+        if empty {
+            Ok(())
+        } else {
+            Err(Error::Invalid(
+                "model options require a registered provider policy".into(),
+            ))
+        }
+    }
+
+    /// Starts one request from the exact bytes admitted by the harness.
+    ///
+    /// Providers that serialize a wire request can override this method and
+    /// consume [`crate::model_input::PreparedModelInput::bytes`] directly. The default preserves
+    /// compatibility with providers that accept the provider-neutral request.
+    fn generate_prepared<'a>(
+        &'a self,
+        prepared: crate::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        self.generate(prepared.into_request())
     }
 
     /// Starts one request and yields ordered model events.
@@ -404,6 +480,25 @@ mod wire_contract_tests {
             crate::contract::canonical_json_bytes(&explicit)?,
             crate::contract::canonical_json_bytes(&omitted)?
         );
+        Ok(())
+    }
+
+    #[test]
+    fn registered_model_option_policy_rejects_undeclared_fields() -> Result<()> {
+        let policy = ModelOptionPolicy::new(
+            crate::registry::ComponentIdentity {
+                name: "mock.options".into(),
+                version: "1".into(),
+                digest: [7; 32],
+            },
+            json!({
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "additionalProperties": false,
+            }),
+        )?;
+        assert!(policy.validate(&json!({"mode": "safe"})).is_ok());
+        assert!(policy.validate(&json!({"credential": "secret"})).is_err());
         Ok(())
     }
 }

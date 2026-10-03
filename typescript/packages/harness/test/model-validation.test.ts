@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import {
-  DEFAULT_LIMITS, NativeContracts, descriptorFor, type AgentId, type FileRef,
+  DEFAULT_LIMITS, NativeContracts, descriptorFor, type AgentId, type FileRef, type NativeLimitsWire,
 } from "../src/index.js";
 import {
   validateModelContent, validateUserInput,
@@ -108,6 +108,19 @@ test("generated WASM model admission captures canonical request bytes and manife
   expect(manifest.messages.map(message => ({ position: message.position, role: message.role })))
     .toEqual(request.messages.map((message, position) => ({ position, role: message.role })));
   expect(manifest.messages.every(message => message.digest.length === 32)).toBe(true);
+
+  const throughFacade = contracts.prepareModelRequest(request, {
+    file_bytes: BigInt(DEFAULT_LIMITS.file_bytes),
+    path_bytes: BigInt(DEFAULT_LIMITS.path_bytes),
+    attachments: BigInt(DEFAULT_LIMITS.attachments),
+    render_bytes: BigInt(DEFAULT_LIMITS.render_bytes),
+    model_steps: BigInt(DEFAULT_LIMITS.model_steps),
+    model_events_per_step: BigInt(DEFAULT_LIMITS.model_events_per_step),
+    tool_calls_per_step: BigInt(DEFAULT_LIMITS.tool_calls_per_step),
+    context_messages: BigInt(DEFAULT_LIMITS.context_messages),
+  } satisfies NativeLimitsWire);
+  expect(throughFacade.requestJson).toBe(prepared.request_json);
+  expect(throughFacade.requestDigest).toEqual(prepared.request_digest);
 });
 
 async function file(): Promise<FileRef> {

@@ -650,15 +650,18 @@ impl StockExecutor {
             }
         }
 
-        let request = if let Some((manifest_ref, request_ref)) = persisted_prepared {
+        let prepared = if let Some((manifest_ref, request_ref)) = persisted_prepared {
             // A prepared request is the durable boundary for model input. Never
             // re-run context stages on replay: they may read mutable files or
             // perform retrieval, which would silently change the provider bytes.
             let manifest =
                 load_json::<crate::model_input::ModelInputManifest>(journal, &manifest_ref).await?;
             let request = load_json::<ModelRequest>(journal, &request_ref).await?;
-            let prepared =
-                crate::model_input::PreparedModelInput::prepare(request.clone(), self.limits)?;
+            let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
+                request.clone(),
+                self.limits,
+                self.provider.model_option_policy(),
+            )?;
             let current_tools = self
                 .tools
                 .definitions()?
@@ -693,7 +696,7 @@ impl StockExecutor {
                     journal.verify_input_file(reference).await?;
                 }
             }
-            request
+            prepared
         } else {
             let context = self
                 .context
@@ -719,7 +722,7 @@ impl StockExecutor {
                     journal.verify_input_file(reference).await?;
                 }
             }
-            let prepared = crate::model_input::PreparedModelInput::prepare(
+            let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
                 ModelRequest {
                     model: self.model.clone(),
                     messages: context.messages,
@@ -736,6 +739,7 @@ impl StockExecutor {
                     max_output_tokens: None,
                 },
                 self.limits,
+                self.provider.model_option_policy(),
 )?
             .with_rejection_evidence(context.rejection_evidence.clone())?;
             prepared.validate_complete_exchange()?;
@@ -766,8 +770,9 @@ impl StockExecutor {
                     },
                 )
                 .await?;
-            prepared.into_request()
+            prepared
         };
+        let request = prepared.request().clone();
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
         for record in &records {
@@ -782,8 +787,7 @@ impl StockExecutor {
                 replayed_model.push(event);
             }
         }
-        let request_digest =
-            *blake3::hash(&crate::contract::canonical_json_bytes(&request)?).as_bytes();
+        let request_digest = prepared.manifest().request_digest;
         if started.is_none() && !replayed_model.is_empty() {
             return Err(Error::Storage(
                 "model observations exist without an admitted attempt".into(),
@@ -874,7 +878,7 @@ impl StockExecutor {
                 }
                 Err(error) => return Err(error),
             }
-            let mut stream = self.provider.generate(request);
+            let mut stream = self.provider.generate_prepared(prepared);
             let mut observed = Vec::new();
             while let Some(event) = stream.next().await {
                 let event = event?;

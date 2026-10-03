@@ -306,6 +306,29 @@ export class NativeContracts {
       || result.request_digest.length !== 32 || !result.request_digest.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
       throw new TypeError("native model request admission returned invalid canonical evidence");
     }
+    const actualRequestBytes = new TextEncoder().encode(result.request_json);
+    const expectedRequestBytes = this.encodeCanonicalJson(request);
+    if (actualRequestBytes.byteLength !== expectedRequestBytes.byteLength
+      || actualRequestBytes.some((byte, index) => byte !== expectedRequestBytes[index])) {
+      throw new TypeError("native model request admission returned non-canonical request bytes");
+    }
+    const expectedDigest = this.digestCanonicalJson(request);
+    if (result.request_digest.some((byte, index) => byte !== expectedDigest[index])) {
+      throw new TypeError("native model request admission returned a mismatched request digest");
+    }
+    let manifest: unknown;
+    try {
+      manifest = JSON.parse(result.manifest_json);
+    } catch {
+      throw new TypeError("native model request admission returned invalid manifest JSON");
+    }
+    const manifestDigest = manifest !== null && typeof manifest === "object" && !Array.isArray(manifest)
+      ? (manifest as Record<string, unknown>).request_digest
+      : undefined;
+    if (!Array.isArray(manifestDigest) || manifestDigest.length !== 32
+      || manifestDigest.some((byte, index) => byte !== result.request_digest[index])) {
+      throw new TypeError("native model request admission returned a mismatched manifest digest");
+    }
     return freezeNative({
       requestJson: result.request_json,
       manifestJson: result.manifest_json,
