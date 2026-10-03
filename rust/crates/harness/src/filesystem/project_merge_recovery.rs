@@ -45,6 +45,11 @@ impl ProjectMergeIntent {
             || self.source_project.class() != crate::conversation::VolumeClass::Project
             || self.target_project.class() != crate::conversation::VolumeClass::Project
             || self.source_project == self.target_project
+            || self.source_project.provider() != self.target_project.provider()
+            || self.source_project.owner() != self.target_project.owner()
+            || self.source_generation.as_resource().provider() != self.source_project.provider()
+            || self.expected_target_generation.as_resource().provider()
+                != self.target_project.provider()
         {
             return Err(Error::Invalid(
                 "project merge intent is inconsistent".into(),
