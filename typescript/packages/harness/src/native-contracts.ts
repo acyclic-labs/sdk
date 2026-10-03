@@ -5,7 +5,7 @@ import type {
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
   WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelEventInput, WasmModelRole,
-  WasmTaskDependencyInput,
+  WasmTaskDependencyInput, WasmModelRequestWire, WasmModelLimitsInput,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationPage, FileDescriptor, FileRef, Limits, MessageKind, ProviderRef, ReferencedAttachments, TaskOutcomeRecord, VolumeClass, VolumeRef,
@@ -84,6 +84,13 @@ export interface NativeSelectedModelContext {
     role: WasmModelRole;
     content: NativeModelContent;
   }>[];
+}
+
+/** Exact canonical request evidence returned by Rust model admission. */
+export interface PreparedModelRequest {
+  readonly requestJson: string;
+  readonly manifestJson: string;
+  readonly requestDigest: readonly number[];
 }
 
 export interface MachineIdentityWire {
@@ -268,6 +275,33 @@ export class NativeContracts {
     return freezeNative({
       event: publicModelEvent(admitted.event),
       state: { ...admittedState, calls: [...admittedState.calls] },
+    });
+  }
+
+  /**
+   * Construct the one canonical provider request after the caller has already
+   * resolved and authorized every referenced content byte. Rust performs all
+   * request bounds, tool pairing, and digest work; this facade does not
+   * rebuild or reinterpret the serialized request.
+   */
+  prepareModelRequest(request: WasmModelRequestWire, limits: NativeLimitsWire): PreparedModelRequest {
+    const prepare = (this.native as NativeExports & {
+      readonly prepareModelRequest?: (request: WasmModelRequestWire, limits: WasmModelLimitsInput) => unknown;
+    }).prepareModelRequest;
+    if (typeof prepare !== "function") throw new Error("harness WASM does not provide canonical model request admission");
+    const admitted = normalizeNativeValue(prepare(request, limits));
+    if (admitted === null || typeof admitted !== "object" || Array.isArray(admitted)) {
+      throw new TypeError("native model request admission returned an invalid result");
+    }
+    const result = admitted as Record<string, unknown>;
+    if (typeof result.request_json !== "string" || typeof result.manifest_json !== "string" || !Array.isArray(result.request_digest)
+      || result.request_digest.length !== 32 || !result.request_digest.every(byte => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+      throw new TypeError("native model request admission returned invalid canonical evidence");
+    }
+    return freezeNative({
+      requestJson: result.request_json,
+      manifestJson: result.manifest_json,
+      requestDigest: [...result.request_digest] as number[],
     });
   }
 

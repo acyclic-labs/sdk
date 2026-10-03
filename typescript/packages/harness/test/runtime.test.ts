@@ -1807,6 +1807,7 @@ describe("typed agent runtime", () => {
 
   test("executes model tool calls with durable task ownership and typed receipts", async () => {
     let modelStep = 0; let sender: RuntimeTaskId | undefined; let toolOperationId: string | undefined;
+    const canonicalRequests: string[] = [];
     const payload = await mailboxFile(3);
     const host: HarnessRuntimeHost = {
       policyIdentity: () => null,
@@ -1822,11 +1823,15 @@ describe("typed agent runtime", () => {
       return effect.state === "succeeded" ? input * 4 : 0;
     });
     const runtime = Harness.builder(contracts).host(host).tool(tool).grant("tool:call:double").model(testModel, {
-      async *generate() { if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
+      async *generate(request) { canonicalRequests.push(request.canonical?.requestJson ?? ""); if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; } },
       async reconcile() { return undefined; },
     }).build();
     const output = await runtime.run("go");
     expect(output.text).toBe("done");
+    expect(canonicalRequests).toHaveLength(2);
+    expect(canonicalRequests[0]).toBeTruthy();
+    expect(canonicalRequests[1]).toBeTruthy();
+    expect(canonicalRequests[1]).not.toBe(canonicalRequests[0]);
     expect(output.receipts).toEqual([{ kind: "model-completed", metadata: {} }, { kind: "tool", step: 0, callId: "call", name: "double", arguments: 3, value: 12, projection: 12 }, { kind: "model-completed", metadata: { tokens: 1 } }]);
     expect(sender).toBe(output.taskId);
     expect(toolOperationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
@@ -2006,6 +2011,32 @@ describe("typed agent runtime", () => {
       async build() { return [{ role: "assistant" as const, content: {
         kind: "tool_call" as const, callId: "call", name: "tool", arguments: { unsafe: Number.POSITIVE_INFINITY },
       } }, { role: "user" as const, content: "safe" }]; },
+    }).model(testModel, {
+      async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("safe")).rejects.toThrow();
+    expect(dispatched).toBe(0);
+  });
+
+  test("canonical request admission rejects an unpaired context tool call before provider dispatch", async () => {
+    let dispatched = 0;
+    const runtime = Harness.builder(contracts).context({
+      async build() { return [{ role: "assistant" as const, content: {
+        kind: "tool_call" as const, callId: "orphan", name: "tool", arguments: { value: "x" },
+      } }, { role: "user" as const, content: "safe" }]; },
+    }).model(testModel, {
+      async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await expect(runtime.run("safe")).rejects.toThrow();
+    expect(dispatched).toBe(0);
+  });
+
+  test("canonical request admission applies aggregate context bounds before provider dispatch", async () => {
+    let dispatched = 0;
+    const runtime = Harness.builder(contracts).limits({ file_bytes: 16 }).context({
+      async build() { return [{ role: "user" as const, content: "12345678" }, { role: "assistant" as const, content: "87654321" }]; },
     }).model(testModel, {
       async *generate() { dispatched++; yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; },

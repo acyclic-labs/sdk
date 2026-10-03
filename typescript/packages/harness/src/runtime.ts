@@ -6,6 +6,7 @@ import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_S
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
 import { HARNESS_MAX_BATCH_INPUTS } from "./limits-contract.js";
 import { validateModelContent as validateModelContentWasm, validateModelMessages as validateModelMessagesWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmFileRefWire, WasmModelContent, WasmModelContentPart, WasmModelJsonValue, WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import type { SelectedModelContext } from "./projection.js";
 import type { ForkPreparer, ForkPublisher, ForkReport, ForkRequest, ForkSeed, ResourceRef } from "./fork.js";
@@ -2311,13 +2312,33 @@ export class AgentHarness {
       const base = selected?.messages ?? [first];
       const messages: ModelMessage[] = [...(await contextBuilder?.build(input, base) ?? base)];
       validateModelMessagesWasm(messages, nativeLimits(this.limits));
+      const tools = this.#modelToolDefinitions();
       let text = "";
       let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
+        // The caller owns final reference resolution and authorization. Once
+        // those bytes are present in `messages`, Rust is the only request
+        // serializer and digest authority before this provider dispatch.
+        const prepared = this.contracts.prepareModelRequest({
+          model: { provider: model.identity.provider, name: model.identity.name, revision: model.identity.revision, options: model.identity.options as WasmModelJsonValue },
+          messages: messages.map(message => ({ role: message.role, content: wasmModelContent(message.content) })),
+          tools: tools.map(tool => ({ name: tool.name, revision: tool.revision, description: tool.description, input_schema: tool.inputSchema, output_schema: tool.outputSchema })),
+          max_output_tokens: undefined,
+        } satisfies WasmModelRequestWire, nativeLimits(this.limits));
+        if (prepared.requestJson.length === 0 || prepared.manifestJson.length === 0 || prepared.requestDigest.length !== 32) {
+          throw new Error("canonical model request admission returned empty evidence");
+        }
+        const providerRequest = {
+          model: model.identity,
+          messages,
+          tools,
+          signal: context.signal,
+          canonical: prepared,
+        };
         const calls: Extract<ModelEvent, { kind: "tool_call" }>[] = [];
         let admission: ModelEventAdmissionState = { ...previousAdmission, count: 0, calls: [], completed: false };
-        for await (const event of model.provider.generate({ model: model.identity, messages, tools: this.#modelToolDefinitions(), signal: context.signal })) {
+        for await (const event of model.provider.generate(providerRequest)) {
           const admitted = this.contracts.admitModelEvent(event, this.limits, admission);
           admission = admitted.state;
           const admittedEvent = admitted.event;
@@ -2484,6 +2505,29 @@ function nativeLimits(value: Limits): NativeLimitsWire {
     model_steps: BigInt(value.model_steps), model_events_per_step: BigInt(value.model_events_per_step),
     tool_calls_per_step: BigInt(value.tool_calls_per_step), context_messages: BigInt(value.context_messages),
   };
+}
+
+/** Convert the public camelCase model parts to the Rust serde spelling. */
+function wasmModelContent(value: ModelContent): WasmModelContent {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(part => wasmModelContentPart(part));
+  return wasmModelContentPart(value);
+}
+
+function wasmModelContentPart(value: unknown): WasmModelContentPart {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new TypeError("model content part is invalid");
+  const part = value as Record<string, unknown>;
+  if (part.kind === "text" && typeof part.text === "string") return { kind: "text", text: part.text };
+  if (part.kind === "file" && part.file !== null && typeof part.file === "object" && typeof part.policy === "string") {
+    return { kind: "file", file: part.file as WasmFileRefWire, policy: part.policy as "reference" | "bounded_full" | "native" };
+  }
+  if (part.kind === "tool_call" && typeof part.callId === "string" && typeof part.name === "string") {
+    return { kind: "tool_call", call_id: part.callId, name: part.name, arguments: part.arguments as WasmModelJsonValue };
+  }
+  if (part.kind === "tool_result" && typeof part.callId === "string" && typeof part.name === "string") {
+    return { kind: "tool_result", call_id: part.callId, name: part.name, value: part.value as WasmModelJsonValue };
+  }
+  throw new TypeError("model content part is invalid");
 }
 function nativeRunLimits(value: EffectiveScope["limits"]): TaskRunLimitsWire {
   return {

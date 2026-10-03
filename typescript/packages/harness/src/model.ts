@@ -62,6 +62,12 @@ export type ModelToolDefinition<InputSchema extends ToolJsonSchema = ToolJsonSch
     inputSchema: InputSchema;
     outputSchema: OutputSchema;
   }>;
+/** Immutable evidence for the exact Rust-admitted request sent to a provider. */
+export interface ModelRequestEvidence {
+  readonly requestJson: string;
+  readonly manifestJson: string;
+  readonly requestDigest: readonly number[];
+}
 export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
   Readonly<Omit<WasmModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
     model: Model<ModelOptions>;
@@ -69,6 +75,8 @@ export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
     tools: readonly ModelToolDefinition[];
     maxOutputTokens?: number;
     signal?: AbortSignal;
+    /** Transport metadata; adapters must keep it out of model-visible content. */
+    canonical?: ModelRequestEvidence;
   }>;
 type PublicModelEvent<Event extends WasmModelEvent, Arguments, Metadata> =
   Event extends Readonly<{ kind: "tool_call" }>
