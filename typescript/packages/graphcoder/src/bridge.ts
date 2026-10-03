@@ -222,7 +222,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async operatorApprove(input: { readonly approvalId: ApprovalRequest["id"]; readonly approved: boolean; readonly sessionId: SessionSummary["id"] }): Promise<void> {
-    await this.#bridge.operatorApprove?.(input);
+    await this.bridge.operatorApprove?.(input);
   }
 
   async cancelSession(id: SessionSnapshot["summary"]["id"]): Promise<SessionSnapshot> {
