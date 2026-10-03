@@ -2689,6 +2689,9 @@ mod tests {
             SwarmBudgetLimits {
                 max_active_agents: 5,
                 max_total_agents: 5,
+                max_model_steps: 16,
+                max_output_bytes: 160,
+                max_execution_time_ms: 1_600,
                 ..limits()
             },
         )?);
