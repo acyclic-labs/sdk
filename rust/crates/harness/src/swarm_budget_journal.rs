@@ -56,7 +56,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(Self {
             stream,
             session_id,
-            revision: events.len() as u64,
+            revision: event_count(events.len())?,
             events,
             budget,
         })
@@ -124,7 +124,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
                 "swarm budget session identity differs".into(),
             ));
         }
-        self.revision = events.len() as u64;
+        self.revision = event_count(events.len())?;
         self.events = events;
         self.budget = budget;
         Ok(())
@@ -344,8 +344,9 @@ async fn read_events<P: StreamProvider>(stream: &Stream<P>) -> Result<Vec<SwarmB
         for record in page {
             let envelope: BudgetRecord = serde_json::from_slice(&record.value)
                 .map_err(|error| Error::Storage(error.to_string()))?;
+            let prior = event_count(events.len())?;
             if envelope.revision != record.sequence.saturating_add(1)
-                || envelope.revision != events.len() as u64 + 1
+                || envelope.revision != prior.saturating_add(1)
             {
                 return Err(Error::Storage(
                     "swarm budget revision is not gapless".into(),
@@ -355,7 +356,7 @@ async fn read_events<P: StreamProvider>(stream: &Stream<P>) -> Result<Vec<SwarmB
                 return Err(Error::Storage("swarm budget event digest mismatch".into()));
             }
             events.push(envelope.event);
-            if events.len() as u64 >= MAX_RECORDS {
+            if event_count(events.len())? >= MAX_RECORDS {
                 return Err(Error::Storage("swarm budget record limit exceeded".into()));
             }
         }
@@ -413,6 +414,10 @@ async fn append_record<P: StreamProvider>(
 
 fn event_digest(event: &SwarmBudgetEvent) -> Result<[u8; 32]> {
     Ok(*blake3::hash(&canonical_json_bytes(event)?).as_bytes())
+}
+
+fn event_count(value: usize) -> Result<u64> {
+    u64::try_from(value).map_err(|_| Error::Storage("swarm budget record count overflow".into()))
 }
 
 fn event_owner(event: &SwarmBudgetEvent) -> Result<SwarmOwnerFence> {
