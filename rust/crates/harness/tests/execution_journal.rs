@@ -564,7 +564,23 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     assert_eq!(first.text, "private answer");
     assert_eq!(model.0.load(Ordering::SeqCst), 1);
     let records = journal.replay(operation_id).await?;
-    assert_eq!(records.len(), 4);
+    assert_eq!(records.len(), 5);
+    let (manifest, request) = records
+        .iter()
+        .find_map(|record| match &record.event {
+            ExecutionEvent::ModelInputPrepared {
+                manifest, request, ..
+            } => Some((manifest, request)),
+            _ => None,
+        })
+        .ok_or_else(|| acyclic_harness::Error::Storage("missing model input admission".into()))?;
+    let manifest: acyclic_harness::model_input::ModelInputManifest =
+        serde_json::from_slice(&journal.load(manifest).await?).unwrap();
+    let request_bytes = journal.load(request).await?;
+    assert_eq!(
+        *blake3::hash(&request_bytes).as_bytes(),
+        manifest.request_digest
+    );
     let stream = stream
         .stream(format!("harness/v2/execution/{operation_id}"))
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;

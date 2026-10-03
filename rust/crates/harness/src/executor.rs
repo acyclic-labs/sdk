@@ -97,6 +97,15 @@ pub enum ExecutionEvent {
         step: u32,
         /// Private immutable file containing the ordered input manifest.
         manifest: FileRef,
+        /// Immutable canonical request actually supplied to the provider.
+        request: FileRef,
+    },
+    /// All tool results in an ordered batch are durable before children may run.
+    ToolBatchCompleted {
+        /// Zero-based executor step.
+        step: u32,
+        /// Exact completed request and its frozen inherited prefix.
+        boundary: FileRef,
     },
 
     /// A model request identity committed before provider dispatch.
@@ -461,11 +470,22 @@ impl StockExecutor {
             prepared.manifest(),
         )
         .await?;
+        let request_file = stage_json(
+            journal,
+            input.operation_id,
+            &format!("model:{step}:request"),
+            prepared.request(),
+        )
+        .await?;
         journal
             .append(
                 input.operation_id,
                 manifest_key,
-                ExecutionEvent::ModelInputPrepared { step, manifest },
+                ExecutionEvent::ModelInputPrepared {
+                    step,
+                    manifest,
+                    request: request_file,
+                },
             )
             .await?;
         let request = prepared.into_request();
@@ -1056,6 +1076,7 @@ impl Executor for StockExecutor {
             let mut prior_messages = Vec::new();
             let mut text = String::new();
             for step in 0..input.max_steps {
+                let step_text_start = text.len();
                 let mut calls = Vec::new();
                 let mut completed = None;
                 let model_events = self
@@ -1103,6 +1124,13 @@ impl Executor for StockExecutor {
                         steps: step + 1,
                     });
                 }
+                let batch_start = prior_messages.len();
+                if text.len() > step_text_start {
+                    prior_messages.push(ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Text(text[step_text_start..].to_owned()),
+                    });
+                }
                 for invocation in calls {
                     let message = ModelMessage {
                         role: ModelRole::Assistant,
@@ -1123,6 +1151,38 @@ impl Executor for StockExecutor {
                     )
                     .await?;
                 }
+                let records = journal.replay(input.operation_id).await?;
+                let request_file = records
+                    .iter()
+                    .find_map(|record| match &record.event {
+                        ExecutionEvent::ModelInputPrepared {
+                            step: recorded,
+                            request,
+                            ..
+                        } if *recorded == step => Some(request),
+                        _ => None,
+                    })
+                    .ok_or_else(|| {
+                        Error::Storage("completed batch has no pinned request".into())
+                    })?;
+                let mut request: ModelRequest = load_json(journal, request_file).await?;
+                request
+                    .messages
+                    .extend_from_slice(&prior_messages[batch_start..]);
+                let boundary =
+                    crate::model_input::CompletedModelBoundary::capture(request, self.limits)?;
+                let key = format!("model:{step}:completed-batch");
+                let reference = stage_json(journal, input.operation_id, &key, &boundary).await?;
+                journal
+                    .append(
+                        input.operation_id,
+                        key,
+                        ExecutionEvent::ToolBatchCompleted {
+                            step,
+                            boundary: reference,
+                        },
+                    )
+                    .await?;
             }
             Err(Error::Conflict("executor step limit reached".into()))
         })

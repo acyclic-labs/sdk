@@ -17,3 +17,22 @@ The latter uses real LocalStream and LocalFs storage and reopens the providers.
 Implementation iterations exposed an unbound conversation initialization check; it
 was repaired by testing the bound agent, and the full 197-case suite rerun passed.
 Final source/suite/artifact digests and full acceptance receipts remain pending.
+
+## Completed-batch checkpoint
+
+Harness library with filesystem-local: 198 passed, zero ignored.
+Production model-input scenario: two edits, all ordered tool results, retained
+assistant text, then three explicitly composed child levels through the same
+StockExecutor and prefix guard. This does not yet exercise a model-facing fork tool.
+
+Existing integration gates rerun on Windows:
+- execution_journal: 6 passed.
+- fork_preparer: 1 passed (lost reply reconciles without another child allocation).
+- local_recursive_fork: 2 passed (native persistent providers, restart and parent controls).
+
+Command: cargo test -p acyclic-harness --locked --features filesystem-local
+--test fork_preparer --test local_recursive_fork --test execution_journal.
+
+The journal regression's former four-record assertion was updated to assert the
+fifth input-admission record and verify the persisted request digest. Its
+exactly-once dispatch and private-content assertions remain intact.

@@ -246,6 +246,84 @@ fn validate_exchanges(messages: &[ModelMessage]) -> Result<()> {
     Ok(())
 }
 
+/// Durable boundary shared by all children requested in one completed tool batch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletedModelBoundary {
+    /// Original serialized request with the ordered completed exchange appended.
+    pub request: ModelRequest,
+    /// Immutable inherited prefix binding every message and definition.
+    pub prefix: FrozenModelPrefix,
+}
+impl CompletedModelBoundary {
+    /// Refuses incomplete exchanges; does not regenerate the original context.
+    pub fn capture(request: ModelRequest, limits: Limits) -> Result<Self> {
+        let prepared = PreparedModelInput::prepare(request, limits)?;
+        let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
+        Ok(Self {
+            request: prepared.into_request(),
+            prefix,
+        })
+    }
+    /// Validates a persisted boundary before admitting any child.
+    pub fn verify(&self, limits: Limits) -> Result<()> {
+        self.prefix
+            .verify(&PreparedModelInput::prepare(self.request.clone(), limits)?)
+    }
+}
+
+/// Explicit context stage appending a child's declaration after a frozen prefix.
+/// Private scratch is declared in the suffix; inherited scratch is never rewritten.
+pub struct InheritedModelContext {
+    boundary: CompletedModelBoundary,
+    suffix: Vec<ModelMessage>,
+}
+impl InheritedModelContext {
+    /// Pins all inherited values and a caller-declared child-only suffix.
+    pub fn new(
+        boundary: CompletedModelBoundary,
+        suffix: Vec<ModelMessage>,
+        limits: Limits,
+    ) -> Result<Self> {
+        boundary.verify(limits)?;
+        if suffix.is_empty() {
+            return Err(Error::Invalid(
+                "child context suffix must be explicit".into(),
+            ));
+        }
+        let mut request = boundary.request.clone();
+        request.messages.extend(suffix.iter().cloned());
+        let prepared = PreparedModelInput::prepare(request, limits)?;
+        prepared.validate_complete_exchange()?;
+        boundary.prefix.verify(&prepared)?;
+        Ok(Self { boundary, suffix })
+    }
+}
+impl crate::context::ContextStage for InheritedModelContext {
+    fn name(&self) -> &str {
+        "inherited-model-prefix"
+    }
+    fn contract(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name(), "revision": MODEL_INPUT_VERSION,
+            "prefix_digest": self.boundary.prefix.digest(), "suffix": self.suffix,
+        })
+    }
+    fn apply<'a>(
+        &'a self,
+        _: &'a crate::context::ContextInput,
+        mut context: crate::context::Context,
+    ) -> futures::future::BoxFuture<'a, Result<crate::context::Context>> {
+        Box::pin(async move {
+            let mut messages = self.boundary.request.messages.clone();
+            messages.extend(self.suffix.iter().cloned());
+            messages.append(&mut context.messages);
+            context.messages = messages;
+            Ok(context)
+        })
+    }
+}
+
 /// Provider boundary that enforces an inherited prefix without owning a loop.
 ///
 /// The caller persists the prefix with its fork state and reconstructs this
@@ -497,6 +575,179 @@ mod tests {
         assert!(provider.admit(&child).is_err());
         assert!(provider.generate(child).next().await.unwrap().is_err());
         assert_eq!(capture.0.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem")]
+    #[tokio::test]
+    async fn production_batch_pins_text_and_all_ordered_results() -> Result<()> {
+        use crate::{
+            executor::ExecutionEvent,
+            filesystem::LocalHarness,
+            model::{ModelAttempt, ModelEvent, ModelProvider},
+        };
+        use futures::{future::BoxFuture, stream::BoxStream};
+        use std::sync::{Arc, Mutex};
+        struct Script(Mutex<Vec<ModelRequest>>);
+        impl ModelProvider for Script {
+            fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+                let mut requests = self.0.lock().unwrap();
+                requests.push(request);
+                let events = if requests.len() == 1 {
+                    vec![
+                        ModelEvent::Content {
+                            delta: "preserved assistant text".into(),
+                        },
+                        ModelEvent::ToolCall {
+                            call_id: "first".into(),
+                            name: "acyclic.stage_file".into(),
+                            arguments: json!({"path":"a.txt","text":"a","media_type":"text/plain","display_name":"a.txt"}),
+                        },
+                        ModelEvent::ToolCall {
+                            call_id: "second".into(),
+                            name: "acyclic.stage_file".into(),
+                            arguments: json!({"path":"b.txt","text":"b","media_type":"text/plain","display_name":"b.txt"}),
+                        },
+                        ModelEvent::Completed {
+                            metadata: json!(null),
+                        },
+                    ]
+                } else {
+                    vec![
+                        ModelEvent::Content {
+                            delta: "done".into(),
+                        },
+                        ModelEvent::Completed {
+                            metadata: json!(null),
+                        },
+                    ]
+                };
+                Box::pin(futures::stream::iter(events.into_iter().map(Ok)))
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+        let script = Arc::new(Script(Mutex::new(Vec::new())));
+        let local =
+            LocalHarness::new(Model::new("mock", "batch", "1", json!({}))?, script.clone()).await?;
+        let op = crate::OperationId::new();
+        let file = local
+            .storage()
+            .stage(
+                op,
+                "input.txt",
+                b"make two files",
+                "text/plain",
+                "input.txt",
+            )
+            .await?;
+        local
+            .storage()
+            .run_conversation(local.bundle(), op, file, vec![], 8)
+            .await?;
+        let records = local.storage().journal().replay(op).await?;
+        let (index, file) = records
+            .iter()
+            .enumerate()
+            .find_map(|(index, record)| match &record.event {
+                ExecutionEvent::ToolBatchCompleted { step: 0, boundary } => Some((index, boundary)),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("missing completed batch".into()))?;
+        assert_eq!(
+            records[..index]
+                .iter()
+                .filter(|record| matches!(record.event, ExecutionEvent::ToolCompleted { .. }))
+                .count(),
+            2
+        );
+        let boundary: CompletedModelBoundary =
+            serde_json::from_slice(&local.storage().read(file).await?).unwrap();
+        boundary.verify(Limits::default())?;
+        let requests = script.0.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(boundary.request, requests[1]);
+        assert_eq!(
+            boundary.request.messages[1].content,
+            ModelContent::Text("preserved assistant text".into())
+        );
+        let mut child = boundary.request.clone();
+        child
+            .messages
+            .push(text("fork notice; fresh scratch; child task"));
+        boundary
+            .prefix
+            .verify(&PreparedModelInput::prepare(child, Limits::default())?)?;
+        drop(requests);
+        let original_digest = boundary.prefix.digest();
+        let mut inherited = boundary;
+        for depth in 1..=3 {
+            let storage = crate::filesystem::MemoryHarnessStorage::new(
+                crate::AgentId::new(),
+                Limits::default().file_bytes,
+            )
+            .await?;
+            let child_script = Arc::new(Script(Mutex::new(Vec::new())));
+            let guarded = Arc::new(PrefixBoundModelProvider::new(
+                inherited.prefix.clone(),
+                Limits::default(),
+                child_script.clone(),
+            )?);
+            let context =
+                crate::context::ContextPipeline::new([Arc::new(InheritedModelContext::new(
+                    inherited.clone(),
+                    vec![text(&format!(
+                        "fork notification; depth={depth}; fresh private scratch"
+                    ))],
+                    Limits::default(),
+                )?)
+                    as Arc<dyn crate::context::ContextStage>]);
+            let bundle = storage
+                .builder()
+                .model(inherited.request.model.clone(), guarded)
+                .tools(storage.default_tools(Limits::default())?)
+                .context(context)
+                .grant("model:generate")
+                .grant("tool:call:acyclic.read_file")
+                .grant("tool:call:acyclic.stage_file")
+                .grant("tool:call:acyclic.list_files")
+                .build()?;
+            let child_op = crate::OperationId::new();
+            let task = storage
+                .stage(
+                    child_op,
+                    "task.txt",
+                    b"explicit recursive task",
+                    "text/plain",
+                    "task.txt",
+                )
+                .await?;
+            storage
+                .run_conversation(&bundle, child_op, task, vec![], 8)
+                .await?;
+            {
+                let dispatched = child_script.0.lock().unwrap();
+                inherited.prefix.verify(&PreparedModelInput::prepare(
+                    dispatched[0].clone(),
+                    Limits::default(),
+                )?)?;
+                assert_eq!(
+                    dispatched[0].messages[inherited.request.messages.len()],
+                    text(&format!(
+                        "fork notification; depth={depth}; fresh private scratch"
+                    ))
+                );
+            }
+            inherited = storage
+                .completed_model_boundary(child_op, 0, Limits::default())
+                .await?
+                .ok_or_else(|| Error::Storage("child batch missing".into()))?;
+        }
+        assert_ne!(inherited.prefix.digest(), original_digest);
         Ok(())
     }
 

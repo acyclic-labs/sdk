@@ -1205,6 +1205,30 @@ where
         Ok(())
     }
 
+    /// Reads a completed model/tool batch from its immutable journal reference.
+    /// Absence means children cannot yet enter their first model request.
+    pub async fn completed_model_boundary(
+        &self,
+        operation_id: OperationId,
+        step: u32,
+        limits: Limits,
+    ) -> Result<Option<crate::model_input::CompletedModelBoundary>> {
+        let records = self.journal.replay(operation_id).await?;
+        let Some(file) = records.iter().find_map(|record| match &record.event {
+            ExecutionEvent::ToolBatchCompleted {
+                step: recorded,
+                boundary,
+            } if *recorded == step => Some(boundary),
+            _ => None,
+        }) else {
+            return Ok(None);
+        };
+        let boundary: crate::model_input::CompletedModelBoundary =
+            crate::executor::load_json(self.journal.as_ref(), file).await?;
+        boundary.verify(limits)?;
+        Ok(Some(boundary))
+    }
+
     /// Stages user content or an attachment before it is admitted to a turn.
     pub async fn stage(
         &self,

@@ -15,12 +15,19 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Memory and persistent compositions share the same provider-neutral storage implementation.
 - Persistent session descriptors pin identities, authority keys, model and limits.
 - Reopening replays completed turns without model redispatch; changed prompt/configuration fails.
+- Full model requests are pinned beside their ordered manifests.
+- Completed tool batches pin one boundary after all results; child context is an explicit suffix stage.
+- Production executor tests preserve inherited inputs across three child levels with real file effects.
+- Assistant text in tool-bearing responses now reaches the next model request.
 
 ## Verification
 - Existing Harness baseline: 176 passed.
 - Shared-input integration: 181 passed.
 - Filesystem-local suite after manifest and provider-capture integration: 195 passed.
 - Durable local composition and prefix admission: 197 passed.
+- Completed-batch and recursive input composition: 198 passed.
+- Existing journal E2E: 6 passed; fork-preparer recovery: 1 passed.
+- Existing native durable recursive-workspace E2E: 2 passed.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
