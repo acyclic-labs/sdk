@@ -232,7 +232,7 @@ pub struct VerifiedSwarmUsageReceipt(SwarmUsageReceipt);
 
 impl VerifiedSwarmUsageReceipt {
     /// Binds a provider receipt after the host verifies its measurement.
-    pub(crate) fn from_verified(receipt: SwarmUsageReceipt) -> Result<Self> {
+    fn from_verified(receipt: SwarmUsageReceipt) -> Result<Self> {
         receipt.validate()?;
         Ok(Self(receipt))
     }
@@ -267,6 +267,7 @@ pub struct SwarmUsageReceiptIssuer<S> {
     operation_id: OperationId,
     dispatch_id: IdempotencyKey,
     provider: String,
+    limits: Option<SwarmResourceRequest>,
     sequence: u64,
     last_usage: Option<SwarmUsage>,
 }
@@ -289,9 +290,27 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             operation_id,
             dispatch_id,
             provider: provider.to_owned(),
+            limits: None,
             sequence: 0,
             last_usage: None,
         })
+    }
+
+    /// Binds the issuer to the exact per-child reservation ceiling.
+    ///
+    /// Runtime/provider adapters should use this constructor so an over-limit
+    /// provider counter cannot be turned into a completion receipt.  The
+    /// durable budget remains the final authority when the receipt is applied.
+    pub fn with_limits(
+        source: S,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        limits: SwarmResourceRequest,
+    ) -> Result<Self> {
+        limits.validate()?;
+        let mut issuer = Self::new(source, operation_id, dispatch_id)?;
+        issuer.limits = Some(limits);
+        Ok(issuer)
     }
 
     /// Reads provider counters and issues the next verified durable receipt.
@@ -303,6 +322,16 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         let usage = self
             .source
             .cumulative_usage(self.operation_id, &self.dispatch_id)?;
+        if let Some(limits) = self.limits {
+            if usage.model_steps > limits.model_steps
+                || usage.output_bytes > limits.output_bytes
+                || usage.execution_time_ms > limits.execution_time_ms
+            {
+                return Err(Error::Conflict(
+                    "provider usage exceeds the child reservation ceiling".into(),
+                ));
+            }
+        }
         if let Some(previous) = self.last_usage {
             usage.checked_delta(previous)?;
         }
@@ -398,6 +427,8 @@ impl SwarmForkRequest {
 
 impl SwarmResourceRequest {
     /// Binds child resource ceilings to the canonical task admission bounds.
+    /// Execution time has no relative field in `TaskRunLimits`, so it is
+    /// pinned to the same protocol ceiling used by the durable swarm budget.
     pub fn validate_against_admission(&self, admission: &TaskAdmissionRecord) -> Result<()> {
         admission.validate()?;
         let max_steps = admission
@@ -412,7 +443,10 @@ impl SwarmResourceRequest {
             .limits
             .file_bytes
             .min(admission.limits.render_bytes);
-        if self.model_steps > max_steps || self.output_bytes > max_output {
+        if self.model_steps > max_steps
+            || self.output_bytes > max_output
+            || self.execution_time_ms > MAX_SWARM_EXECUTION_TIME_MS
+        {
             return Err(Error::Conflict(
                 "swarm child resources exceed canonical task admission limits".into(),
             ));
@@ -507,6 +541,9 @@ pub struct SwarmForkReservation {
     pub idempotency_key: IdempotencyKey,
     /// Cumulative measured child usage.
     pub usage: SwarmUsage,
+    /// Last durable provider receipt sequence accepted for this child.
+    #[serde(default)]
+    pub usage_sequence: u64,
     /// Current reservation lifecycle.
     pub state: SwarmReservationState,
     /// Publication evidence, present before activation.
@@ -567,6 +604,8 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Cumulative measured child usage.
         usage: SwarmUsage,
+        /// Provider evidence retained with the durable usage transition.
+        receipt: SwarmUsageReceipt,
     },
     /// Adds cumulative measured usage from the root operation.
     RootUsageReported {
@@ -574,6 +613,8 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Cumulative measured root usage.
         usage: SwarmUsage,
+        /// Provider evidence retained with the durable usage transition.
+        receipt: SwarmUsageReceipt,
     },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
@@ -583,6 +624,8 @@ pub enum SwarmBudgetEvent {
         owner: SwarmOwnerFence,
         /// Final cumulative child usage.
         usage: SwarmUsage,
+        /// Provider evidence retained with the durable usage transition.
+        receipt: SwarmUsageReceipt,
     },
     /// Cancels a child and releases active/unconsumed resources without refunding usage.
     ChildCancelled {
@@ -670,6 +713,7 @@ struct SwarmBudgetState {
     owner: SwarmOwnerFence,
     usage: SwarmBudgetUsage,
     root_usage: SwarmUsage,
+    root_usage_sequence: u64,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
 }
@@ -708,6 +752,7 @@ impl SwarmBudget {
                 owner,
                 usage,
                 root_usage: SwarmUsage::default(),
+                root_usage_sequence: 0,
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -904,6 +949,7 @@ impl SwarmBudget {
             resources: request.resources,
             idempotency_key: request.idempotency_key.clone(),
             usage: SwarmUsage::default(),
+            usage_sequence: 0,
             state: SwarmReservationState::Reserved,
             publication: None,
             request_digest: digest,
@@ -980,7 +1026,7 @@ impl SwarmBudget {
     ) -> Result<SwarmForkReservation> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_usage(&mut state, operation_id, owner, usage, false)
+        update_usage(&mut state, operation_id, owner, usage, false, None)
     }
 
     /// Completes a child and releases only its unconsumed active reservation.
@@ -992,7 +1038,7 @@ impl SwarmBudget {
     ) -> Result<SwarmForkReservation> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_usage(&mut state, operation_id, owner, usage, true)
+        update_usage(&mut state, operation_id, owner, usage, true, None)
     }
 
     /// Reports cumulative root usage against the same session-wide limits as
@@ -1005,28 +1051,42 @@ impl SwarmBudget {
     ) -> Result<SwarmUsage> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        let delta = usage.checked_delta(state.root_usage)?;
-        let next = add_usage(state.usage.consumed, delta)?;
-        if next
-            .model_steps
-            .checked_add(state.usage.reserved.model_steps)
-            .is_none_or(|value| value > state.limits.max_model_steps)
-            || next
-                .output_bytes
-                .checked_add(state.usage.reserved.output_bytes)
-                .is_none_or(|value| value > state.limits.max_output_bytes)
-            || next
-                .execution_time_ms
-                .checked_add(state.usage.reserved.execution_time_ms)
-                .is_none_or(|value| value > state.limits.max_execution_time_ms)
-        {
-            return Err(Error::Conflict(
-                "root usage exceeds remaining swarm resource budget".into(),
-            ));
-        }
-        state.root_usage = usage;
-        state.usage.consumed = next;
-        Ok(usage)
+        update_root_usage(&mut state, owner, usage, None)
+    }
+
+    fn report_usage_event(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
+    ) -> Result<SwarmForkReservation> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        update_usage(&mut state, operation_id, owner, usage, false, receipt)
+    }
+
+    fn complete_event(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
+    ) -> Result<SwarmForkReservation> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        update_usage(&mut state, operation_id, owner, usage, true, receipt)
+    }
+
+    fn report_root_usage_event(
+        &self,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
+    ) -> Result<SwarmUsage> {
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        update_root_usage(&mut state, owner, usage, receipt)
     }
 
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
@@ -1130,15 +1190,25 @@ impl SwarmBudget {
                 operation_id,
                 owner,
                 usage,
-            } => self.report_usage(operation_id, &owner, usage).map(|_| ()),
-            SwarmBudgetEvent::RootUsageReported { owner, usage } => {
-                self.report_root_usage(&owner, usage).map(|_| ())
-            }
+                receipt,
+            } => self
+                .report_usage_event(operation_id, &owner, usage, Some(&receipt))
+                .map(|_| ()),
+            SwarmBudgetEvent::RootUsageReported {
+                owner,
+                usage,
+                receipt,
+            } => self
+                .report_root_usage_event(&owner, usage, Some(&receipt))
+                .map(|_| ()),
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
                 owner,
                 usage,
-            } => self.complete(operation_id, &owner, usage).map(|_| ()),
+                receipt,
+            } => self
+                .complete_event(operation_id, &owner, usage, Some(&receipt))
+                .map(|_| ()),
             SwarmBudgetEvent::ChildCancelled {
                 operation_id,
                 owner,
@@ -1347,6 +1417,7 @@ fn update_usage(
     owner: &SwarmOwnerFence,
     usage: SwarmUsage,
     complete: bool,
+    receipt: Option<&SwarmUsageReceipt>,
 ) -> Result<SwarmForkReservation> {
     let mut reservation = state
         .reservations
@@ -1355,6 +1426,9 @@ fn update_usage(
         .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
     if reservation.owner != *owner {
         return Err(Error::Conflict("stale swarm reservation generation".into()));
+    }
+    if let Some(receipt) = receipt {
+        validate_child_receipt(&reservation, operation_id, usage, receipt)?;
     }
     if reservation.state == SwarmReservationState::Completed
         && complete
@@ -1416,6 +1490,9 @@ fn update_usage(
         .checked_add(delta.execution_time_ms)
         .ok_or_else(|| Error::Invalid("swarm time usage exhausted".into()))?;
     reservation.usage = usage;
+    if let Some(receipt) = receipt {
+        reservation.usage_sequence = receipt.sequence;
+    }
     if complete {
         release_remaining(&mut state.usage, &reservation)?;
         state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
@@ -1423,6 +1500,68 @@ fn update_usage(
     }
     state.reservations.insert(operation_id, reservation.clone());
     Ok(reservation.clone())
+}
+
+fn validate_child_receipt(
+    reservation: &SwarmForkReservation,
+    operation_id: OperationId,
+    usage: SwarmUsage,
+    receipt: &SwarmUsageReceipt,
+) -> Result<()> {
+    receipt.validate()?;
+    if receipt.operation_id != operation_id
+        || receipt.usage != usage
+        || receipt.sequence != reservation.usage_sequence.saturating_add(1)
+    {
+        return Err(Error::Conflict(
+            "swarm child usage receipt is stale or mismatched".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn update_root_usage(
+    state: &mut SwarmBudgetState,
+    _owner: &SwarmOwnerFence,
+    usage: SwarmUsage,
+    receipt: Option<&SwarmUsageReceipt>,
+) -> Result<SwarmUsage> {
+    if let Some(receipt) = receipt {
+        receipt.validate()?;
+        if receipt.operation_id != state.session_id
+            || receipt.usage != usage
+            || receipt.sequence != state.root_usage_sequence.saturating_add(1)
+        {
+            return Err(Error::Conflict(
+                "swarm root usage receipt is stale or mismatched".into(),
+            ));
+        }
+    }
+    let delta = usage.checked_delta(state.root_usage)?;
+    let next = add_usage(state.usage.consumed, delta)?;
+    if next
+        .model_steps
+        .checked_add(state.usage.reserved.model_steps)
+        .is_none_or(|value| value > state.limits.max_model_steps)
+        || next
+            .output_bytes
+            .checked_add(state.usage.reserved.output_bytes)
+            .is_none_or(|value| value > state.limits.max_output_bytes)
+        || next
+            .execution_time_ms
+            .checked_add(state.usage.reserved.execution_time_ms)
+            .is_none_or(|value| value > state.limits.max_execution_time_ms)
+    {
+        return Err(Error::Conflict(
+            "root usage exceeds remaining swarm resource budget".into(),
+        ));
+    }
+    state.root_usage = usage;
+    state.usage.consumed = next;
+    if let Some(receipt) = receipt {
+        state.root_usage_sequence = receipt.sequence;
+    }
+    Ok(usage)
 }
 
 fn has_live_descendant(state: &SwarmBudgetState, operation_id: OperationId) -> bool {
@@ -1561,6 +1700,15 @@ mod tests {
             .validate_against_admission(&admission)
             .is_err()
         );
+        assert!(
+            SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: 1,
+                execution_time_ms: MAX_SWARM_EXECUTION_TIME_MS + 1,
+            }
+            .validate_against_admission(&admission)
+            .is_err()
+        );
         Ok(())
     }
 
@@ -1629,6 +1777,29 @@ mod tests {
             }
         );
         assert_eq!(issuer.next_sequence(), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_receipt_issuer_rejects_any_provider_dimension_over_ceiling() -> Result<()> {
+        let source = MeasuredSource {
+            snapshots: Mutex::new(vec![SwarmUsage {
+                model_steps: 5,
+                output_bytes: 10,
+                execution_time_ms: 100,
+            }]),
+        };
+        let mut issuer = SwarmUsageReceiptIssuer::with_limits(
+            source,
+            id(19),
+            IdempotencyKey::new("dispatch-bounded")?,
+            SwarmResourceRequest {
+                model_steps: 4,
+                output_bytes: 10,
+                execution_time_ms: 100,
+            },
+        )?;
+        assert!(matches!(issuer.issue(), Err(Error::Conflict(_))));
         Ok(())
     }
 

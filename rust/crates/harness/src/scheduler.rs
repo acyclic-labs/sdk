@@ -1058,7 +1058,7 @@ impl Scheduler {
                 require_phase(operation, OperationPhase::Running)?;
                 require_fence(operation, &fence)?;
                 next.validate_swarm_usage_receipt(operation_id, usage, receipt.as_ref())?;
-                next.apply_swarm_usage(operation_id, owner, usage)?;
+                next.apply_swarm_usage(operation_id, owner, usage, receipt.as_ref())?;
                 if let Some(receipt) = receipt {
                     next.mutable(operation_id)?.swarm_usage_sequence = receipt.sequence;
                 }
@@ -1086,7 +1086,7 @@ impl Scheduler {
                     usage,
                     receipt.as_ref(),
                 )?;
-                next.apply_swarm_root_usage(session_id, owner, usage)?;
+                next.apply_swarm_root_usage(session_id, owner, usage, receipt.as_ref())?;
                 if let Some(receipt) = receipt {
                     next.mutable(session_id)?.swarm_usage_sequence = receipt.sequence;
                 }
@@ -1111,7 +1111,7 @@ impl Scheduler {
                     },
                     true,
                 )?;
-                next.apply_swarm_completed(operation_id, owner, usage, &outcome)?;
+                next.apply_swarm_completed(operation_id, owner, usage, receipt.as_ref(), &outcome)?;
                 if let Some(receipt) = receipt {
                     next.mutable(operation_id)?.swarm_usage_sequence = receipt.sequence;
                 }
@@ -1368,13 +1368,18 @@ impl Scheduler {
         operation_id: OperationId,
         owner: SwarmOwnerFence,
         usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
     ) -> Result<()> {
+        let receipt = receipt.ok_or_else(|| {
+            Error::Unauthorized("provider usage receipt required for swarm usage".into())
+        })?;
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
         budget.report_usage(operation_id, &owner, usage)?;
         self.swarm_events.push(SwarmBudgetEvent::UsageReported {
             operation_id,
             owner,
             usage,
+            receipt: receipt.clone(),
         });
         Ok(())
     }
@@ -1384,7 +1389,11 @@ impl Scheduler {
         session_id: OperationId,
         owner: SwarmOwnerFence,
         usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
     ) -> Result<()> {
+        let receipt = receipt.ok_or_else(|| {
+            Error::Unauthorized("provider usage receipt required for swarm root usage".into())
+        })?;
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
         let (observed_session, _, _) = budget.descriptor()?;
         if observed_session != session_id {
@@ -1408,8 +1417,11 @@ impl Scheduler {
             ));
         }
         budget.report_root_usage(&owner, usage)?;
-        self.swarm_events
-            .push(SwarmBudgetEvent::RootUsageReported { owner, usage });
+        self.swarm_events.push(SwarmBudgetEvent::RootUsageReported {
+            owner,
+            usage,
+            receipt: receipt.clone(),
+        });
         if let Some(operation) = self.operations.get_mut(&session_id) {
             operation.revision = operation
                 .revision
@@ -1424,8 +1436,12 @@ impl Scheduler {
         operation_id: OperationId,
         owner: SwarmOwnerFence,
         usage: SwarmUsage,
+        receipt: Option<&SwarmUsageReceipt>,
         outcome: &Outcome<FileRef>,
     ) -> Result<()> {
+        let receipt = receipt.ok_or_else(|| {
+            Error::Unauthorized("provider usage receipt required for swarm completion".into())
+        })?;
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
         if matches!(outcome, Outcome::Indeterminate { .. }) {
             budget.report_usage(operation_id, &owner, usage)?;
@@ -1433,6 +1449,7 @@ impl Scheduler {
                 operation_id,
                 owner,
                 usage,
+                receipt: receipt.clone(),
             });
         } else {
             let mut budget = budget;
@@ -1441,6 +1458,7 @@ impl Scheduler {
                 operation_id,
                 owner: owner.clone(),
                 usage,
+                receipt: receipt.clone(),
             });
             self.close_cancelled_ancestors(operation_id, &mut budget)?;
         }
@@ -1865,9 +1883,9 @@ impl Scheduler {
         usage: SwarmUsage,
         receipt: Option<&SwarmUsageReceipt>,
     ) -> Result<()> {
-        let Some(receipt) = receipt else {
-            return Ok(());
-        };
+        let receipt = receipt.ok_or_else(|| {
+            Error::Unauthorized("provider usage receipt required for swarm usage".into())
+        })?;
         receipt.validate()?;
         let operation = self
             .operations
@@ -1892,9 +1910,9 @@ impl Scheduler {
         usage: SwarmUsage,
         receipt: Option<&SwarmUsageReceipt>,
     ) -> Result<()> {
-        let Some(receipt) = receipt else {
-            return Ok(());
-        };
+        let receipt = receipt.ok_or_else(|| {
+            Error::Unauthorized("provider usage receipt required for swarm root usage".into())
+        })?;
         receipt.validate()?;
         let operation = self
             .operations
