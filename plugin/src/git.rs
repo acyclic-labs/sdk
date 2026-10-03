@@ -164,7 +164,23 @@ impl PluginGitExecutor<'_> {
 pub(crate) fn git_requires_exact_workspace(argv: &[String]) -> bool {
     matches!(
         argv.first().map(String::as_str),
-        Some("status" | "diff" | "blame" | "grep" | "clean" | "archive" | "check-ignore")
+        Some(
+            "status"
+                | "diff"
+                | "blame"
+                | "grep"
+                | "clean"
+                | "archive"
+                | "check-ignore"
+                // Transitions retain their target tree in the durable Git
+                // journal. Capture a complete authored snapshot before
+                // preparing one so `--abort` can restore the exact target
+                // after a conflict, including when the root began lazy.
+                | "merge"
+                | "rebase"
+                | "reset"
+                | "stash"
+        )
     )
 }
 
