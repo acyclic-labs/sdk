@@ -1,0 +1,16 @@
+{
+  "qualification": "incomplete",
+  "source": "3950ea86b",
+  "change": "GraphCoder wire type and dispatcher derive from one frozen method tuple",
+  "bridge_sha256": "3813A53CA4C7302936397B22159E950FBAE77BE9BF9C2BB844E9841242668008",
+  "dispatcher_sha256": "C982500C838A794478ADA77AD3058DEF0774236C8E3721E05BA051732B8A88A3",
+  "tests": {
+    "command": "bun test test",
+    "passed": 49,
+    "failed": 0,
+    "assertions": 150,
+    "files": 3
+  },
+  "source_types": "bun x tsc -p tsconfig.json --noEmit passed",
+  "scope": "Source adapter validation on Windows; not fresh installed native artifact or PTY qualification"
+}
