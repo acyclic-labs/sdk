@@ -1,0 +1,102 @@
+{
+  "kind": "focused-checkpoint",
+  "complete": false,
+  "source_commit": "9f64eedd1f67b21a43df9ddffd7195d4ce59e587",
+  "source_scope": "Listed files only. Native receipts and projection captures are focused evidence; no final packaged or full-tree qualification.",
+  "platform": "Windows native and actual generated WASM execution",
+  "digests": {
+    "rust/crates/harness/src/model.rs": "2ab93f1818efa1ad2e74c10ec198c57ec0c73e96ffb54574daadd4a3e70110b6",
+    "rust/crates/harness/src/model_input.rs": "51ab410c61b9bb2dd9e399e2d146906cbbd1e425829ca0febff535c842949b77",
+    "rust/crates/harness/src/executor.rs": "a21bb0262d072f3bb942967b9263bede58a9a722326d0a1a105b5ddccd490961",
+    "rust/crates/harness/src/tool.rs": "0596c4f54563c902e44127957d518372468c04b582e12bfba827e228a285c247",
+    "rust/crates/harness/src/filesystem/local.rs": "3c419409570f192012ec4a452a8fc51913c149a871bf1612075326a1ec4f0d9d",
+    "typescript/packages/harness/src/runtime.ts": "f9eec9503feaf650df17e19acf4adcc4290c38225200bc3bca157ca0185e8333",
+    "typescript/packages/harness/test/model-validation.test.ts": "f2cdd3245dbc1c93506fdd3f45676e4d38ab7085c69c1c6d27bb53e3ab2bfe62",
+    "typescript/packages/harness/test/runtime.test.ts": "c7a6356321b67910de28a7513d27c91b81af6374edf3d5276f57d403c30da914",
+    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.d.ts": "372fc97a54dad27327cd302f2cbb36200f7fd0c320e99ddd18988e4bdd77aaae",
+    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm.js": "5c4f9162df23d4989986f15a0fef6acdb203010805aacbe5846f121eae32d5c1",
+    "typescript/packages/harness/generated/wasm/acyclic_harness_wasm_bg.wasm": "63536644b7bbe6d0b096e40bb62d2181a4eecfe38e9d0d5fec112b338fae9120",
+    "scripts/graphcoder-qualification.test.mjs": "f9549dec583f8757487a3d324eeea4fdd77f67a3a5e24c15d095301cc64f2149",
+    "scripts/assemble-graphcoder-receipt.test.mjs": "e5854d7af49759c56f4d2344af3421eeecdf72dd667a28f3107b427fb619bff3",
+    "scripts/graphcoder-artifact.test.mjs": "03d473a02a8377a85b09f407437c13c8b1b0b88ccfdcd10a23c81e6d63e32197",
+    "scripts/graphcoder-scenario.test.mjs": "aaaecf94e8a5452e803aad149beb358662e3f4b9767582bf1ddffcba0f74eb45",
+    "docs/graphcoder-swarm/requirements.json": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+  },
+  "results": [
+    {
+      "suite": "native all Harness test contracts cargo check",
+      "source": "12b3e2e4 plus committed fixture repairs in 1b823660",
+      "result": "pass"
+    },
+    {
+      "suite": "native receipt reopen exact publication replay",
+      "source": "e794818a",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.15
+    },
+    {
+      "suite": "real native subprocess fault after durable receipt",
+      "source": "e794818a",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.33,
+      "limitation": "Permissive fixture verifier and same live session; cold authenticated production approval recovery remains unproven."
+    },
+    {
+      "suite": "native captured narrowed tool projection",
+      "source": "1b823660 fixture content",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "seconds": 0.01,
+      "limitation": "Capture proves private field exclusion. Reviewer identified projection tampering rejection occurs through boundary persistence; direct recomputation replay remains required."
+    },
+    {
+      "suite": "actual generated WASM model-validation",
+      "passed": 12,
+      "failed": 0,
+      "assertions": 49
+    },
+    {
+      "suite": "Harness TypeScript tsconfig noEmit",
+      "result": "pass",
+      "dependencies": "Fresh actual Objects WASM build and Objects TypeScript build"
+    },
+    {
+      "suite": "focused runtime captures and admission",
+      "passed": 8,
+      "failed": 0,
+      "filtered": 64,
+      "assertions": 39
+    },
+    {
+      "suite": "qualification provenance/receipt/scenario validation",
+      "passed": 21,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "required_failures": [
+    {
+      "suite": "model_input native suite at e794818a",
+      "passed": 8,
+      "failed": 3,
+      "names": [
+        "fork_requires_complete_matching_tool_exchange",
+        "dispatched_provider_bytes_match_journaled_manifest",
+        "production_batch_pins_text_and_all_ordered_results"
+      ],
+      "followup": "Pairing fixture repaired and focused rerun passed at d5835abc; other two require host-reader/result schema and published-fork fixture repair."
+    },
+    {
+      "suite": "malformed_tool_arguments_return_to_the_model_instead_of_ending_the_turn at current native source",
+      "passed": 0,
+      "failed": 1,
+      "outcome": "Invalid: malformed tool call lacks typed rejection evidence"
+    }
+  ],
+  "remaining": "All final matrix qualification remains unproven. Dynamic model-selected recursion, complete budgets, durable waits/cancellation, cold approval/merge recovery, actual installed native terminal/ConPTY and full fresh artifact gates are required."
+}

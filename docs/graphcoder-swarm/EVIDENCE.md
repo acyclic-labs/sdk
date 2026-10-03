@@ -190,3 +190,9 @@ WASM/package/platform lanes, and production terminal qualification remain requir
 ## Canonical fork and terminal checkpoint
 
 checkpoint-canonical-fork-terminal.json binds focused Windows native, actual WASM, captured TypeScript model-dispatch, and GraphCoder package checks to listed source/suite/artifact digests. It does not qualify the full production swarm or final packaged matrix.
+
+## Projection, execution, and regenerated bindings checkpoint
+
+See checkpoint-projection-execution-bindings.json for scoped digests, actual pass counts, required failures, and limitations. Fresh WASM admission: 12 passed; focused TypeScript runtime: 8 passed; TypeScript contracts pass after generating the Objects dependency; qualification validation: 21 passed. Native receipt reopen and actual subprocess fault checks each passed one case. These do not qualify the full recursive runtime or production approval recovery.
+
+The native malformed-call continuation test currently fails because cumulative typed rejection evidence is missing. Host-owned journal reader separation and the full published-fork fixture remain required failures. Dynamic model-selected fork routing and final installed native terminal/ConPTY qualification remain pending. The goal is active; no merge occurred.
