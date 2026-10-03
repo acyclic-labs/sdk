@@ -139,7 +139,9 @@ impl ModelProvider for RecoveryProvider {
         });
         if self.fail_after_prefix.load(Ordering::SeqCst) && call == 0 {
             return Box::pin(first.chain(stream::once(async {
-                Err(Error::Storage("simulated interrupted provider stream".into()))
+                Err(Error::Storage(
+                    "simulated interrupted provider stream".into(),
+                ))
             })));
         }
         Box::pin(first.chain(stream::iter([Ok(ModelEvent::Completed {
@@ -342,7 +344,12 @@ async fn local_persisted_prefix_reconciles_without_redispatch() -> Result<()> {
         Limits::default(),
     )
     .await?;
-    assert!(swarm.run_root(operation, "recover a partial result").await.is_err());
+    assert!(
+        swarm
+            .run_root(operation, "recover a partial result")
+            .await
+            .is_err()
+    );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     drop(swarm);
 
@@ -357,7 +364,10 @@ async fn local_persisted_prefix_reconciles_without_redispatch() -> Result<()> {
     let recovered = reopened
         .run_root(operation, "recover a partial result")
         .await?;
-    assert_eq!(recovered.text, "durable local resultreconciled local result");
+    assert_eq!(
+        recovered.text,
+        "durable local resultreconciled local result"
+    );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(provider.requests().len(), 1);
     Ok(())
@@ -383,12 +393,10 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
     )
     .await?;
     let operation = OperationId::new();
-    let left = tokio::spawn(async move {
-        first.run_root(operation, "one durable operation").await
-    });
-    let right = tokio::spawn(async move {
-        second.run_root(operation, "one durable operation").await
-    });
+    let left =
+        tokio::spawn(async move { first.run_root(operation, "one durable operation").await });
+    let right =
+        tokio::spawn(async move { second.run_root(operation, "one durable operation").await });
     provider.wait_for_calls(1).await;
     // Give a second independent handle a chance to cross the admission
     // window.  A corrected implementation remains at one call; the current
@@ -400,9 +408,40 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
     let (left, right) = timeout(Duration::from_secs(2), async { tokio::join!(left, right) })
         .await
         .expect("shared operation did not finish after provider release");
-    let left = left.expect("first operation task panicked")?;
-    let right = right.expect("second operation task panicked")?;
-    assert_eq!(left, right);
+    let left = left.expect("first operation task panicked");
+    let right = right.expect("second operation task panicked");
+    let completed = match (left, right) {
+        (Ok(left), Ok(right)) => {
+            assert_eq!(left, right);
+            left
+        }
+        (Ok(completed), Err(error)) | (Err(error), Ok(completed)) => {
+            assert!(matches!(
+                error,
+                Error::Conflict(_) | Error::Indeterminate(_)
+            ));
+            completed
+        }
+        (Err(left), Err(right)) => {
+            return Err(Error::Conflict(format!(
+                "both concurrent owners failed: {left}; {right}"
+            )));
+        }
+    };
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let reopened = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    assert_eq!(
+        reopened
+            .run_root(operation, "one durable operation")
+            .await?,
+        completed
+    );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     Ok(())
 }
@@ -428,9 +467,8 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
     .await?;
     let task = first.root_task().await?;
     let operation = OperationId::new();
-    let running = tokio::spawn(async move {
-        first.run_root(operation, "cancel while running").await
-    });
+    let running =
+        tokio::spawn(async move { first.run_root(operation, "cancel while running").await });
     provider.wait_for_calls(1).await;
     second.cancel(task).await?;
     provider.release();

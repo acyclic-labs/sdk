@@ -212,6 +212,15 @@ where
                     let receipt: ExecutionReceipt = serde_json::from_slice(&bytes)
                         .map_err(|error| Error::Storage(error.to_string()))?;
                     receipt.validate()?;
+                    if cancellation_requested
+                        .iter()
+                        .any(|candidate| candidate == key)
+                        && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                    {
+                        return Err(Error::Conflict(
+                            "execution receipt completed after cancellation was requested".into(),
+                        ));
+                    }
                     if *operator_resolution != matches!(receipt, ExecutionReceipt::Unknown { .. })
                         || (*operator_authenticated && operator_principal.is_none())
                         || (!*operator_authenticated && operator_principal.is_some())
@@ -261,6 +270,10 @@ where
             ));
         }
         Ok(())
+    }
+
+    fn same_operation(left: &ExecutionReceiptKey, right: &ExecutionReceiptKey) -> bool {
+        left.operation_id == right.operation_id && left.effect_id == right.effect_id
     }
 
     async fn append_at_tail(&self, tail: u64, event: &ExecutionReceiptEvent) -> Result<bool> {
@@ -515,6 +528,39 @@ where
                 }) {
                     return Ok(ExecutionClaim::Pending);
                 }
+                let fenced_keys: Vec<ExecutionReceiptKey> = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        ExecutionReceiptEvent::Pending { key: candidate, .. }
+                        | ExecutionReceiptEvent::CancellationRequested { key: candidate }
+                            if Self::same_operation(candidate, key) =>
+                        {
+                            Some(candidate.clone())
+                        }
+                        ExecutionReceiptEvent::Completed { key: candidate, .. }
+                            if Self::same_operation(candidate, key) =>
+                        {
+                            Some(candidate.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                for candidate in fenced_keys {
+                    if events.iter().any(|event| {
+                        matches!(
+                            event,
+                            ExecutionReceiptEvent::Pending { key: pending, .. }
+                                if pending == &candidate
+                        )
+                    }) {
+                        return Ok(ExecutionClaim::Pending);
+                    }
+                    if let Some(record) = self.terminal_for(&events, &candidate).await?
+                        && matches!(record.receipt, ExecutionReceipt::Unknown { .. })
+                    {
+                        return Ok(ExecutionClaim::Completed(record));
+                    }
+                }
                 let handle = ExecutionClaimHandle::issue(key.clone(), tail);
                 if self
                     .append_at_tail(
@@ -673,6 +719,18 @@ where
                 if owner_token != *handle.token() || generation != handle.generation() {
                     return Err(Error::Conflict(
                         "execution receipt handle is stale or owned by another dispatcher".into(),
+                    ));
+                }
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        ExecutionReceiptEvent::CancellationRequested { key: candidate }
+                            if candidate == key
+                    )
+                }) && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                {
+                    return Err(Error::Conflict(
+                        "execution receipt publication lost a cancellation race".into(),
                     ));
                 }
                 let result = self
@@ -977,7 +1035,10 @@ impl PersistentLocalHarness {
     /// Project read/write capabilities are signed into the owner scope and
     /// pinned by the session descriptor; no model supplied reference can add
     /// project access.
-    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
     pub async fn from_providers_with_tools_and_project(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -1090,7 +1151,10 @@ impl PersistentLocalHarness {
 
     /// Composes a published child while pinning the stream provider used by
     /// its fork verifier to the surrounding local composition.
-    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identity is an explicit durable binding"
+    )]
     pub async fn from_published_fork_with_tools_and_stream_provider(
         model: Model,
         provider: Arc<dyn ModelProvider>,
@@ -1179,7 +1243,10 @@ impl PersistentLocalHarness {
     /// Opens a durable local session using an explicit authenticated
     /// filesystem provider identity for fresh descriptor creation. Reopens
     /// always use the provider pinned in the descriptor.
-    #[allow(clippy::too_many_arguments, reason = "provider identity is an explicit durable binding")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identity is an explicit durable binding"
+    )]
     pub async fn open_with_tools_and_project_for_provider(
         root: impl AsRef<Path>,
         model: Model,
@@ -1297,7 +1364,10 @@ impl PersistentLocalHarness {
     /// conversation aggregate and filesystem volumes use the supplied
     /// provider instances.  This is required when a swarm resolver and its
     /// task harnesses share one authenticated local provider domain.
-    #[allow(clippy::too_many_arguments, reason = "provider identities are explicit durable bindings")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider identities are explicit durable bindings"
+    )]
     pub async fn open_with_tools_and_project_on_providers(
         root: impl AsRef<Path>,
         model: Model,
@@ -1926,6 +1996,117 @@ mod tests {
                     .is_err()
             );
         }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receipt_store_fences_new_attempt_after_pending_or_unknown() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-receipt-attempt-fence-{}",
+            OperationId::new()
+        ));
+        let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
+        let key = ExecutionReceiptKey {
+            operation_id: OperationId::from_bytes([81; 16]),
+            effect_id: EffectId::from_bytes([82; 16]),
+            attempt_id: EffectAttemptId::from_bytes([83; 16]),
+            provider: "harness.native-execution.v1".into(),
+            effect_kind: "host.process".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: [84; 32],
+        };
+        let fresh = ExecutionReceiptKey {
+            attempt_id: EffectAttemptId::from_bytes([85; 16]),
+            ..key.clone()
+        };
+        {
+            let session = PersistentLocalHarness::open(
+                &root,
+                model.clone(),
+                Arc::new(Mock(AtomicUsize::new(0))),
+                Limits::default(),
+            )
+            .await?;
+            let store = session.execution_receipt_store()?;
+            assert!(matches!(
+                store.claim(&key).await?,
+                ExecutionClaim::Acquired { .. }
+            ));
+            assert_eq!(store.claim(&fresh).await?, ExecutionClaim::Pending);
+
+            let (_, _, _, resolver, _) = session.storage().execution_binding();
+            let resolution = session.execution_resolution_capability()?;
+            let pending = store.pending_claims(&resolution, &resolver).await?;
+            let (_, operator) = pending
+                .into_iter()
+                .find(|(candidate, _)| candidate == &key)
+                .ok_or_else(|| Error::Storage("pending attempt fence claim missing".into()))?;
+            store
+                .resolve_unknown_owner(
+                    &key,
+                    &resolution,
+                    &resolver,
+                    &operator,
+                    "attempt outcome remained unknown",
+                )
+                .await?;
+            let ExecutionClaim::Completed(record) = store.claim(&fresh).await? else {
+                return Err(Error::Storage(
+                    "unknown operation fence did not retain the terminal record".into(),
+                ));
+            };
+            assert!(matches!(record.receipt, ExecutionReceipt::Unknown { .. }));
+            assert_eq!(record.key.attempt_id, key.attempt_id);
+        }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn receipt_store_rejects_success_after_cancellation_request() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-receipt-cancel-fence-{}",
+            OperationId::new()
+        ));
+        let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
+        let key = ExecutionReceiptKey {
+            operation_id: OperationId::from_bytes([86; 16]),
+            effect_id: EffectId::from_bytes([87; 16]),
+            attempt_id: EffectAttemptId::from_bytes([88; 16]),
+            provider: "harness.native-execution.v1".into(),
+            effect_kind: "host.process".into(),
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest: [89; 32],
+        };
+        let session = PersistentLocalHarness::open(
+            &root,
+            model,
+            Arc::new(Mock(AtomicUsize::new(0))),
+            Limits::default(),
+        )
+        .await?;
+        let store = session.execution_receipt_store()?;
+        let ExecutionClaim::Acquired { handle } = store.claim(&key).await? else {
+            return Err(Error::Storage("cancellation claim was not acquired".into()));
+        };
+        store.request_cancel(&key).await?;
+        let result = store
+            .publish(
+                &key,
+                &handle,
+                &ExecutionReceipt::Succeeded {
+                    status_code: 0,
+                    stdout: b"late success".to_vec(),
+                    stderr: Vec::new(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(Error::Conflict(message)) if message.contains("cancellation"))
+        );
+        assert_eq!(store.claim(&key).await?, ExecutionClaim::Pending);
+        drop(session);
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
