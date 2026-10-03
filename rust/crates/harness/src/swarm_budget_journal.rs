@@ -71,6 +71,9 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: SwarmOwnerFence,
         limits: SwarmBudgetLimits,
     ) -> Result<Self> {
+        // Validate the descriptor before creating the durable stream. A
+        // malformed start must never leave an unreplayable root record.
+        SwarmBudget::new(session_id, owner.clone(), limits)?;
         let stream = stream_for(client, session_id)?;
         let tail = match stream.tail().await {
             Ok(tail) => tail,

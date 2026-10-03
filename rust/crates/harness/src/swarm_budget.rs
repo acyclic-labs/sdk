@@ -721,6 +721,17 @@ impl SwarmBudget {
                 "completed swarm child cannot be cancelled".into(),
             ));
         }
+        if state.reservations.values().any(|descendant| {
+            descendant.parent_operation_id == Some(operation_id)
+                && matches!(
+                    descendant.state,
+                    SwarmReservationState::Reserved | SwarmReservationState::Active
+                )
+        }) {
+            return Err(Error::Conflict(
+                "swarm child with live descendants cannot be cancelled".into(),
+            ));
+        }
         if reservation.state == SwarmReservationState::Cancelled {
             return Ok(reservation);
         }
@@ -1111,6 +1122,20 @@ mod tests {
                 .reserve_child(request(3, Some(grandchild.operation_id)))
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parent_cancellation_requires_descendants_to_release_first() -> Result<()> {
+        let budget = SwarmBudget::new(id(9), owner(0), limits())?;
+        let parent = budget.reserve_child(request(1, None))?.reservation;
+        let child = budget
+            .reserve_child(request(2, Some(parent.operation_id)))?
+            .reservation;
+        assert!(budget.cancel(parent.operation_id, &owner(0)).is_err());
+        budget.cancel(child.operation_id, &owner(0))?;
+        budget.cancel(parent.operation_id, &owner(0))?;
+        assert_eq!(budget.usage()?.active_agents, 1);
         Ok(())
     }
 

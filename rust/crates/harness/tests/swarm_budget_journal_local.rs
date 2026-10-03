@@ -152,6 +152,28 @@ async fn local_stream_budget_start_race_reopens_exact_descriptor() {
 }
 
 #[tokio::test]
+async fn local_stream_budget_rejects_invalid_descriptor_before_append() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let mut invalid = limits();
+    invalid.max_model_steps = 0;
+    assert!(
+        SwarmBudgetJournal::start(&client, session, owner.clone(), invalid)
+            .await
+            .is_err()
+    );
+    SwarmBudgetJournal::start(&client, session, owner, limits())
+        .await
+        .expect("valid descriptor can append after rejected start");
+}
+
+#[tokio::test]
 async fn local_stream_budget_concurrent_reservations_are_tail_atomic() {
     let root = tempdir().expect("temporary root");
     let client = StreamClient::new(Arc::new(
