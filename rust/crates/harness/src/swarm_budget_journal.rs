@@ -13,6 +13,7 @@ use crate::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
         SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, VerifiedForkPublication,
+        VerifiedSwarmUsageReceipt,
     },
 };
 use acyclic_stream::{
@@ -276,13 +277,29 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
     ) -> Result<SwarmForkReservation> {
+        let _ = (operation_id, owner, usage);
+        Err(Error::Unauthorized(
+            "provider usage receipt required for durable swarm usage".into(),
+        ))
+    }
+
+    /// Persists provider-measured cumulative usage with a verified receipt.
+    pub async fn report_usage_with_receipt(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        receipt: VerifiedSwarmUsageReceipt,
+    ) -> Result<SwarmForkReservation> {
+        let receipt = receipt.into_receipt();
+        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let reservation = projected.report_usage(operation_id, owner, usage)?;
+        let reservation = projected.report_usage(operation_id, owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::UsageReported {
                 operation_id,
                 owner: owner.clone(),
-                usage,
+                usage: receipt.usage,
+                receipt: receipt.clone(),
             },
             operation_id,
         )
@@ -296,12 +313,27 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
     ) -> Result<SwarmUsage> {
+        let _ = (owner, usage);
+        Err(Error::Unauthorized(
+            "provider usage receipt required for durable swarm root usage".into(),
+        ))
+    }
+
+    /// Persists provider-measured cumulative root usage with a verified receipt.
+    pub async fn report_root_usage_with_receipt(
+        &mut self,
+        owner: &SwarmOwnerFence,
+        receipt: VerifiedSwarmUsageReceipt,
+    ) -> Result<SwarmUsage> {
+        let receipt = receipt.into_receipt();
+        self.validate_receipt(self.session_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let reported = projected.report_root_usage(owner, usage)?;
+        let reported = projected.report_root_usage(owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::RootUsageReported {
                 owner: owner.clone(),
-                usage,
+                usage: receipt.usage,
+                receipt: receipt.clone(),
             },
             self.session_id,
         )
@@ -316,18 +348,72 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
     ) -> Result<SwarmForkReservation> {
+        let _ = (operation_id, owner, usage);
+        Err(Error::Unauthorized(
+            "provider usage receipt required for durable swarm completion".into(),
+        ))
+    }
+
+    /// Completes a child with provider-measured cumulative usage evidence.
+    pub async fn complete_with_receipt(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        receipt: VerifiedSwarmUsageReceipt,
+    ) -> Result<SwarmForkReservation> {
+        let receipt = receipt.into_receipt();
+        self.validate_receipt(operation_id, receipt.usage, &receipt)?;
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let reservation = projected.complete(operation_id, owner, usage)?;
+        let reservation = projected.complete(operation_id, owner, receipt.usage)?;
         self.commit(
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
                 owner: owner.clone(),
-                usage,
+                usage: receipt.usage,
+                receipt: receipt.clone(),
             },
             operation_id,
         )
         .await?;
         Ok(reservation)
+    }
+
+    fn validate_receipt(
+        &self,
+        operation_id: OperationId,
+        usage: SwarmUsage,
+        receipt: &crate::swarm_budget::SwarmUsageReceipt,
+    ) -> Result<()> {
+        receipt.validate()?;
+        if receipt.operation_id != operation_id || receipt.usage != usage {
+            return Err(Error::Conflict(
+                "swarm usage receipt does not match the requested operation".into(),
+            ));
+        }
+        let prior = self
+            .events
+            .iter()
+            .filter(|event| match event {
+                SwarmBudgetEvent::UsageReported {
+                    operation_id: id, ..
+                }
+                | SwarmBudgetEvent::ChildCompleted {
+                    operation_id: id, ..
+                } => *id == operation_id,
+                SwarmBudgetEvent::RootUsageReported { .. } => operation_id == self.session_id,
+                _ => false,
+            })
+            .count();
+        let expected = u64::try_from(prior)
+            .ok()
+            .and_then(|value| value.checked_add(1))
+            .ok_or_else(|| Error::Invalid("swarm usage receipt sequence exhausted".into()))?;
+        if receipt.sequence != expected {
+            return Err(Error::Conflict(
+                "swarm usage receipt sequence is stale".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Cancels a child while retaining consumed usage in the total budget.
@@ -561,6 +647,22 @@ mod tests {
             })
             .await
             .expect("reserve");
+        assert!(matches!(
+            journal
+                .report_usage(child, &owner, SwarmUsage::default())
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            journal
+                .report_root_usage(&owner, SwarmUsage::default())
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            journal.complete(child, &owner, SwarmUsage::default()).await,
+            Err(Error::Unauthorized(_))
+        ));
         let retry = journal
             .reserve_child(SwarmForkRequest {
                 operation_id: child,
