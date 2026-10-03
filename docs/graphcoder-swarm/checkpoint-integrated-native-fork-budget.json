@@ -206,6 +206,35 @@
         "native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix: completed batch has stale conversation boundary"
       ],
       "contract_scope": "inherited malformed-call evidence progressed to subsequent stale boundary refusal; no recursive prefix pass claimed"
+    },
+    {
+      "suite": "durable LocalStream swarm budget",
+      "source": "e89c719f",
+      "passed": 8,
+      "failed": 1,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test swarm_budget_journal_local -j 2 -- --nocapture",
+      "artifact_sha256": "fca76419a642119da91da2e86448060c1a8e7023943648ed16aec8b808ddcfa7",
+      "suite_sha256": "c1407eca7010a944b6a1af1643376dc074ae2c4e63b02f20580375adf8d87889",
+      "failures": [
+        "same-operation race returns sixteen non-replayed receipts; expected one winner plus fifteen replays"
+      ],
+      "contract_scope": "actual ancestor ceiling, receipt preflight, resumed cursor, shared-provider sixteen-issuer CAS passed; not cross-process providers or runtime provider ceilings"
+    },
+    {
+      "suite": "Harness TypeScript runtime and memory",
+      "source": "e89c719f",
+      "passed": 95,
+      "failed": 3,
+      "assertions": 576,
+      "command": "bun test typescript/packages/harness/test/runtime.test.ts typescript/packages/harness/test/memory-conversation.test.ts",
+      "log_sha256": "73214c91c70ca1aeac8b37cc2f4680ca76e073508709f57bc5bbbbc7c67ab63a",
+      "failures": [
+        "completed model run resume reports predispatch overflow as indeterminate",
+        "native/WASM canonical prerequisite mismatch (WASM stale)",
+        "detached admission fixture rejects"
+      ],
+      "contract_scope": "tool revision FileRef artifacts and private projection replay now passed; WASM refresh and remaining failures required"
     }
   ],
   "input_digests": {
