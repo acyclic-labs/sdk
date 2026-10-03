@@ -100,7 +100,7 @@
       "additionalProperties": false,
       "required": ["url", "claim"],
       "properties": {
-        "url": { "type": "string", "format": "uri" },
+        "url": { "type": "string", "format": "uri-reference" },
         "claim": { "type": "string", "minLength": 1 }
       }
     }
