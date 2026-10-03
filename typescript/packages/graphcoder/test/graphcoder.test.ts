@@ -116,6 +116,33 @@ describe("GraphCoder terminal adapter", () => {
     expect(output.lines()).toHaveLength(2);
   });
 
+  test("headless and command-loop adapters issue the same lazy transport sequence", async () => {
+    const commands = [
+      "start inspect",
+      "activity",
+      "messages",
+      "approvals",
+      "approve approval-1 yes",
+      "changes",
+      "diff README.md",
+      "file README.md",
+      "writeback mock-writeback-1 1 yes",
+      "cancel",
+      "resume session-1",
+      "cancel",
+    ];
+    const headlessTransport = createMockTransport();
+    const headless = new GraphCoderTerminal(headlessTransport, { output: writable().stream });
+    await headless.headless(commands);
+    const commandTransport = createMockTransport();
+    const commandLoop = new GraphCoderTerminal(commandTransport, { output: writable().stream });
+    for (const command of commands) await commandLoop.command(command);
+    expect(commandTransport.calls.map(call => call.method)).toEqual(headlessTransport.calls.map(call => call.method));
+    expect(commandTransport.calls.map(call => call.method).filter(method => method === "listChanges")).toHaveLength(1);
+    expect(commandTransport.calls.map(call => call.method).filter(method => method === "readChange")).toHaveLength(1);
+    expect(commandTransport.calls.map(call => call.method).filter(method => method === "readFile")).toHaveLength(1);
+  });
+
   test("malformed terminal commands become typed errors in headless mode", async () => {
     const output = writable();
     const terminal = new GraphCoderTerminal(createMockTransport(), { output: output.stream });
