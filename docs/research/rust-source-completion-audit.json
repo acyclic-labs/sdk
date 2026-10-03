@@ -21,7 +21,7 @@
     },
     {
       "id": "clean-generation",
-      "evidence": "Root inspected failed frozen64484b output: product/wire/rustdoc reject unresolved Cargo.lock under --locked; Python lacks wire outputs. Examples declares Rust .tgz package containing PE executable prefix4D5A900003000000, SHA8c3bf97dc0ff96496ff32707613736384f25728e1d835772369ffedfa21532b4, same bytes as compile artifact. No qualification manifest emitted; coherent lock/package repair and actual successful reproducibility remain required.",
+      "evidence": "Root inspected failed frozen64484b output: product/wire/rustdoc reject unresolved Cargo.lock under --locked; Python lacks wire outputs. Examples declares Rust .tgz package containing PE executable prefix4D5A900003000000, SHA8c3bf97dc0ff96496ff32707613736384f25728e1d835772369ffedfa21532b4, same bytes as compile artifact. No qualification manifest emitted; coherent lock/package repair and actual successful reproducibility remain required. Repairs347bfef6b/4936736bf now parse pinned OSS tar/gzip and reject executable/generic consumer archives;33 generator tests pass. Current committed tree has sdk-typescript baseline8131e594d, but sdk-examples and sdk-python essential manifests/source remain missing. No fresh full success exists.",
       "state": "failed"
     },
     {
@@ -46,7 +46,7 @@
     },
     {
       "id": "docs-source-coverage",
-      "evidence": "Compiler-derived module paths/signatures and portable host rustdoc profiles committed 4f8a17e57 with 23 library tests. Current generated preview still predates these fields. Actual fresh strict bundle and full source coverage remain required.",
+      "evidence": "Docs9e400b8b3 retains actual generated OUT_DIR bytes with valid source spans and emits readable signatureText plus raw compiler AST.24 library tests and historical Actors/Stream strict Node validator pass. Current full49 graph output and website ingestion remain required.",
       "state": "partial"
     },
     {
@@ -66,7 +66,7 @@
     },
     {
       "id": "fast-ci",
-      "evidence": "Full downstream checks release/manual gated, existing planner regression16/16 passed. Root37c3e1f53 installs rustfmt/wasm target and replaces duplicate full check generation with drift after generate. Genuine complete output drift and remote runner execution still outstanding.",
+      "evidence": "Root reran planner16/16 and metadata gate exit0. d44eae4d6 adds source-bound qualified-state gate for release C++/Swift jobs and4 pending/stale/package regressions; ordinary PRs retain tiny policy checks. Current pending platform recipes intentionally fail release qualification until actual packages/conformance pass. Remote runner execution remains unverified.",
       "state": "verified-scoped"
     },
     {
