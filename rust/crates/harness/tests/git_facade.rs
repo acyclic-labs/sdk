@@ -9,6 +9,7 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
 use acyclic_harness::resources::GenerationRef;
 use acyclic_harness::{
+    AgentId, Capabilities, Error, Result,
     conversation::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
@@ -17,12 +18,12 @@ use acyclic_harness::{
     filesystem::{FilesystemGitFacade, FilesystemHost},
     merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan},
     resources::ProviderRef,
-    AgentId, Capabilities, Error, Result,
 };
 use futures::future::BoxFuture;
+use std::collections::BTreeSet;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +87,13 @@ impl GitFilesystemExecutor for FaultExecutor {
             return Err(TestExecutorError);
         }
         let result = match action {
+            GitFilesystemAction::CaptureCommit { workspace_tree, .. } => {
+                GitFilesystemResult::Captured {
+                    tree: *workspace_tree,
+                    tracked_paths: BTreeSet::new(),
+                    proof: None,
+                }
+            }
             GitFilesystemAction::ForkBranch { .. } => GitFilesystemResult::Forked {
                 workspace_id: WorkspaceId::from_bytes([31; 16]),
             },
@@ -468,16 +476,18 @@ async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()
         )
         .await?;
     executor.fail_once();
-    assert!(facade
-        .run(
-            GitCommand::Merge {
-                branch: "feature".into(),
-            },
-            live_tree(workspace_id),
-            executor.as_ref(),
-        )
-        .await
-        .is_err());
+    assert!(
+        facade
+            .run(
+                GitCommand::Merge {
+                    branch: "feature".into(),
+                },
+                live_tree(workspace_id),
+                executor.as_ref(),
+            )
+            .await
+            .is_err()
+    );
     let aborted = facade
         .run(
             GitCommand::MergeAbort,
@@ -490,5 +500,77 @@ async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()
         acyclic_fs::GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
     ));
     assert_eq!(executor.operations().len(), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_rebase_and_hard_reset_use_the_facade_identity() -> Result<()> {
+    let (facade, workspace_id) = transition_facade()?;
+    let executor = Arc::new(FaultExecutor::new(workspace_id));
+    facade
+        .run(
+            GitCommand::Commit {
+                message: "baseline".into(),
+                author: "root".into(),
+                authored_at_seconds: 100,
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await?;
+    facade
+        .run(
+            GitCommand::Branch {
+                create: Some("feature".into()),
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await?;
+    executor.fail_once();
+    assert!(
+        facade
+            .run(
+                GitCommand::Rebase {
+                    branch: "feature".into(),
+                },
+                live_tree(workspace_id),
+                executor.as_ref(),
+            )
+            .await
+            .is_err()
+    );
+    let resumed = facade
+        .resume(executor.as_ref())
+        .await?
+        .ok_or_else(|| Error::Invalid("pending rebase was not recoverable".into()))?;
+    assert!(matches!(
+        resumed,
+        acyclic_fs::GitCommandOutput::Committed(_)
+    ));
+
+    executor.fail_once();
+    assert!(
+        facade
+            .run(
+                GitCommand::Reset {
+                    target: acyclic_fs::GitObjectName("HEAD".into()),
+                    mode: acyclic_fs::GitResetMode::Hard,
+                },
+                live_tree(workspace_id),
+                executor.as_ref(),
+            )
+            .await
+            .is_err()
+    );
+    let resumed = facade
+        .resume(executor.as_ref())
+        .await?
+        .ok_or_else(|| Error::Invalid("pending hard reset was not recoverable".into()))?;
+    assert!(matches!(
+        resumed,
+        acyclic_fs::GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
+    ));
+    assert_eq!(executor.operations().len(), 6);
     Ok(())
 }

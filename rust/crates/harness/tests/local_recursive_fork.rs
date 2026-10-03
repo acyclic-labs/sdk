@@ -539,18 +539,42 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 "parent workspace changed before the explicit facade publication"
             );
             let operation_id = OperationId::from_bytes([91; 16]);
-            let outcome = parent_facade
-                .apply_project_merge(host.as_ref(), aggregate.reducer(), &plan, operation_id)
+            let mut malformed_notice = merge_message.clone();
+            malformed_notice.kind = MessageKind::User;
+            assert!(parent_facade
+                .apply_project_merge_for_child_with_notice(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                    &plan,
+                    operation_id,
+                    &malformed_notice,
+                )
+                .await
+                .is_err());
+            assert!(
+                host.read(
+                    &project_head.workspace,
+                    None,
+                    &format!("/level-{level}.txt"),
+                    1_024,
+                )
+                .await
+                .is_err(),
+                "invalid merge receipt intent must not publish a workspace change"
+            );
+            let receipt = parent_facade
+                .apply_project_merge_for_child_with_receipt(
+                    host.as_ref(),
+                    aggregate.reducer(),
+                    &child_authority,
+                    &child_project,
+                    &plan,
+                    operation_id,
+                    merge_message,
+                )
                 .await?;
-            let receipt = parent_facade.merge_receipt(
-                host.as_ref(),
-                aggregate.reducer(),
-                &plan,
-                &outcome,
-                child_authority.clone(),
-                operation_id,
-                merge_message,
-            )?;
             aggregate
                 .execute(Command {
                     operation_id,

@@ -345,6 +345,72 @@ impl<S> FilesystemGitFacade<S> {
             .await
     }
 
+    /// Validates the merge notice and direct-child binding immediately before
+    /// applying the inspected provider join. Callers that will publish a
+    /// merge receipt should use this boundary so malformed notices cannot
+    /// follow a successful Filesystem mutation.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the mutating boundary keeps parent, child, plan, operation, and notice explicit"
+    )]
+    pub async fn apply_project_merge_for_child_with_notice<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        notice: &ConversationMessage,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        validate_merge_receipt_inputs(child, notice)?;
+        self.apply_project_merge(host, parent, plan, operation_id)
+            .await
+    }
+
+    /// Applies a direct-child merge and constructs the matching authenticated
+    /// receipt from the same validated child and notice. Taking ownership of
+    /// those values keeps callers from applying one receipt intent and later
+    /// publishing a different child or notice.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the mutating boundary keeps parent, child, plan, operation, and notice explicit"
+    )]
+    pub async fn apply_project_merge_for_child_with_receipt<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        notice: ConversationMessage,
+    ) -> Result<ProjectMergeReceipt>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        validate_merge_receipt_inputs(child, &notice)?;
+        let outcome = self
+            .apply_project_merge(host, parent, plan, operation_id)
+            .await?;
+        self.merge_receipt(
+            host,
+            parent,
+            plan,
+            &outcome,
+            child.clone(),
+            operation_id,
+            notice,
+        )
+    }
+
     /// Converts a successful provider join into the authenticated Harness
     /// receipt used to publish the parent conversation's merge event.
     #[allow(
@@ -763,6 +829,20 @@ impl<S> FilesystemGitFacade<S> {
         self.require_write()?;
         self.require_capability("fork:publish")
     }
+}
+
+fn validate_merge_receipt_inputs(child: &Authority, notice: &ConversationMessage) -> Result<()> {
+    if child.kind != crate::core::AggregateKind::Conversation {
+        return Err(Error::Invalid(
+            "project join child is not a conversation".into(),
+        ));
+    }
+    child.stream_path()?;
+    notice.validate()?;
+    if notice.kind != crate::conversation::MessageKind::Merge {
+        return Err(Error::Invalid("project join notice is not a merge".into()));
+    }
+    Ok(())
 }
 
 fn map_run_error<S, E>(error: &GitCompatRunError<S, E>) -> Error
