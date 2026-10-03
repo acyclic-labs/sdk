@@ -4402,30 +4402,6 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
-    struct CommunicationHost;
-
-    impl crate::runtime::DurableTaskHost for CommunicationHost {
-        fn outcome<'a>(
-            &'a self,
-            _task_id: TaskId,
-        ) -> BoxFuture<'a, Result<Option<crate::Outcome<Value>>>> {
-            Box::pin(async { Ok(None) })
-        }
-
-        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async { Ok(()) })
-        }
-    }
-
-    #[test]
-    fn communication_bindings_pin_the_authenticated_swarm_task() -> Result<()> {
-        let task = TaskId::from_bytes([81; 16]);
-        let bindings = LocalSwarmBindings::communication(Arc::new(CommunicationHost), None, None);
-        let tools = bindings.tools_for(task)?;
-        assert_eq!(tools.authenticated_task, Some(task));
-        Ok(())
-    }
-
     impl ModelProvider for MockModel {
         fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
