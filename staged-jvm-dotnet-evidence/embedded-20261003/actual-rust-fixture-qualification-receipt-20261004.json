@@ -62,6 +62,8 @@
   },
   "rust_tls_fixture_probes": {
     "inference": "passed; host::tests::default_remote_transport_completes_authenticated_tls_grpc_handshake",
+    "inference_context": "passed; host::tests::remote_context_create_and_inspect_preserve_server_identities",
+    "inference_run_watch": "passed; host::tests::remote_run_watch_cancel_and_resume_preserve_terminal_identity",
     "machines": "passed; grpc::tests::default_remote_transport_completes_authenticated_mtls_grpc_handshake",
     "qualification_boundary": "These are Rust crate in-process tests with generated certificates; no external --serve endpoint or JVM/.NET TLS client run was available."
   },  "parity": {
@@ -76,6 +78,7 @@
     "The prior current-source closure receipt is retained and not relabeled by this capture."
   ]
 }
+
 
 
 
