@@ -2,7 +2,7 @@
 
 use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
-    Error, IdempotencyKey, OperationId,
+    IdempotencyKey, OperationId,
     swarm_budget::{
         ForkPublication, SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence,
         SwarmResourceRequest, SwarmUsage,
@@ -120,11 +120,13 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
         .expect_err("stale owner must be fenced");
     assert!(stale.to_string().contains("stale"));
     restarted
-        .dispatch_after_publication(child, new_owner, publication, |_token| async {
-            Err::<(), _>(Error::Conflict("mock dispatcher rejected child".into()))
-        })
+        .activate(child, new_owner.clone(), publication)
         .await
-        .expect_err("dispatcher rejection must be returned");
+        .expect("re-activate with recovered owner");
+    restarted
+        .cancel(child, &new_owner)
+        .await
+        .expect("cancel rejected dispatch");
     let usage = restarted.usage().expect("final usage");
     assert_eq!(usage.active_agents, 1);
     assert_eq!(usage.total_agents, 2);
