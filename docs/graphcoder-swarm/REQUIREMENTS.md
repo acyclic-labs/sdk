@@ -1,7 +1,7 @@
 # Locked acceptance matrix: Harness-first coding swarm
 
 The exhaustive, machine-readable matrix is [requirements.json](requirements.json).
-It contains 66 locked entries covering scope, exact model inputs, recursive
+It contains 68 locked entries covering scope, exact model inputs, recursive
 forks, effects and recovery, workspace integration, model-facing tools, limits,
 library ownership, terminal behavior, lazy loading, bindings, real swarm
 scenarios, fault injection, and final qualification. This document retains the

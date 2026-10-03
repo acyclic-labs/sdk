@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,7 +31,7 @@ function suiteFixture(directory, executionKind = "native") {
 }
 
 test("the locked matrix has unique coverage for every requirement", () => {
-  assert.equal(matrix.entries.length, 66);
+  assert.equal(matrix.entries.length, 68);
   assert.equal(new Set(matrix.entries.map(entry => entry.id)).size, matrix.entries.length);
   assert.ok(matrix.entries.every(entry => entry.contract && entry.verification && entry.modes.length > 0));
 });
@@ -38,8 +39,8 @@ test("the locked matrix has unique coverage for every requirement", () => {
 test("a pending receipt is structurally valid but cannot be final", () => {
   const receipt = makePendingReceipt();
   const result = validateReceipt(matrix, receipt);
-  assert.equal(result.requirements, 66);
-  assert.equal(result.counts.missing, 66);
+  assert.equal(result.requirements, 68);
+  assert.equal(result.counts.missing, 68);
   assert.throws(() => validateReceipt(matrix, { ...receipt, gate: { ...receipt.gate, final: true } }, { final: true }), /required cases must be passed|missing/);
 });
 
@@ -47,6 +48,21 @@ test("gate.final applies final-case and artifact rules even without --final", ()
   const receipt = makePendingReceipt();
   receipt.gate.final = true;
   assert.throws(() => validateReceipt(matrix, receipt), /is pending, required cases must be passed/);
+});
+
+test("gate.final refuses a missing artifact even without --final", () => {
+  const receipt = makePendingReceipt();
+  receipt.gate.final = true;
+  receipt.artifacts = [{
+    path: join(tmpdir(), "graphcoder-qualification-artifact-that-does-not-exist.tgz"),
+    sha256: "0".repeat(64),
+    source_commit: receipt.source.commit,
+    source_tree: execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim(),
+    built_at: "2026-10-03T00:00:00.000Z",
+    build_id: "build-missing",
+    fresh: true,
+  }];
+  assert.throws(() => validateReceipt(matrix, receipt), /artifact is missing/);
 });
 
 test("evidence cannot relabel a compile suite as native", () => {

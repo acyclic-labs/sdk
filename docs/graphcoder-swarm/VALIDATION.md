@@ -26,7 +26,7 @@ with the current Git checkout and hashes the referenced files itself.
 
 Compilation is a separate execution kind. It may prove that code targets a
 platform, but it cannot satisfy a native, PTY, package, or WASM runtime row.
-The final gate also requires each listed artifact to name the qualified source
+The final gate requires each listed artifact to name the qualified source
 commit and tree, a build ID, and a timestamp, then hashes it from disk. Stale or
 missing files are rejected, so evidence cannot be satisfied by a filename,
 boolean freshness flag, or an earlier checkpoint alone.

@@ -1,0 +1,42 @@
+{
+  "protocol": "acyclic.graphcoder.qualification-baseline.v1",
+  "kind": "baseline-not-final",
+  "date": "2026-10-03",
+  "platform": "windows-x86_64",
+  "source_commit": "3052b7dfc1a141e2626e3b5e705ec3e01c18445d",
+  "official_script": "scripts/check-harness-package.sh",
+  "invocation": "C:\\Program Files\\Git\\bin\\bash.exe scripts/check-harness-package.sh /c/Users/varun/.codex/visualizations/2026/10/02/01a0fbef-7dce-7c70-be2a-5fc08e62b6af/harness-package-validation",
+  "prerequisite": {
+    "status": "passed",
+    "command": "bun install --frozen-lockfile; bun run --filter '@acyclic-labs/objects' build",
+    "observation": "The isolated Harness TypeScript build requires the workspace Objects declaration package even though Objects is an optional peer at publish time."
+  },
+  "runs": [
+    {
+      "id": "official-package-run-without-objects-build",
+      "status": "failed-setup",
+      "observed": ["fresh Harness WASM build started"],
+      "failure": "typescript/packages/harness/src/objects.ts could not resolve @acyclic-labs/objects/v2; subsequent strict TypeScript diagnostics were emitted.",
+      "qualification": "does not count as installed-package evidence"
+    },
+    {
+      "id": "official-package-run-after-objects-build",
+      "status": "blocked-by-host-contention",
+      "observed": [
+        "fresh Harness WASM build passed",
+        "installed npm consumer ran 40 tests with 92 expectations and 0 failures",
+        "installed native/WASM event-byte equivalence passed",
+        "installed protobuf/package-artifact smoke passed",
+        "installed wire transport suite passed"
+      ],
+      "failure": "The official isolated Cargo package test failed with only metadata stubs available for std and test. Multiple independent Cargo/rustc builds were running on the Windows host at the same time; the package script's Rust suite did not reach a valid result.",
+      "qualification": "TypeScript installed-package runtime evidence is recorded; Rust package and provider-conformance evidence remain pending and must be rerun after host contention clears."
+    }
+  ],
+  "not_claimed": [
+    "final qualification",
+    "Rust package test success",
+    "provider conformance through scripts/run-harness-conformance.mjs",
+    "fresh artifact receipt"
+  ]
+}
