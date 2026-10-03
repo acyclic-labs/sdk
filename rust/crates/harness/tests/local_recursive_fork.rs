@@ -1138,6 +1138,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             drop(reopened_facade);
             drop(terminal_recovery);
             drop(terminal_journal);
+            drop(post_apply_recovery);
+            drop(post_apply_journal);
             drop(child_aggregate);
             drop(aggregate);
             drop(stream);
