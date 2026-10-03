@@ -1,0 +1,24 @@
+{
+  "schema": "acyclic.acceptance.bounded.v1",
+  "result": "passed",
+  "scope": "Live isolated SDK worktree; this receipt does not qualify later source edits or a clean final checkout",
+  "revision": "cc5e2eee9374bd83a75dfa0690f2824cfbd7e30d",
+  "command": "cargo test --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked --offline --no-fail-fast",
+  "tests_passed": 72,
+  "unit_tests": 24,
+  "integration_tests": 48,
+  "integration_suites": 12,
+  "exit_code": 0,
+  "log": {
+    "path": "Q:/sdk/work/rust-source-root-wire-latest.log",
+    "sha256": "a790b0fc44523bc3988825fd5629ec2f3982e08b420c65a37c7d85254f422ce3"
+  },
+  "source_state": "dirty-worktree",
+  "qualifications_excluded": [
+    "Later concurrent edits",
+    "Clean-checkout reproducibility",
+    "Installed multilingual packages",
+    "Complete strict rustdoc profiles",
+    "Website final qualification"
+  ]
+}
