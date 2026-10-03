@@ -1,0 +1,65 @@
+{
+  "authority": "rust",
+  "exporter": "acyclic-sdk-contract-wire@0.1.0",
+  "families": [
+    {
+      "descriptor": "actors/v1/actors.fds.bin",
+      "descriptor_sha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf",
+      "source": "actors/v1/actors.proto",
+      "source_sha256": "6456ad6c501f483be06779392118f4b16a06f42eeda9674c90d7a54f077e68ab"
+    },
+    {
+      "descriptor": "stream/v2/stream.fds.bin",
+      "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
+      "source": "stream/v2/stream.proto",
+      "source_sha256": "3047fe47eb65dc734298f907a02184c67147febd6bfd85b13fa3a6243608f578"
+    },
+    {
+      "descriptor": "objects/v2/objects.fds.bin",
+      "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
+      "source": "objects/v2/objects.proto",
+      "source_sha256": "23e4db40df19793bf8a0de95a83f23a05308c4e8be2299c6a239ac52c606d8f9"
+    },
+    {
+      "descriptor": "workers/v1/workers.fds.bin",
+      "descriptor_sha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128",
+      "source": "workers/v1/workers.proto",
+      "source_sha256": "82a917655bb8b7c8a94b764b8ae876a5a3ec14f790fa4d70841257798d574193"
+    },
+    {
+      "descriptor": "filesystem/v2/filesystem.fds.bin",
+      "descriptor_sha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
+      "source": "filesystem/v2/filesystem.proto",
+      "source_sha256": "eb71fce3dd8dc65f9a6494d993601565b7ffce75667932ccf90b8b05708609ef"
+    },
+    {
+      "descriptor": "harness/v2/harness.fds.bin",
+      "descriptor_sha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
+      "source": "harness/v2/harness.proto",
+      "source_sha256": "7325b68fe8f493b957c027aa13602137f53cf1f70358b19eef8cabbaf141e876"
+    },
+    {
+      "descriptor": "protocol/v1/protocol.fds.bin",
+      "descriptor_sha256": "ce697a9dede342fa869397ca984dd148d6c6375d33a0a633483615a506398660",
+      "source": "protocol/v1/protocol.proto",
+      "source_sha256": "e9b3abd5386a875799cfedaf0245998724bc3f5e48a4c6dd43f05c0539262497"
+    },
+    {
+      "descriptor": "inference/v1/inference.fds.bin",
+      "descriptor_sha256": "2dc76c646796f90a69f037a46df8945633593a22301b88847b52b17d219e6682",
+      "source": "inference/v1/inference.proto",
+      "source_sha256": "de2a9b3895b94e94c4ac44c5b278bee47133bac4a91091f8eaf5f3c30e55567e"
+    },
+    {
+      "descriptor": "machines/v1/machines.fds.bin",
+      "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
+      "source": "machines/v1/machines.proto",
+      "source_sha256": "4c293693004f5b430c9706cc6f13eaa2cac1f593a698d52fce5c50deae37e0fc"
+    }
+  ],
+  "generator": "sdk-python-generator@0.1.0",
+  "grpcio-tools": "1.83.0",
+  "protobuf": "7.36.0",
+  "source_revision": "6370d9add8bb88edb0f14c77841bf60fac0b0c4bc33ea7cc9e4104cfa50f1770",
+  "source_revision_kind": "rust-model-sha256"
+}

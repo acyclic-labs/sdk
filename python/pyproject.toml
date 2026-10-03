@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools==84.0.0", "wheel==0.46.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "acyclic-sdk-transport"
+version = "0.2.0"
+description = "Generated transport-only Python bindings for the Acyclic Rust-owned contracts"
+requires-python = ">=3.12"
+dependencies = [
+  "grpcio==1.83.0",
+  "protobuf==7.36.0",
+]
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["acyclic_sdk*"]
+
+[tool.setuptools.package-data]
+acyclic_sdk = ["generated/generation.json"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
