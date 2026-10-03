@@ -9,7 +9,6 @@ use acyclic_fs::{
 use acyclic_harness::filesystem::{RootWritebackApproval, RootWritebackRequest};
 use acyclic_harness::resources::GenerationRef;
 use acyclic_harness::{
-    AgentId, Capabilities, Error, Result,
     conversation::{
         ConversationMessage, FileDescriptor, FileRef, MessageKind, ReferencedAttachments,
         VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
@@ -18,8 +17,13 @@ use acyclic_harness::{
     filesystem::{FilesystemGitFacade, FilesystemHost},
     merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan},
     resources::ProviderRef,
+    AgentId, Capabilities, Error, Result,
 };
 use futures::future::BoxFuture;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 #[derive(Debug, thiserror::Error)]
 #[error("test executor failed")]
@@ -39,6 +43,58 @@ impl GitFilesystemExecutor for NoopExecutor {
             tree: None,
             tracked_paths: None,
         })
+    }
+}
+
+struct FaultExecutor {
+    workspace_id: WorkspaceId,
+    fail_next: AtomicBool,
+    operations: Mutex<Vec<FsOperationId>>,
+}
+
+impl FaultExecutor {
+    fn new(workspace_id: WorkspaceId) -> Self {
+        Self {
+            workspace_id,
+            fail_next: AtomicBool::new(false),
+            operations: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn fail_once(&self) {
+        self.fail_next.store(true, Ordering::SeqCst);
+    }
+
+    fn operations(&self) -> Vec<FsOperationId> {
+        self.operations.lock().expect("operation lock").clone()
+    }
+}
+
+impl GitFilesystemExecutor for FaultExecutor {
+    type Error = TestExecutorError;
+
+    async fn execute(
+        &self,
+        operation_id: FsOperationId,
+        action: &GitFilesystemAction,
+    ) -> std::result::Result<GitFilesystemResult, Self::Error> {
+        self.operations
+            .lock()
+            .expect("operation lock")
+            .push(operation_id);
+        if self.fail_next.swap(false, Ordering::SeqCst) {
+            return Err(TestExecutorError);
+        }
+        let result = match action {
+            GitFilesystemAction::ForkBranch { .. } => GitFilesystemResult::Forked {
+                workspace_id: WorkspaceId::from_bytes([31; 16]),
+            },
+            _ => GitFilesystemResult::Applied {
+                tree: Some(live_tree(self.workspace_id)),
+                tracked_paths: None,
+            },
+        };
+        Ok(result)
     }
 }
 
@@ -110,6 +166,42 @@ fn fixture(
 
 fn live_tree(workspace_id: WorkspaceId) -> GitTreeRef {
     GitTreeRef::exact(workspace_id, GenerationId::new(Digest::from_bytes([1; 32])))
+}
+
+fn transition_facade() -> Result<(FilesystemGitFacade<MemoryGitCompatStore>, WorkspaceId)> {
+    let provider = ProviderRef::new("git-facade-recovery", "filesystem", "2")?;
+    let volume = VolumeRef::new(
+        provider,
+        "root-project",
+        VolumeClass::Project,
+        VolumeOwner::Project("root".into()),
+    )?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "root".into(),
+    };
+    let issuer = AuthorityIssuer::new("git-facade-recovery", [41; 32], authority);
+    let scope = issuer.root_for_agent(
+        AgentId::from_bytes([42; 16]),
+        "root",
+        Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+            "fork:publish",
+            "project:merge",
+        ]),
+    );
+    let workspace_id = WorkspaceId::from_bytes([43; 16]);
+    Ok((
+        FilesystemGitFacade::new(
+            workspace_id,
+            MemoryGitCompatStore::new(),
+            volume,
+            issuer.verifier(),
+            scope,
+        )?,
+        workspace_id,
+    ))
 }
 
 #[tokio::test]
@@ -323,5 +415,80 @@ async fn lifecycle_fork_uses_parent_controller_and_real_filesystem_state() -> Re
         host.resolve(&child_head.workspace).await?.generation,
         child_head.generation
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn recovery_continuation_and_abort_use_the_facade_sequencer() -> Result<()> {
+    let (facade, workspace_id) = transition_facade()?;
+    let executor = Arc::new(FaultExecutor::new(workspace_id));
+    facade
+        .run(
+            GitCommand::Branch {
+                create: Some("feature".into()),
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await?;
+    executor.fail_once();
+    let merge_error = facade
+        .run(
+            GitCommand::Merge {
+                branch: "feature".into(),
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await
+        .err()
+        .ok_or_else(|| Error::Invalid("failed merge was reported as complete".into()))?;
+    assert!(matches!(merge_error, Error::Storage(_)));
+    let resumed = facade
+        .resume(executor.as_ref())
+        .await?
+        .ok_or_else(|| Error::Invalid("pending merge was not recoverable".into()))?;
+    assert!(matches!(
+        resumed,
+        acyclic_fs::GitCommandOutput::Committed(_)
+    ));
+    let operations = executor.operations();
+    assert_eq!(operations.len(), 3);
+    assert_ne!(operations[1], operations[2]);
+
+    let (facade, workspace_id) = transition_facade()?;
+    let executor = Arc::new(FaultExecutor::new(workspace_id));
+    facade
+        .run(
+            GitCommand::Branch {
+                create: Some("feature".into()),
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await?;
+    executor.fail_once();
+    assert!(facade
+        .run(
+            GitCommand::Merge {
+                branch: "feature".into(),
+            },
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await
+        .is_err());
+    let aborted = facade
+        .run(
+            GitCommand::MergeAbort,
+            live_tree(workspace_id),
+            executor.as_ref(),
+        )
+        .await?;
+    assert!(matches!(
+        aborted,
+        acyclic_fs::GitCommandOutput::Filesystem(GitFilesystemResult::Applied { .. })
+    ));
+    assert_eq!(executor.operations().len(), 3);
     Ok(())
 }
