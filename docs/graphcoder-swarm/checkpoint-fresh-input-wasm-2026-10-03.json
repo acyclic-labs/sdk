@@ -1,0 +1,34 @@
+{
+  "source": "7c3381a63",
+  "qualification": "incomplete",
+  "wasm": {
+    "profile": "wasm-release",
+    "cargo_exit_code": 0,
+    "wrapper_exit_code": 0,
+    "sha256": "568B87CB08BFF9F5FF3B8A0FEA8676F30EF9921C5FF53600C4AD021A195E5900",
+    "platform": "Windows host compiling wasm32-unknown-unknown, then executing WASM in Bun",
+    "initial_handle": 17146,
+    "initial_exit_code": 1,
+    "initial_diagnostic": "Build wrapper exited 1 after warnings; no cause established and no fresh artifact claimed for that attempt",
+    "build_log_sha256": "92991F9644F6A20FF1E4AC7CBED9D4099F8583C856AC86310940E09F9D92F0C9",
+    "cargo_handle": 96757
+  },
+  "harness": {
+    "failed": 0,
+    "test_types": "passed",
+    "assertions": 1218,
+    "passed": 242,
+    "runtime_suite_sha256": "DFD7CB8B47FABB14D68401DCEC3F5A999FC2D8AF85F9B1C78D5DF3297CB5D175",
+    "source_types": "passed",
+    "files": 19
+  },
+  "graphcoder": {
+    "assertions": 150,
+    "failed": 0,
+    "passed": 49,
+    "source_types": "passed",
+    "files": 3,
+    "scope": "Current root source adapter tests, not held terminal changes and not installed native PTY"
+  },
+  "remaining": "Fork authority/cancellation, concurrent durable budgets, effects and process cleanup, actual filesystem recovery scenarios, terminal writeback and installed qualification remain open"
+}
