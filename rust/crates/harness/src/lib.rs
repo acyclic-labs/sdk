@@ -11,6 +11,12 @@
 #![doc = include_str!("../docs/quickstart.md")]
 #![doc = include_str!("../docs/topics.md")]
 #![doc = include_str!("../docs/service-availability.md")]
+#![doc = include_str!("../docs/integrations.md")]
+#![doc = include_str!("../docs/filesystem.md")]
+#![doc = include_str!("../docs/grpc.md")]
+#![doc = include_str!("../docs/machines.md")]
+#![doc = include_str!("../docs/managed-agent-runtime.md")]
+#![doc = include_str!("../docs/objects.md")]
 
 pub mod agent_loop;
 pub mod bundle;

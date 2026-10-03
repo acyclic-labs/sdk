@@ -143,12 +143,25 @@ by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
 
 | Legacy topic family | Rust authority |
 | --- | --- |
-| overview and quickstart | `README.md`, `Inference::connect`, `Inference::context` |
-| immutable context revisions | `Context`, `ContextMutation`, `wire::ContextView` |
-| runs, recovery, and streaming | `GenerateRun`, `Run`, `RunEvents`, `WatchRunState` |
-| warm retention | `Retention`, `RetainWarm`, `WarmContext` |
-| evaluations | `wire::EvaluationSpec`, `CreateEvaluation`, `Evaluation` |
-| HTTP and JSON transport | `http_codec::routes`, `decode_http_request`, `encode_http_response` |
+| `overview` | `README.md`, `Inference::connect`, `Inference::context` |
+| `quickstart` | `README.md`, `Inference::connect`, `examples/inference-capability-discovery.rs` |
+| `contexts` | `Context`, `ContextMutation`, `wire::ContextView` |
+| `editing` | `Context::edit`, `ContextMutation`, `wire::Edit` |
+| `forks` | `Context::fork`, `ContextMutation`, `wire::ForkContextRequest` |
+| `generation` | `Context::generate`, `GenerateRun`, `RunEvents` |
+| `operations` | Typed operation builders, operation identities, `Inference::recover_run` |
+| `retention` | `Retention`, `RetainWarm`, `WarmContext` |
+| `kv` | `WarmView::idle_kv`, `wire::IdleKvProfile` |
+| `models` | `Inference::models`, `wire::ModelCapability` |
+| `reasoning` | `wire::ModelCapability.execution_profile`, model feature records |
+| `anthropic` | `Inference::models`, provider model identifiers and capability records |
+| `openai` | `Inference::models`, provider model identifiers and capability records |
+| `billing` | Model capability records and provider policy returned with discovery |
+| `security` | `Inference::connect`, trusted CA input, `validate_customer_wire` |
+| `structured-output` | Generated `wire` messages and `validate_customer_wire` |
+| `tools` | Typed request builders, model feature records, and wire validation |
+| `transfer` | `Context::transfer`, `ContextMutation`, model profile identity |
+| `reference` | Generated `wire` modules, `http_codec::routes`, `decode_http_request`, `encode_http_response` |
 
 This table maps each legacy topic to its Rust authority. `Inference::connect`
 validates the supplied HTTPS endpoint and caller CA material, while the selected

@@ -11,8 +11,10 @@ routes. The package is `acyclic-harness` at the workspace version (`0.2.0`).
 | `tools` | Tools | [`tool.rs`](../src/tool.rs) |
 | `recursive-execution` | Recursive execution | [`runtime.rs`](../src/runtime.rs), [`live.rs`](../src/live.rs) |
 | `state-recovery` | State recovery | [`executor.rs`](../src/executor.rs), [`durable_tool.rs`](../src/durable_tool.rs) |
-| `extensions`, `design-references` | Extensions and design references | [`extension.rs`](../src/extension.rs), [`conversation.rs`](../src/conversation.rs) |
+| `extensions`, `design-references`, `plugins` | Extensions, plugins, and design references | [`extension.rs`](../src/extension.rs), [`conversation.rs`](../src/conversation.rs) |
 | `infrastructure` | Infrastructure and providers | [`runtime.rs`](../src/runtime.rs) |
+| `managed-runtime`, `managed-agent-runtime` | Managed agent runtime composition | [`managed-agent-runtime.md`](managed-agent-runtime.md), [`runtime.rs`](../src/runtime.rs) |
+| `managed-runtime`, `managed-agent-runtime` | Managed agent runtime composition | [`managed-agent-runtime.md`](managed-agent-runtime.md), [`runtime.rs`](../src/runtime.rs) |
 | `reference` | Wire and reference | [`wire_api.rs`](../src/wire_api.rs), [`grpc.rs`](../src/grpc.rs) |
 
 ## Composition and overview ([bundle.rs](../src/bundle.rs), [lib.rs](../src/lib.rs))
