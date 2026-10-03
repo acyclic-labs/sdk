@@ -170,6 +170,36 @@ impl PreparedModelInput {
     }
 }
 
+/// Validates native manifest evidence against one freshly admitted request.
+///
+/// The manifest is durable evidence, so callers must provide its exact JSON
+/// bytes.  Deserialization applies the same deny-unknown-fields contract as
+/// the production type, canonical re-encoding rejects alternate spellings,
+/// and equality with a fresh admission keeps all binding, message, file, and
+/// registered-option checks in this Rust path.
+pub fn validate_manifest(
+    request: ModelRequest,
+    limits: Limits,
+    policy: Option<&ModelOptionPolicy>,
+    manifest_json: &str,
+) -> Result<()> {
+    let manifest: ModelInputManifest = serde_json::from_str(manifest_json)
+        .map_err(|error| Error::Invalid(format!("invalid model input manifest: {error}")))?;
+    let canonical = crate::contract::canonical_json_bytes(&manifest)?;
+    if canonical.as_slice() != manifest_json.as_bytes() {
+        return Err(Error::Invalid(
+            "model input manifest is not canonically encoded".into(),
+        ));
+    }
+    let prepared = PreparedModelInput::prepare_with_policy(request, limits, policy)?;
+    if &manifest != prepared.manifest() {
+        return Err(Error::Conflict(
+            "model input manifest does not match the admitted request".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Persistable byte-perfect conversation prefix. Child context is a suffix.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1176,6 +1206,28 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn manifest_validator_owns_schema_and_canonical_bytes() -> Result<()> {
+        let request = request()?;
+        let prepared = PreparedModelInput::prepare(request.clone(), Limits::default())?;
+        let manifest_json = String::from_utf8(crate::contract::canonical_json_bytes(
+            prepared.manifest(),
+        )?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        validate_manifest(request.clone(), Limits::default(), None, &manifest_json)?;
+
+        let mut forged: serde_json::Value =
+            serde_json::from_str(&manifest_json).map_err(|error| Error::Invalid(error.to_string()))?;
+        forged["unexpected"] = serde_json::Value::Bool(true);
+        let forged_json = serde_json::to_string(&forged)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(validate_manifest(request.clone(), Limits::default(), None, &forged_json).is_err());
+
+        let noncanonical = format!(" {manifest_json}");
+        assert!(validate_manifest(request, Limits::default(), None, &noncanonical).is_err());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn prefix_provider_rejects_before_downstream_dispatch() -> Result<()> {
         use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
@@ -1392,19 +1444,33 @@ mod tests {
         let expected_bytes = prepared.bytes().to_vec();
         let expected_manifest = prepared.manifest().clone();
         let prefix = FrozenModelPrefix::capture(&prepared, prepared.request().messages.len())?;
+        let persisted_prefix = serde_json::to_vec(&prefix)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored_prefix: FrozenModelPrefix = serde_json::from_slice(&persisted_prefix)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored_request: ModelRequest = serde_json::from_slice(&expected_bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored_prepared = PreparedModelInput::prepare_with_policy(
+            restored_request,
+            Limits::default(),
+            Some(&policy),
+        )?;
         let downstream = Arc::new(ReconciliationCapture {
             policy: policy.clone(),
             seen: Mutex::new(Vec::new()),
         });
-        let provider =
-            PrefixBoundModelProvider::new(prefix, Limits::default(), downstream.clone())?;
+        let provider = PrefixBoundModelProvider::new(
+            restored_prefix,
+            Limits::default(),
+            downstream.clone(),
+        )?;
         provider
             .reconcile_admitted(
-                prepared.clone(),
+                restored_prepared.clone(),
                 ModelAttempt {
                     operation_id: crate::OperationId::new(),
                     step: 0,
-                    request_digest: prepared.manifest().request_digest,
+                    request_digest: restored_prepared.manifest().request_digest,
                     observed: Vec::new(),
                 },
             )
