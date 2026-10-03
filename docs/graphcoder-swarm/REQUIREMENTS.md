@@ -1,5 +1,26 @@
 # Locked acceptance matrix: Harness-first coding swarm
 
+The exhaustive, machine-readable matrix is [requirements.json](requirements.json).
+It contains 66 locked entries covering scope, exact model inputs, recursive
+forks, effects and recovery, workspace integration, model-facing tools, limits,
+library ownership, terminal behavior, lazy loading, bindings, real swarm
+scenarios, fault injection, and final qualification. This document retains the
+checkpoint narrative and earlier evidence notes; it is not a substitute for the
+machine-readable matrix.
+
+Validate the matrix with:
+
+```text
+node scripts/graphcoder-qualification.mjs matrix-check
+```
+
+Qualification receipts must use
+[qualification-receipt.schema.json](qualification-receipt.schema.json) and are
+checked against the exact matrix digest. A final receipt is rejected if any
+required entry is missing, pending, failed, skipped, flaky, or not-run, or if a
+suite is compile-only where native, WASM, PTY, mock, or package evidence is
+required.
+
 All rows are required. PENDING is not a pass. Model scripts are mocks;
 filesystem operations, subprocesses, journals and terminal interaction must be real.
 
