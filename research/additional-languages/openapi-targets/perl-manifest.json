@@ -2,13 +2,21 @@
   "receipt_version": 1,
   "recorded_at": "2026-10-03",
   "target": "perl",
-  "qualification": "Rust-owned Actors OpenAPI HTTP projection prototype",
+  "qualification": "Rust-owned five-family OpenAPI HTTP projection prototype",
   "source": {
-    "contract": "Rust sdk-openapi-prototype Actors document",
-    "projection_sha256": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
-    "fixture_sha256": "BE04340BE8C3EE8AB02452009B50229F11766227746BC3E895925661DC2CB576",
-    "consumer_sha256": "BE5C0DDB08762B263CBE8949D40138B933C88A9EF83EDB5ACFE3F2AAEC6816D7",
+    "contract": "Rust sdk-openapi-prototype Actors, Workers, Stream, Objects and Inference documents",
+    "projection_sha256": {
+      "actors": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
+      "workers": "090821C087D43A6813E6A0457B448303FD131FD7E9FB1FC76301261DB4551A77",
+      "stream": "9EE98891DF2D54503FA6CF058B849E89482422062FA5A5575A046A14038A1E4D",
+      "objects": "34D1FC4DD0A909122BFEAB8FA349B746FFF1451CCD8D4CC760EE7EA970BBBC6A",
+      "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
+    },
+    "fixture_sha256": "5D663FBD494915AA373A0DC19D1AEA0D1B6737C7C99BF57C567305F8E065AA27",
+    "consumer_sha256": "72BB504649D2918FF99974733E121A4C8977034CBA6D215560E9BC3608AF3273",
     "generator_script": "research/additional-languages/openapi-targets/qualify-perl.ps1",
+    "generator_script_sha256": "2DD183D0B7B7D8D7175F9ED3152F66980470BE37792806B459D991F8C6BE20FB",
+    "generation_mode": "Rust projections were already generated and hash-bound; the qualification run used SkipRustGeneration while concurrent wire sources were active",
     "runtime_adaptation": "research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1",
     "adaptation_sha256": "5A0DDEB0D3C8BCE69E5DD99BF7B324862DE0F17258DDAB1DFDABF975ACFD2486"
   },
@@ -27,10 +35,9 @@
     "dependency_install": "69 distributions installed into ignored target/perl/local-lib"
   },
   "package": {
-    "name": "acyclic-actors-perl-0.1.0.zip",
-    "sha256": "04E7C883002D4F851AF1D2AACED5E2E7D41EBD609B11F9B3B74E3735A25433F4",
-    "manifest_sha256": "BA737D35B89FD166DE51A409014AF56D92B5DE6A413C7232837C0D0505586F27",
-    "install": "Generated Perl lib plus cpanfile installed into an isolated local-lib-contained directory",
+    "name": "acyclic-http-perl-0.1.0.zip",
+    "sha256": "8D0443C081B8CB1417E3A6B26E74E0D35F54741F8976ED52D6F4B0B1EBC50480",
+    "install": "Five generated Perl libs plus cpanfiles installed into an isolated local-lib-contained directory",
     "publication": "local-only"
   },
   "tests": {
@@ -38,23 +45,26 @@
     "consumer": "research/additional-languages/openapi-targets/perl-consumer.pl",
     "status": "passed",
     "vectors": [
-      "Generated invokeActor request preserves actorId, method, URL and bytes/base64 AQID",
-      "Generated response preserves status 200 and bytes/base64 AQID",
-      "Rust contract uint64 boundary is retained as textual 18446744073709551615 in the Perl model check",
-      "Bearer authentication reaches the fixture",
-      "Unauthenticated HTTP 401 raises a generated API error"
+      "Actors invokeActor preserves actorId, method, URL and bytes/base64 AQID with generated response status 200",
+      "Workers deployment invoke preserves bytes/base64 AQID, bearer authentication, and textual uint64 boundary 18446744073709551615",
+      "Stream read exercises generated 503 error handling, explicit bounded manual recovery, AQID record bytes and max uint64 sequence",
+      "Objects put preserves request bytes/base64 AQID, completion flag, etag and size response",
+      "Inference generate preserves context bytes/base64 AQID, max uint64 request and response sequence",
+      "Unauthenticated Actors HTTP 401 raises a generated API error"
     ],
-    "scope": "Actors invokeActor only; this is not full Perl SDK qualification"
+    "scope": "One Rust-derived representative operation per HTTP family; this is not full Perl SDK qualification"
   },
   "license_scope": {
     "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
     "perl_runtime": "Strawberry Perl licensing applies to the installed runtime",
     "cpan_dependencies": "Each CPAN distribution retains its own license; dependency closure was installed for local qualification only",
-    "transport": "LWP::UserAgent and its dependency licenses remain separate runtime obligations"
+    "transport": "LWP::UserAgent and its dependency licenses remain separate runtime obligations",
+    "fixture_and_consumer": "Local qualification harness is repository research code; it does not change generated package licensing"
   },
   "limits": [
-    "HTTP/JSON projection only; no protobuf/gRPC, streaming, native or embedded behavior is qualified",
-    "Actors invokeActor is the only remote operation exercised",
+    "HTTP/JSON projection only; no protobuf/gRPC, native or embedded behavior is qualified",
+    "Stream is qualified as polling with one explicit 503/manual retry vector; no automatic retry or operation cancellation primitive is claimed",
+    "One representative route per family was exercised; every operation and model vector remains outstanding",
     "The generated client does not supply the Rust endpoint-pool recovery policy",
     "No registry publication or redistributable dependency bundle is claimed"
   ]

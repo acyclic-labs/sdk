@@ -21,13 +21,34 @@ class Fixture(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         payload = json.loads(self.rfile.read(length))
-        if self.path != "/v1/actors/invoke":
-            self.send_error(404)
+        if self.path == "/v1/actors/invoke":
+            assert payload["actorId"] == "actor-1", payload
+            assert payload["body"] == "AQID", payload
+            assert payload["method"] == "POST", payload
+            self._reply(200, {"body": "AQID", "status": 200, "headers": []})
             return
-        assert payload["actorId"] == "actor-1", payload
-        assert payload["body"] == "AQID", payload
-        assert payload["method"] == "POST", payload
-        self._reply(200, {"body": "AQID", "status": 200, "headers": []})
+        if self.path == "/v1/workers/deployments/prod/invoke":
+            assert payload["body"] == "AQID", payload
+            self._reply(200, {"body": "AQID", "resolvedRevision": "18446744073709551615", "status": 200, "resolvedSha256": "AQID", "headers": []})
+            return
+        if self.path == "/v1/stream/read":
+            assert payload["path"] == "root", payload
+            if payload.get("limit") == 0:
+                self._reply(503, {"code": "unavailable", "retryable": True})
+            else:
+                self._reply(200, {"record": {"commitId": "c1", "committedAtMicros": "1", "sequence": "18446744073709551615", "value": "AQID"}})
+            return
+        if self.path == "/v2/objects/objects/put":
+            assert payload["body"] == "AQID", payload
+            assert payload["complete"] is True, payload
+            self._reply(200, {"etag": "etag-fixture", "size": "3"})
+            return
+        if self.path == "/v1/inference/runs/generate":
+            assert payload["context"] == "AQID", payload
+            assert payload["maximumOutput"] == "18446744073709551615", payload
+            self._reply(200, {"run": {"runId": "run-fixture", "input": "AQID", "lastSequence": "18446744073709551615", "model": "fixture", "cancellationRequested": False}})
+            return
+        self.send_error(404)
 
 
 if __name__ == "__main__":

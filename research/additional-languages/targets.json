@@ -736,7 +736,7 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "Rust-derived Actors OpenAPI projection has an installed Perl HTTP consumer; OAG remains JSON/HTTP-only and does not provide protobuf support."
+        "notes": "Rust-derived OpenAPI projections for Actors, Workers, Stream, Objects and Inference have installed Perl HTTP consumers; OAG remains JSON/HTTP-only and does not provide protobuf support."
       },
       "embedded": {
         "level": "none",
@@ -752,9 +752,9 @@
       },
       "package": {
         "ecosystem": "CPAN",
-        "artifact": "acyclic-actors-perl-0.1.0.zip",
+        "artifact": "acyclic-http-perl-0.1.0.zip",
         "installable": true,
-        "notes": "Actors HTTP package installs into an isolated local-lib-contained CPAN tree; receipt: openapi-targets/perl-manifest.json."
+        "notes": "Five-family HTTP package installs into an isolated local-lib-contained CPAN tree; receipt: openapi-targets/perl-manifest.json."
       },
       "evidence": [
         {
@@ -763,12 +763,13 @@
         },
         {
           "url": "openapi-targets/perl-manifest.json",
-          "claim": "Rust-derived Actors package installed and passed bounded bytes, uint64, bearer and HTTP error vectors."
+          "claim": "Rust-derived five-family package installed and passed bounded bytes, uint64, bearer, stream recovery and HTTP error vectors."
         }
       ],
       "outstanding": [
-        "Extend the prototype to Workers, Stream, Objects and Inference projections before making broader target claims.",
-        "Audit the individual CPAN dependency licenses before any redistribution claim."
+        "Extend qualification to every operation and model vector before making broader target claims.",
+        "Audit the individual CPAN dependency licenses before any redistribution claim.",
+        "The generated Perl HTTP client has no operation cancellation primitive; native cancellation and endpoint-pool recovery remain unqualified."
       ]
     },
     {
