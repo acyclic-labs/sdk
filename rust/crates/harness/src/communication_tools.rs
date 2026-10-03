@@ -739,6 +739,17 @@ mod tests {
     struct RecordingHost(Mutex<Option<TaskId>>);
 
     impl DurableTaskHost for RecordingHost {
+        fn outcome<'a>(
+            &'a self,
+            _: TaskId,
+        ) -> BoxFuture<'a, Result<Option<crate::Outcome<serde_json::Value>>>> {
+            Box::pin(async { Err(Error::Unsupported("test host is unbound".into())) })
+        }
+
+        fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Err(Error::Unsupported("test host is unbound".into())) })
+        }
+
         fn observe_admission<'a>(
             &'a self,
             task_id: TaskId,

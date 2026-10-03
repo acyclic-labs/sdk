@@ -2808,7 +2808,7 @@ mod tests {
         };
 
         // The turn survives the rejected call and finishes on the corrected one.
-        let output = executor.execute(input, &journal).await?;
+        let output = executor.execute(input.clone(), &journal).await?;
         assert_eq!(output.text, "done");
         assert!(
             journal
@@ -2897,6 +2897,10 @@ mod tests {
                 output_schema: json!({
                     "type": "object",
                     "required": ["private", "public"],
+                    "properties": {
+                        "private": {"type": "string"},
+                        "public": {"type": "string"},
+                    },
                     "additionalProperties": false,
                 }),
                 model_output_schema: json!({

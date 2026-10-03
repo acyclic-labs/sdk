@@ -653,7 +653,8 @@ mod tests {
             "parent_operation": operation,
             "step": 3,
         });
-        let decoded: ModelToolContext = serde_json::from_value(legacy)?;
+        let decoded: ModelToolContext =
+            serde_json::from_value(legacy).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(decoded.task_id, None);
 
         let bound = ModelToolContext {
@@ -661,7 +662,10 @@ mod tests {
             step: 3,
             task_id: Some(crate::TaskId::from_bytes([22; 16])),
         };
-        let round_trip: ModelToolContext = serde_json::from_value(serde_json::to_value(bound)?)?;
+        let encoded =
+            serde_json::to_value(bound).map_err(|error| Error::Invalid(error.to_string()))?;
+        let round_trip: ModelToolContext =
+            serde_json::from_value(encoded).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(round_trip, bound);
         assert_eq!(
             round_trip.publication_operation(),
