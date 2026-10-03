@@ -3231,7 +3231,7 @@ mod local_provider_tests {
                 .await?;
             dispatch = EffectDispatch {
                 provider: provider.id().into(),
-                effect_id: EffectId::from_bytes([113; 16]),
+                effect_id: EffectId::from_bytes(operation.into_bytes()),
                 attempt_id: EffectAttemptId::from_bytes([114; 16]),
                 effect_kind: "host.process".into(),
                 request: request_file,
