@@ -1,0 +1,125 @@
+# acyclic-sdk-generation
+
+acyclic-sdk-generation is the orchestration boundary for the Rust SDK
+source-of-truth migration. It does not implement language generators. It
+captures one immutable source identity, writes a request envelope for each
+family tool, invokes tools that are present, and records their exact outputs.
+
+The crate is intentionally outside the root workspace during bootstrap. This
+keeps the migration command usable before the workspace can depend on the new
+generator, and avoids editing the root manifest or lockfile as a side effect.
+
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- generate --source-root . --output target/sdk-generation
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- check --source-root . --output target/sdk-generation
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- inventory --source-root . --output target/sdk-generation
+    cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml -- qualify --source-root . --output target/sdk-generation
+
+inventory can report pending work. generate and check fail closed when a
+delegated stage fails or remains pending; check also fails on source or
+artifact drift. qualify exits with status 2 while any language is missing
+complete evidence and exits 0 only when every inventoried language has
+qualified remote, embedded, documentation, snippet, and installation evidence.
+
+Each delegated tool receives requests/<tool>.json using the
+acyclic.sdk.generation.request.v1 schema. The current pinned prototypes retain
+their explicit native interfaces: `sdk-contract-wire generate --out DIR`,
+`sdk-openapi-prototype PATH`, `sdk-docs --repo-root ROOT --output FILE
+--website-output FILE --profile-manifest docs/rustdoc-profiles.json
+--rustdoc-json target/rustdoc-json --strict-rustdoc-json --source-revision
+REV`, and `sdk-python generate --schema-root ROOT --output DIR`. New tools
+should accept `--request PATH` directly. Every tool reads the
+immutable source root, writes only under the requested output directory, and
+makes no registry or production deployment calls. The orchestrator hashes all
+generated artifacts after the tool returns.
+
+After wire export, the required `sdk-contract-validation` stage compares the
+Rust Actors, Stream, and Workers descriptor outputs against immutable deployed
+compatibility fixtures. Exact descriptor bytes and semantic compatibility are
+reported separately; the fixtures are never rewritten by generation.
+
+The request envelope's contract scope is always explicit and points at Rust
+authority exports; it never selects an ambient active `.proto` tree. Missing
+authority exports, unimplemented generators, and stale artifacts remain
+visible as failed or pending stages rather than being reported as qualified.
+
+Language qualification evidence is a structured receipt, not a free-form test
+log. A capability may use a test entry such as
+`smoke qualification/receipts/remote.json sha256:<receipt-sha256>` in its
+`tests` array. The referenced path must be below the generated output's
+`qualification/receipts/` directory, and its bytes must hash to the supplied
+digest. The file must contain JSON with this schema and identity binding:
+
+```json
+{
+  "schema": "acyclic.sdk.qualification.receipt.v1",
+  "language": "rust",
+  "capability": "remote",
+  "source_revision": "<manifest source revision>",
+  "contract_digest": "sha256:<manifest source digest>",
+  "artifact_digest": "sha256:<manifest artifact-set digest>",
+  "status": "passed",
+  "exit_code": 0,
+  "suite": "remote-smoke",
+  "assertions": 1,
+  "consumer": {
+    "executed": true,
+    "name": "rust-consumer",
+    "version": "<consumer version>",
+    "source_revision": "<manifest source revision>",
+    "artifact_path": "qualification/consumers/remote.bin",
+    "artifact_sha256": "sha256:<consumer artifact hash>"
+  },
+  "families": [
+    {
+      "family": "actors",
+      "methods": ["list"],
+      "features": ["serialization", "transport"],
+      "rpc_shapes": ["unary"]
+    }
+  ]
+}
+```
+
+Qualification accepts a capability only when every listed receipt is present,
+hash-valid, identity-matched to the current generated output, and records a
+passed suite with a nonzero assertion count. The `consumer` object proves that
+an executable consumer actually ran and binds its portable runtime path and
+SHA-256 to the generated artifact manifest. A stale executable relabeled with
+the current source revision therefore fails the byte check. The `families`
+array must cover every Rust descriptor family emitted in `wire/`; each entry
+names the methods and exercised features. Each capability is evaluated
+independently. An unavailable capability can be marked `excluded` only with a
+nonempty scoped `scope` value; an unscoped exclusion remains pending.
+
+Rust snippets in `sdk-examples-manifest.json` have a stricter receipt. A
+generic `cargo test` result for the examples crate does not qualify a rendered
+snippet. An executed Rust snippet must bind its rendered `snippet_path` and
+`snippet_sha256`, its source snapshot path and hash, the current source
+revision, a zero exit code, stdout and stderr hashes, and exact hashes for both
+the compile artifact and runtime artifact under `qualification/consumers/`.
+It also requires an executed locked Cargo consumer test, with a disposable
+consumer manifest and lockfile, whose extracted package artifact under
+`qualification/packages/` is tied to the snippet and compile hashes. The
+`package_resolution` evidence binds the Cargo package name/version, extracted
+tree and manifest hashes, archive bytes and archive metadata, and the lockfile
+entry. This keeps a same-name/version package at another path, an altered
+extracted source tree, an archive/extraction mismatch, or a registry-sourced
+lock entry from qualifying. The generation gate checks those bytes directly;
+missing or relabeled snippet or package evidence remains pending.
+
+The OpenAPI stage also emits `openapi/workers-powershell-adaptation.ps1` from
+the Rust `sdk-openapi` authority entrypoint. The pinned OpenAPI Generator
+package supplies the PowerShell scaffolding; this Rust-owned, anchor-checked
+adaptation supplies Workers protobuf bytes and uint64 behavior. Since the file
+is written below the generation output, its SHA-256 and byte length are
+included in `sdk-generation-manifest.json` and regenerated during `check`.
+The same stage writes `openapi/stage-receipt.json`, which binds that adaptation
+hash and anchor report to the Rust emitter, records the pinned OpenAPI Generator
+7.25.0 qualification metadata, and records the Apache-2.0 metadata-overlay
+scope with per-target license fields; it does not make a global license claim
+for every template. The receipt is itself part of the hashed artifact set, so
+changing the pin, license scope, anchor report, or any projection makes `check`
+fail.
+Receipt cleanup is limited to the staged generation output; `check` leaves the
+existing output tree untouched while it regenerates under `.check/` for drift
+comparison.
