@@ -147,11 +147,11 @@ by 19 legacy data pages. The Rust source maps those topics to concrete APIs:
 | `quickstart` | `README.md`, `Inference::connect`, `examples/inference-capability-discovery.rs` |
 | `contexts` | `Context`, `ContextMutation`, `wire::ContextView` |
 | `editing` | `Context::edit`, `ContextMutation`, `wire::Edit` |
-| `forks` | `Context::fork`, `ContextMutation`, `wire::ForkContextRequest` |
+| `forks` | `Context::fork`, `ContextMutation`, `wire::MutateContextRequest` |
 | `generation` | `Context::generate`, `GenerateRun`, `RunEvents` |
 | `operations` | Typed operation builders, operation identities, `Inference::recover_run` |
 | `retention` | `Retention`, `RetainWarm`, `WarmContext` |
-| `kv` | `WarmView::idle_kv`, `wire::IdleKvProfile` |
+| `kv` | `WarmView::idle_kv`, `wire::IdleKvPolicy` |
 | `models` | `Inference::models`, `wire::ModelCapability` |
 | `reasoning` | `wire::ModelCapability.execution_profile`, model feature records |
 | `anthropic` | `Inference::models`, provider model identifiers and capability records |
