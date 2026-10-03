@@ -2098,6 +2098,20 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         host.generation_ref_id(root_plan.target_head())?,
     )?;
     let request = RootWritebackRequest::new(approval, root_scope.clone());
+    assert!(
+        root_facade
+            .apply_project_merge_for_child(
+                host.as_ref(),
+                &root_reducer,
+                &child_b_authority,
+                &child_b_project,
+                &root_plan,
+                OperationId::from_bytes([196; 16]),
+            )
+            .await
+            .is_err(),
+        "a direct child cannot publish another child's inspected plan"
+    );
     let mismatched_approval = RootWritebackApproval::issue(
         &root_issuer.verifier(),
         &root_scope,
@@ -2120,9 +2134,49 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
-    let root_outcome = root_facade
+    let root_after_approval = host.resolve(&root_head.workspace).await?;
+    host.apply(
+        &root_after_approval.workspace,
+        Some(&root_after_approval.generation),
+        &[WorkspaceMutation::PutFile {
+            path: "/after-approval.txt".into(),
+            bytes: b"user edit after approval".to_vec(),
+        }],
+        &IdempotencyKey::new("facade-after-approval-edit")?,
+    )
+    .await?;
+    let stale_outcome = root_facade
         .apply_root_writeback_plan_for_child(
             &request,
+            host.as_ref(),
+            &root_reducer,
+            &child_authority,
+            &child_a_project,
+            &root_plan,
+            BTreeMap::new(),
+        )
+        .await?;
+    assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
+    let root_plan = root_facade
+        .prepare_project_merge_for_child(
+            host.as_ref(),
+            &root_reducer,
+            &child_authority,
+            &child_a_project,
+        )
+        .await?;
+    let retry_operation_id = OperationId::from_bytes([197; 16]);
+    let retry_approval = RootWritebackApproval::issue(
+        &root_issuer.verifier(),
+        &root_scope,
+        retry_operation_id,
+        host.generation_ref_id(root_plan.source_head())?,
+        host.generation_ref_id(root_plan.target_head())?,
+    )?;
+    let retry_request = RootWritebackRequest::new(retry_approval, root_scope.clone());
+    let root_outcome = root_facade
+        .apply_root_writeback_plan_for_child(
+            &retry_request,
             host.as_ref(),
             &root_reducer,
             &child_authority,
@@ -2134,7 +2188,7 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
     assert!(matches!(root_outcome, JoinOutcome::Applied(_)));
     let replayed = root_facade
         .apply_root_writeback_plan_for_child(
-            &request,
+            &retry_request,
             host.as_ref(),
             &root_reducer,
             &child_authority,
@@ -2153,6 +2207,11 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         host.read(&root_head.workspace, None, "/user.txt", 128)
             .await?,
         bytes::Bytes::from_static(b"user edit")
+    );
+    assert_eq!(
+        host.read(&root_head.workspace, None, "/after-approval.txt", 128)
+            .await?,
+        bytes::Bytes::from_static(b"user edit after approval")
     );
     assert!(
         host.read(&child_b_head.workspace, None, "/grandchild.txt", 128)

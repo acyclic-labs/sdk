@@ -2074,6 +2074,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let Some(pending) = self.pending_transition().await? else {
             return Ok(None);
         };
+        // Recovery is still a fresh effect dispatch. Validate the executor
+        // lease before invoking the retained action, then validate it again
+        // before publishing the observed result.
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         let result = executor
             .execute(pending.id.operation_id(), &pending.action)
             .await

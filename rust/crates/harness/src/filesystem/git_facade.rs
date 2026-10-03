@@ -18,8 +18,9 @@ use crate::{
 };
 use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, ConflictSide, GitCommand, GitCommandOutput,
-    GitCompatRepository, GitCompatRunError, GitCompatStore, GitFilesystemExecutor, IntoGitTreeRef,
-    JoinOutcome, MergeConflict, MergeDriverRegistry, MergePlan, MergeResolutionCache, WorkspaceId,
+    GitCompatRepository, GitCompatRunError, GitCompatStore, GitFilesystemExecutor,
+    GitPendingMutation, IntoGitTreeRef, JoinOutcome, MergeConflict, MergeDriverRegistry, MergePlan,
+    MergeResolutionCache, WorkspaceId,
 };
 
 /// Capability required to authorize an exact root writeback approval.
@@ -204,6 +205,18 @@ impl<S> FilesystemGitFacade<S> {
         S: GitCompatStore,
     {
         self.require_write()?;
+        let pending = self
+            .repository
+            .pending_transition()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        if let Some(pending) = pending {
+            match pending.mutation {
+                GitPendingMutation::ForkBranch { .. } => self.require_fork()?,
+                GitPendingMutation::Join { .. } => self.require_capability("project:merge")?,
+                _ => {}
+            }
+        }
         self.repository
             .resume(executor)
             .await
@@ -283,7 +296,8 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore,
     {
         self.authorize_direct_child(parent, child, child_project)?;
-        self.prepare_project_merge(host, parent, child_project).await
+        self.prepare_project_merge(host, parent, child_project)
+            .await
     }
 
     /// Publishes a previously inspected direct-child plan under parent authority.
@@ -326,8 +340,9 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authorize_direct_child(parent, child, child_project)?;
-        self.apply_project_merge(host, parent, plan, operation_id).await
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        self.apply_project_merge(host, parent, plan, operation_id)
+            .await
     }
 
     /// Converts a successful provider join into the authenticated Harness
@@ -425,7 +440,7 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authorize_direct_child(parent, child, child_project)?;
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         self.apply_project_merge_sides(host, parent, plan, operation_id, selections)
             .await
     }
@@ -460,6 +475,42 @@ impl<S> FilesystemGitFacade<S> {
         controller
             .apply_project_merge_with_drivers(plan, operation_id, registry, cache, replanning)
             .await
+    }
+
+    /// Resolves a direct child's conflicts only after rechecking the child's
+    /// published fork and the plan's captured child project.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "driver resolution keeps parent, child, plan, and retry inputs explicit"
+    )]
+    pub async fn apply_project_merge_with_drivers_for_child<A, O, C>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        registry: &MergeDriverRegistry,
+        cache: &mut C,
+        replanning: bool,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        C: MergeResolutionCache,
+    {
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        self.apply_project_merge_with_drivers(
+            host,
+            parent,
+            plan,
+            operation_id,
+            registry,
+            cache,
+            replanning,
+        )
+        .await
     }
 
     /// Applies a previously inspected project join only with an exact approval.
@@ -540,7 +591,7 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authorize_direct_child(parent, child, child_project)?;
+        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         self.apply_root_writeback_plan(request, host, parent, plan, selections)
             .await
     }
@@ -580,7 +631,9 @@ impl<S> FilesystemGitFacade<S> {
         child_project: &VolumeRef,
     ) -> Result<()> {
         if child.kind != crate::core::AggregateKind::Conversation {
-            return Err(Error::Invalid("project join child is not a conversation".into()));
+            return Err(Error::Invalid(
+                "project join child is not a conversation".into(),
+            ));
         }
         child.stream_path()?;
         let seed = parent.fork(child).ok_or_else(|| {
@@ -598,6 +651,22 @@ impl<S> FilesystemGitFacade<S> {
         }) {
             return Err(Error::Unauthorized(
                 "project join is outside the published direct fork".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn authorize_direct_child_plan<A, O>(
+        &self,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+    ) -> Result<()> {
+        self.authorize_direct_child(parent, child, child_project)?;
+        if plan.child_project() != child_project {
+            return Err(Error::Unauthorized(
+                "project merge plan belongs to another direct child".into(),
             ));
         }
         Ok(())

@@ -73,8 +73,10 @@ generation transitions, merge/rebase sequencers, conflict continuation, and
 recovery to `acyclic-fs::GitCompatRepository`; it never invokes a system Git
 process or copies directories. Read commands require the exact project read
 capability. Mutating commands require project write, and merge/rebase
-transitions additionally require `project:merge`. `resume` uses the same
-durable pending transition and executor identity after restart.
+transitions additionally require `project:merge`. `resume` rechecks the
+pending transition kind, requiring `fork:publish` for a retained branch fork
+and `project:merge` for a retained merge or rebase, then uses the same durable
+transition and executor identity after restart.
 
 The same facade exposes typed project lifecycle methods for fork, merge-plan
 inspection, conflict description, side or driver resolution, publication, and
@@ -87,8 +89,9 @@ for these operations.
 Use the `*_for_child` variants when a model-facing request carries a child
 conversation identity. They revalidate that the current parent reducer has a
 published direct fork whose project resource matches the requested child
-volume; possessing a project capability alone cannot authorize sibling or
-grandchild promotion. Native approved writeback uses the same lineage fence,
+volume, and that the inspected plan captures that same child volume; possessing
+a project capability alone cannot authorize sibling or grandchild promotion.
+Native approved writeback uses the same lineage fence,
 operation identity, and immutable source/target generation approval, and a
 retry of a completed provider operation reconciles to its durable result.
 
