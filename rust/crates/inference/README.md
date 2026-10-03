@@ -16,6 +16,8 @@ the same operation; inspect reports the current lifecycle. The canonical
 its authoritative Run identity. Cloud implementation and package publication
 remain separate from this source contract.
 
+The `cargo add acyclic-inference` block is a caller manifest install instruction, not an offline qualification command; local checks use the source path and lockfile.
+
 ```sh
 cargo add acyclic-inference
 ```
@@ -30,5 +32,7 @@ rejects unknown request fields and trailing JSON, and emits one JSON value per
 `runs/watch` event for NDJSON framing. Adapters still own authentication, semantic
 admission, caller-bound validation and stream lifecycle checks. This codec does
 not establish that any deployed service mounts the canonical HTTP routes.
+
+The source-owned [Rust guide](docs/guide.md) maps the legacy topics to these APIs. The compile-only `examples/inference-capability-discovery.rs` demonstrates `Inference::models`; running it requires an authenticated customer endpoint and trusted CA, so local qualification checks it without invoking a service.
 
 See the [Rust API](https://docs.rs/acyclic-inference/latest/acyclic_inference/), [repository example](https://github.com/acyclic-labs/sdk/blob/main/README.md), and [customer protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/inference). Provider availability, model access, and billing are deployment-specific.
