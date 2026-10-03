@@ -94,13 +94,9 @@ test("explicit model selection resolves complete manifest-backed attachments bey
   expect(Array.isArray(parts) ? parts.length : 0).toBe(131);
   expect(Array.isArray(parts) ? parts[0] : null).toEqual({ kind: "file", file: content, policy: "bounded_full" });
   expect(Array.isArray(parts) ? parts[1] : null).toEqual({ kind: "file", file: image, policy: "native" });
-  const bounded = await selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
+  await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
     ...options, maxProjectedAttachments: 1,
-  });
-  const boundedParts = bounded.messages[0]?.content;
-  expect(Array.isArray(boundedParts) ? boundedParts.length : 0).toBe(3);
-  expect(Array.isArray(boundedParts) ? boundedParts.at(-1) : null)
-    .toEqual({ kind: "text", text: "[129 additional attachments omitted from this bounded model context]" });
+  })).rejects.toThrow("no attachments were omitted");
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
     ...options, decodeManifest: async () => [{ file: content, label: null }],
   })).rejects.toThrow("disagrees with canonical manifest");

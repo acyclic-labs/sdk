@@ -87,3 +87,21 @@ workspace facade/integration/writeback, approved execution, terminal/generic UI,
 The root owns exact model inputs, fork activation, shared composition and combined integration.
 Workers continue validation and maintainability iterations after initial delivery; verified commits
 are cherry-picked to this branch without merging branches.
+
+## Strict history and attachment admission checkpoint
+
+Default turn selection now keeps every authoritative model-visible message through the current
+user, or rejects overflow. It never chooses a suffix automatically. Retained selections omitting
+prior history are fenced before replay or dispatch. Projection rejects excess selected attachments
+instead of adding an omission note. Explicit selection remains a separate public contract.
+
+Native focused gates: 209 library + 2 dependencies + 6 journal + 1 fork preparer + 2 boundary =
+220 passed. Native library lint passed. Fresh WASM production code passed 101 TypeScript tests
+with 582 assertions across runtime, projection and memory-conversation suites. The first new replay
+test omitted completion of its prior turn and was repaired. A highly contended run exceeded the
+5-second default for the 1,030-attachment fixture; its explicit budget is now 15 seconds. The next
+full run passed, with that fixture completing in about 2.1 seconds. Reliability still requires final
+qualification; these observations are retained rather than treated as final product evidence.
+
+Persistent slice owners received review feedback and continue native effects, model-facing tools,
+recovery and package qualification work. Initial worker commits remain under review.

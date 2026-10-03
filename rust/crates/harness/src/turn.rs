@@ -235,6 +235,13 @@ pub fn prepare_turn_with_user_id(
                     "turn identity is bound to another context selection".into(),
                 ));
             }
+            let complete =
+                bounded_model_context_selection(&prepared, user_id, limits.context_messages)?;
+            if selection.message_ids != complete.message_ids {
+                return Err(Error::Conflict(
+                    "retained turn selection omits authoritative history".into(),
+                ));
+            }
             selection
         }
         None => bounded_model_context_selection(&prepared, user_id, limits.context_messages)?,
@@ -312,6 +319,69 @@ mod tests {
         let mut value = ConversationState::default();
         value.bind(AgentId::new())?;
         Ok(value)
+    }
+
+    #[test]
+    fn retained_selection_cannot_hide_prior_authoritative_messages() -> Result<()> {
+        let mut state = conversation()?;
+        let old_user = Uuid::new_v4();
+        state.append(ConversationMessage {
+            id: old_user,
+            sequence: 1,
+            kind: MessageKind::User,
+            content: file("old-user.txt")?,
+            attachments: inline_attachments(Vec::new()),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: Default::default(),
+        })?;
+        state.append(ConversationMessage {
+            id: Uuid::new_v4(),
+            sequence: 2,
+            kind: MessageKind::Assistant,
+            content: file("old-assistant.txt")?,
+            attachments: inline_attachments(Vec::new()),
+            reply_to: Some(old_user),
+            tool_call_id: None,
+            extensions: Default::default(),
+        })?;
+        let operation = OperationId::new();
+        let content = file("new-user.txt")?;
+        let first = prepare_turn(
+            &state,
+            operation,
+            content.clone(),
+            inline_attachments(Vec::new()),
+            limits(),
+            None,
+            false,
+            true,
+        )?;
+        let user = first
+            .user_message
+            .ok_or_else(|| Error::Storage("missing planned user".into()))?;
+        state.append(user)?;
+        let mut truncated = first.selection.clone();
+        truncated.message_ids = vec![first.user_id];
+        assert!(matches!(
+            prepare_turn(
+                &state, operation, content.clone(), inline_attachments(Vec::new()),
+                limits(), Some(truncated), false, true,
+            ),
+            Err(Error::Conflict(message)) if message.contains("omits authoritative history")
+        ));
+        let replay = prepare_turn(
+            &state,
+            operation,
+            content,
+            inline_attachments(Vec::new()),
+            limits(),
+            Some(first.selection.clone()),
+            false,
+            true,
+        )?;
+        assert_eq!(replay.selection, first.selection);
+        Ok(())
     }
 
     #[test]

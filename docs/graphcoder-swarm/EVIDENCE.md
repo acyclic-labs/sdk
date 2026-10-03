@@ -136,3 +136,17 @@ the wire fixture refresh changes only that fingerprint, and native equality pass
 runtime passed 69 tests and 382 assertions before final lint-only native source repairs. Running the
 installed equivalence fixture without installation failed module resolution; packaged execution
 remains required. See checkpoint-dependencies.json. These checks do not qualify a complete swarm.
+
+## Strict input omission checkpoint
+
+Removed automatic old-history draining and synthetic attachment omission text from shared
+Rust selection/projection. Tests prove exact-limit order and parts, over-limit refusal, retained
+selection fencing and actual persistent session refusal across restart with no extra provider call.
+Fresh WASM tests exercise the changed public TypeScript behavior. The native focused suite passed
+220 tests and the three TypeScript suites passed 101 tests (582 assertions). Native library lint passed.
+
+Observed repair history: replay fixture initially left its prior turn unresolved; adding the real
+assistant completion made it reach the intended omitted-selection assertion. One contended run
+reported a 7.03-second timeout for the 1,030-attachment fixture under its 5-second default. Its explicit
+15-second fixture budget retains all semantic assertions. A subsequent full run passed (2.09 seconds
+for that case). Final reliability and packaged qualification remain pending. See checkpoint-input-omission.json.

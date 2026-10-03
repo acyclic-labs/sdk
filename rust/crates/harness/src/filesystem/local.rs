@@ -224,6 +224,40 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn authoritative_history_overflow_refuses_dispatch_after_restart() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(Mock(AtomicUsize::new(0)));
+        let model = Model::new("mock", "context-overflow", "1", serde_json::json!({}))?;
+        let limits = Limits {
+            context_messages: 2,
+            ..Limits::default()
+        };
+        let operation = OperationId::new();
+        {
+            let session =
+                PersistentLocalHarness::open(root.path(), model.clone(), provider.clone(), limits)
+                    .await?;
+            assert_eq!(
+                session.run(OperationId::new(), "first").await?.text,
+                "persisted"
+            );
+            assert!(matches!(
+                session.run(operation, "second").await,
+                Err(Error::Invalid(message)) if message.contains("no history was omitted")
+            ));
+            assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        }
+        let reopened =
+            PersistentLocalHarness::open(root.path(), model, provider.clone(), limits).await?;
+        assert!(matches!(
+            reopened.run(operation, "second").await,
+            Err(Error::Invalid(message)) if message.contains("no history was omitted")
+        ));
+        assert_eq!(provider.0.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn reopen_recovers_completed_turn_without_dispatch() -> Result<()> {
         let root = std::env::temp_dir().join(format!("harness-reopen-{}", OperationId::new()));
         let provider = Arc::new(Mock(AtomicUsize::new(0)));

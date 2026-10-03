@@ -313,17 +313,12 @@ test("partial tool-history publication is idempotent across a transient retry", 
   host.free();
 });
 
-test("large canonical attachment lists produce a bounded model request", async () => {
+test("oversized canonical attachments refuse dispatch without omission", async () => {
   const host = await MemoryConversation.create({ agent, wasm });
-  let projectedParts = 0;
-  let omission = "";
+  let calls = 0;
   const runtime = Harness.builder(contracts).model(testModel, {
-    async *generate(request) {
-      const content = request.messages.at(-1)?.content;
-      if (!Array.isArray(content)) throw new Error("expected selected file parts");
-      projectedParts = content.length;
-      const last = content.at(-1);
-      if (last?.kind === "text") omission = last.text;
+    async *generate() {
+      calls += 1;
       yield { kind: "completed" as const, metadata: {} };
     },
     async reconcile() { return undefined; },
@@ -331,13 +326,13 @@ test("large canonical attachment lists produce a bounded model request", async (
   const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
   const content = await host.stage("turns/three/user.txt", new TextEncoder().encode("inspect"), "text/plain", "user.txt");
   const attachment = await host.stage("files/one.txt", new TextEncoder().encode("file"), "text/plain", "one.txt");
-  await host.runConversation(runtime, operation, content,
-    Array.from({ length: 1_030 }, () => ({ file: attachment, label: null })));
-  expect(projectedParts).toBe(1_024);
-  expect(omission).toContain("8 additional attachments omitted");
+  await expect(host.runConversation(runtime, operation, content,
+    Array.from({ length: 1_030 }, () => ({ file: attachment, label: null }))))
+    .rejects.toThrow("no attachments were omitted");
+  expect(calls).toBe(0);
   expect(host.conversation().messages[0]!.attachments.kind).toBe("manifest");
   host.free();
-});
+}, 15_000);
 
 test("concurrent retries serialize before model dispatch", async () => {
   const host = await MemoryConversation.create({ agent, wasm });

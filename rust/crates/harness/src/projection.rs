@@ -12,7 +12,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Default maximum bytes read when resolving a file for the provider-neutral
@@ -81,8 +81,8 @@ pub struct SelectedModelContext {
     pub messages: Vec<ModelMessage>,
 }
 
-/// Derives the bounded, ordered message identity set for one admitted user
-/// turn.  This is deliberately separate from byte projection: callers can
+/// Derives the complete ordered message identity set through one admitted user
+/// turn, refusing overflow without dropping history. Callers can
 /// commit the selection before invoking an asynchronous model or content
 /// provider, and retries can reuse the exact committed identities.
 pub fn bounded_model_context_selection(
@@ -104,7 +104,7 @@ pub fn bounded_model_context_selection(
         .messages
         .get(..=current)
         .ok_or_else(|| Error::Storage("admitted user message is missing".into()))?;
-    let mut ids = prefix
+    let ids = prefix
         .iter()
         .filter(|message| {
             matches!(
@@ -119,23 +119,10 @@ pub fn bounded_model_context_selection(
         .map(|message| message.id)
         .collect::<Vec<_>>();
     if ids.len() > maximum_messages {
-        ids.drain(..ids.len() - maximum_messages);
+        return Err(Error::Invalid(
+            "authoritative model context exceeds message limit; no history was omitted".into(),
+        ));
     }
-    // A bounded suffix can start inside a tool exchange. Never hand a
-    // provider a result whose precise call fell outside the window.
-    let included = ids.iter().copied().collect::<HashSet<_>>();
-    let by_id = prefix
-        .iter()
-        .map(|message| (message.id, message))
-        .collect::<HashMap<_, _>>();
-    ids.retain(|id| {
-        by_id.get(id).is_some_and(|message| {
-            message.kind != MessageKind::ToolResult
-                || message
-                    .reply_to
-                    .is_some_and(|call| included.contains(&call))
-        })
-    });
     let selection = ModelContextSelection {
         conversation_revision: conversation.messages.len() as u64,
         message_ids: ids,
@@ -370,9 +357,12 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             ));
         }
         let attachments = resolve_attachments(message, resolver, maximum_attachments).await?;
-        let projected_count = attachments.len().min(maximum_projected_attachments);
-        let omitted_count = attachments.len() - projected_count;
-        for attachment in attachments.into_iter().take(projected_count) {
+        if attachments.len() > maximum_projected_attachments {
+            return Err(Error::Invalid(
+                "selected attachments exceed projection limit; no attachments were omitted".into(),
+            ));
+        }
+        for attachment in attachments {
             attachment.validate()?;
             let policy = match attachment.file.descriptor().media_type() {
                 "image/png" | "image/jpeg" | "image/gif" | "image/webp" => {
@@ -383,11 +373,6 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
             parts.push(ModelContentPart::File {
                 file: attachment.file,
                 policy,
-            });
-        }
-        if omitted_count > 0 {
-            parts.push(ModelContentPart::Text {
-                text: format!("[{omitted_count} additional attachments omitted from this bounded model context]"),
             });
         }
         messages.push(ModelMessage {
@@ -713,6 +698,40 @@ mod tests {
     }
 
     #[test]
+    fn default_selection_preserves_complete_history_or_refuses_overflow() -> Result<()> {
+        let agent = AgentId::new();
+        let mut conversation = ConversationState::default();
+        conversation.bind(agent)?;
+        let ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        for (index, id) in ids.iter().enumerate() {
+            conversation.append(ConversationMessage {
+                id: *id,
+                sequence: index as u64 + 1,
+                kind: if index == 1 {
+                    MessageKind::Assistant
+                } else {
+                    MessageKind::User
+                },
+                content: file(agent, &format!("message-{index}.txt"), "text/plain")?,
+                attachments: Vec::new().into(),
+                reply_to: None,
+                tool_call_id: None,
+                extensions: BTreeMap::new(),
+            })?;
+        }
+        assert_eq!(
+            bounded_model_context_selection(&conversation, ids[2], 3)?.message_ids,
+            ids
+        );
+        assert!(matches!(
+            bounded_model_context_selection(&conversation, ids[2], 2),
+            Err(Error::Invalid(message)) if message.contains("no history was omitted")
+        ));
+        assert_eq!(conversation.messages.len(), 3);
+        Ok(())
+    }
+
+    #[test]
     fn projected_context_dispatch_admission_uses_native_model_bounds() {
         let id = Uuid::new_v4();
         let mut selected = SelectedModelContext {
@@ -810,6 +829,63 @@ mod tests {
             select_model_context(&conversation, selection, &resolver, 256, 2, 128 * 1024).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn projection_refuses_attachment_omission_and_preserves_exact_limit() -> Result<()> {
+        let agent = AgentId::new();
+        let id = Uuid::new_v4();
+        let attachment = Attachment {
+            file: file(agent, "attachment.txt", "text/plain")?,
+            label: None,
+        };
+        let mut conversation = ConversationState::default();
+        conversation.bind(agent)?;
+        conversation.append(ConversationMessage {
+            id,
+            sequence: 1,
+            kind: MessageKind::User,
+            content: file(agent, "user.txt", "text/plain")?,
+            attachments: vec![attachment.clone(), attachment].into(),
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        })?;
+        let selection = ModelContextSelection {
+            conversation_revision: 1,
+            message_ids: vec![id],
+        };
+        let resolver = ArtifactResolver { bytes: Vec::new() };
+        assert!(matches!(
+            select_model_context_with_projection_limit(
+                &conversation, selection.clone(), &resolver, 1, 2, 4096, 1
+            ).await,
+            Err(Error::Invalid(message)) if message.contains("no attachments were omitted")
+        ));
+        let selected = select_model_context_with_projection_limit(
+            &conversation,
+            selection,
+            &resolver,
+            1,
+            2,
+            4096,
+            2,
+        )
+        .await?;
+        let message = selected
+            .messages
+            .first()
+            .ok_or_else(|| Error::Storage("missing projected message".into()))?;
+        let ModelContent::Parts(parts) = &message.content else {
+            return Err(Error::Storage("expected exact file parts".into()));
+        };
+        assert_eq!(parts.len(), 3);
+        assert!(
+            parts
+                .iter()
+                .all(|part| matches!(part, ModelContentPart::File { .. }))
+        );
         Ok(())
     }
 
