@@ -84,6 +84,13 @@ pub fn objects_v2_http_error_code(status: u16, detail: Option<i32>) -> i32 {
     acyclic_objects::v2::response::http_error_code(status, detail) as i32
 }
 
+/// Maps Connect/tonic status/detail values through the canonical Objects
+/// error vocabulary before they cross the browser boundary.
+#[wasm_bindgen]
+pub fn objects_v2_grpc_error_code(status: u32, detail: Option<i32>) -> i32 {
+    acyclic_objects::v2::response::grpc_error_code(status, detail) as i32
+}
+
 /// Validates the HTTPS or loopback HTTP endpoint policy used by native and
 /// browser Objects clients.
 #[wasm_bindgen]

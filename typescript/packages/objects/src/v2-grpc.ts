@@ -1,5 +1,5 @@
 import { rootCertificates } from "node:tls";
-import { createClient, Code, ConnectError, type Interceptor } from "@connectrpc/connect";
+import { createClient, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
 import { BucketsService, ObjectsService, MultipartService } from "../generated/proto/objects/v2/objects_pb.js";
@@ -12,15 +12,13 @@ export interface ObjectsV2GrpcOptions {
 }
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
-import { validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { objects_v2_grpc_error_code, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_request, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { ensureObjectsWasm } from "./wasm-runtime.js";
 
 function grpcError(error: unknown): ObjectsV2Error {
   if (!(error instanceof ConnectError)) return objectsV2Error(error);
   const detail = error.findDetails(wire.ErrorDetailSchema).find(value => value.code >= wire.ErrorCode.INVALID_ARGUMENT && value.code <= wire.ErrorCode.NOT_MODIFIED);
-  if (detail !== undefined) return new ObjectsV2Error(detail.code);
-  const code = error.code === Code.InvalidArgument ? wire.ErrorCode.INVALID_ARGUMENT : error.code === Code.NotFound ? wire.ErrorCode.NOT_FOUND : error.code === Code.AlreadyExists ? wire.ErrorCode.ALREADY_EXISTS : error.code === Code.FailedPrecondition ? wire.ErrorCode.PRECONDITION_FAILED : error.code === Code.ResourceExhausted ? wire.ErrorCode.QUOTA_EXCEEDED : error.code === Code.PermissionDenied || error.code === Code.Unauthenticated ? wire.ErrorCode.ACCESS_DENIED : error.code === Code.Unimplemented ? wire.ErrorCode.UNSUPPORTED : wire.ErrorCode.UNAVAILABLE;
-  return new ObjectsV2Error(code);
+  return new ObjectsV2Error(objects_v2_grpc_error_code(error.code, detail?.code) as wire.ErrorCode);
 }
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */

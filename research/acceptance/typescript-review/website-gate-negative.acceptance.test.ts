@@ -1,0 +1,272 @@
+import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("../../../", import.meta.url));
+
+function sha256(bytes: Buffer | string) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function runDocs(
+  repositoryRoot: string,
+  bundleRoot: string,
+  outputRoot: string,
+  scratch: string,
+  docsManifestRoot: string,
+  authorityPath: string,
+) {
+  return spawnSync("cargo", [
+    "run", "--manifest-path", join(docsManifestRoot, "Cargo.toml"),
+    "--locked", "--offline", "--quiet", "--",
+    "--repo-root", repositoryRoot,
+    "--output", join(outputRoot, "bundle.json"),
+    "--website-output", join(outputRoot, "website.json"),
+    "--examples-bundle", bundleRoot,
+    "--source-authority", authorityPath,
+    "--source-revision", "website-gate-negative-revision",
+  ], {
+    cwd: root,
+    encoding: "utf8",
+    env: { ...process.env, CARGO_TARGET_DIR: join(scratch, "sdk-docs-target") },
+  });
+}
+
+async function writeSourceAuthority(repositoryRoot: string, authorityPath: string) {
+  const relative = "rust/crates/sdk-examples/src/lib.rs";
+  const bytes = await readFile(join(repositoryRoot, relative));
+  await writeFile(authorityPath, JSON.stringify({
+    schema: "acyclic.sdk.examples.source-authority.v1",
+    source_revision: "website-gate-negative-revision",
+    source_path: relative,
+    source_sha256: sha256(bytes),
+    source_files: [relative],
+    source_file_hashes: { [relative]: sha256(bytes) },
+  }, null, 2) + "\n");
+}
+
+async function stageDocsCrate(scratch: string) {
+  const docsManifestRoot = join(scratch, "sdk-docs");
+  await cp(join(root, "rust/crates/sdk-docs"), docsManifestRoot, { recursive: true });
+  const lock = spawnSync("cargo", [
+    "generate-lockfile", "--manifest-path", join(docsManifestRoot, "Cargo.toml"), "--offline",
+  ], { cwd: root, encoding: "utf8" });
+  if (lock.status !== 0) {
+    throw new Error(`unable to stage disposable sdk-docs lockfile: ${lock.stderr || lock.stdout}`);
+  }
+  return docsManifestRoot;
+}
+
+async function writeFabricatedBundle(
+  repositoryRoot: string,
+  bundleRoot: string,
+  declaredSourceHash?: string,
+  validArtifact = false,
+  boundOutput = false,
+) {
+  const sourcePath = join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs");
+  const sourceBytes = await readFile(sourcePath);
+  const sourceHash = sha256(sourceBytes);
+  const manifestSourceHash = declaredSourceHash ?? sourceHash;
+  const snippetCode = "// fabricated receipt fixture\n";
+  const artifactPath = validArtifact ? "artifacts/fabricated-package.tgz" : "C:/does-not-exist/fabricated-package.tgz";
+  const artifactBytes = Buffer.from("bound artifact bytes\n");
+  const outputBytes = Buffer.from("bound output evidence\n");
+  const outputPath = "artifacts/fabricated-stdout.log";
+  const stderrPath = "artifacts/fabricated-stderr.log";
+  await mkdir(join(bundleRoot, "snippets/fabricated"), { recursive: true });
+  if (validArtifact) {
+    await mkdir(join(bundleRoot, "artifacts"), { recursive: true });
+    await writeFile(join(bundleRoot, artifactPath), artifactBytes);
+  }
+  if (boundOutput) {
+    await mkdir(join(bundleRoot, "artifacts"), { recursive: true });
+    await writeFile(join(bundleRoot, outputPath), outputBytes);
+    await writeFile(join(bundleRoot, stderrPath), Buffer.alloc(0));
+  }
+  await writeFile(join(bundleRoot, "snippets/fabricated/rust.rs"), snippetCode);
+  await writeFile(join(bundleRoot, "sdk-examples-manifest.json"), JSON.stringify({
+    schema: "acyclic.sdk.examples.bundle.v1",
+    generator: "acyclic-sdk-examples@0.2.0",
+    source: {
+      revision: "website-gate-negative-revision",
+      path: "rust/crates/sdk-examples/src/lib.rs",
+      // Keep source identity valid so this fixture isolates receipt/artifact
+      // qualification checks below.
+      sha256: manifestSourceHash,
+    },
+    snippets: [{
+      id: "fabricated",
+      family: "actors",
+      title: "Fabricated qualified receipt",
+      language: "rust",
+      source: "rust/crates/sdk-examples/src/lib.rs",
+      source_sha256: manifestSourceHash,
+      capability: "supported",
+      validation: {
+        declared_level: "executed",
+        declared_status: "passed",
+        evidence: "fabricated test evidence",
+        receipt: {
+          status: "qualified",
+          command: "cargo test",
+          // Empty stdout/stderr hashes are valid SHA-256 strings but contain no
+          // evidence that a consumer emitted or asserted anything.
+          stdout_sha256: boundOutput ? sha256(outputBytes) : sha256(Buffer.alloc(0)),
+          stderr_sha256: sha256(Buffer.alloc(0)),
+          ...(boundOutput ? {
+            stdout_path: outputPath,
+            stderr_path: stderrPath,
+            assertion_count: 1,
+          } : {}),
+          source_revision: "website-gate-negative-revision",
+          source_path: "rust/crates/sdk-examples/src/lib.rs",
+          source_sha256: manifestSourceHash,
+          artifact: {
+            kind: "generated-package",
+            path: artifactPath,
+            sha256: validArtifact ? sha256(artifactBytes) : sha256("fabricated artifact"),
+          },
+        },
+      },
+      path: "snippets/fabricated/rust.rs",
+      code_sha256: sha256(snippetCode),
+    }],
+    files: [
+      "snippets/fabricated/rust.rs",
+      ...(validArtifact ? [artifactPath] : []),
+      ...(boundOutput ? [outputPath] : []),
+      ...(boundOutput ? [stderrPath] : []),
+    ],
+    // Keep this value live so the fixture proves the repository source exists;
+    // it is intentionally not used as the declared source identity above.
+    source_bytes_sha256_for_test_only: sha256(sourceBytes),
+  }, null, 2) + "\n");
+}
+
+test("website gate rejects fabricated qualified receipt metadata", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-website-gate-negative-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    await cp(
+      join(root, "rust/crates/sdk-examples/src/lib.rs"),
+      join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
+    );
+    await mkdir(outputRoot, { recursive: true });
+    await writeFabricatedBundle(repositoryRoot, bundleRoot);
+    await writeSourceAuthority(repositoryRoot, authorityPath);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}\n${result.stdout}`)
+      .toContain("has unsafe artifact path: C:/does-not-exist/fabricated-package.tgz");
+    let websiteExists = true;
+    try {
+      await readFile(join(outputRoot, "website.json"));
+    } catch {
+      websiteExists = false;
+    }
+    expect(websiteExists).toBe(false);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("website gate rejects source SHA-256 drift before receipt projection", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-website-source-drift-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    await cp(
+      join(root, "rust/crates/sdk-examples/src/lib.rs"),
+      join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
+    );
+    await mkdir(outputRoot, { recursive: true });
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, "sha256:declared-but-wrong");
+    await writeSourceAuthority(repositoryRoot, authorityPath);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}\n${result.stdout}`).toContain("source sha256 mismatch");
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("website gate rejects qualified receipts with empty output evidence", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-website-empty-output-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    await cp(
+      join(root, "rust/crates/sdk-examples/src/lib.rs"),
+      join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
+    );
+    await mkdir(outputRoot, { recursive: true });
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true);
+    await writeSourceAuthority(repositoryRoot, authorityPath);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}\n${result.stdout}`)
+      .toContain("has no stdout path");
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
+
+test("website gate rejects a forged source closure when source and receipt are edited together", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-forged-source-closure-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    const sourcePath = join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs");
+    await cp(join(root, "rust/crates/sdk-examples/src/lib.rs"), sourcePath);
+    await writeSourceAuthority(repositoryRoot, authorityPath);
+    await writeFile(sourcePath, `${await readFile(sourcePath, "utf8")}\n// forged source closure\n`);
+    await mkdir(outputRoot, { recursive: true });
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}\n${result.stdout}`).toContain("immutable source/revision closure mismatch");
+    let websiteExists = true;
+    try {
+      await readFile(join(outputRoot, "website.json"));
+    } catch {
+      websiteExists = false;
+    }
+    expect(websiteExists).toBe(false);
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
