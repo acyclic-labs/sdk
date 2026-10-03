@@ -1978,8 +1978,11 @@ mod tests {
                     _ => None,
                 })
                 .ok_or_else(|| Error::Storage("persisted model input is missing".into()))?;
-            let request_bytes = session.storage().read(&prepared.1).await?;
-            let manifest_bytes = session.storage().read(&prepared.0).await?;
+            // Request evidence belongs to the host journal, not the model's
+            // workspace content grants.
+            let journal = session.storage().journal();
+            let request_bytes = journal.load(&prepared.1).await?;
+            let manifest_bytes = journal.load(&prepared.0).await?;
             let manifest: crate::model_input::ModelInputManifest =
                 serde_json::from_slice(&manifest_bytes)
                     .map_err(|error| Error::Storage(error.to_string()))?;
