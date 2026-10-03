@@ -303,6 +303,7 @@ pub fn message_definition() -> ToolDefinition {
             .into(),
         input_schema: message_input_schema(),
         output_schema: message_output_schema(),
+        model_output_schema: message_output_schema(),
     }
 }
 
@@ -316,6 +317,7 @@ pub fn wait_definition() -> ToolDefinition {
             .into(),
         input_schema: wait_input_schema(),
         output_schema: wait_output_schema(),
+        model_output_schema: wait_output_schema(),
     }
 }
 

@@ -2443,8 +2443,8 @@ export class AgentHarness {
       if (!selected) throw new Error(`model-visible tool revision is ambiguous: ${name}`);
       const tool = this.#tools.get(toolKey(name, selected));
       if (!tool) throw new Error(`selected tool revision is not registered: ${name}@${selected}`);
-      const { revision, description, inputSchema, outputSchema } = tool.definition;
-      return { name, revision, description, inputSchema, outputSchema };
+      const { revision, description, inputSchema, outputSchema, modelOutputSchema } = tool.definition;
+      return { name, revision, description, inputSchema, outputSchema, modelOutputSchema: modelOutputSchema ?? outputSchema };
     });
   }
 }

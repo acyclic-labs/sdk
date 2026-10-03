@@ -363,6 +363,11 @@ impl DurableToolRunner {
                 ));
             }
             validate_value(&definition.output_schema, &result.value, "tool output")?;
+            validate_value(
+                &definition.model_output_schema,
+                &projection,
+                "tool projection",
+            )?;
             return Ok(Outcome::Succeeded(result.value));
         }
         if let Some(reason) = failed {
@@ -543,6 +548,24 @@ impl DurableToolRunner {
                 )
                 .await;
         }
+        if validate_value(
+            &definition.model_output_schema,
+            &projection,
+            "tool projection",
+        )
+        .is_err()
+        {
+            return self
+                .fail(
+                    task_id,
+                    operation_id,
+                    &definition,
+                    &invocation,
+                    replay_context,
+                    ToolFailureKind::ProjectionRejected,
+                )
+                .await;
+        }
         let result_ref =
             match stage_json(self.journal.as_ref(), operation_id, "tool:result", &result).await {
                 Ok(reference) => reference,
@@ -707,6 +730,7 @@ mod tests {
             description: "test resumable tool".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({"type": "object"}),
+            model_output_schema: json!({"type": "object"}),
         }
     }
 

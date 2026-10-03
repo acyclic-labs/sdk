@@ -231,13 +231,13 @@ export class NativeContracts {
   }
 
   /** Rust owns the complete model-visible tool definition contract. */
-  validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">): void {
+  validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "modelOutputSchema">): void {
     this.native.validateToolDefinition(nativeToolDefinition(definition));
   }
 
   /** Rust owns tool invocation identity and argument schema validation. */
   validateToolInvocation(
-    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "modelOutputSchema">,
     invocation: Pick<ToolInvocation, "callId" | "name" | "arguments">,
   ): void {
     this.native.validateToolInvocation(nativeToolDefinition(definition), invocation);
@@ -245,10 +245,18 @@ export class NativeContracts {
 
   /** Rust owns tool result output schema validation. */
   validateToolResult(
-    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "modelOutputSchema">,
     result: ToolResult,
   ): void {
     this.native.validateToolResult(nativeToolDefinition(definition), result);
+  }
+
+  /** Rust owns the separate model-visible projection schema. */
+  validateToolProjection(
+    definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "modelOutputSchema">,
+    result: ToolResult,
+  ): void {
+    this.native.validateToolProjection(nativeToolDefinition(definition), result);
   }
 
   /** Rust owns model stream event, tool-call, completion, and UTF-8 byte admission. */
@@ -521,14 +529,15 @@ export class NativeContracts {
 
 /** Strip executable parser/handler members before crossing the serde WASM ABI. */
 function nativeToolDefinition(
-  definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema">,
-): Readonly<{ name: string; revision: string; description: string; inputSchema: ToolJsonSchema; outputSchema: ToolJsonSchema }> {
+  definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "modelOutputSchema">,
+): Readonly<{ name: string; revision: string; description: string; inputSchema: ToolJsonSchema; outputSchema: ToolJsonSchema; modelOutputSchema: ToolJsonSchema }> {
   return {
     name: definition.name,
     revision: definition.revision,
     description: definition.description,
     inputSchema: definition.inputSchema,
     outputSchema: definition.outputSchema,
+    modelOutputSchema: definition.modelOutputSchema ?? definition.outputSchema,
   };
 }
 

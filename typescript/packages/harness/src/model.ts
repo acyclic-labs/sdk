@@ -50,6 +50,8 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
   readonly description: string;
   readonly inputSchema: InputSchema;
   readonly outputSchema: OutputSchema;
+  /** JSON Schema for the model-visible value after projection. Defaults to outputSchema. */
+  readonly modelOutputSchema?: OutputSchema;
   /** Converts only schema-admitted JSON into the handler's input type. */
   readonly parseInput: (value: unknown) => Input;
   /** Verifies the executor's schema-admitted output before typed publication. */
@@ -58,9 +60,10 @@ export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema e
 }
 /** Only the declarative schema crosses the model boundary; executors stay private. */
 export type ModelToolDefinition<InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> =
-  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema"> & {
+  Readonly<Omit<WasmModelToolDefinitionWire, "input_schema" | "output_schema" | "model_output_schema"> & {
     inputSchema: InputSchema;
     outputSchema: OutputSchema;
+    modelOutputSchema?: OutputSchema;
   }>;
 /** Immutable evidence for the exact Rust-admitted request sent to a provider. */
 export interface ModelRequestEvidence {

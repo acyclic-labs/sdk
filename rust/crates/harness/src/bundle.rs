@@ -1008,6 +1008,9 @@ mod tests {
                 output_schema: json!({"type": "object", "properties": {
                     "tool": {"type": "string"}
                 }, "required": ["tool"], "additionalProperties": false}),
+                model_output_schema: json!({"type": "object", "properties": {
+                    "tool": {"type": "string"}
+                }, "required": ["tool"], "additionalProperties": false}),
             })
         }
 

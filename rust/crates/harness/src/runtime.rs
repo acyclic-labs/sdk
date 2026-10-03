@@ -6485,6 +6485,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: serde_json::json!({}),
             output_schema: serde_json::json!({}),
+            model_output_schema: serde_json::json!({}),
         };
         let invocation = ToolInvocation {
             operation_id: OperationId::new(),

@@ -10,6 +10,80 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
+/// Version of the structured model-visible admission feedback envelope.
+pub const TOOL_REJECTION_FEEDBACK_VERSION: u32 = 1;
+
+/// Durable, model-visible evidence that a tool call was refused before effect
+/// admission. The call, argument, and schema digests make this feedback
+/// usable only for the exact rejected call; a forged result cannot authorize a
+/// different historical call.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolRejectionFeedback {
+    /// Version of this envelope.
+    pub version: u32,
+    /// Stable rejection class (for example `invalid_arguments`).
+    pub kind: String,
+    /// Model-owned call identity.
+    pub call_id: String,
+    /// Registered tool name as requested by the model.
+    pub name: String,
+    /// Canonical digest of the rejected arguments.
+    pub arguments_digest: [u8; 32],
+    /// Canonical digest of the pinned input schema used for validation.
+    pub schema_digest: [u8; 32],
+}
+
+impl ToolRejectionFeedback {
+    /// Creates feedback for a schema-invalid invocation.
+    pub fn invalid_arguments(invocation: &ToolInvocation, schema: &Value) -> Result<Self> {
+        Ok(Self {
+            version: TOOL_REJECTION_FEEDBACK_VERSION,
+            kind: "invalid_arguments".into(),
+            call_id: invocation.call_id.clone(),
+            name: invocation.name.clone(),
+            arguments_digest: crate::contract::canonical_json_digest(&invocation.arguments)?,
+            schema_digest: crate::contract::canonical_json_digest(schema)?,
+        })
+    }
+
+    /// Validates the envelope and returns its canonical model value.
+    pub fn to_model_value(&self, error: &str) -> Result<Value> {
+        if self.version != TOOL_REJECTION_FEEDBACK_VERSION || self.kind != "invalid_arguments" {
+            return Err(Error::Invalid(
+                "tool rejection feedback version or kind is invalid".into(),
+            ));
+        }
+        Self::validate_identity(&self.call_id, &self.name)?;
+        Ok(serde_json::json!({
+            "error": error,
+            "rejection": self,
+        }))
+    }
+
+    /// Extracts and validates feedback from a model-visible tool result.
+    pub fn from_model_value(value: &Value) -> Result<Option<Self>> {
+        let Some(rejection) = value.get("rejection") else {
+            return Ok(None);
+        };
+        let feedback: Self = serde_json::from_value(rejection.clone())
+            .map_err(|error| Error::Invalid(format!("invalid tool rejection feedback: {error}")))?;
+        if feedback.version != TOOL_REJECTION_FEEDBACK_VERSION
+            || feedback.kind != "invalid_arguments"
+        {
+            return Err(Error::Invalid(
+                "tool rejection feedback version or kind is invalid".into(),
+            ));
+        }
+        Self::validate_identity(&feedback.call_id, &feedback.name)?;
+        Ok(Some(feedback))
+    }
+
+    fn validate_identity(call_id: &str, name: &str) -> Result<()> {
+        ToolInvocation::validate_identity(call_id, name)
+    }
+}
+
 /// Model-visible tool definition with immutable schemas.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,12 +96,18 @@ pub struct ToolDefinition {
     pub description: String,
     /// JSON Schema for invocation arguments.
     pub input_schema: Value,
-    /// JSON Schema for the successful result.
+    /// JSON Schema for the successful result before model projection.
     pub output_schema: Value,
+    /// JSON Schema for the value returned to the model after projection.
+    ///
+    /// This is intentionally separate from `output_schema`: executors may
+    /// return a rich private value while a projection exposes a narrower,
+    /// stable model contract.
+    pub model_output_schema: Value,
 }
 
 impl ToolDefinition {
-    /// Validates the name and both schemas.
+    /// Validates the name and all pinned schemas.
     pub fn validate(&self) -> Result<()> {
         validate_tool_name(&self.name)?;
         validate_component_label(&self.revision, "tool revision")?;
@@ -36,7 +116,11 @@ impl ToolDefinition {
                 "tool name and revision cannot contain the version separator".into(),
             ));
         }
-        for schema in [&self.input_schema, &self.output_schema] {
+        for schema in [
+            &self.input_schema,
+            &self.output_schema,
+            &self.model_output_schema,
+        ] {
             jsonschema::validator_for(schema)
                 .map_err(|error| Error::Invalid(format!("invalid tool schema: {error}")))?;
         }
@@ -506,6 +590,7 @@ mod tests {
                     description: "Echo".into(),
                     input_schema: json!({}),
                     output_schema: json!({}),
+                    model_output_schema: json!({}),
                 },
                 executor: Arc::new(Executor),
                 projection: Arc::new(Projection),
@@ -557,6 +642,7 @@ mod tests {
             description: "Echo".into(),
             input_schema: json!({"type": "object"}),
             output_schema: json!({}),
+            model_output_schema: json!({}),
         };
         let digest = definition.digest()?;
         let operation_id = OperationId::from_bytes([8; 16]);

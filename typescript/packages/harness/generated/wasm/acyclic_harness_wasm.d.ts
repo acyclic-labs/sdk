@@ -332,6 +332,7 @@ export interface WasmModelToolDefinitionWire {
     description: string;
     input_schema: WasmModelJsonSchema;
     output_schema: WasmModelJsonSchema;
+    model_output_schema: WasmModelJsonSchema;
 }
 
 export interface WasmTaskAdmissionInput {
@@ -799,6 +800,8 @@ export function validateToolInvocation(definition: any, invocation: any): void;
  * Validates one successful tool result against its registered definition.
  */
 export function validateToolResult(definition: any, result: any): void;
+/** Validates a model-visible projected tool result against its pinned schema. */
+export function validateToolProjection(definition: any, result: any): void;
 
 /**
  * Applies the same JSON Schema admission used by Rust tool execution before

@@ -338,6 +338,8 @@ struct WasmModelToolDefinitionWire {
     input_schema: serde_json::Value,
     #[tsify(type = "WasmModelJsonSchema")]
     output_schema: serde_json::Value,
+    #[tsify(type = "WasmModelJsonSchema")]
+    model_output_schema: serde_json::Value,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, Tsify)]
@@ -2401,16 +2403,23 @@ struct WasmToolDefinitionInput {
     description: String,
     input_schema: serde_json::Value,
     output_schema: serde_json::Value,
+    #[serde(default)]
+    model_output_schema: Option<serde_json::Value>,
 }
 
 impl From<WasmToolDefinitionInput> for ToolDefinition {
     fn from(value: WasmToolDefinitionInput) -> Self {
+        let output_schema = value.output_schema;
+        let model_output_schema = value
+            .model_output_schema
+            .unwrap_or_else(|| output_schema.clone());
         Self {
             name: value.name,
             revision: value.revision,
             description: value.description,
             input_schema: value.input_schema,
-            output_schema: value.output_schema,
+            output_schema,
+            model_output_schema,
         }
     }
 }
@@ -2461,6 +2470,20 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
     validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+}
+
+/// Validates a model-visible projected tool result against its pinned schema.
+#[wasm_bindgen(js_name = validateToolProjection)]
+pub fn validate_tool_projection(definition: JsValue, result: JsValue) -> Result<(), JsValue> {
+    let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
+    definition.validate().map_err(js_error)?;
+    let result: WasmToolResultInput = from_js(result)?;
+    validate_value(
+        &definition.model_output_schema,
+        &result.value,
+        "tool projection",
+    )
+    .map_err(js_error)
 }
 
 /// Validates provider-neutral model content under the exact native limits.

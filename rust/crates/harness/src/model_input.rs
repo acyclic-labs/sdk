@@ -64,6 +64,7 @@ impl PreparedModelInput {
                 return Err(Error::Invalid("duplicate model tool definition".into()));
             }
         }
+        validate_exchanges(&request.messages, &request.tools)?;
         let mut messages = Vec::with_capacity(request.messages.len());
         for (position, message) in request.messages.iter().enumerate() {
             message.content.validate_limits(limits)?;
@@ -114,7 +115,7 @@ impl PreparedModelInput {
     }
     /// Requires complete paired tool exchanges at a fork boundary.
     pub fn validate_complete_exchange(&self) -> Result<()> {
-        validate_exchanges(&self.request.messages)
+        validate_exchanges(&self.request.messages, &self.request.tools)
     }
 }
 
@@ -140,7 +141,7 @@ impl FrozenModelPrefix {
             .messages
             .get(..count)
             .ok_or_else(|| Error::Invalid("frozen model prefix is unavailable".into()))?;
-        validate_exchanges(messages)?;
+        validate_exchanges(messages, &input.request.tools)?;
         let message_bytes = messages
             .iter()
             .map(crate::contract::canonical_json_bytes)
@@ -181,7 +182,7 @@ impl FrozenModelPrefix {
                 ));
             }
         }
-        validate_exchanges(messages)
+        validate_exchanges(messages, &input.request.tools)
     }
     /// Ordered message blocks retained for replay.
     #[must_use]
@@ -200,7 +201,21 @@ fn binding_digest(request: &ModelRequest) -> Result<[u8; 32]> {
 fn prefix_digest(binding: [u8; 32], messages: &[Vec<u8>]) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(&(MODEL_INPUT_VERSION, binding, messages))
 }
-fn validate_exchanges(messages: &[ModelMessage]) -> Result<()> {
+#[derive(Clone, Copy)]
+struct PendingToolCall<'a> {
+    name: &'a str,
+    arguments: &'a serde_json::Value,
+    malformed: bool,
+}
+
+fn validate_exchanges(
+    messages: &[ModelMessage],
+    tools: &[crate::tool::ToolDefinition],
+) -> Result<()> {
+    let definitions = tools
+        .iter()
+        .map(|tool| (tool.name.as_str(), tool))
+        .collect::<BTreeMap<_, _>>();
     let mut pending = BTreeMap::new();
     for message in messages {
         let parts = match &message.content {
@@ -216,23 +231,101 @@ fn validate_exchanges(messages: &[ModelMessage]) -> Result<()> {
                 "message interrupts unfinished tool exchange".into(),
             ));
         }
+        if message.role == ModelRole::Tool
+            && parts
+                .iter()
+                .any(|part| !matches!(part, ModelContentPart::ToolResult { .. }))
+        {
+            return Err(Error::Invalid(
+                "tool message contains non-result content".into(),
+            ));
+        }
         for part in parts {
             match part {
-                ModelContentPart::ToolCall { call_id, name, .. } => {
-                    if message.role != ModelRole::Assistant
-                        || call_id.is_empty()
-                        || pending.contains_key(call_id)
-                    {
+                ModelContentPart::ToolCall {
+                    call_id,
+                    name,
+                    arguments,
+                } => {
+                    crate::tool::ToolInvocation::validate_identity(call_id, name)?;
+                    if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                         return Err(Error::Invalid(
                             "invalid or duplicate inherited tool call".into(),
                         ));
                     }
-                    pending.insert(call_id, name);
+                    let Some(definition) = definitions.get(name.as_str()) else {
+                        return Err(Error::Invalid(
+                            "inherited tool call names an unregistered tool".into(),
+                        ));
+                    };
+                    let malformed = crate::tool::validate_value(
+                        &definition.input_schema,
+                        arguments,
+                        "tool input",
+                    )
+                    .is_err();
+                    pending.insert(
+                        call_id,
+                        PendingToolCall {
+                            name,
+                            arguments,
+                            malformed,
+                        },
+                    );
                 }
-                ModelContentPart::ToolResult { call_id, name, .. }
-                    if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name) =>
-                {
-                    return Err(Error::Invalid("inherited tool result is not paired".into()));
+                ModelContentPart::ToolResult {
+                    call_id,
+                    name,
+                    value,
+                } => {
+                    if message.role != ModelRole::Tool {
+                        return Err(Error::Invalid("tool result has invalid role".into()));
+                    }
+                    let Some(call) = pending.remove(call_id) else {
+                        return Err(Error::Invalid("inherited tool result is not paired".into()));
+                    };
+                    if call.name != name.as_str() {
+                        return Err(Error::Conflict("inherited tool result changed tool".into()));
+                    }
+                    let feedback = crate::tool::ToolRejectionFeedback::from_model_value(value)?;
+                    if call.malformed {
+                        let Some(feedback) = feedback else {
+                            return Err(Error::Invalid(
+                                "malformed tool call lacks correlated rejection feedback".into(),
+                            ));
+                        };
+                        let definition = definitions
+                            .get(name.as_str())
+                            .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                        let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
+                            &crate::tool::ToolInvocation {
+                                operation_id: crate::OperationId::new(),
+                                call_id: call_id.clone(),
+                                name: name.clone(),
+                                arguments: call.arguments.clone(),
+                            },
+                            &definition.input_schema,
+                        )?;
+                        if feedback != expected {
+                            return Err(Error::Conflict(
+                                "tool rejection feedback does not match the rejected call".into(),
+                            ));
+                        }
+                    } else {
+                        if feedback.is_some() {
+                            return Err(Error::Invalid(
+                                "valid tool call cannot carry rejection feedback".into(),
+                            ));
+                        }
+                        let definition = definitions
+                            .get(name.as_str())
+                            .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                        crate::tool::validate_value(
+                            &definition.model_output_schema,
+                            value,
+                            "tool projection",
+                        )?;
+                    }
                 }
                 _ => {}
             }
@@ -456,7 +549,14 @@ mod tests {
                     }),
                 },
             ],
-            tools: vec![],
+            tools: vec![crate::tool::ToolDefinition {
+                name: "fork".into(),
+                revision: "1".into(),
+                description: "fork test tool".into(),
+                input_schema: json!({"type": "object", "additionalProperties": false}),
+                output_schema: json!({}),
+                model_output_schema: json!({}),
+            }],
             max_output_tokens: Some(100),
         })
     }
@@ -578,6 +678,67 @@ mod tests {
                 .validate_complete_exchange()
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_historical_call_requires_correlated_versioned_feedback() -> Result<()> {
+        let mut malformed = request()?;
+        if let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
+            &mut malformed.messages[2].content
+        {
+            *arguments = json!({"unexpected": true});
+        }
+        assert!(PreparedModelInput::prepare(malformed.clone(), Limits::default()).is_err());
+
+        let invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::new(),
+            call_id: "fork-1".into(),
+            name: "fork".into(),
+            arguments: json!({"unexpected": true}),
+        };
+        let definition = &malformed
+            .tools
+            .iter()
+            .find(|tool| tool.name == "fork")
+            .expect("fork definition");
+        let feedback = crate::tool::ToolRejectionFeedback::invalid_arguments(
+            &invocation,
+            &definition.input_schema,
+        )?;
+        malformed.messages[3] = ModelMessage {
+            role: ModelRole::Tool,
+            content: ModelContent::Part(ModelContentPart::ToolResult {
+                call_id: "fork-1".into(),
+                name: "fork".into(),
+                value: feedback.to_model_value("invalid")?,
+            }),
+        };
+        PreparedModelInput::prepare(malformed.clone(), Limits::default())?;
+
+        if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
+            &mut malformed.messages[3].content
+        {
+            value["rejection"]["call_id"] = json!("forged");
+        }
+        assert!(PreparedModelInput::prepare(malformed, Limits::default()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn historical_projection_is_checked_against_the_pinned_model_schema() -> Result<()> {
+        let mut forged = request()?;
+        forged.tools[0].model_output_schema = json!({
+            "type": "object",
+            "required": ["child"],
+            "additionalProperties": false,
+        });
+        if let ModelContent::Part(ModelContentPart::ToolResult { value, .. }) =
+            &mut forged.messages[3].content
+        {
+            *value = json!({"other": "forged"});
+        }
+        assert!(PreparedModelInput::prepare(forged, Limits::default()).is_err());
         Ok(())
     }
     #[test]

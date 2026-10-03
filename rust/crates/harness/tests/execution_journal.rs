@@ -379,6 +379,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "No-op".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        model_output_schema: json!({}),
     };
     let executions = Arc::new(AtomicUsize::new(0));
     let reconciliations = Arc::new(AtomicUsize::new(0));
@@ -398,6 +399,7 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
         description: "Pinned invalid result".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({"type":"string"}),
+        model_output_schema: json!({"type":"string"}),
     };
     registry.register(Tool {
         definition: invalid_output.clone(),
@@ -813,6 +815,7 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
         description: "Echo".into(),
         input_schema: json!({"type":"object"}),
         output_schema: json!({}),
+        model_output_schema: json!({}),
     };
     let digest = definition.digest()?;
     let operation = OperationId::from_bytes([14; 16]);

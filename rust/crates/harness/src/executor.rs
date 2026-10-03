@@ -16,7 +16,10 @@ use crate::{
     runtime::{
         RuntimeScope, ToolPolicy, ToolPolicyDecision, check_tool_approval, validate_policy_identity,
     },
-    tool::{ModelToolContext, ToolInvocation, ToolRegistry, ToolResult, validate_value},
+    tool::{
+        ModelToolContext, ToolInvocation, ToolRegistry, ToolRejectionFeedback, ToolResult,
+        validate_value,
+    },
 };
 use futures::{StreamExt as _, future::BoxFuture};
 use serde::{Deserialize, Serialize};
@@ -974,12 +977,16 @@ impl StockExecutor {
                 ToolRejectionKind::InvalidArguments,
             )
             .await?;
+            let feedback = ToolRejectionFeedback::invalid_arguments(
+                &invocation,
+                &tool.definition.input_schema,
+            )?;
             let message = ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: invocation.call_id.clone(),
                     name: invocation.name.clone(),
-                    value: json!({"error": error.to_string()}),
+                    value: feedback.to_model_value(&error.to_string())?,
                 }),
             };
             message.content.validate_limits(self.limits)?;
@@ -1214,6 +1221,11 @@ impl StockExecutor {
                 .projection
                 .project(&invocation, &result)
                 .and_then(|value| {
+                    validate_value(
+                        &tool.definition.model_output_schema,
+                        &value,
+                        "tool projection",
+                    )?;
                     if crate::contract::canonical_json_bytes(&value)?.len() as u64
                         > self.limits.render_bytes
                     {
@@ -1917,6 +1929,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                model_output_schema: json!({"type":"object"}),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),
@@ -2332,6 +2345,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
             },
             executor: tool.clone(),
             projection: Arc::new(Projection),
@@ -2406,6 +2420,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
             },
             executor: Arc::new(FakeTool(AtomicUsize::new(0))),
             projection: Arc::new(Projection),
@@ -2469,6 +2484,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type": "object"}),
                 output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2568,6 +2584,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"object"}),
+                model_output_schema: json!({"type":"object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2628,6 +2645,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2724,6 +2742,7 @@ mod tests {
                     "additionalProperties": false,
                 }),
                 output_schema: json!({"type": "object"}),
+                model_output_schema: json!({"type": "object"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),
@@ -2799,6 +2818,7 @@ mod tests {
                 description: "Echo".into(),
                 input_schema: json!({"type":"object"}),
                 output_schema: json!({"type":"string"}),
+                model_output_schema: json!({"type":"string"}),
             },
             executor: tool_executor.clone(),
             projection: Arc::new(Projection),

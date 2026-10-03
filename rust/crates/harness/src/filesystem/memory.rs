@@ -619,6 +619,17 @@ where
                     "required": ["generation", "entries", "has_more", "next_after"],
                     "additionalProperties": false
                 }),
+                model_output_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "generation": {"type": "object"},
+                        "entries": {"type": "array", "items": {"type": "object"}},
+                        "has_more": {"type": "boolean"},
+                        "next_after": {"type": ["string", "null"]}
+                    },
+                    "required": ["generation", "entries", "has_more", "next_after"],
+                    "additionalProperties": false
+                }),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -652,6 +663,12 @@ where
                     "required": ["file"],
                     "additionalProperties": false
                 }),
+                model_output_schema: json!({
+                    "type": "object",
+                    "properties": {"file": {"type": "object"}},
+                    "required": ["file"],
+                    "additionalProperties": false
+                }),
             },
             executor: implementation.clone(),
             projection: implementation,
@@ -675,6 +692,12 @@ where
                     "additionalProperties": false
                 }),
                 output_schema: json!({
+                    "type": "object",
+                    "properties": {"file": {"type": "object"}, "text": {"type": "string"}},
+                    "required": ["file", "text"],
+                    "additionalProperties": false
+                }),
+                model_output_schema: json!({
                     "type": "object",
                     "properties": {"file": {"type": "object"}, "text": {"type": "string"}},
                     "required": ["file", "text"],
