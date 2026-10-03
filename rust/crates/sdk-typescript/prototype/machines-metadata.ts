@@ -48,7 +48,7 @@ export const MACHINES_OPERATIONS = {
   "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c", sourceModelSha256: "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c", modeledOperations: 19, httpProjection: false } as const;
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "cd698b76b1b65228f74e77b447a3dacfb14c31b454a077e2d76867e10f586e2b", sourceModelSha256: "cd698b76b1b65228f74e77b447a3dacfb14c31b454a077e2d76867e10f586e2b", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_METHODS = {
 

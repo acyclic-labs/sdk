@@ -11,11 +11,40 @@
       "package": "acyclic.actors.v1",
       "service": "ActorsService",
       "descriptor_sha256": "0515dc7e3f38a5648f85ee52f5bda7e639cc31cf83179a208bb5abbd398a04bf",
-      "source_content_sha256": "9521f271f01acce7da5023fbe769647c387b2f1835d6f09dc1d2c4070195f815",
-      "source_model_sha256": "9521f271f01acce7da5023fbe769647c387b2f1835d6f09dc1d2c4070195f815",
+      "source_content_sha256": "ec85416625e3682b9e59a36fe0ce6b47a82cbd31d6d75c00dd51c34b91a8341f",
+      "source_model_sha256": "ec85416625e3682b9e59a36fe0ce6b47a82cbd31d6d75c00dd51c34b91a8341f",
       "modeled_operations": 8,
       "http_projection": true,
-      "remote_policy": null,
+      "remote_policy": {
+        "protocol": "https-or-loopback-http",
+        "auth": "bearer",
+        "request_encoding": "protobuf-json",
+        "response_encoding": "protobuf-json",
+        "credential_policy": "bearer-no-crlf",
+        "response_limit_policy": "bounded-cumulative-utf8",
+        "behavior_binding": "generated-client",
+        "transport": {
+          "native": [
+            {
+              "kind": "grpc",
+              "streaming": false,
+              "bearer_auth": true
+            },
+            {
+              "kind": "http",
+              "streaming": false,
+              "bearer_auth": true
+            }
+          ],
+          "browser": [
+            {
+              "kind": "http",
+              "streaming": false,
+              "bearer_auth": true
+            }
+          ]
+        }
+      },
       "operations": [
         {
           "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
@@ -779,11 +808,40 @@
       "package": "acyclic.workers.v1",
       "service": "WorkersService",
       "descriptor_sha256": "a95fddea86c47f08101a62406abf7089ea2d014858f3bb3f2fd32115457c0128",
-      "source_content_sha256": "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051",
-      "source_model_sha256": "7f7483601ad6b66484a71ed64e81d02f46e950e76594579d046e1fbf7e977051",
+      "source_content_sha256": "034cf336b178ecdd266541978cc27df5667adb60dc6da8e599666da72ee06998",
+      "source_model_sha256": "034cf336b178ecdd266541978cc27df5667adb60dc6da8e599666da72ee06998",
       "modeled_operations": 7,
       "http_projection": true,
-      "remote_policy": null,
+      "remote_policy": {
+        "protocol": "https-or-loopback-http",
+        "auth": "bearer",
+        "request_encoding": "protobuf-json",
+        "response_encoding": "protobuf-json",
+        "credential_policy": "bearer-no-crlf",
+        "response_limit_policy": "bounded-cumulative-utf8",
+        "behavior_binding": "generated-client",
+        "transport": {
+          "native": [
+            {
+              "kind": "grpc",
+              "streaming": false,
+              "bearer_auth": true
+            },
+            {
+              "kind": "http",
+              "streaming": false,
+              "bearer_auth": true
+            }
+          ],
+          "browser": [
+            {
+              "kind": "http",
+              "streaming": false,
+              "bearer_auth": true
+            }
+          ]
+        }
+      },
       "operations": [
         {
           "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
@@ -1482,8 +1540,8 @@
       "package": "acyclic.objects.v2",
       "service": "BucketsService",
       "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
-      "source_content_sha256": "1bf75b864c0a235232316a85484a7e135af90018cf7d03dba2a0cab46800ddc8",
-      "source_model_sha256": "1bf75b864c0a235232316a85484a7e135af90018cf7d03dba2a0cab46800ddc8",
+      "source_content_sha256": "30972c94b9af38b39142b76410920fd1fa569b03fb97804145cb8c3f65bd3a2b",
+      "source_model_sha256": "30972c94b9af38b39142b76410920fd1fa569b03fb97804145cb8c3f65bd3a2b",
       "modeled_operations": 13,
       "http_projection": true,
       "remote_policy": {
@@ -1493,7 +1551,28 @@
         "response_encoding": "protobuf-json",
         "credential_policy": "bearer-no-crlf",
         "response_limit_policy": "bounded-cumulative-utf8",
-        "behavior_binding": "native-wasm"
+        "behavior_binding": "native-wasm",
+        "transport": {
+          "native": [
+            {
+              "kind": "grpc",
+              "streaming": true,
+              "bearer_auth": true
+            },
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ],
+          "browser": [
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ]
+        }
       },
       "operations": [
         {
@@ -2891,8 +2970,8 @@
       "package": "acyclic.stream.v2",
       "service": "StreamService",
       "descriptor_sha256": "1d311dd12a56de4f04923e4144071c507c6b59b1789955fd8629d09c990abd0c",
-      "source_content_sha256": "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f",
-      "source_model_sha256": "c047ad0a4013c3631d1f1fcb686a74038746138ecfca153da5147eaca9e5dd8f",
+      "source_content_sha256": "cafaebb60b146961a09734b3006540ee202cb9910b7ee5071e039b834a03d42a",
+      "source_model_sha256": "cafaebb60b146961a09734b3006540ee202cb9910b7ee5071e039b834a03d42a",
       "modeled_operations": 10,
       "http_projection": true,
       "remote_policy": {
@@ -2902,7 +2981,28 @@
         "response_encoding": "protobuf-json",
         "credential_policy": "bearer-no-crlf",
         "response_limit_policy": "bounded-cumulative-utf8",
-        "behavior_binding": "native-wasm"
+        "behavior_binding": "native-wasm",
+        "transport": {
+          "native": [
+            {
+              "kind": "grpc",
+              "streaming": true,
+              "bearer_auth": true
+            },
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ],
+          "browser": [
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ]
+        }
       },
       "operations": [
         {
@@ -3770,11 +3870,35 @@
       "package": "inference.customer.v1",
       "service": "ModelsService",
       "descriptor_sha256": "5806ea956e68e460a14f6b8dd817a3d9fb0bafa18cba10b1d592739dcafa58ea",
-      "source_content_sha256": "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404",
-      "source_model_sha256": "1b36c47d23376a8e34f7c2c4d021194e68df079f675bf35775d9e00264743404",
+      "source_content_sha256": "030de3eb3336fcbf6390afb5a067d78198e9d972efd50f462669c4efae117604",
+      "source_model_sha256": "030de3eb3336fcbf6390afb5a067d78198e9d972efd50f462669c4efae117604",
       "modeled_operations": 14,
       "http_projection": true,
-      "remote_policy": null,
+      "remote_policy": {
+        "protocol": "https",
+        "auth": "bearer",
+        "request_encoding": "protobuf-json",
+        "response_encoding": "protobuf-json",
+        "credential_policy": "bearer-no-crlf",
+        "response_limit_policy": "bounded-cumulative-utf8",
+        "behavior_binding": "generated-client",
+        "transport": {
+          "native": [
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ],
+          "browser": [
+            {
+              "kind": "http",
+              "streaming": true,
+              "bearer_auth": true
+            }
+          ]
+        }
+      },
       "operations": [
         {
           "rpc": "inference.customer.v1.ModelsService/List",
@@ -5531,8 +5655,8 @@
       "package": "acyclic.machines.v1",
       "service": "MachinesService",
       "descriptor_sha256": "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7",
-      "source_content_sha256": "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c",
-      "source_model_sha256": "c48d417e4e9bc3d475bfd7d299e74e3b4674dbac0c82a1217cff214d9d61891c",
+      "source_content_sha256": "cd698b76b1b65228f74e77b447a3dacfb14c31b454a077e2d76867e10f586e2b",
+      "source_model_sha256": "cd698b76b1b65228f74e77b447a3dacfb14c31b454a077e2d76867e10f586e2b",
       "modeled_operations": 19,
       "http_projection": false,
       "remote_policy": null,
@@ -5976,8 +6100,8 @@
       "package": "acyclic.filesystem.v2",
       "service": "FilesystemService",
       "descriptor_sha256": "bff35b6e5c9f53ec79f165b5c37fb6874243c8ad31904fc7700bebb89673cbe1",
-      "source_content_sha256": "d9c5d66c6d6dc87d4290af10046cb621cb4172da9c0a7e4749e00f171476c060",
-      "source_model_sha256": "d9c5d66c6d6dc87d4290af10046cb621cb4172da9c0a7e4749e00f171476c060",
+      "source_content_sha256": "6269874bac16ebd834e30aa11367612a93ae624b0329d24835fd6152e31b7158",
+      "source_model_sha256": "6269874bac16ebd834e30aa11367612a93ae624b0329d24835fd6152e31b7158",
       "modeled_operations": 30,
       "http_projection": false,
       "remote_policy": null,
@@ -6623,8 +6747,8 @@
       "package": "acyclic.harness.v2",
       "service": "HarnessService",
       "descriptor_sha256": "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e",
-      "source_content_sha256": "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021",
-      "source_model_sha256": "c11a8c879b3d02189608b4bfe26346fcf9551860729353d9ccf08677d9ffa021",
+      "source_content_sha256": "918b302226572ce99b0711150d31238fc6d49a761b97226ea12c008f4cc74fab",
+      "source_model_sha256": "918b302226572ce99b0711150d31238fc6d49a761b97226ea12c008f4cc74fab",
       "modeled_operations": 5,
       "http_projection": false,
       "remote_policy": null,
