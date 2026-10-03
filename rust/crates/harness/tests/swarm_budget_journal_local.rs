@@ -4,14 +4,18 @@ use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
     IdempotencyKey, OperationId,
     swarm_budget::{
-        SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmResourceRequest, SwarmUsage,
+        ForkPublication, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits, SwarmForkRequest,
+        SwarmOwnerFence, SwarmResourceRequest, SwarmUsage, SwarmUsageReceipt,
         SwarmUsageReceiptIssuer, SwarmUsageSource,
     },
     swarm_budget_journal::SwarmBudgetJournal,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::future::join_all;
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
 use tempfile::tempdir;
 
 fn request(operation_id: OperationId, key: &str) -> SwarmForkRequest {
@@ -68,6 +72,67 @@ impl SwarmUsageSource for LocalMeasuredUsage {
             output_bytes: 8,
             execution_time_ms: 10,
         })
+    }
+}
+
+struct LocalMeasuredUsageSequence {
+    provider: String,
+    snapshots: Mutex<VecDeque<SwarmUsage>>,
+}
+
+impl LocalMeasuredUsageSequence {
+    fn new(provider: impl Into<String>, snapshots: impl IntoIterator<Item = SwarmUsage>) -> Self {
+        Self {
+            provider: provider.into(),
+            snapshots: Mutex::new(snapshots.into_iter().collect()),
+        }
+    }
+}
+
+impl SwarmUsageSource for LocalMeasuredUsageSequence {
+    fn provider_identity(&self) -> &str {
+        &self.provider
+    }
+
+    fn cumulative_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+    ) -> acyclic_harness::Result<SwarmUsage> {
+        self.snapshots
+            .lock()
+            .map_err(|_| acyclic_harness::Error::Storage("measurement lock poisoned".into()))?
+            .pop_front()
+            .ok_or_else(|| acyclic_harness::Error::Storage("measurement exhausted".into()))
+    }
+}
+
+fn ancestor_request(
+    operation_id: OperationId,
+    key: &str,
+    parent_operation_id: Option<OperationId>,
+    depth: u32,
+    resources: SwarmResourceRequest,
+) -> SwarmForkRequest {
+    SwarmForkRequest {
+        operation_id,
+        idempotency_key: IdempotencyKey::new(key).expect("key"),
+        parent_operation_id,
+        depth,
+        resources,
+        admission_digest: None,
+    }
+}
+
+fn publication(
+    operation_id: OperationId,
+    parent_operation_id: Option<OperationId>,
+) -> ForkPublication {
+    ForkPublication {
+        operation_id,
+        parent_operation_id,
+        completed_boundary_digest: [1; 32],
+        workspace_generation_digest: [2; 32],
     }
 }
 
@@ -254,4 +319,341 @@ async fn local_stream_budget_same_operation_race_has_one_append_and_replays() {
     assert_eq!(usage.active_agents, 2);
     assert_eq!(usage.total_agents, 2);
     assert_eq!(usage.reserved.model_steps, 4);
+}
+
+#[tokio::test]
+async fn local_stream_wrong_dispatch_receipt_is_rejected_before_append_and_reopen() {
+    let root = tempdir().expect("temporary root");
+    let stream_path = root.path().join("stream");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(&stream_path, LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let dispatch_id = IdempotencyKey::new("root-dispatch").expect("dispatch");
+    let usage = SwarmUsage {
+        model_steps: 1,
+        output_bytes: 8,
+        execution_time_ms: 10,
+    };
+    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
+        .await
+        .expect("start budget");
+    let mut issuer = SwarmUsageReceiptIssuer::new(
+        LocalMeasuredUsage,
+        session,
+        dispatch_id.clone(),
+    )
+    .expect("usage issuer");
+    journal
+        .report_root_usage_with_receipt(&owner, issuer.issue().expect("first receipt"))
+        .await
+        .expect("first root receipt");
+
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("tail before forged receipt");
+    let mut forged_issuer = SwarmUsageReceiptIssuer::resume(
+        LocalMeasuredUsage,
+        session,
+        IdempotencyKey::new("forged-dispatch").expect("forged dispatch"),
+        1,
+        Some(usage),
+    )
+    .expect("forged issuer");
+    let result = journal
+        .report_root_usage_with_receipt(&owner, forged_issuer.issue().expect("forged receipt"))
+        .await;
+    assert!(result.is_err(), "a receipt for another dispatch must fail");
+    assert_eq!(
+        stream.tail().await.expect("tail after forged receipt"),
+        tail_before,
+        "rejected receipt must not poison the durable tail"
+    );
+    drop(journal);
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen after forged receipt");
+    assert_eq!(reopened.usage().expect("reopened usage").consumed, usage);
+}
+
+#[tokio::test]
+async fn local_stream_resumed_receipt_cursor_preserves_cumulative_usage() {
+    let root = tempdir().expect("temporary root");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(root.path().join("stream"), LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let dispatch_id = IdempotencyKey::new("resumed-root-dispatch").expect("dispatch");
+    let first_usage = SwarmUsage {
+        model_steps: 1,
+        output_bytes: 8,
+        execution_time_ms: 10,
+    };
+    let second_usage = SwarmUsage {
+        model_steps: 3,
+        output_bytes: 24,
+        execution_time_ms: 30,
+    };
+    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
+        .await
+        .expect("start budget");
+    let mut issuer = SwarmUsageReceiptIssuer::new(
+        LocalMeasuredUsageSequence::new("provider-a", [first_usage]),
+        session,
+        dispatch_id.clone(),
+    )
+    .expect("usage issuer");
+    let first_receipt = issuer.issue().expect("first receipt");
+    journal
+        .report_root_usage_with_receipt(&owner, first_receipt)
+        .await
+        .expect("first root receipt");
+    drop(journal);
+
+    let mut reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen budget");
+    let mut resumed = SwarmUsageReceiptIssuer::resume(
+        LocalMeasuredUsageSequence::new("provider-a", [second_usage]),
+        session,
+        dispatch_id,
+        1,
+        Some(first_usage),
+    )
+    .expect("resume usage issuer");
+    let second_receipt = resumed.issue().expect("resumed receipt");
+    reopened
+        .report_root_usage_with_receipt(&owner, second_receipt)
+        .await
+        .expect("resumed root receipt");
+    drop(reopened);
+
+    let final_journal = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("final reopen budget");
+    assert_eq!(
+        final_journal.usage().expect("final usage").consumed,
+        second_usage,
+        "cumulative provider usage must be charged by delta after resume"
+    );
+}
+
+#[tokio::test]
+async fn local_stream_sixteen_independent_providers_have_one_receipt_winner() {
+    let root = tempdir().expect("temporary root");
+    let stream_path = root.path().join("stream");
+    let client = StreamClient::new(Arc::new(
+        LocalStream::open(&stream_path, LocalStreamLimits::default())
+            .await
+            .expect("local stream provider"),
+    ));
+    let session = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
+    let dispatch_id = IdempotencyKey::new("shared-root-dispatch").expect("dispatch");
+    let first_usage = SwarmUsage {
+        model_steps: 1,
+        output_bytes: 8,
+        execution_time_ms: 10,
+    };
+    let second_usage = SwarmUsage {
+        model_steps: 2,
+        output_bytes: 16,
+        execution_time_ms: 20,
+    };
+    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
+        .await
+        .expect("start budget");
+    let mut issuer = SwarmUsageReceiptIssuer::new(
+        LocalMeasuredUsageSequence::new("bootstrap-provider", [first_usage]),
+        session,
+        dispatch_id.clone(),
+    )
+    .expect("bootstrap issuer");
+    journal
+        .report_root_usage_with_receipt(&owner, issuer.issue().expect("bootstrap receipt"))
+        .await
+        .expect("bootstrap root receipt");
+    drop(journal);
+
+    let results = join_all((0..16).map(|index| {
+        let stream_path = stream_path.clone();
+        let owner = owner.clone();
+        let dispatch_id = dispatch_id.clone();
+        async move {
+            let provider = LocalStream::open(stream_path, LocalStreamLimits::default())
+                .await
+                .expect("independent local stream provider");
+            let client = StreamClient::new(Arc::new(provider));
+            let mut journal = SwarmBudgetJournal::open(&client, session)
+                .await
+                .expect("open independent journal");
+            let mut issuer = SwarmUsageReceiptIssuer::resume(
+                LocalMeasuredUsageSequence::new(
+                    format!("independent-provider-{index}"),
+                    [second_usage],
+                ),
+                session,
+                dispatch_id,
+                1,
+                Some(first_usage),
+            )
+            .expect("independent issuer");
+            journal
+                .report_root_usage_with_receipt(&owner, issuer.issue().expect("receipt"))
+                .await
+        }
+    }))
+    .await;
+    assert_eq!(
+        results.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "one CAS winner must publish the next cumulative receipt"
+    );
+    assert_eq!(
+        results.iter().filter(|result| result.is_err()).count(),
+        15,
+        "losing independent providers must not append competing receipts"
+    );
+
+    let reopened = SwarmBudgetJournal::open(&client, session)
+        .await
+        .expect("reopen budget");
+    assert_eq!(reopened.usage().expect("usage").consumed, second_usage);
+}
+
+#[test]
+fn replay_rejects_live_usage_that_exceeds_an_ancestor_ceiling() -> acyclic_harness::Result<()> {
+    let session_id = OperationId::new();
+    let owner = SwarmOwnerFence::new("worker-a", 0)?;
+    let limits = SwarmBudgetLimits {
+        max_active_agents: 8,
+        max_total_agents: 8,
+        max_recursion_depth: 3,
+        max_model_steps: 40,
+        max_output_bytes: 400,
+        max_execution_time_ms: 4_000,
+    };
+    let parent_resources = SwarmResourceRequest {
+        model_steps: 10,
+        output_bytes: 100,
+        execution_time_ms: 1_000,
+    };
+    let child_resources = parent_resources;
+    let grandchild_resources = SwarmResourceRequest {
+        model_steps: 4,
+        output_bytes: 40,
+        execution_time_ms: 400,
+    };
+    let projection = SwarmBudget::new(session_id, owner.clone(), limits)?;
+    let parent = projection
+        .reserve_child(ancestor_request(
+            OperationId::new(),
+            "ancestor-parent",
+            None,
+            1,
+            parent_resources,
+        ))?
+        .reservation;
+    let child = projection
+        .reserve_child(ancestor_request(
+            OperationId::new(),
+            "ancestor-child",
+            Some(parent.operation_id),
+            2,
+            child_resources,
+        ))?
+        .reservation;
+    let grandchild = projection
+        .reserve_child(ancestor_request(
+            OperationId::new(),
+            "ancestor-grandchild",
+            Some(child.operation_id),
+            3,
+            grandchild_resources,
+        ))?
+        .reservation;
+    let parent_dispatch = IdempotencyKey::new("ancestor-parent-dispatch")?;
+    let grandchild_dispatch = IdempotencyKey::new("ancestor-grandchild-dispatch")?;
+    let parent_usage = SwarmUsage {
+        model_steps: 10,
+        output_bytes: 100,
+        execution_time_ms: 1_000,
+    };
+    let grandchild_usage = SwarmUsage {
+        model_steps: 4,
+        output_bytes: 40,
+        execution_time_ms: 400,
+    };
+    let parent_receipt = SwarmUsageReceipt::new(
+        parent.operation_id,
+        parent_dispatch.clone(),
+        1,
+        parent_usage,
+        "parent-provider",
+    )?;
+    let grandchild_receipt = SwarmUsageReceipt::new(
+        grandchild.operation_id,
+        grandchild_dispatch.clone(),
+        1,
+        grandchild_usage,
+        "grandchild-provider",
+    )?;
+    let events = vec![
+        SwarmBudgetEvent::Started {
+            session_id,
+            owner: owner.clone(),
+            limits,
+        },
+        SwarmBudgetEvent::ChildReserved {
+            reservation: parent.clone(),
+        },
+        SwarmBudgetEvent::ChildReserved {
+            reservation: child.clone(),
+        },
+        SwarmBudgetEvent::ChildReserved {
+            reservation: grandchild.clone(),
+        },
+        SwarmBudgetEvent::ChildActivated {
+            operation_id: parent.operation_id,
+            owner: owner.clone(),
+            publication: publication(parent.operation_id, None),
+            dispatch_id: Some(parent_dispatch),
+        },
+        SwarmBudgetEvent::ChildActivated {
+            operation_id: child.operation_id,
+            owner: owner.clone(),
+            publication: publication(child.operation_id, Some(parent.operation_id)),
+            dispatch_id: Some(IdempotencyKey::new("ancestor-child-dispatch")?),
+        },
+        SwarmBudgetEvent::ChildActivated {
+            operation_id: grandchild.operation_id,
+            owner: owner.clone(),
+            publication: publication(grandchild.operation_id, Some(child.operation_id)),
+            dispatch_id: Some(grandchild_dispatch),
+        },
+        SwarmBudgetEvent::UsageReported {
+            operation_id: parent.operation_id,
+            owner: owner.clone(),
+            usage: parent_usage,
+            receipt: parent_receipt,
+        },
+        SwarmBudgetEvent::UsageReported {
+            operation_id: grandchild.operation_id,
+            owner,
+            usage: grandchild_usage,
+            receipt: grandchild_receipt,
+        },
+    ];
+    assert!(
+        SwarmBudget::replay(events).is_err(),
+        "live parent plus descendant usage must stay within each ancestor ceiling"
+    );
+    Ok(())
 }
