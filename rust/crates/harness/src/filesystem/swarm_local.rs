@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex as StdMutex, Weak},
+    sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
 };
 use tokio::sync::Mutex;
 
@@ -58,6 +58,55 @@ const REGISTRY_VERSION: u32 = 2;
 const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
+
+type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
+
+/// LocalStream journals are process-exclusive. Keep one authenticated provider
+/// handle per composition root so independently opened swarm handles observe
+/// the same journal and CAS boundary.
+static LOCAL_STREAM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalStream>>>> = OnceLock::new();
+static LOCAL_FILESYSTEM_CACHE: OnceLock<
+    Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>,
+> = OnceLock::new();
+
+async fn shared_local_stream(root: PathBuf) -> Result<StreamClient<LocalStream>> {
+    let cache = LOCAL_STREAM_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut cache = cache.lock().await;
+    if let Some(provider) = cache.get(&root).and_then(Weak::upgrade) {
+        return Ok(StreamClient::new(provider));
+    }
+    let provider = Arc::new(
+        LocalStream::open(&root, LocalStreamLimits::default())
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+    );
+    cache.retain(|_, provider| provider.strong_count() != 0);
+    cache.insert(root, Arc::downgrade(&provider));
+    Ok(StreamClient::new(provider))
+}
+
+async fn shared_local_filesystem(
+    root: PathBuf,
+    provider: ProviderRef,
+) -> Result<Arc<LocalFilesystemHost>> {
+    let cache = LOCAL_FILESYSTEM_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut cache = cache.lock().await;
+    if let Some(host) = cache.get(&root).and_then(Weak::upgrade) {
+        if host.provider == provider {
+            return Ok(host);
+        }
+        return Err(Error::Conflict(
+            "local filesystem root is already bound to another provider".into(),
+        ));
+    }
+    let filesystem = LocalFs::local(LocalOptions::new(&root))
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let host = Arc::new(FilesystemHost::new(filesystem, provider)?);
+    cache.retain(|_, host| host.strong_count() != 0);
+    cache.insert(root, Arc::downgrade(&host));
+    Ok(host)
+}
 
 /// Configuration for one persistent local swarm.
 #[derive(Clone, Debug)]
@@ -1950,18 +1999,10 @@ impl PersistentLocalSwarm {
                 )
             } else {
                 let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-                let host = Arc::new(FilesystemHost::new(
-                    LocalFs::local(LocalOptions::new(root.join("filesystem")))
-                        .await
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                    filesystem_provider,
-                )?);
+                let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider)
+                    .await?;
                 let stream_provider = ProviderRef::new("local", "stream", "2")?;
-                let stream = StreamClient::new(Arc::new(
-                    LocalStream::open(root.join("conversation"), LocalStreamLimits::default())
-                        .await
-                        .map_err(|error| Error::Storage(error.to_string()))?,
-                ));
+                let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
             };
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
@@ -1975,11 +2016,9 @@ impl PersistentLocalSwarm {
         } else {
             None
         };
-        let registry = StreamClient::new(Arc::new(
-            LocalStream::open(root.join("swarm"), LocalStreamLimits::default())
-                .await
-                .map_err(|error| Error::Storage(error.to_string()))?,
-        ));
+        // Keep the registry's durable path stable while sharing its exclusive
+        // local provider handle between same-root swarm instances.
+        let registry = shared_local_stream(root.join("swarm")).await?;
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -2450,7 +2489,7 @@ impl PersistentLocalSwarm {
     pub async fn cancel(&self, task: TaskId) -> Result<LocalSwarmSession> {
         let gate = self.task_gate(task).await;
         let _completion_guard = gate.lock().await;
-        self.refresh_registry_state().await?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
         let session = self.session(task).await?;
         if session.phase == LocalSessionPhase::Cancelled {
             return Ok(session);
@@ -2462,9 +2501,23 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(&registry, StoredEvent::ForkCancelled { child: task }).await?;
-        self.update_session(task, |current| current.phase = LocalSessionPhase::Cancelled)
-            .await?;
+        if let Err(error) = append_record_at(
+            &registry,
+            StoredEvent::ForkCancelled { child: task },
+            observed_tail,
+        )
+        .await
+        {
+            self.refresh_registry_state().await?;
+            let latest = self.session(task).await?;
+            if latest.phase == LocalSessionPhase::Cancelled {
+                return Ok(latest);
+            }
+            return Err(error);
+        }
+        if let Some(current) = self.records.lock().await.get_mut(&task) {
+            current.phase = LocalSessionPhase::Cancelled;
+        }
         if let Some(source) = &self.bindings.cancellation {
             let _ = source.cancel(task);
         }
@@ -2758,7 +2811,8 @@ impl PersistentLocalSwarm {
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         if new_admission {
-            let append = append_record(
+            let observed_tail = self.refresh_registry_state_with_tail().await?;
+            let append = append_record_at(
                 &registry,
                 StoredEvent::ForkAdmitted {
                     parent: request.parent,
@@ -2777,6 +2831,7 @@ impl PersistentLocalSwarm {
                     publication: Some(publication.clone()),
                     declaration: Some(declaration.clone()),
                 },
+                observed_tail,
             )
             .await;
             if let Err(error) = append {
@@ -2795,6 +2850,18 @@ impl PersistentLocalSwarm {
                 new_admission = false;
             }
             if new_admission {
+                self.refresh_registry_state().await?;
+                if self
+                    .records
+                    .lock()
+                    .await
+                    .get(&child)
+                    .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+                {
+                    return Err(Error::Conflict(
+                        "child operation was cancelled during admission".into(),
+                    ));
+                }
                 self.records.lock().await.insert(
                     child,
                     LocalSwarmSession {
@@ -2981,7 +3048,8 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        append_record_at(
             &registry,
             StoredEvent::ForkPrepared {
                 parent: request.parent,
@@ -3000,8 +3068,21 @@ impl PersistentLocalSwarm {
                 publication: Some(publication.clone()),
                 declaration: Some(declaration.clone()),
             },
+            observed_tail,
         )
         .await?;
+        self.refresh_registry_state().await?;
+        if self
+            .records
+            .lock()
+            .await
+            .get(&child)
+            .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+        {
+            return Err(Error::Conflict(
+                "child operation was cancelled during admission preparation".into(),
+            ));
+        }
         self.records.lock().await.insert(
             child,
             LocalSwarmSession {
@@ -3267,10 +3348,6 @@ impl PersistentLocalSwarm {
         .await?;
         self.refresh_registry_state().await?;
         self.outcomes.lock().await.insert(child, output.clone());
-        self.update_session(child, |session| {
-            session.phase = LocalSessionPhase::Completed;
-        })
-        .await?;
         Ok(LocalForkOutcome {
             child,
             operation: request.child_operation,
@@ -3526,6 +3603,19 @@ impl PersistentLocalSwarm {
     where
         F: FnOnce(&mut LocalSwarmSession),
     {
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        self.update_session_at(observed_tail, task, update).await
+    }
+
+    async fn update_session_at<F>(
+        &self,
+        observed_tail: u64,
+        task: TaskId,
+        update: F,
+    ) -> Result<()>
+    where
+        F: FnOnce(&mut LocalSwarmSession),
+    {
         let stream = self
             .registry
             .stream(REGISTRY_STREAM)
@@ -3536,7 +3626,12 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))?;
         let mut next = current.clone();
         update(&mut next);
-        append_record(&stream, StoredEvent::Session(next.clone().into())).await?;
+        append_record_at(
+            &stream,
+            StoredEvent::Session(next.clone().into()),
+            observed_tail,
+        )
+        .await?;
         *current = next;
         Ok(())
     }
@@ -3547,7 +3642,7 @@ impl PersistentLocalSwarm {
     /// the same operation is an acknowledgement of the already committed
     /// terminal state; a different operation or a cancellation is a conflict.
     async fn complete_session(&self, task: TaskId, operation: OperationId) -> Result<()> {
-        self.refresh_registry_state().await?;
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
         let current = self.session(task).await?;
         if current.phase == LocalSessionPhase::Cancelled {
             return Err(Error::Conflict(
@@ -3571,7 +3666,7 @@ impl PersistentLocalSwarm {
             ));
         }
         match self
-            .update_session(task, |session| {
+            .update_session_at(observed_tail, task, |session| {
                 session.operation = Some(operation);
                 session.phase = LocalSessionPhase::Completed;
             })
@@ -3608,10 +3703,19 @@ impl PersistentLocalSwarm {
     /// completion fence: a second handle sees an admission or cancellation
     /// committed by the first handle before it can dispatch or append again.
     async fn refresh_registry_state(&self) -> Result<()> {
+        self.refresh_registry_state_with_tail().await.map(|_| ())
+    }
+
+    async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
         let stream = self
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
+        let observed_tail = match stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
         let records = load_records(&stream).await?;
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
@@ -3644,7 +3748,7 @@ impl PersistentLocalSwarm {
         *self.declarations.lock().await = declarations;
         *self.outcomes.lock().await = outcomes;
         *self.completion_refs.lock().await = completion_refs;
-        Ok(())
+        Ok(observed_tail)
     }
 
     async fn mark_failed(&self, task: TaskId, reason: String) -> Result<()> {
@@ -3723,6 +3827,14 @@ async fn append_record(
         Err(StreamError::NotFound) => 0,
         Err(error) => return Err(Error::Storage(error.to_string())),
     };
+    append_record_at(stream, event, tail).await
+}
+
+async fn append_record_at(
+    stream: &acyclic_stream::Stream<LocalStream>,
+    event: StoredEvent,
+    observed_tail: u64,
+) -> Result<()> {
     let bytes = crate::contract::canonical_json_bytes(&StoredRecord {
         version: REGISTRY_VERSION,
         event,
@@ -3733,7 +3845,7 @@ async fn append_record(
         ));
     }
     match stream
-        .append_at(bytes, tail)
+        .append_at(bytes, observed_tail)
         .await
         .map_err(|error| Error::Storage(error.to_string()))?
     {
@@ -3760,7 +3872,24 @@ fn apply_record(
             if session.version != REGISTRY_VERSION {
                 return Err(Error::Conflict("unsupported local session version".into()));
             }
-            sessions.insert(session.task, session.into());
+            let next: LocalSwarmSession = session.into();
+            if let Some(existing) = sessions.get(&next.task) {
+                if existing.phase == LocalSessionPhase::Cancelled
+                    && next.phase != LocalSessionPhase::Cancelled
+                {
+                    return Err(Error::Conflict(
+                        "persisted session completion follows terminal cancellation".into(),
+                    ));
+                }
+                if existing.phase == LocalSessionPhase::Completed
+                    && next.phase == LocalSessionPhase::Cancelled
+                {
+                    return Err(Error::Conflict(
+                        "persisted session cancellation follows terminal completion".into(),
+                    ));
+                }
+            }
+            sessions.insert(next.task, next);
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
