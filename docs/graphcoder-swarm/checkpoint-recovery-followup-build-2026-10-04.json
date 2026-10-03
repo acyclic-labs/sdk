@@ -1,0 +1,18 @@
+{
+  "qualification": "incomplete",
+  "source": "2f04441d605b5e56001e2f793d0eb371e80f08e7",
+  "worktree": "recovery-fences-v3/sdk",
+  "handle": 60372,
+  "exit_code": 1,
+  "tests_executed": false,
+  "platform": "Windows native compilation",
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib -j2 --no-run",
+  "diagnostics": [
+    "E0425 host_execution.rs:1235 missing ChildStdout import",
+    "E0425 host_execution.rs:1244 missing ChildStderr import",
+    "E0422 host_execution.rs:4528 CancellationUnknownRunner inaccessible from this test module",
+    "E0308 host_execution.rs:4639 concrete receipt store Arc clone does not coerce to trait Arc",
+    "E0308 host_execution.rs:4666 concrete receipt store Arc clone does not coerce to trait Arc"
+  ],
+  "scope": "Windows unsafe lint repair compiled; Harness stack remains unqualified until these production and test compilation errors are fixed and native subprocess tests execute."
+}
