@@ -2340,6 +2340,60 @@ impl PersistentLocalSwarm {
         Ok(())
     }
 
+    /// Commits an authenticated operator decision through the durable
+    /// interaction journal. The ticket supplies the operation and action
+    /// digest; callers cannot provide a replacement binding or mint a scope
+    /// from the boolean decision.
+    pub async fn resolve_authenticated_operator_approval(
+        &self,
+        task: TaskId,
+        id: InteractionId,
+        approved: bool,
+    ) -> Result<InteractionOutcome> {
+        let approval = self
+            .list_approvals(task)
+            .await?
+            .into_iter()
+            .find(|approval| approval.ticket.id == id)
+            .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if let Some(resolution) = approval.resolution {
+            let matches = match &resolution.outcome {
+                InteractionOutcome::Approved => approved,
+                InteractionOutcome::Declined => !approved,
+                _ => false,
+            };
+            return if matches {
+                Ok(resolution.outcome)
+            } else {
+                Err(Error::Conflict(
+                    "approval retry changes the previously committed decision".into(),
+                ))
+            };
+        }
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("approval ticket has no exact operation binding".into())
+        })?;
+        let operator = self.interaction_operator_authorizer(task).await?;
+        let responder = operator
+            .issue_scope(&InteractionApprovalAuthorization {
+                interaction_id: id,
+                operation_id: binding.operation_id,
+                action_digest: binding.action_digest,
+                approved,
+            })
+            .await?;
+        self.resolve_approval(
+            task,
+            id,
+            InteractionResponse::Approval {
+                approved,
+                reason: None,
+            },
+            &responder,
+        )
+        .await
+    }
+
     /// Resolves a decision recorded by the host operator boundary. The signer
     /// is selected from the exact task and revalidates the immutable ticket
     /// before the existing storage resolver commits the interaction.
@@ -2355,6 +2409,20 @@ impl PersistentLocalSwarm {
             .into_iter()
             .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
             .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
+        if let Some(resolution) = &approval.resolution {
+            let matches = match &resolution.outcome {
+                InteractionOutcome::Approved => approved,
+                InteractionOutcome::Declined => !approved,
+                _ => false,
+            };
+            return if matches {
+                Ok(resolution.outcome.clone())
+            } else {
+                Err(Error::Unauthorized(
+                    "operator choice does not match the committed approval".into(),
+                ))
+            };
+        }
         let binding = approval.ticket.approval.ok_or_else(|| {
             Error::Invalid("approval ticket has no exact operation binding".into())
         })?;
@@ -4626,6 +4694,56 @@ mod tests {
                 .resolve_recorded_operator_approval(task, interaction, false)
                 .await?,
             InteractionOutcome::Declined
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authenticated_operator_resolution_is_durable_and_idempotent() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let interaction = InteractionId::new();
+        let operation = OperationId::new();
+        let action_digest = [0x73; 32];
+        swarm
+            .open_session(task)
+            .await?
+            .storage()
+            .open_interaction(
+                interaction,
+                Interaction::approval("approve durable action", operation, action_digest)?,
+            )
+            .await?;
+
+        assert!(matches!(
+            swarm
+                .resolve_authenticated_operator_approval(task, interaction, false)
+                .await?,
+            InteractionOutcome::Declined
+        ));
+        assert!(matches!(
+            swarm
+                .resolve_recorded_operator_approval(task, interaction, false)
+                .await?,
+            InteractionOutcome::Declined
+        ));
+        assert!(matches!(
+            swarm
+                .resolve_authenticated_operator_approval(task, interaction, true)
+                .await,
+            Err(Error::Conflict(_))
         ));
         Ok(())
     }

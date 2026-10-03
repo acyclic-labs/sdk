@@ -646,7 +646,7 @@ impl Runtime {
             .and_then(Value::as_bool)
             .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
         self.swarm
-            .record_operator_approval(task, id, approved)
+            .resolve_authenticated_operator_approval(task, id, approved)
             .await
             .map_err(DispatchError::from_harness)?;
         Ok(json!({
