@@ -151,7 +151,9 @@ dependencies = [
 name = "acyclic-graphcoder-cli"
 version = "0.2.0"
 dependencies = [
+ "acyclic-fs",
  "acyclic-harness",
+ "acyclic-stream",
  "blake3",
  "clap",
  "futures",
