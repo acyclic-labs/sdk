@@ -3555,12 +3555,16 @@ impl TaskContext {
                 (used < step_bound).then_some(used + 1)
             })
             .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
-        let request = ModelRequest {
-            model: binding.model.clone(),
-            messages,
-            tools,
-            max_output_tokens,
-        };
+        let request = crate::model_input::PreparedModelInput::prepare(
+            ModelRequest {
+                model: binding.model.clone(),
+                messages,
+                tools,
+                max_output_tokens,
+            },
+            self.scope.limits(),
+        )?
+        .into_request();
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;

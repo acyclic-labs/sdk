@@ -40,6 +40,7 @@ pub mod machines;
 pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
+pub mod model_input;
 #[cfg(feature = "objects")]
 pub mod objects;
 pub mod projection;

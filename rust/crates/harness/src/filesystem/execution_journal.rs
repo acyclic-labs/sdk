@@ -264,6 +264,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         let refs: Vec<&FileRef> = match event {
+            ExecutionEvent::ModelInputPrepared { manifest, .. } => vec![manifest],
             ExecutionEvent::Model { event, .. } => vec![event],
             ExecutionEvent::ToolStarted { invocation, .. } => vec![invocation],
             ExecutionEvent::ToolCompleted {

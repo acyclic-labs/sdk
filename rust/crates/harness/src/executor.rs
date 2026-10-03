@@ -91,6 +91,14 @@ pub enum ExecutionEvent {
         /// Digest of the input, stock executor version, model, stages, and tools.
         request_digest: [u8; 32],
     },
+    /// Exact model-input manifest committed before provider dispatch.
+    ModelInputPrepared {
+        /// Zero-based executor step.
+        step: u32,
+        /// Private immutable file containing the ordered input manifest.
+        manifest: FileRef,
+    },
+
     /// A model request identity committed before provider dispatch.
     ModelStarted {
         /// Zero-based executor step.
@@ -425,22 +433,41 @@ impl StockExecutor {
                 replayed_model.push(event);
             }
         }
-        let request = ModelRequest {
-            model: self.model.clone(),
-            messages: context.messages,
-            tools: self
-                .tools
-                .definitions()?
-                .into_iter()
-                .filter(|tool| {
-                    self.tool_scope
-                        .grants()
-                        .contains(&format!("tool:call:{}", tool.name))
-                })
-                .collect(),
-            max_output_tokens: None,
-        };
-        let request_digest = model_request_digest(&request)?;
+        let prepared = crate::model_input::PreparedModelInput::prepare(
+            ModelRequest {
+                model: self.model.clone(),
+                messages: context.messages,
+                tools: self
+                    .tools
+                    .definitions()?
+                    .into_iter()
+                    .filter(|tool| {
+                        self.tool_scope
+                            .grants()
+                            .contains(&format!("tool:call:{}", tool.name))
+                    })
+                    .collect(),
+                max_output_tokens: None,
+            },
+            self.limits,
+        )?;
+        let request_digest = prepared.manifest().request_digest;
+        let manifest_key = format!("model:{step}:input");
+        let manifest = stage_json(
+            journal,
+            input.operation_id,
+            &manifest_key,
+            prepared.manifest(),
+        )
+        .await?;
+        journal
+            .append(
+                input.operation_id,
+                manifest_key,
+                ExecutionEvent::ModelInputPrepared { step, manifest },
+            )
+            .await?;
+        let request = prepared.into_request();
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ModelStarted {
                 step: event_step,
@@ -1099,10 +1126,6 @@ impl Executor for StockExecutor {
             Err(Error::Conflict("executor step limit reached".into()))
         })
     }
-}
-
-fn model_request_digest(request: &ModelRequest) -> Result<[u8; 32]> {
-    crate::contract::canonical_json_digest(request)
 }
 
 pub(crate) async fn stage_json<T: Serialize>(
