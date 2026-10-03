@@ -173,6 +173,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
                 "fork preparation is not at the bound parent revision".into(),
             ));
         }
+        let conversation = self
+            .parent
+            .conversation()
+            .ok_or_else(|| Error::Invalid("fork parent has no conversation state".into()))?;
+        if request.preparation.inherited_through_sequence > conversation.messages.len() as u64 {
+            return Err(Error::Invalid(
+                "fork inherited prefix exceeds parent conversation".into(),
+            ));
+        }
         Ok(())
     }
 

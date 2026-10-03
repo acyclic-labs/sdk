@@ -827,7 +827,6 @@ pub struct LocalModelForkPlans {
     plans: Mutex<BTreeMap<(OperationId, OperationId), LocalModelForkPlan>>,
     intents: Mutex<BTreeMap<(OperationId, OperationId), LocalForkIntent>>,
     issuer_bindings: Mutex<BTreeMap<(OperationId, OperationId), [u8; 32]>>,
-    completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
     resolver: Option<Arc<dyn LocalModelForkResolver>>,
     journal: Mutex<Option<StreamClient<LocalStream>>>,
 }
@@ -838,7 +837,6 @@ impl Default for LocalModelForkPlans {
             plans: Mutex::new(BTreeMap::new()),
             intents: Mutex::new(BTreeMap::new()),
             issuer_bindings: Mutex::new(BTreeMap::new()),
-            completed: Mutex::new(BTreeMap::new()),
             resolver: None,
             journal: Mutex::new(None),
         }
@@ -868,70 +866,88 @@ impl LocalModelForkPlans {
         Ok(())
     }
 
+    fn apply_intent_record(
+        event: StoredEvent,
+        intents: &mut BTreeMap<(OperationId, OperationId), LocalForkIntent>,
+        issuer_bindings: &mut BTreeMap<(OperationId, OperationId), [u8; 32]>,
+    ) -> Result<()> {
+        match event {
+            StoredEvent::ForkIntent { intent } => {
+                let key = (intent.fork_operation, intent.child_operation);
+                if let Some(existing) = intents.get(&key)
+                    && existing != &intent
+                {
+                    return Err(Error::Conflict(
+                        "durable model fork intent changed during recovery".into(),
+                    ));
+                }
+                intents.insert(key, intent);
+            }
+            StoredEvent::ForkIntentSelected {
+                intent,
+                issuer_digest,
+            } => {
+                let key = (intent.fork_operation, intent.child_operation);
+                if let Some(existing) = intents.get(&key)
+                    && existing != &intent
+                {
+                    return Err(Error::Conflict(
+                        "durable model fork intent changed during recovery".into(),
+                    ));
+                }
+                intents.insert(key, intent);
+                if let Some(digest) = issuer_digest {
+                    Self::apply_issuer_binding(key, digest, issuer_bindings)?;
+                }
+            }
+            StoredEvent::ForkIssuerBinding {
+                operation,
+                child_operation,
+                digest,
+            } => {
+                Self::apply_issuer_binding(
+                    (operation, child_operation),
+                    digest,
+                    issuer_bindings,
+                )?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn apply_issuer_binding(
+        key: (OperationId, OperationId),
+        digest: [u8; 32],
+        issuer_bindings: &mut BTreeMap<(OperationId, OperationId), [u8; 32]>,
+    ) -> Result<()> {
+        if digest == [0; 32] {
+            return Err(Error::Conflict(
+                "persisted local fork issuer binding is empty".into(),
+            ));
+        }
+        if let Some(existing) = issuer_bindings.get(&key)
+            && existing != &digest
+        {
+            return Err(Error::Conflict(
+                "durable model fork issuer binding changed during recovery".into(),
+            ));
+        }
+        issuer_bindings.insert(key, digest);
+        Ok(())
+    }
+
     /// Binds the owner registry used to persist model-selected intents before
     /// the provider publication callback is entered.
     pub async fn bind_journal(&self, registry: StreamClient<LocalStream>) -> Result<()> {
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        for record in load_records(&stream).await? {
-            match record.event {
-                StoredEvent::ForkIntent { intent } => {
-                    let key = (intent.fork_operation, intent.child_operation);
-                    let mut intents = self.intents.lock().await;
-                    if let Some(existing) = intents.get(&key)
-                        && existing != &intent
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork intent changed during recovery".into(),
-                        ));
-                    }
-                    intents.insert(key, intent);
-                }
-                StoredEvent::ForkIntentSelected {
-                    intent,
-                    issuer_digest,
-                } => {
-                    let key = (intent.fork_operation, intent.child_operation);
-                    let mut intents = self.intents.lock().await;
-                    if let Some(existing) = intents.get(&key)
-                        && existing != &intent
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork intent changed during recovery".into(),
-                        ));
-                    }
-                    intents.insert(key, intent);
-                    if let Some(issuer_digest) = issuer_digest {
-                        let mut bindings = self.issuer_bindings.lock().await;
-                        if let Some(existing) = bindings.get(&key)
-                            && existing != &issuer_digest
-                        {
-                            return Err(Error::Conflict(
-                                "durable model fork issuer binding changed during recovery".into(),
-                            ));
-                        }
-                        bindings.insert(key, issuer_digest);
-                    }
-                }
-                StoredEvent::ForkIssuerBinding {
-                    operation,
-                    child_operation,
-                    digest,
-                } => {
-                    let key = (operation, child_operation);
-                    let mut bindings = self.issuer_bindings.lock().await;
-                    if let Some(existing) = bindings.get(&key)
-                        && existing != &digest
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork issuer binding changed during recovery".into(),
-                        ));
-                    }
-                    bindings.insert(key, digest);
-                }
-                _ => {}
-            }
+        let records = load_records(&stream).await?;
+        let mut intents = self.intents.lock().await;
+        let mut issuer_bindings = self.issuer_bindings.lock().await;
+        for record in records {
+            Self::apply_intent_record(record.event, &mut intents, &mut issuer_bindings)?;
         }
         *self.journal.lock().await = Some(registry);
         Ok(())
@@ -972,70 +988,7 @@ impl LocalModelForkPlans {
         let mut intents = self.intents.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
         for record in records {
-            match record.event {
-                StoredEvent::ForkIntent { intent } => {
-                    let key = (intent.fork_operation, intent.child_operation);
-                    if let Some(existing) = intents.get(&key)
-                        && existing != &intent
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork intent changed during recovery".into(),
-                        ));
-                    }
-                    intents.insert(key, intent);
-                }
-                StoredEvent::ForkIntentSelected {
-                    intent,
-                    issuer_digest,
-                } => {
-                    let key = (intent.fork_operation, intent.child_operation);
-                    if let Some(existing) = intents.get(&key)
-                        && existing != &intent
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork intent changed during recovery".into(),
-                        ));
-                    }
-                    intents.insert(key, intent);
-                    if let Some(digest) = issuer_digest {
-                        if digest == [0; 32] {
-                            return Err(Error::Conflict(
-                                "persisted local fork issuer binding is empty".into(),
-                            ));
-                        }
-                        if let Some(existing) = issuer_bindings.get(&key)
-                            && existing != &digest
-                        {
-                            return Err(Error::Conflict(
-                                "durable model fork issuer binding changed during recovery"
-                                    .into(),
-                            ));
-                        }
-                        issuer_bindings.insert(key, digest);
-                    }
-                }
-                StoredEvent::ForkIssuerBinding {
-                    operation,
-                    child_operation,
-                    digest,
-                } => {
-                    let key = (operation, child_operation);
-                    if digest == [0; 32] {
-                        return Err(Error::Conflict(
-                            "persisted local fork issuer binding is empty".into(),
-                        ));
-                    }
-                    if let Some(existing) = issuer_bindings.get(&key)
-                        && existing != &digest
-                    {
-                        return Err(Error::Conflict(
-                            "durable model fork issuer binding changed during recovery".into(),
-                        ));
-                    }
-                    issuer_bindings.insert(key, digest);
-                }
-                _ => {}
-            }
+            Self::apply_intent_record(record.event, &mut intents, &mut issuer_bindings)?;
         }
         Ok(())
     }
@@ -1101,6 +1054,7 @@ impl LocalModelForkPlans {
     }
 
     async fn resolve_intents(&self, publication: ModelBatchPublication) -> Result<Vec<LocalModelForkPlan>> {
+        self.refresh_intents_from_journal().await?;
         let intents = self
             .intents
             .lock()
@@ -1200,21 +1154,17 @@ impl LocalModelForkPlans {
             .any(|intent| intent.publication_operation == Some(operation))
     }
 
-    async fn mark_completed(&self, operation: OperationId, digest: [u8; 32]) -> Result<()> {
-        let mut completed = self.completed.lock().await;
-        if let Some(existing) = completed.get(&operation)
-            && existing != &digest
-        {
-            return Err(Error::Conflict(
-                "model fork publication result changed on retry".into(),
-            ));
-        }
-        completed.insert(operation, digest);
-        Ok(())
-    }
-
-    async fn completed(&self, operation: OperationId) -> Option<[u8; 32]> {
-        self.completed.lock().await.get(&operation).copied()
+    async fn expected_children_for_publication(
+        &self,
+        operation: OperationId,
+    ) -> Result<BTreeSet<TaskId>> {
+        self.refresh_intents_from_journal().await?;
+        let intents = self.intents.lock().await;
+        Ok(intents
+            .values()
+            .filter(|intent| intent.publication_operation == Some(operation))
+            .map(|intent| TaskId::from_bytes(intent.child_operation.into_bytes()))
+            .collect())
     }
 
     async fn replay_intent(
@@ -1392,12 +1342,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     )
                     .await?;
             }
-            self.plans
-                .mark_completed(
-                    publication.operation_id,
-                    crate::contract::canonical_json_digest(&publication)?,
-                )
-                .await
+            Ok(())
         })
     }
 
@@ -1407,22 +1352,34 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
     ) -> BoxFuture<'a, Result<Option<()>>> {
         Box::pin(async move {
             let plans = self.plans.get_for_publication(publication.operation_id).await;
+            let mut expected = self
+                .plans
+                .expected_children_for_publication(publication.operation_id)
+                .await?;
             if plans.is_empty() {
                 if !self.plans.has_intent(publication.operation_id).await {
                     return Ok(Some(()));
                 }
-                return Ok(None);
-            }
-            let digest = crate::contract::canonical_json_digest(&publication)?;
-            if self.plans.completed(publication.operation_id).await == Some(digest) {
-                return Ok(Some(()));
-            }
-            for plan in plans {
-                if publication.operation_id != plan.publication_operation {
-                    return Err(Error::Conflict(
-                        "reconciled model publication does not match its fork plan".into(),
+            } else {
+                for plan in &plans {
+                    if publication.operation_id != plan.publication_operation {
+                        return Err(Error::Conflict(
+                            "reconciled model publication does not match its fork plan".into(),
+                        ));
+                    }
+                    expected.insert(TaskId::from_bytes(
+                        plan.request.child_operation.into_bytes(),
                     ));
                 }
+            }
+            let Some(swarm) = self.target()? else {
+                return Ok(None);
+            };
+            if swarm
+                .model_publication_completed(&publication, &expected)
+                .await?
+            {
+                return Ok(Some(()));
             }
             Ok(None)
         })
@@ -4484,6 +4441,33 @@ impl PersistentLocalSwarm {
         Ok(observed_tail)
     }
 
+    /// Reports whether every child selected by one model publication has a
+    /// durable completion record. Publisher reconciliation uses this registry
+    /// projection so a cold reopen does not trust a process-local cache.
+    async fn model_publication_completed(
+        &self,
+        publication: &ModelBatchPublication,
+        expected_children: &BTreeSet<TaskId>,
+    ) -> Result<bool> {
+        if expected_children.is_empty() {
+            return Ok(false);
+        }
+        self.refresh_registry_state().await?;
+        let sessions = self.records.lock().await.clone();
+        let publications = self.publications.lock().await.clone();
+        let outcomes = self.outcomes.lock().await.clone();
+        let completion_refs = self.completion_refs.lock().await.clone();
+        Ok(expected_children.iter().all(|child| {
+            publications
+                .get(child)
+                .is_some_and(|stored| stored == publication)
+                && sessions
+                    .get(child)
+                    .is_some_and(|session| session.phase == LocalSessionPhase::Completed)
+                && (outcomes.contains_key(child) || completion_refs.contains_key(child))
+        }))
+    }
+
     async fn mark_failed(&self, task: TaskId, reason: String) -> Result<()> {
         let bounded = reason.chars().take(512).collect::<String>();
         let observed_tail = self.refresh_registry_state_with_tail().await?;
@@ -4701,8 +4685,14 @@ fn apply_record(
                 }
                 match (&existing.phase, &next.phase) {
                     (LocalSessionPhase::Completed, LocalSessionPhase::Completed)
-                    | (LocalSessionPhase::Cancelled, LocalSessionPhase::Cancelled)
-                    | (LocalSessionPhase::Failed(_), LocalSessionPhase::Failed(_)) => {}
+                    | (LocalSessionPhase::Cancelled, LocalSessionPhase::Cancelled) => {}
+                    (LocalSessionPhase::Failed(existing), LocalSessionPhase::Failed(next)) => {
+                        if existing != next {
+                            return Err(Error::Conflict(
+                                "persisted session failure reason changed".into(),
+                            ));
+                        }
+                    }
                     (LocalSessionPhase::Completed, _)
                     | (LocalSessionPhase::Cancelled, _)
                     | (LocalSessionPhase::Failed(_), _) => {
