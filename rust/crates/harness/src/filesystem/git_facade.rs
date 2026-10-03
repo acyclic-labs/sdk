@@ -268,6 +268,24 @@ impl<S> FilesystemGitFacade<S> {
         controller.prepare_project_merge(child).await
     }
 
+    /// Inspects only a child whose fork was published by this parent
+    /// conversation. The reducer check is part of the facade boundary so a
+    /// grandchild or sibling volume cannot be routed by capability alone.
+    pub async fn prepare_project_merge_for_child<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+    ) -> Result<ParentMergePlan<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child(parent, child, child_project)?;
+        self.prepare_project_merge(host, parent, child_project).await
+    }
+
     /// Publishes a previously inspected direct-child plan under parent authority.
     pub async fn apply_project_merge<A, O>(
         &self,
@@ -288,6 +306,28 @@ impl<S> FilesystemGitFacade<S> {
             self.volume.clone(),
         )?;
         controller.apply_project_merge(plan, operation_id).await
+    }
+
+    /// Publishes a plan only after rechecking the direct-child fork boundary.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "publication keeps parent, child, plan, and operation identities explicit"
+    )]
+    pub async fn apply_project_merge_for_child<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child(parent, child, child_project)?;
+        self.apply_project_merge(host, parent, plan, operation_id).await
     }
 
     /// Converts a successful provider join into the authenticated Harness
@@ -370,6 +410,26 @@ impl<S> FilesystemGitFacade<S> {
             .await
     }
 
+    /// Resolves a plan only after rechecking direct-child lineage.
+    pub async fn apply_project_merge_sides_for_child<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child(parent, child, child_project)?;
+        self.apply_project_merge_sides(host, parent, plan, operation_id, selections)
+            .await
+    }
+
     /// Resolves conflicts with registered immutable-input drivers.
     #[allow(
         clippy::too_many_arguments,
@@ -415,6 +475,82 @@ impl<S> FilesystemGitFacade<S> {
         notice: &ConversationMessage,
         selections: &[ProjectConflictSelection],
     ) -> Result<ProjectJoinOutcome> {
+        self.verify_root_writeback(
+            request,
+            plan.source_generation(),
+            plan.expected_target_generation(),
+        )?;
+        plan.apply(
+            &request.scope,
+            request.approval.operation_id,
+            child,
+            notice,
+            selections,
+        )
+        .await
+    }
+
+    /// Applies an inspected native Filesystem join only with the same exact
+    /// approval used by the model-facing writeback boundary.  This keeps the
+    /// durable provider plan behind the facade while still binding approval
+    /// to immutable source and target generations.
+    pub async fn apply_root_writeback_plan<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let source = host.generation_ref_id(plan.source_head())?;
+        let target = host.generation_ref_id(plan.target_head())?;
+        self.verify_root_writeback(request, &source, &target)?;
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller
+            .apply_project_merge_sides(plan, request.approval.operation_id, selections)
+            .await
+    }
+
+    /// Approved native writeback with a final direct-parent lineage fence.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "approved writeback keeps all authority and generation inputs explicit"
+    )]
+    pub async fn apply_root_writeback_plan_for_child<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+        plan: &ParentMergePlan<A, O>,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        self.authorize_direct_child(parent, child, child_project)?;
+        self.apply_root_writeback_plan(request, host, parent, plan, selections)
+            .await
+    }
+
+    fn verify_root_writeback(
+        &self,
+        request: &RootWritebackRequest,
+        source: &GenerationRef,
+        target: &GenerationRef,
+    ) -> Result<()> {
         self.verifier.verify(&request.scope)?;
         if request.scope.id() != request.approval.scope_id
             || request.scope != self.scope
@@ -427,21 +563,44 @@ impl<S> FilesystemGitFacade<S> {
                 "root writeback approval belongs to another scope".into(),
             ));
         }
-        if plan.source_generation() != &request.approval.source_generation
-            || plan.expected_target_generation() != &request.approval.expected_target_generation
+        if source != &request.approval.source_generation
+            || target != &request.approval.expected_target_generation
         {
             return Err(Error::Conflict(
                 "root writeback approval does not match inspected plan".into(),
             ));
         }
-        plan.apply(
-            &request.scope,
-            request.approval.operation_id,
-            child,
-            notice,
-            selections,
-        )
-        .await
+        Ok(())
+    }
+
+    fn authorize_direct_child(
+        &self,
+        parent: &Reducer,
+        child: &Authority,
+        child_project: &VolumeRef,
+    ) -> Result<()> {
+        if child.kind != crate::core::AggregateKind::Conversation {
+            return Err(Error::Invalid("project join child is not a conversation".into()));
+        }
+        child.stream_path()?;
+        let seed = parent.fork(child).ok_or_else(|| {
+            Error::Unauthorized("project join child has no published parent fork".into())
+        })?;
+        seed.validate()?;
+        if !seed.resources.iter().any(|resource| {
+            matches!(
+                (&resource.source, &resource.revision),
+                (
+                    crate::fork::ResourceRevision::Project { volume: source, .. },
+                    crate::fork::ResourceRevision::Project { volume: forked, .. }
+                ) if source == &self.volume && forked == child_project
+            )
+        }) {
+            return Err(Error::Unauthorized(
+                "project join is outside the published direct fork".into(),
+            ));
+        }
+        Ok(())
     }
 
     fn require_write(&self) -> Result<()> {

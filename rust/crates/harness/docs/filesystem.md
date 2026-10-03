@@ -84,6 +84,14 @@ lineage, signed scope ownership, generation pinning, and provider CAS checks
 remain in Filesystem. Applications do not need a second model-facing schema
 for these operations.
 
+Use the `*_for_child` variants when a model-facing request carries a child
+conversation identity. They revalidate that the current parent reducer has a
+published direct fork whose project resource matches the requested child
+volume; possessing a project capability alone cannot authorize sibling or
+grandchild promotion. Native approved writeback uses the same lineage fence,
+operation identity, and immutable source/target generation approval, and a
+retry of a completed provider operation reconciles to its durable result.
+
 Root writeback is a separate explicit boundary. `RootWritebackApproval` binds
 one operation ID to the inspected child generation and expected root target,
 and requires the parent scope's `project:writeback` grant. The approval is
