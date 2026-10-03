@@ -1,0 +1,425 @@
+//! Stream backed durability for [`crate::swarm_budget::SwarmBudget`].
+//!
+//! The Stream tail is the authority for admission ordering.  The in-memory
+//! projection is rebuilt from that tail and is only used to validate the next
+//! transition.  This keeps a process mutex from becoming a second admission
+//! ledger when two local runtimes race to reserve a child.
+
+use crate::{
+    Error, OperationId, Result,
+    contract::canonical_json_bytes,
+    swarm_budget::{
+        ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
+        SwarmBudgetUsage, SwarmDispatchToken, SwarmForkRequest, SwarmForkReservation,
+        SwarmOwnerFence, SwarmUsage,
+    },
+};
+use acyclic_stream::{
+    AppendOutcome, IdempotencyKey as StreamKey, Stream, StreamClient, StreamError, StreamProvider,
+};
+use bytes::Bytes;
+use serde::{Deserialize, Serialize};
+use std::future::Future;
+
+const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
+const MAX_RECORDS: u64 = 1_000_000;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetRecord {
+    revision: u64,
+    event_digest: [u8; 32],
+    event: SwarmBudgetEvent,
+}
+
+/// A durable session budget whose Stream tail is the authoritative CAS ledger.
+pub struct SwarmBudgetJournal<P> {
+    stream: Stream<P>,
+    session_id: OperationId,
+    revision: u64,
+    events: Vec<SwarmBudgetEvent>,
+    budget: SwarmBudget,
+}
+
+impl<P: StreamProvider> SwarmBudgetJournal<P> {
+    /// Opens and replays an existing session budget.
+    pub async fn open(client: &StreamClient<P>, session_id: OperationId) -> Result<Self> {
+        let stream = stream_for(client, session_id)?;
+        let events = read_events(&stream).await?;
+        let budget = SwarmBudget::replay(events.clone())?;
+        let (stored_session, _, _) = budget.descriptor()?;
+        if stored_session != session_id {
+            return Err(Error::Conflict(
+                "swarm budget session identity differs".into(),
+            ));
+        }
+        Ok(Self {
+            stream,
+            session_id,
+            revision: events.len() as u64,
+            events,
+            budget,
+        })
+    }
+
+    /// Creates a session with a durable root admission, or reopens an exact
+    /// existing session after a restart.
+    pub async fn start(
+        client: &StreamClient<P>,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        limits: SwarmBudgetLimits,
+    ) -> Result<Self> {
+        let stream = stream_for(client, session_id)?;
+        let tail = match stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        if tail != 0 {
+            return Self::open(client, session_id).await;
+        }
+        let event = SwarmBudgetEvent::Started {
+            session_id,
+            owner,
+            limits,
+        };
+        match append_record(&stream, 0, &event, session_id).await {
+            Ok(()) => Self::open(client, session_id).await,
+            Err(Error::Conflict(_)) => {
+                let reopened = Self::open(client, session_id).await?;
+                let (_, observed_owner, observed_limits) = reopened.descriptor()?;
+                if observed_owner == event_owner(&event)? && observed_limits == limits {
+                    Ok(reopened)
+                } else {
+                    Err(Error::Conflict("swarm session descriptor differs".into()))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Returns the current immutable session descriptor.
+    pub fn descriptor(&self) -> Result<(OperationId, SwarmOwnerFence, SwarmBudgetLimits)> {
+        self.budget.descriptor()
+    }
+
+    /// Returns the current usage projection.
+    pub fn usage(&self) -> Result<SwarmBudgetUsage> {
+        self.budget.usage()
+    }
+
+    /// Returns a reservation snapshot for recovery and dispatch reconciliation.
+    pub fn reservation(&self, operation_id: OperationId) -> Result<Option<SwarmForkReservation>> {
+        self.budget.reservation(operation_id)
+    }
+
+    /// Reloads all committed records from the provider's current tail.
+    pub async fn refresh(&mut self) -> Result<()> {
+        let events = read_events(&self.stream).await?;
+        let budget = SwarmBudget::replay(events.clone())?;
+        let (stored_session, _, _) = budget.descriptor()?;
+        if stored_session != self.session_id {
+            return Err(Error::Conflict(
+                "swarm budget session identity differs".into(),
+            ));
+        }
+        self.revision = events.len() as u64;
+        self.events = events;
+        self.budget = budget;
+        Ok(())
+    }
+
+    /// Persists a child reservation before any fork or model dispatch.
+    pub async fn reserve_child(
+        &mut self,
+        request: SwarmForkRequest,
+    ) -> Result<SwarmAdmissionReceipt> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let receipt = projected.reserve_child(request)?;
+        if receipt.replayed {
+            return Ok(receipt);
+        }
+        self.commit(receipt.durable_event(), receipt.reservation.operation_id)
+            .await?;
+        self.budget
+            .reservation(receipt.reservation.operation_id)?
+            .map(|reservation| SwarmAdmissionReceipt {
+                reservation,
+                replayed: false,
+            })
+            .ok_or_else(|| Error::Storage("committed swarm reservation is missing".into()))
+    }
+
+    /// Activates a reservation only after complete fork publication evidence.
+    pub async fn activate(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: ForkPublication,
+    ) -> Result<SwarmDispatchToken> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let token = projected.activate(operation_id, owner, publication)?;
+        self.commit(
+            SwarmBudgetEvent::ChildActivated {
+                operation_id,
+                owner: token.owner.clone(),
+                publication: token.publication(),
+            },
+            operation_id,
+        )
+        .await?;
+        Ok(token)
+    }
+
+    /// Activates a published child and invokes the production dispatcher.
+    ///
+    /// Activation is durably committed before `dispatch` is called. If the
+    /// dispatcher rejects the token, the active reservation is cancelled and
+    /// only its unconsumed allocation is released. A failed cancellation is
+    /// reported as indeterminate so recovery can reconcile the durable tail.
+    pub async fn dispatch_after_publication<F, Fut, T>(
+        &mut self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+        publication: ForkPublication,
+        dispatch: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(SwarmDispatchToken) -> Fut,
+        Fut: Future<Output = Result<T>>,
+    {
+        let token = self
+            .activate(operation_id, owner.clone(), publication)
+            .await?;
+        match dispatch(token).await {
+            Ok(value) => Ok(value),
+            Err(error) => match self.cancel(operation_id, &owner).await {
+                Ok(_) => Err(error),
+                Err(_) => Err(Error::Indeterminate(operation_id)),
+            },
+        }
+    }
+
+    /// Persists cumulative usage without refunding consumed resources.
+    pub async fn report_usage(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmForkReservation> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let reservation = projected.report_usage(operation_id, owner, usage)?;
+        self.commit(
+            SwarmBudgetEvent::UsageReported {
+                operation_id,
+                owner: owner.clone(),
+                usage,
+            },
+            operation_id,
+        )
+        .await?;
+        Ok(reservation)
+    }
+
+    /// Completes a child and releases only the unconsumed reservation.
+    pub async fn complete(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmForkReservation> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let reservation = projected.complete(operation_id, owner, usage)?;
+        self.commit(
+            SwarmBudgetEvent::ChildCompleted {
+                operation_id,
+                owner: owner.clone(),
+                usage,
+            },
+            operation_id,
+        )
+        .await?;
+        Ok(reservation)
+    }
+
+    /// Cancels a child while retaining consumed usage in the total budget.
+    pub async fn cancel(
+        &mut self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+    ) -> Result<SwarmForkReservation> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let reservation = projected.cancel(operation_id, owner)?;
+        self.commit(
+            SwarmBudgetEvent::ChildCancelled {
+                operation_id,
+                owner: owner.clone(),
+            },
+            operation_id,
+        )
+        .await?;
+        Ok(reservation)
+    }
+
+    /// Advances the owner generation and fences all old callers durably.
+    pub async fn takeover(
+        &mut self,
+        owner: impl Into<String>,
+        expected_generation: u64,
+    ) -> Result<SwarmOwnerFence> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let next = projected.takeover(owner, expected_generation)?;
+        self.commit(
+            SwarmBudgetEvent::OwnerTakenOver {
+                owner: next.clone(),
+            },
+            self.session_id,
+        )
+        .await?;
+        Ok(next)
+    }
+
+    async fn commit(&mut self, event: SwarmBudgetEvent, operation_id: OperationId) -> Result<()> {
+        let digest = event_digest(&event)?;
+        if let Some(existing) = self
+            .events
+            .iter()
+            .find(|candidate| event_digest(candidate).ok() == Some(digest))
+        {
+            if existing == &event {
+                self.refresh().await?;
+                return Ok(());
+            }
+            return Err(Error::Conflict("swarm event digest collision".into()));
+        }
+        match append_record(&self.stream, self.revision, &event, operation_id).await {
+            Ok(()) => self.refresh().await,
+            Err(Error::Conflict(_)) => {
+                self.refresh().await?;
+                if self
+                    .events
+                    .iter()
+                    .any(|candidate| event_digest(candidate).ok() == Some(digest))
+                {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict("swarm budget tail changed".into()))
+                }
+            }
+            Err(Error::Indeterminate(operation)) => {
+                if self.refresh().await.is_ok()
+                    && self
+                        .events
+                        .iter()
+                        .any(|candidate| event_digest(candidate).ok() == Some(digest))
+                {
+                    Ok(())
+                } else {
+                    Err(Error::Indeterminate(operation))
+                }
+            }
+            Err(error) => Err(error),
+        }
+    }
+}
+
+fn stream_for<P: StreamProvider>(
+    client: &StreamClient<P>,
+    session_id: OperationId,
+) -> Result<Stream<P>> {
+    client
+        .stream(format!("{STREAM_PREFIX}/{session_id}"))
+        .map_err(|error| Error::Storage(error.to_string()))
+}
+
+async fn read_events<P: StreamProvider>(stream: &Stream<P>) -> Result<Vec<SwarmBudgetEvent>> {
+    let mut replay = stream.replay(0);
+    let mut events = Vec::new();
+    while let Some(page) = replay
+        .next_page()
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?
+    {
+        for record in page {
+            let envelope: BudgetRecord = serde_json::from_slice(&record.value)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            if envelope.revision != record.sequence.saturating_add(1)
+                || envelope.revision != events.len() as u64 + 1
+            {
+                return Err(Error::Storage(
+                    "swarm budget revision is not gapless".into(),
+                ));
+            }
+            if event_digest(&envelope.event)? != envelope.event_digest {
+                return Err(Error::Storage("swarm budget event digest mismatch".into()));
+            }
+            events.push(envelope.event);
+            if events.len() as u64 >= MAX_RECORDS {
+                return Err(Error::Storage("swarm budget record limit exceeded".into()));
+            }
+        }
+    }
+    if events.is_empty() {
+        return Err(Error::NotFound("swarm budget session".into()));
+    }
+    Ok(events)
+}
+
+async fn append_record<P: StreamProvider>(
+    stream: &Stream<P>,
+    expected_tail: u64,
+    event: &SwarmBudgetEvent,
+    operation_id: OperationId,
+) -> Result<()> {
+    let digest = event_digest(event)?;
+    let envelope = BudgetRecord {
+        revision: expected_tail.saturating_add(1),
+        event_digest: digest,
+        event: event.clone(),
+    };
+    let bytes = canonical_json_bytes(&envelope)?;
+    if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+        return Err(Error::Invalid(
+            "swarm budget event exceeds Stream limit".into(),
+        ));
+    }
+    let key = StreamKey::new(Bytes::copy_from_slice(&digest))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    match stream
+        .append_batch(vec![Bytes::from(bytes)], Some(expected_tail), Some(key))
+        .await
+    {
+        Ok(AppendOutcome::Committed(receipt))
+            if receipt.start == expected_tail && receipt.end == expected_tail + 1 =>
+        {
+            Ok(())
+        }
+        Ok(AppendOutcome::Committed(_)) => {
+            Err(Error::Storage("invalid swarm budget append receipt".into()))
+        }
+        Ok(AppendOutcome::TailConflict { .. }) => {
+            Err(Error::Conflict("swarm budget tail changed".into()))
+        }
+        Err(StreamError::IdempotencyMismatch) => {
+            Err(Error::Conflict("swarm budget retry identity reused".into()))
+        }
+        Err(StreamError::Unavailable | StreamError::DeadlineElapsed) => {
+            Err(Error::Indeterminate(operation_id))
+        }
+        Err(error) => Err(Error::Storage(error.to_string())),
+    }
+}
+
+fn event_digest(event: &SwarmBudgetEvent) -> Result<[u8; 32]> {
+    Ok(*blake3::hash(&canonical_json_bytes(event)?).as_bytes())
+}
+
+fn event_owner(event: &SwarmBudgetEvent) -> Result<SwarmOwnerFence> {
+    match event {
+        SwarmBudgetEvent::Started { owner, .. } => Ok(owner.clone()),
+        _ => Err(Error::Invalid(
+            "swarm session start event is invalid".into(),
+        )),
+    }
+}
