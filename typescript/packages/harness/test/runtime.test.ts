@@ -2149,6 +2149,28 @@ describe("typed agent runtime", () => {
     } } as never)).rejects.toThrow("cannot be combined");
   });
 
+  test("selected context getters are captured once before admission", async () => {
+    let reads = 0;
+    let observed: readonly ModelMessage[] = [];
+    const selectedContext = {
+      selection: { conversationRevision: 1n, messageIds: [fixtureMessageId("02020202-0202-0202-0202-020202020202")] },
+      messages: [{ role: "user" as const, content: "pinned selected content" }],
+    };
+    const runtime = Harness.builder(contracts).model(testModel, {
+      async *generate(request) { observed = request.messages; yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run({
+      get selectedContext() {
+        reads++;
+        if (reads !== 1) throw new Error("selected context was reread");
+        return selectedContext;
+      },
+    });
+    expect(reads).toBe(1);
+    expect(observed).toEqual(selectedContext.messages);
+  });
+
   test("builder limits bound selected history and direct input before model dispatch", async () => {
     let dispatched = 0;
     const runtime = Harness.builder(contracts).limits({ context_messages: 1, render_bytes: 8 }).model(testModel, {
