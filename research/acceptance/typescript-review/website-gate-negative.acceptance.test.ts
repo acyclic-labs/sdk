@@ -238,6 +238,37 @@ test("website gate rejects qualified receipts with empty output evidence", async
   }
 }, 300_000);
 
+test("website gate accepts a clean authority-bound bundle and emits its authority digest", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "acyclic-website-authority-positive-"));
+  try {
+    const repositoryRoot = join(scratch, "repo");
+    const bundleRoot = join(scratch, "bundle");
+    const outputRoot = join(scratch, "output");
+    const authorityPath = join(scratch, "source-authority.json");
+    const docsManifestRoot = await stageDocsCrate(scratch);
+    await mkdir(join(repositoryRoot, "rust/crates"), { recursive: true });
+    await cp(join(root, "rust/crates/objects"), join(repositoryRoot, "rust/crates/objects"), { recursive: true });
+    await mkdir(join(repositoryRoot, "rust/crates/sdk-examples/src"), { recursive: true });
+    await cp(
+      join(root, "rust/crates/sdk-examples/src/lib.rs"),
+      join(repositoryRoot, "rust/crates/sdk-examples/src/lib.rs"),
+    );
+    await mkdir(outputRoot, { recursive: true });
+    await writeSourceAuthority(repositoryRoot, authorityPath);
+    await writeFabricatedBundle(repositoryRoot, bundleRoot, undefined, true, true);
+
+    const result = runDocs(repositoryRoot, bundleRoot, outputRoot, scratch, docsManifestRoot, authorityPath);
+    expect(result.status).toBe(0);
+    const website = JSON.parse(await readFile(join(outputRoot, "website.json"), "utf8")) as {
+      scenarioBundle: { source: { source_authority_sha256: string } };
+    };
+    expect(website.scenarioBundle.source.source_authority_sha256)
+      .toBe(sha256(await readFile(authorityPath)));
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}, 300_000);
+
 test("website gate rejects a forged source closure when source and receipt are edited together", async () => {
   const scratch = await mkdtemp(join(tmpdir(), "acyclic-forged-source-closure-"));
   try {
