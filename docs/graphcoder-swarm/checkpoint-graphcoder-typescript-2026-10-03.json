@@ -1,0 +1,11 @@
+{
+  "source": "5a0412db",
+  "command": "bun x tsc -p tsconfig.json --noEmit then bun test test",
+  "package": "@acyclic-labs/graphcoder",
+  "exit_code": 0,
+  "passed": 49,
+  "failed": 0,
+  "assertions": 150,
+  "scope": "TypeScript and public transport/terminal/process bridge tests; not full descendant cleanup, native installed-artifact or PTY qualification",
+  "qualification": "incomplete"
+}
