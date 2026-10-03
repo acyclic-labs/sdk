@@ -255,6 +255,25 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(reservation)
     }
 
+    /// Persists cumulative root usage before admitting further descendants.
+    pub async fn report_root_usage(
+        &mut self,
+        owner: &SwarmOwnerFence,
+        usage: SwarmUsage,
+    ) -> Result<SwarmUsage> {
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        let reported = projected.report_root_usage(owner, usage)?;
+        self.commit(
+            SwarmBudgetEvent::RootUsageReported {
+                owner: owner.clone(),
+                usage,
+            },
+            self.session_id,
+        )
+        .await?;
+        Ok(reported)
+    }
+
     /// Completes a child and releases only the unconsumed reservation.
     pub async fn complete(
         &mut self,
