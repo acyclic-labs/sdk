@@ -1737,8 +1737,9 @@ impl NativeExecutionProvider {
         let receipt = if approval.approved {
             let runner = Arc::clone(&self.runner);
             let execution_request = approval.request.clone();
+            let runner_cancellation = cancellation.clone();
             let outcome = tokio::task::spawn_blocking(move || {
-                runner.run_with_cancellation(&execution_request, &cancellation)
+                runner.run_with_cancellation(&execution_request, &runner_cancellation)
             })
             .await;
             match outcome {
@@ -3994,7 +3995,7 @@ mod local_provider_tests {
                 }),
                 session.storage().execution_approval_verifier(),
             )?;
-            let replay = provider.dispatch(dispatch).await?;
+            let replay = provider.dispatch(dispatch.clone()).await?;
             assert_eq!(replay.status, EffectStatus::Indeterminate);
             assert_eq!(second_calls.load(Ordering::SeqCst), 0);
 
