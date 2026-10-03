@@ -793,7 +793,14 @@ where
         clippy::too_many_arguments,
         reason = "provider and authority boundaries remain explicit"
     )]
-    async fn from_providers_with_reads(
+    /// Composes storage with explicit additional owner capabilities.
+    ///
+    /// This is used by durable local compositions that bind a project volume
+    /// alongside the agent-private volume. The caller must provide the exact
+    /// typed capabilities for that project; this method does not derive or
+    /// widen them from model content.
+    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    pub(crate) async fn from_providers_with_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
         host: Arc<FilesystemHost<A, O>>,

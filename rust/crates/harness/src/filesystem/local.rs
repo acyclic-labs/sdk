@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer},
+    core::{AggregateKind, Authority, AuthorityIssuer, Capabilities},
     effects::EffectRegistry,
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
@@ -334,10 +334,15 @@ struct SessionDescriptor {
     signing_key: [u8; 32],
     model: Model,
     limits: Limits,
+    /// Optional owner-selected project volume used by the recursive local
+    /// allocator. It is pinned in the descriptor so reopen cannot silently
+    /// switch the source workspace.
+    #[serde(default)]
+    project: Option<VolumeRef>,
 }
 
 impl SessionDescriptor {
-    fn fresh(model: Model, limits: Limits) -> Result<Self> {
+    fn fresh(model: Model, limits: Limits, project: Option<VolumeRef>) -> Result<Self> {
         let agent = AgentId::new();
         let descriptor = Self {
             version: 1,
@@ -355,6 +360,7 @@ impl SessionDescriptor {
             signing_key: *blake3::hash(&OperationId::new().into_bytes()).as_bytes(),
             model,
             limits,
+            project,
         };
         Ok(descriptor)
     }
@@ -364,6 +370,7 @@ fn validate_descriptor(
     descriptor: &SessionDescriptor,
     model: &Model,
     limits: Limits,
+    project: Option<&VolumeRef>,
 ) -> Result<()> {
     if descriptor.version != 1
         || &descriptor.model != model
@@ -372,6 +379,13 @@ fn validate_descriptor(
     {
         return Err(Error::Conflict(
             "local session composition differs from its pinned descriptor".into(),
+        ));
+    }
+    if let Some(project) = project
+        && descriptor.project.as_ref() != Some(project)
+    {
+        return Err(Error::Conflict(
+            "local session project differs from its pinned descriptor".into(),
         ));
     }
     Ok(())
@@ -485,8 +499,56 @@ impl PersistentLocalHarness {
         issuer: AuthorityIssuer,
         extension: LocalHarnessTools,
     ) -> Result<Self> {
+        Self::from_providers_with_tools_and_project(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            agent,
+            volume,
+            conversation,
+            issuer,
+            extension,
+            None,
+        )
+        .await
+    }
+
+    /// Composes a durable local agent with an owner-selected project volume.
+    /// Project read/write capabilities are signed into the owner scope and
+    /// pinned by the session descriptor; no model supplied reference can add
+    /// project access.
+    #[allow(clippy::too_many_arguments, reason = "provider and authority boundaries remain explicit")]
+    pub async fn from_providers_with_tools_and_project(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        agent: AgentId,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        extension: LocalHarnessTools,
+        project: Option<&VolumeRef>,
+    ) -> Result<Self> {
         limits.validate()?;
-        let storage = DurableHarnessStorage::from_providers(
+        let project_capabilities = match project {
+            Some(project) => {
+                if project.class() != VolumeClass::Project || project.provider() != &host.provider {
+                    return Err(Error::Invalid(
+                        "local session project belongs to another provider or class".into(),
+                    ));
+                }
+                Capabilities::new([
+                    project.capability(VolumeOperation::Read)?,
+                    project.capability(VolumeOperation::Write)?,
+                ])
+            }
+            None => Capabilities::new(std::iter::empty::<String>()),
+        };
+        let storage = DurableHarnessStorage::from_providers_with_reads(
             agent,
             limits.file_bytes,
             host.clone(),
@@ -494,6 +556,7 @@ impl PersistentLocalHarness {
             volume,
             conversation,
             issuer,
+            project_capabilities,
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
@@ -595,6 +658,20 @@ impl PersistentLocalHarness {
         limits: Limits,
         extension: LocalHarnessTools,
     ) -> Result<Self> {
+        Self::open_with_tools_and_project(root, model, provider, limits, extension, None).await
+    }
+
+    /// Opens a durable local session with an owner-selected project binding.
+    /// The project identity is persisted with the session descriptor and must
+    /// match on every reopen.
+    pub async fn open_with_tools_and_project(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+    ) -> Result<Self> {
         limits.validate()?;
         let root = root.as_ref();
         let stream = StreamClient::new(Arc::new(
@@ -616,7 +693,7 @@ impl PersistentLocalHarness {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if missing {
-            let descriptor = SessionDescriptor::fresh(model.clone(), limits)?;
+            let descriptor = SessionDescriptor::fresh(model.clone(), limits, project.clone())?;
             match metadata
                 .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
                 .await
@@ -641,7 +718,7 @@ impl PersistentLocalHarness {
             .map_err(|error| Error::Storage(error.to_string()))?;
         let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        validate_descriptor(&descriptor, &model, limits)?;
+        validate_descriptor(&descriptor, &model, limits, project.as_ref())?;
         let fs = LocalFs::local(LocalOptions::new(root.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
@@ -650,12 +727,22 @@ impl PersistentLocalHarness {
             descriptor.private_volume.provider().clone(),
         )?);
         host.create_volume(&descriptor.private_volume).await?;
+        if let Some(project) = &descriptor.project {
+            host.create_volume(project).await?;
+        }
         let issuer = AuthorityIssuer::new(
             "local-harness",
             descriptor.signing_key,
             descriptor.conversation.clone(),
         );
-        let storage = DurableHarnessStorage::from_providers(
+        let project_capabilities = match descriptor.project.as_ref() {
+            Some(project) => Capabilities::new([
+                project.capability(VolumeOperation::Read)?,
+                project.capability(VolumeOperation::Write)?,
+            ]),
+            None => Capabilities::new(std::iter::empty::<String>()),
+        };
+        let storage = DurableHarnessStorage::from_providers_with_reads(
             descriptor.agent,
             limits.file_bytes,
             host.clone(),
@@ -663,6 +750,7 @@ impl PersistentLocalHarness {
             descriptor.private_volume,
             descriptor.conversation,
             issuer,
+            project_capabilities,
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
