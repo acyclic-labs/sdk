@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
-    BindingFamily, actors_descriptor, actors_proto, descriptor_set_with_docs,
+    actors_descriptor, actors_proto, descriptor_set_with_docs,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_product_bindings,
     harness::{harness_descriptor, harness_proto},
@@ -16,6 +16,7 @@ use acyclic_sdk_contract_wire::{
     protocol::{protocol_descriptor, protocol_proto},
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
+    BindingFamily,
 };
 use prost::Message;
 use prost_types::FileDescriptorSet;
@@ -70,6 +71,14 @@ const MACHINES_ARCHIVED_FIXTURE: &[u8] =
 // can remain unchanged while a worktree is edited, so a commit-only marker is
 // not sufficient for generation or package input validation.
 const MODEL_SOURCES: &[(&str, &[u8])] = &[
+    (
+        "rust/crates/sdk-contract-wire/src/family_registry.rs",
+        include_bytes!("../family_registry.rs"),
+    ),
+    (
+        "rust/crates/sdk-contract-wire/src/credential.rs",
+        include_bytes!("../credential.rs"),
+    ),
     (
         "rust/crates/sdk-contract-wire/src/lib.rs",
         include_bytes!("../lib.rs"),

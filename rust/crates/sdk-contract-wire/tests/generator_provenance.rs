@@ -185,6 +185,25 @@ fn authority_manifest_binds_rust_models_without_authored_proto_inputs() {
     assert!(manifest.contains("\"authority\": \"rust\""));
     assert!(manifest.contains("rust/crates/sdk-contract-wire/src/inference.rs"));
     assert!(manifest.contains("rust/crates/sdk-contract-wire/src/machines.rs"));
+    // Runtime credential policy and registry selection must participate in
+    // provenance even when their edits leave canonical descriptor bytes intact.
+    for (relative, bytes) in [
+        (
+            "rust/crates/sdk-contract-wire/src/family_registry.rs",
+            include_bytes!("../src/family_registry.rs").as_slice(),
+        ),
+        (
+            "rust/crates/sdk-contract-wire/src/credential.rs",
+            include_bytes!("../src/credential.rs").as_slice(),
+        ),
+    ] {
+        use sha2::{Digest, Sha256};
+        let expected = format!("{:x}", Sha256::digest(bytes));
+        assert!(
+            manifest.contains(&format!("\"{relative}\": \"{expected}\"")),
+            "missing policy source identity: {relative}"
+        );
+    }
     assert!(manifest.contains("\"descriptor_role\": \"canonical_schema\""));
     assert!(
         !manifest.contains("proto/inference") && !manifest.contains("proto/machines"),
