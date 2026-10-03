@@ -23,7 +23,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, sync::Arc};
+use std::{future::Future, sync::{Arc, Mutex}};
 
 const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
 const BUDGET_EVENT_VERSION: u16 = 1;
@@ -238,6 +238,30 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         let context = self.root_usage_context(source)?;
         Ok(crate::swarm_budget::MeteredModelProvider::new_root(
             provider, context,
+        ))
+    }
+
+    /// Wraps root work with a shared remaining-ceiling view. Local child
+    /// admission updates this view so a root provider continuing in the same
+    /// turn cannot spend resources already reserved by a descendant.
+    pub fn metered_root_provider_with_dynamic<M, S>(
+        &self,
+        provider: Arc<M>,
+        source: S,
+        dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
+    ) -> Result<(
+        Arc<crate::swarm_budget::MeteredModelProvider<M, S>>,
+        crate::swarm_budget::SwarmProviderMeter<S>,
+    )>
+    where
+        M: crate::model::ModelProvider + ?Sized + 'static,
+        S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
+    {
+        let context = self.root_usage_context(source)?;
+        Ok(crate::swarm_budget::MeteredModelProvider::new_root_with_dynamic(
+            provider,
+            context,
+            dynamic_limits,
         ))
     }
 

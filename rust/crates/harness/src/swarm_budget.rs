@@ -386,6 +386,17 @@ pub trait SwarmUsageSource {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> Result<SwarmUsage>;
+
+    /// Receives locally admitted counters when this source owns runtime
+    /// measurement. External hosts may leave this hook at its default and
+    /// return authoritative counters from [`Self::cumulative_usage`].
+    fn record_runtime_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+        _usage: SwarmUsage,
+    ) {
+    }
 }
 
 impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
@@ -399,6 +410,15 @@ impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
         dispatch_id: &IdempotencyKey,
     ) -> Result<SwarmUsage> {
         (**self).cumulative_usage(operation_id, dispatch_id)
+    }
+
+    fn record_runtime_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        usage: SwarmUsage,
+    ) {
+        (**self).record_runtime_usage(operation_id, dispatch_id, usage)
     }
 }
 
@@ -580,6 +600,11 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         VerifiedSwarmUsageReceipt::from_verified(receipt)
     }
 
+    fn record_runtime_usage(&self, usage: SwarmUsage) {
+        self.source
+            .record_runtime_usage(self.operation_id, &self.dispatch_id, usage);
+    }
+
     /// Returns the next sequence expected from this issuer.
     #[must_use]
     pub fn next_sequence(&self) -> Result<u64> {
@@ -655,6 +680,10 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         &self.token
     }
 
+    fn record_runtime_usage(&self, usage: SwarmUsage) {
+        self.issuer.record_runtime_usage(usage);
+    }
+
     /// Returns the mutable pre-work provider limiter.
     ///
     /// The provider adapter must call its admission methods before each model
@@ -701,11 +730,54 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
 pub struct SwarmRootDispatchContext<S> {
     limiter: SwarmUsageLimiter,
     issuer: SwarmUsageReceiptIssuer<S>,
+    dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
+    dynamic_base: SwarmUsage,
 }
 
 impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     fn new(limiter: SwarmUsageLimiter, issuer: SwarmUsageReceiptIssuer<S>) -> Self {
-        Self { limiter, issuer }
+        Self {
+            dynamic_base: limiter.usage(),
+            limiter,
+            issuer,
+            dynamic_limits: None,
+        }
+    }
+
+    fn new_with_dynamic(
+        limiter: SwarmUsageLimiter,
+        issuer: SwarmUsageReceiptIssuer<S>,
+        dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
+    ) -> Self {
+        Self {
+            dynamic_base: limiter.usage(),
+            limiter,
+            issuer,
+            dynamic_limits: Some(dynamic_limits),
+        }
+    }
+
+    fn check_dynamic(&self, next: SwarmUsage) -> Result<()> {
+        let Some(dynamic_limits) = &self.dynamic_limits else {
+            return Ok(());
+        };
+        let limits = *dynamic_limits
+            .lock()
+            .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))?;
+        let delta = next.checked_delta(self.dynamic_base)?;
+        if delta.model_steps > limits.model_steps
+            || delta.output_bytes > limits.output_bytes
+            || delta.execution_time_ms > limits.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "root provider exceeds remaining swarm budget".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_runtime_usage(&self, usage: SwarmUsage) {
+        self.issuer.record_runtime_usage(usage);
     }
 
     /// Returns the mutable pre-work provider limiter.
@@ -752,22 +824,61 @@ enum SwarmProviderBoundary<S> {
 impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
     fn admit_model_step(&mut self) -> Result<SwarmUsage> {
         match self {
-            Self::Child(context) => context.limiter_mut().admit_model_step(),
-            Self::Root(context) => context.limiter_mut().admit_model_step(),
+            Self::Child(context) => {
+                let usage = context.limiter_mut().admit_model_step()?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    model_steps: current.model_steps.saturating_add(1),
+                    ..current
+                })?;
+                let usage = context.limiter_mut().admit_model_step()?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
         }
     }
 
     fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
         match self {
-            Self::Child(context) => context.limiter_mut().admit_output(bytes),
-            Self::Root(context) => context.limiter_mut().admit_output(bytes),
+            Self::Child(context) => {
+                let usage = context.limiter_mut().admit_output(bytes)?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    output_bytes: current.output_bytes.saturating_add(bytes),
+                    ..current
+                })?;
+                let usage = context.limiter_mut().admit_output(bytes)?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
         }
     }
 
     fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
         match self {
-            Self::Child(context) => context.limiter_mut().admit_execution_time(elapsed_ms),
-            Self::Root(context) => context.limiter_mut().admit_execution_time(elapsed_ms),
+            Self::Child(context) => {
+                let usage = context.limiter_mut().admit_execution_time(elapsed_ms)?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    execution_time_ms: current.execution_time_ms.saturating_add(elapsed_ms),
+                    ..current
+                })?;
+                let usage = context.limiter_mut().admit_execution_time(elapsed_ms)?;
+                context.record_runtime_usage(usage);
+                Ok(usage)
+            }
         }
     }
 
@@ -992,6 +1103,29 @@ where
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
         let meter = SwarmProviderMeter {
             context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(context))),
+        };
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps root work with a shared remaining-ceiling view that local child
+    /// admission can update while the root turn is still running.
+    pub fn new_root_with_dynamic(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let meter = SwarmProviderMeter {
+            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(
+                SwarmRootDispatchContext::new_with_dynamic(
+                    context.limiter,
+                    context.issuer,
+                    dynamic_limits,
+                ),
+            ))),
         };
         let wrapped = Arc::new(Self {
             provider,
