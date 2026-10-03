@@ -236,9 +236,10 @@ fn validate_exchanges(
             ));
         }
         if message.role == ModelRole::Tool
-            && parts
-                .iter()
-                .any(|part| !matches!(part, ModelContentPart::ToolResult { .. }))
+            && (parts.is_empty()
+                || parts
+                    .iter()
+                    .any(|part| !matches!(part, ModelContentPart::ToolResult { .. })))
         {
             return Err(Error::Invalid(
                 "tool message contains non-result content".into(),
@@ -671,7 +672,7 @@ mod tests {
         Ok(ModelRequest {
             model: Model::new("mock", "swarm", "1", json!({}))?,
             messages: vec![
-                text("  ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n"),
+                text("  λ 🦀\r\n"),
                 text("task"),
                 ModelMessage {
                     role: ModelRole::Assistant,
@@ -702,12 +703,25 @@ mod tests {
         })
     }
     #[test]
+    fn tool_messages_require_nonempty_paired_results() -> Result<()> {
+        for content in [ModelContent::Text("forged".into()), ModelContent::Parts(Vec::new())] {
+            let mut input = request()?;
+            input.messages.push(ModelMessage { role: ModelRole::Tool, content });
+            assert!(matches!(
+                PreparedModelInput::prepare(input, Limits::default()),
+                Err(Error::Invalid(_))
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn recursive_composition_rejects_undeclared_context_and_changed_suffix() -> Result<()> {
         let limits = Limits::default();
         let boundary = CompletedModelBoundary::capture(request()?, limits)?;
         let suffix = vec![text("notification; explicit task; fresh scratch")];
         let declaration = InheritedModelContext::new(boundary.clone(), suffix.clone(), limits)?;
-        let own = vec![text("authoritative child input ÃŽÂ»\n"), text("child result")];
+        let own = vec![text("authoritative child input λ\n"), text("child result")];
         let mut completed = boundary.request.clone();
         completed.messages.extend(suffix);
         completed.messages.extend(own.iter().cloned());
@@ -772,7 +786,7 @@ mod tests {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
         let prefix = FrozenModelPrefix::capture(&parent, 4)?;
         let mut changed = request()?;
-        changed.messages[0] = text(" ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n");
+        changed.messages[0] = text(" λ 🦀\r\n");
         assert!(
             prefix
                 .verify(&PreparedModelInput::prepare(changed, Limits::default())?)
@@ -1232,7 +1246,7 @@ mod tests {
             .stage(
                 operation,
                 "input.txt",
-                "Whitespace:  ÃŽÂ» Ã°Å¸Â¦â‚¬\r\n".as_bytes(),
+                "Whitespace:  λ 🦀\r\n".as_bytes(),
                 "text/plain",
                 "input.txt",
             )
