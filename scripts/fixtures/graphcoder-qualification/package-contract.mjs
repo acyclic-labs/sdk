@@ -62,8 +62,14 @@ function inspectArtifact(archive, packageJson) {
     || JSON.stringify(artifactJson.bin) !== JSON.stringify(packageJson.bin)) {
     fail("installed package export/bin metadata differs from package artifact");
   }
-  for (const target of [...exportedTargets(packageJson.exports), ...exportedTargets(packageJson.bin)]) {
+  for (const target of exportedTargets(packageJson.exports)) {
     if (!target.startsWith("./") || !files.has(`package/${target.slice(2)}`)) {
+      fail(`package artifact is missing target ${target}`);
+    }
+  }
+  for (const target of exportedTargets(packageJson.bin)) {
+    const relativeTarget = target.startsWith("./") ? target.slice(2) : target;
+    if (relativeTarget === "" || relativeTarget.startsWith("../") || !files.has(`package/${relativeTarget}`)) {
       fail(`package artifact is missing target ${target}`);
     }
   }

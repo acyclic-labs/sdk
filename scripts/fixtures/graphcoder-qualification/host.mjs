@@ -17,10 +17,6 @@ if (logPath !== undefined) {
   appendFileSync(logPath, `${JSON.stringify({ kind: "host_identity", executable: process.execPath, argv: process.argv.slice(1) })}\n`);
 }
 
-if (logPath !== undefined) {
-  appendFileSync(logPath, `${JSON.stringify({ kind: "host_identity", executable: process.execPath, argv: process.argv.slice(1) })}\n`);
-}
-
 function respond(request, result) {
   process.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, result })}\n`);
 }
@@ -109,10 +105,10 @@ function handle(request) {
       return respond(request, { session_id: sessionId, generation, items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] });
     case "read_change":
       if (params.path !== "README.md") return fail(request, "not_found", "change was not found");
-      return respond(request, { path: params.path, unified_diff: "@@ -1 +1 @@\n-native\n+fixture\n", generation: params.generation });
+      return respond(request, { session_id: sessionId, path: params.path, unified_diff: "@@ -1 +1 @@\n-native\n+fixture\n", generation: params.generation });
     case "read_file":
       if (params.path !== "README.md") return fail(request, "not_found", "file was not found");
-      return respond(request, { path: params.path, media_type: "text/markdown", bytes: [35, 32, 110, 97, 116, 105, 118, 101, 10], generation: params.generation });
+      return respond(request, { session_id: sessionId, path: params.path, media_type: "text/markdown", bytes: [35, 32, 110, 97, 116, 105, 118, 101, 10], generation: params.generation });
     case "approve_writeback":
       if (params.operation_id !== "op-7" || params.session_id !== sessionId) return fail(request, "denied", "writeback operation is not pending");
       if (params.expected_generation !== generation) return fail(request, "stale", "workspace generation changed");
