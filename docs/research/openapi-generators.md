@@ -161,6 +161,14 @@ only a packaging smoke test. The available environment had Pydantic 2.10 while
 the generated package requests >=2.11; this is an environment qualification
 failure to resolve before publishing, not a contract change.
 
+For this checkout, the derived JSON artifact hashed to
+`13e2535b89d281325316cfc1c9f16ffe72cca41056ca6b1586de0fcad6b1cd77`.
+The local wheel built and installed successfully; a second wheel build had a
+different SHA-256 from the first (`4bc178e3…` versus `d0d617f7…`), so package
+artifact reproducibility is currently **unqualified**. The generation loop
+must normalize wheel metadata/timestamps or use a reproducible packaging step
+before it can claim byte-identical SDK artifacts.
+
 ## Consequences for migration
 
 Use the Rust descriptor and Buf plugin lock as the single generation input.
