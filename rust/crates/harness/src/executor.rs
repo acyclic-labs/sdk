@@ -521,9 +521,14 @@ impl StockExecutor {
             }
             match &record.event {
                 ExecutionEvent::ModelInputPrepared { step, .. } => {
-                    if !prepared_steps.insert(*step) || started_steps.contains(step) {
+                    if !prepared_steps.insert(*step) {
                         return Err(Error::Storage(
-                            "model input preparation is duplicated or out of order".into(),
+                            "duplicate prepared model input for executor step".into(),
+                        ));
+                    }
+                    if started_steps.contains(step) {
+                        return Err(Error::Storage(
+                            "model input preparation is out of order".into(),
                         ));
                     }
                 }
