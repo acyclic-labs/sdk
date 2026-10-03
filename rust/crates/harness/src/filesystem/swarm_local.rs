@@ -2277,6 +2277,11 @@ impl PersistentLocalSwarm {
                     "child operation is already complete".into(),
                 ));
             }
+            if existing.phase == LocalSessionPhase::Cancelled {
+                return Err(Error::Conflict(
+                    "cancelled child operation is terminal and cannot be resurrected".into(),
+                ));
+            }
             if self.publications.lock().await.get(&child) != Some(&publication)
                 || self.declarations.lock().await.get(&child) != Some(&declaration)
             {
