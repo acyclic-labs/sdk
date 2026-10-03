@@ -115,9 +115,9 @@ export function defineRuntimeSchema<Value>(id: string,
   return Object.freeze({ id, document: freezeSchema(detached), parse, [runtimeSchemaBrand]: (value: Value) => value });
 }
 function freezeSchema<Value>(value: Value): Value {
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === "object" && !ArrayBuffer.isView(value)) {
     for (const child of Object.values(value)) freezeSchema(child);
-    Object.freeze(value);
+    try { Object.freeze(value); } catch { /* typed views are outside JSON schema values */ }
   }
   return value;
 }
@@ -298,9 +298,13 @@ function validateModelContent(content: ModelContent, limits: Limits): void {
 }
 
 function deepFreeze<T>(value: T): T {
-  if (typeof value !== "object" || value === null || ArrayBuffer.isView(value) || Object.isFrozen(value)) return value;
+  if (typeof value !== "object" || value === null || ArrayBuffer.isView(value)) return value;
   for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
-  return Object.freeze(value);
+  // structuredClone has already detached model evidence before this helper
+  // is called. Do not trust a shallow frozen host object: its nested values
+  // still need traversal. Typed arrays are rejected by canonical JSON
+  // admission and therefore intentionally remain outside this freeze path.
+  try { return Object.freeze(value); } catch { return value; }
 }
 
 /** A model projection is an exact bounded value; oversized values are an admission failure. */
@@ -1794,6 +1798,97 @@ export class AgentHarness {
   get content(): ContentBindings | undefined { return this.components.content; }
   get artifacts(): ContentBindings | undefined { return this.components.artifacts; }
   get limits(): Limits { return this.#contentLimits; }
+  /**
+   * Admit an output returned by an owner host before it can enter conversation
+   * history.  Host receipts are durable data, so their raw result and the
+   * model projection must be checked against the registered tool revision on
+   * every replay.  The returned value is detached from the host object and
+   * contains only schema-admitted values.
+   */
+  validateRunOutput(output: RunOutput): RunOutput {
+    if (output === null || typeof output !== "object"
+      || typeof output.text !== "string" || !Array.isArray(output.receipts)
+      || typeof output.taskId !== "string" || !output.taskId) {
+      throw new TypeError("host returned an invalid assistant output");
+    }
+    const outputKeys = Object.keys(output).sort();
+    if (outputKeys.some(key => !["artifacts", "attachments", "content", "receipts", "taskId", "text"].includes(key))) {
+      throw new TypeError("host assistant output has an invalid shape");
+    }
+    this.contracts.validateIdentity("task", output.taskId);
+    if (new TextEncoder().encode(output.text).byteLength > this.limits.file_bytes) {
+      throw new TypeError("host assistant output exceeds file limit");
+    }
+    for (const key of ["content", "artifacts", "attachments"] as const) {
+      const value = output[key];
+      if (value !== undefined) {
+        if (!Array.isArray(value)) throw new TypeError(`host assistant ${key} must be an array`);
+        this.contracts.encodeCanonicalJson(structuredClone(value));
+      }
+    }
+    const receipts: RunReceipt[] = [];
+    const seen = new Set<string>();
+    for (const candidate of output.receipts) {
+      if (candidate === null || typeof candidate !== "object" || typeof candidate.kind !== "string") {
+        throw new TypeError("host returned an invalid receipt");
+      }
+      if (candidate.kind === "model-completed") {
+        if (Object.keys(candidate).sort().join("\0") !== "kind\0metadata") {
+          throw new TypeError("model completion metadata has an invalid shape");
+        }
+        // Metadata is model-visible provider content. Canonical admission
+        // rejects host-only values before they can be persisted or replayed.
+        const metadata = structuredClone(candidate.metadata);
+        this.contracts.encodeCanonicalJson(metadata);
+        receipts.push({ kind: "model-completed", metadata: deepFreeze(metadata) });
+        continue;
+      }
+      if (candidate.kind !== "tool") throw new TypeError("host returned an unknown receipt kind");
+      if (Object.keys(candidate).sort().join("\0") !== "arguments\0callId\0kind\0name\0projection\0step\0value") {
+        throw new TypeError("host tool receipt has an invalid shape");
+      }
+      if (!Number.isSafeInteger(candidate.step) || candidate.step < 0
+        || typeof candidate.callId !== "string" || !candidate.callId
+        || typeof candidate.name !== "string" || !candidate.name
+        || !("arguments" in candidate) || !("value" in candidate) || !("projection" in candidate)) {
+        throw new TypeError("host returned an invalid tool receipt");
+      }
+      const identity = `${candidate.step}:${candidate.callId}`;
+      if (seen.has(identity)) throw new TypeError("tool call identity is duplicated within a model step");
+      seen.add(identity);
+      const tool = this.tool(candidate.name);
+      const erased = this.#tools.get(toolKey(tool.definition.name, tool.definition.revision));
+      if (erased === undefined) throw new Error("tool definition is not registered or no longer active");
+      const registered = restoreRegisteredTool<unknown, unknown>(erased);
+      const argumentsValue = structuredClone(candidate.arguments);
+      this.contracts.validateToolInvocation(registered.definition, {
+        callId: candidate.callId, name: candidate.name, arguments: argumentsValue,
+      });
+      const admittedArguments = this.contracts.validateToolValue(registered.definition.inputSchema, argumentsValue);
+      registered.definition.parseInput(admittedArguments);
+      const detachedValue = structuredClone(candidate.value);
+      this.contracts.validateToolResult(registered.definition, { value: detachedValue });
+      const admittedValue = this.contracts.validateToolValue(registered.definition.outputSchema, detachedValue);
+      const parsedValue = registered.definition.parseOutput(admittedValue);
+      // Revalidate the parsed value as well: a typed parser is allowed to
+      // narrow its return type but cannot introduce a value outside the pin.
+      const publishedValue = this.contracts.validateToolValue(registered.definition.outputSchema, parsedValue);
+      this.contracts.validateToolResult(registered.definition, { value: publishedValue });
+      const projected = structuredClone(registered.definition.projectOutput?.(publishedValue) ?? publishedValue);
+      const admittedProjection = this.contracts.validateToolValue(
+        registered.definition.modelOutputSchema ?? registered.definition.outputSchema, projected);
+      this.contracts.validateToolProjection(registered.definition, { value: admittedProjection });
+      if (!this.contracts.canonicalEqual(candidate.projection, admittedProjection)) {
+        throw new TypeError("host tool projection does not match the pinned projection");
+      }
+      const projectionBytes = this.contracts.encodeCanonicalJson(admittedProjection).byteLength;
+      if (projectionBytes > this.limits.render_bytes) throw new TypeError("tool projection exceeds render limit");
+      receipts.push({ kind: "tool", step: candidate.step, callId: candidate.callId,
+        name: registered.definition.name, arguments: deepFreeze(structuredClone(admittedArguments)),
+        value: deepFreeze(structuredClone(publishedValue)), projection: deepFreeze(admittedProjection) });
+    }
+    return deepFreeze(structuredClone({ ...output, text: output.text, taskId: output.taskId, receipts }));
+  }
   /** Rust's durable admission pins one policy implementation, not an unrecorded composition. */
   durablePolicyIdentity(): ComponentIdentity | null {
     if (this.#policyIdentity !== null && "composition" in this.#policyIdentity) {
@@ -2294,15 +2389,7 @@ export class AgentHarness {
       }
       if (outcome.kind === "failed") throw new TerminalModelTurnError(operationId, "failed", outcome.error.message);
       if (outcome.kind === "cancelled") throw new TerminalModelTurnError(operationId, "cancelled", "durable selected turn was cancelled");
-      if (outcome.value === null || typeof outcome.value !== "object"
-        || typeof outcome.value.text !== "string" || !Array.isArray(outcome.value.receipts)
-        || typeof outcome.value.taskId !== "string" || !outcome.value.taskId) {
-        throw new TypeError("host returned an invalid assistant output");
-      }
-      if (new TextEncoder().encode(outcome.value.text).byteLength > this.limits.file_bytes) {
-        throw new TypeError("host assistant output exceeds file limit");
-      }
-      return structuredClone(outcome.value);
+      return this.validateRunOutput(outcome.value);
     }
     if (this.state) throw new Error("durable selected-turn execution is not bound; local replay would duplicate an owner operation");
     return this.run({ selectedContext });
@@ -2411,7 +2498,7 @@ export class AgentHarness {
     const task = runtime.spawn(definition, input);
     const outcome = await task.result();
     if (outcome.kind !== "succeeded") throw new TaskRunError(task.id(), outcome);
-    return { ...outcome.value, taskId: task.id(), receipts };
+    return this.validateRunOutput({ ...outcome.value, taskId: task.id(), receipts });
   }
   attach(id: RuntimeTaskId): Promise<Task<unknown>>;
   attach<Input, Output>(definition: TaskDefinition<Input, Output>, id: RuntimeTaskId): Promise<Task<Output>>;

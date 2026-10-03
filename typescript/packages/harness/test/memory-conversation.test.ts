@@ -418,7 +418,7 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
     async executeSelectedTurn(operationId, selected) {
       requests.push(`${operationId}:${selected.selection.conversationRevision}`);
       if (requests.length === 1) return { kind: "indeterminate", operationId };
-      return { kind: "succeeded", value: { taskId: "task:recovered" as RuntimeTaskId,
+      return { kind: "succeeded", value: { taskId: "12121212-1212-1212-1212-121212121212" as RuntimeTaskId,
         text: "recovered answer", receipts: [{ kind: "model-completed", metadata: {} }] } };
     },
     async attach() { throw new Error("unused"); },
@@ -437,6 +437,63 @@ test("a durable turn host reconciles an unknown model attempt under the same sel
   conversation.free();
 });
 
+test("durable host replay revalidates the pinned projection without publishing private fields", async () => {
+  type Raw = { readonly private: string; readonly public: string };
+  let dispatches = 0;
+  let projectionCalls = 0;
+  const tool = defineTool<null, Raw>({
+    name: "private-host-result", revision: "1", description: "private host result",
+    inputSchema: { type: "null" },
+    outputSchema: {
+      type: "object", required: ["private", "public"],
+      properties: { private: { type: "string" }, public: { type: "string" } }, additionalProperties: false,
+    },
+    modelOutputSchema: {
+      type: "object", required: ["public"],
+      properties: { public: { type: "string" } }, additionalProperties: false,
+    },
+    parseInput: value => value as null,
+    parseOutput: value => value as Raw,
+    projectOutput: value => { projectionCalls++; return { public: value.public }; },
+  }, async () => ({ private: "secret", public: "shown" }));
+  const conversation = await MemoryConversation.create({ agent });
+  const host: HarnessRuntimeHost = {
+    policyIdentity: () => null,
+    async executeSelectedTurn(operationId) {
+      dispatches++;
+      if (dispatches === 1) return { kind: "indeterminate", operationId };
+      return { kind: "succeeded", value: { taskId: "14141414-1414-1414-1414-141414141414" as RuntimeTaskId,
+        text: "recovered", receipts: [
+          { kind: "tool" as const, step: 0, callId: "private-call", name: "private-host-result", arguments: null,
+            value: { private: "secret", public: "shown" }, projection: { public: "shown" } },
+          { kind: "model-completed" as const, metadata: {} },
+        ] } };
+    },
+    async attach() { throw new Error("unused"); },
+    async reconcileEffect() { return { state: "indeterminate" }; },
+    async send(message) { return { accepted: true, messageId: message.id }; },
+    async *inbox() { yield* []; },
+  };
+  const runtime = Harness.builder(contracts).host(host).tool(tool)
+    .grant("tool:call:private-host-result").build();
+  const operation = "15151515-1515-1515-1515-151515151515" as OperationId;
+  const content = await conversation.stage("turns/host-replay/user.txt", new TextEncoder().encode("question"), "text/plain", "question.txt");
+  await expect(conversation.runConversation(runtime, operation, content))
+    .rejects.toBeInstanceOf(IndeterminateModelTurnError);
+  const output = await conversation.runConversation(runtime, operation, content);
+  expect(output.text).toBe("recovered");
+  expect(dispatches).toBe(2);
+  expect(projectionCalls).toBe(1);
+  const resultMessage = conversation.conversation().messages.find(message => message.kind === "tool_result");
+  if (!resultMessage || resultMessage.attachments.kind !== "inline") throw new Error("tool result projection was not published");
+  const projection = resultMessage.attachments.items.find(item => item.label === "model_projection");
+  if (!projection) throw new Error("tool projection attachment is missing");
+  const projectionText = new TextDecoder().decode(await conversation.read(projection.file));
+  expect(projectionText).toContain("shown");
+  expect(projectionText).not.toContain("secret");
+  conversation.free();
+});
+
 test("authoritative failed and cancelled turns close without claiming an unknown model effect", async () => {
   for (const outcome of ["failed", "cancelled"] as const) {
     const conversation = await MemoryConversation.create({ agent, wasm });
@@ -449,7 +506,7 @@ test("authoritative failed and cancelled turns close without claiming an unknown
           ? outcome === "failed"
             ? { kind: "failed", error: { message: "provider rejected" } }
             : { kind: "cancelled", receipt: { requested: true } }
-          : { kind: "succeeded", value: { taskId: "task:next" as RuntimeTaskId,
+          : { kind: "succeeded", value: { taskId: "13131313-1313-1313-1313-131313131313" as RuntimeTaskId,
             text: "next answer", receipts: [] } };
       },
       async attach() { throw new Error("unused"); },

@@ -602,9 +602,9 @@ function boundedJsonNumber(value: bigint): number {
 }
 
 function freezeNative<Value>(value: Value): Value {
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === "object" && !ArrayBuffer.isView(value)) {
     for (const child of Object.values(value)) freezeNative(child);
-    Object.freeze(value);
+    try { Object.freeze(value); } catch { /* byte views remain transport-owned */ }
   }
   return value;
 }

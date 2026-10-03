@@ -468,7 +468,10 @@ export class MemoryConversation {
         throw error instanceof IndeterminateModelTurnError
           ? error : new IndeterminateModelTurnError(operationId, error);
       }
-      if (typeof output.text !== "string") throw new TypeError("assistant output text is invalid");
+      // The Harness admits host and loop receipts before returning this
+      // output. Keep the conversation provider as a ref publisher: it stores
+      // the already pinned raw result and model projection without invoking
+      // owner callbacks a second time.
       stableOutput = structuredClone(output);
       this.#outputs.set(operationId, stableOutput);
     }
