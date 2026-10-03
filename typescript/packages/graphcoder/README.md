@@ -8,8 +8,9 @@ workspace generations, and writeback are supplied by the injected
 orchestration system.
 
 The same `GraphCoderUi` can drive a native application. `GraphCoderTerminal`
-only translates newline-delimited commands into UI operations and JSON
-output, so terminal behavior is covered by the same contracts as other hosts.
+from the `@acyclic-labs/graphcoder/terminal` entry point only translates
+newline-delimited commands into JSON output, so the generic root entry point
+does not import Node readline or process APIs into native applications.
 
 The command line fixture is deliberately explicit:
 
