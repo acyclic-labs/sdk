@@ -112,6 +112,45 @@ test("final package suites must identify the installed artifact used by their ev
   }
 });
 
+test("a bystander artifact cannot satisfy a suite's consuming-artifact evidence", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-artifact-use-"));
+  try {
+    const suite = suiteFixture(directory, "package");
+    const consumedPath = join(directory, "consumed.tgz");
+    const bystanderPath = join(directory, "bystander.tgz");
+    writeFileSync(consumedPath, "consumed package\\n");
+    writeFileSync(bystanderPath, "bystander package\\n");
+    suite.artifact_paths = [consumedPath];
+    const receipt = makePendingReceipt();
+    const sourceTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+    const artifact = (path, buildId) => ({
+      path,
+      sha256: digest(readFileSync(path)),
+      source_commit: receipt.source.commit,
+      source_tree: sourceTree,
+      built_at: "2026-10-02T23:59:00.000Z",
+      build_id: buildId,
+      fresh: true,
+    });
+    receipt.suites = [suite];
+    receipt.artifacts = [artifact(consumedPath, "consumed-build"), artifact(bystanderPath, "bystander-build")];
+    receipt.cases[0] = {
+      id: receipt.cases[0].id,
+      status: "passed",
+      evidence: [{
+        suite: suite.id,
+        descriptor_sha256: suite.descriptor_sha256,
+        execution_kind: "package",
+        artifact_paths: [bystanderPath],
+      }],
+    };
+    receipt.gate.missing--;
+    assert.throws(() => validateReceipt(matrix, receipt), /artifact use does not match suite/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("suite execution cannot precede the build of its referenced artifact", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-qualification-suite-"));
   try {
