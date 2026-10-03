@@ -1946,10 +1946,14 @@ describe("typed agent runtime", () => {
   test("provider wrappers cannot replace the admitted transport body with their projection", async () => {
     let innerMessages: readonly ModelMessage[] = [];
     let capturedBody: number[] = [];
+    let capturedDigest: number[] = [];
     const inner: ModelProvider = {
       async *generate(request) {
         innerMessages = request.messages;
+        expect(() => { (request.transport.body as number[])[0] = 0; }).toThrow();
+        expect(() => { (request.transport.requestDigest as number[])[0] = 0; }).toThrow();
         capturedBody = [...request.transport.body];
+        capturedDigest = [...request.transport.requestDigest];
         yield { kind: "completed" as const, metadata: {} };
       },
       async reconcile() { return undefined; },
@@ -1967,9 +1971,13 @@ describe("typed agent runtime", () => {
     await runtime.run("exact transport");
     expect(innerMessages[0]?.content).toBe("wrapper-only projection");
     const body = JSON.parse(new TextDecoder().decode(Uint8Array.from(capturedBody))) as {
-      messages: readonly { readonly content: unknown }[];
+      readonly model: unknown;
+      readonly messages: readonly { readonly content: unknown }[];
+      readonly tools: unknown;
+      readonly max_output_tokens: unknown;
     };
     expect(body.messages[0]?.content).toBe("exact transport");
+    expect(Array.from(contracts.digestCanonicalJson(body))).toEqual(capturedDigest);
   });
 
   test("oversized tool projections refuse the model step without an omission sentinel", async () => {
@@ -2153,6 +2161,47 @@ describe("typed agent runtime", () => {
     await runtime.run("absence");
     expect(manifests).toHaveLength(1);
     expect(JSON.parse(manifests[0]!).model_option_policy).toBeUndefined();
+  });
+
+  test("provider option policy is read once while binding the model", async () => {
+    let reads = 0;
+    const policy = { schema: { type: "object", additionalProperties: false } } as const;
+    const provider = {
+      get modelOptions() {
+        reads += 1;
+        if (reads > 1) throw new Error("modelOptions getter read more than once");
+        return policy;
+      },
+      async *generate(request: { readonly canonical: { readonly manifestJson: string } }) {
+        expect(JSON.parse(request.canonical.manifestJson).model_option_policy).toBeDefined();
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, provider).build();
+    await runtime.run("getter policy");
+    expect(reads).toBe(1);
+  });
+
+  test("provider option schema is detached once while binding the model", async () => {
+    let schemaReads = 0;
+    const provider = {
+      modelOptions: {
+        get schema() {
+          schemaReads += 1;
+          if (schemaReads > 1) throw new Error("modelOptions.schema getter read more than once");
+          return { type: "object", additionalProperties: false } as const;
+        },
+      },
+      async *generate(request: { readonly canonical: { readonly manifestJson: string } }) {
+        expect(JSON.parse(request.canonical.manifestJson).model_option_policy).toBeDefined();
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, provider).build();
+    await runtime.run("getter schema");
+    expect(schemaReads).toBe(1);
   });
 
   test("selected context preserves canonical roles without a synthetic user duplicate", async () => {

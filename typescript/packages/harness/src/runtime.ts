@@ -140,15 +140,21 @@ function freezeSchema<Value>(value: Value): Value {
   return value;
 }
 interface BoundModel { readonly identity: Model; readonly provider: ModelProvider }
-function bindModel(identity: Model, provider: ModelProvider): BoundModel {
+type BoundModelOptions = ModelProvider["modelOptions"];
+function captureModelOptions(provider: ModelProvider): BoundModelOptions {
+  const modelOptions = provider.modelOptions;
+  return modelOptions === undefined
+    ? undefined
+    : Object.freeze({ schema: freezeSchema(structuredClone(modelOptions.schema)) });
+}
+function bindModel(identity: Model, provider: ModelProvider, modelOptions: BoundModelOptions): BoundModel {
   for (const label of [identity.provider, identity.name, identity.revision]) {
     if (typeof label !== "string" || !label.trim()) throw new TypeError("model identity requires a provider, name, and revision");
   }
   if (typeof provider.generate !== "function" || typeof provider.reconcile !== "function") {
     throw new TypeError("model provider requires generate and reconcile");
   }
-  const pinnedOptions = provider.modelOptions === undefined ? undefined
-    : Object.freeze({ schema: freezeSchema(structuredClone(provider.modelOptions.schema)) });
+  const pinnedOptions = modelOptions;
   // Always expose a wrapper, including the no-policy case. This pins both the
   // value and the presence of modelOptions, so later assignment on the caller's
   // provider cannot change native admission policy for an already-bound model.
@@ -159,8 +165,7 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
   });
   return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider: pinnedProvider });
 }
-function validateModelBinding(contracts: NativeContracts, identity: Model, provider: ModelProvider): void {
-  const policy = provider.modelOptions;
+function validateModelBinding(contracts: NativeContracts, identity: Model, policy: BoundModelOptions): void {
   if (policy === undefined) {
     if (identity.options === null || typeof identity.options !== "object"
       || Array.isArray(identity.options) || Object.keys(identity.options).length !== 0) {
@@ -566,7 +571,10 @@ export class ExecutionScope {
     });
   }
   static create(): ExecutionScope { return new ExecutionScope(); }
-  model(identity: Model, provider: ModelProvider): ExecutionScope { return new ExecutionScope(bindModel(identity, provider), this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
+  model(identity: Model, provider: ModelProvider): ExecutionScope {
+    const modelOptions = captureModelOptions(provider);
+    return new ExecutionScope(bindModel(identity, provider, modelOptions), this.contextBuilder, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider);
+  }
   context(value: ContextBuilder): ExecutionScope { return new ExecutionScope(this.modelBinding, value, this.interactionHandler, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
   interactions(value: InteractionHandler): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, value, this.policyProvider, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
   policy(value: Policy): ExecutionScope { return new ExecutionScope(this.modelBinding, this.contextBuilder, this.interactionHandler, value, this.grants, this.limits, this.grantsExplicit, this.executionProvider); }
@@ -1695,8 +1703,9 @@ export class HarnessBuilder {
     return this;
   }
   model(identity: Model, provider: ModelProvider): this {
-    validateModelBinding(this.contracts, identity, provider);
-    this.#model = bindModel(identity, provider);
+    const modelOptions = captureModelOptions(provider);
+    validateModelBinding(this.contracts, identity, modelOptions);
+    this.#model = bindModel(identity, provider, modelOptions);
     return this;
   }
   agentLoop(value: AgentLoop): this { this.#loop = value; return this; }
@@ -1808,8 +1817,8 @@ export class AgentHarness {
     this.#selectedTools = new Map(selectedTools);
     this.#toolSources = new Map(toolSources);
     this.#contentLimits = contracts.validate("limits", components.limits ?? DEFAULT_LIMITS);
-    if (components.model) validateModelBinding(contracts, components.model.identity, components.model.provider);
-    if (scope.modelBinding) validateModelBinding(contracts, scope.modelBinding.identity, scope.modelBinding.provider);
+    if (components.model) validateModelBinding(contracts, components.model.identity, components.model.provider.modelOptions);
+    if (scope.modelBinding) validateModelBinding(contracts, scope.modelBinding.identity, scope.modelBinding.provider.modelOptions);
     this.components = Object.freeze({ ...components, limits: this.#contentLimits });
     this.#policyIdentity = validatePolicyIdentity((scope.policyProvider ?? components.policy)?.identity() ?? null);
     if (components.host && !samePolicyIdentity(this.#policyIdentity,
@@ -2551,9 +2560,10 @@ export class AgentHarness {
         } satisfies WasmModelRequestWire;
         let prepared: ReturnType<NativeContracts["prepareModelRequest"]>;
         try {
-          const optionPolicy = model.provider.modelOptions === undefined
+          const registeredOptions = model.provider.modelOptions;
+          const optionPolicy = registeredOptions === undefined
             ? null
-            : nativeModelOptionPolicy(this.contracts, model.identity, model.provider.modelOptions);
+            : nativeModelOptionPolicy(this.contracts, model.identity, registeredOptions);
           prepared = this.contracts.prepareModelRequest(wireRequest, nativeLimits(this.limits), optionPolicy);
         } catch (error) {
           throw asHarnessLimitError(error) ?? error;
