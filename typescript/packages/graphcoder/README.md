@@ -59,6 +59,14 @@ passing that transport to `new GraphCoderTerminal(transport, io)` or
 JSON-lines process, native callback, or WASM binding; the package does not
 choose or start that execution provider.
 
+Node hosts that explicitly own a local runtime executable can use
+`@acyclic-labs/graphcoder/node`'s `JsonLineGraphCoderBridge`. It correlates
+concurrent requests, rejects pending requests on process errors or EOF, bounds
+one line, and reports stderr, malformed lines, unmatched responses, and exit
+status through `onDiagnostic`. Pass `executable`, `args`, `cwd`, and `env`
+explicitly; an omitted environment is empty and does not inherit host
+credentials.
+
 After building, the Windows PTY qualification can be run when Python's
 `winpty` binding is installed:
 
