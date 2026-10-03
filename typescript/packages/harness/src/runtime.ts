@@ -153,7 +153,7 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
   // value and the presence of modelOptions, so later assignment on the caller's
   // provider cannot change native admission policy for an already-bound model.
   const pinnedProvider: ModelProvider = Object.freeze({
-    modelOptions: pinnedOptions,
+    ...(pinnedOptions === undefined ? {} : { modelOptions: pinnedOptions }),
     generate: provider.generate.bind(provider),
     reconcile: provider.reconcile.bind(provider),
   });
