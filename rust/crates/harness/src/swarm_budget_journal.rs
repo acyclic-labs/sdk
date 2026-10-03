@@ -212,15 +212,22 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         &mut self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
         publication: ForkPublication,
     ) -> Result<SwarmDispatchToken> {
         let projected = SwarmBudget::replay(self.events.clone())?;
-        let token = projected.activate(operation_id, owner, publication)?;
+        let token = projected.activate_with_dispatch(
+            operation_id,
+            owner,
+            publication,
+            Some(dispatch_id),
+        )?;
         self.commit(
             SwarmBudgetEvent::ChildActivated {
                 operation_id,
                 owner: token.owner().clone(),
                 publication: token.publication(),
+                dispatch_id: token.dispatch_id().cloned(),
             },
             operation_id,
         )
@@ -230,14 +237,20 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
 
     /// Activates only publication evidence produced by the authoritative fork
     /// helper. Raw digest fields cannot be supplied by an external caller.
-    pub async fn activate_verified(
+    pub async fn activate_verified_with_dispatch(
         &mut self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
         publication: VerifiedForkPublication,
     ) -> Result<SwarmDispatchToken> {
-        self.activate_raw(operation_id, owner, publication.into_publication())
-            .await
+        self.activate_raw(
+            operation_id,
+            owner,
+            dispatch_id,
+            publication.into_publication(),
+        )
+        .await
     }
 
     /// Activates verified publication evidence and invokes the production dispatcher.
@@ -250,6 +263,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         &mut self,
         operation_id: OperationId,
         owner: SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
         publication: VerifiedForkPublication,
         dispatch: F,
     ) -> Result<T>
@@ -258,7 +272,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Fut: Future<Output = Result<T>>,
     {
         let token = self
-            .activate_verified(operation_id, owner.clone(), publication)
+            .activate_verified_with_dispatch(operation_id, owner.clone(), dispatch_id, publication)
             .await?;
         match dispatch(token).await {
             Ok(value) => Ok(value),
@@ -774,9 +788,13 @@ mod tests {
         })
         .expect("verified publication");
         let rejected = journal
-            .dispatch_after_publication(child, owner.clone(), publication, |_token| async {
-                Err::<(), _>(Error::Conflict("dispatcher rejected".into()))
-            })
+            .dispatch_after_publication(
+                child,
+                owner.clone(),
+                IdempotencyKey::new("dispatch-rejected").expect("dispatch key"),
+                publication,
+                |_token| async { Err::<(), _>(Error::Conflict("dispatcher rejected".into())) },
+            )
             .await;
         assert!(rejected.is_err());
         let usage = journal.usage().expect("usage");
@@ -807,9 +825,13 @@ mod tests {
         })
         .expect("verified unknown publication");
         let unknown = journal
-            .dispatch_after_publication(unknown_child, owner, unknown_publication, |_token| async {
-                Err::<(), _>(Error::Indeterminate(unknown_child))
-            })
+            .dispatch_after_publication(
+                unknown_child,
+                owner,
+                IdempotencyKey::new("dispatch-unknown").expect("dispatch key"),
+                unknown_publication,
+                |_token| async { Err::<(), _>(Error::Indeterminate(unknown_child)) },
+            )
             .await;
         assert!(matches!(unknown, Err(Error::Indeterminate(_))));
         let usage = journal.usage().expect("unknown usage");
@@ -846,7 +868,12 @@ mod tests {
             workspace_generation_digest: [8; 32],
         })?;
         journal
-            .activate_verified(child, owner.clone(), publication)
+            .activate_verified_with_dispatch(
+                child,
+                owner.clone(),
+                IdempotencyKey::new("receipt-dispatch")?,
+                publication,
+            )
             .await?;
         let mut issuer = SwarmUsageReceiptIssuer::new(
             ZeroSource,
