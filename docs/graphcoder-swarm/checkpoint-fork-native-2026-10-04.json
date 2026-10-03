@@ -1,0 +1,33 @@
+{
+  "qualification": "incomplete",
+  "source": "6c6ae54449cd0be7e7a5994db5a81d77ca791b4d",
+  "worktree": "fork-boundary-tests/sdk",
+  "platform": "Windows native execution",
+  "compile_handle": 99985,
+  "compile_exit_code": 0,
+  "suites": [
+    {
+      "name": "model_fork_boundary",
+      "passed": 1, "failed": 2, "exit_code": 1,
+      "suite_sha256": "5BEFC84DE5C4E70AA1075D58BB9CE8FEA10AEF93E795333F3F3081FE4648C4FB",
+      "artifact_sha256": "B437A52662469D2CECDFD62E6D79D6CB540310CA7FCBE489560A8D45CAB8D5F8",
+      "diagnostic": "Preallocation absence assertions fail for forged private workspace (line 808) and child project workspace (line 1795). Stale completed boundary rejection passes."
+    },
+    {
+      "name": "local_model_swarm",
+      "handle": 59389,
+      "passed": 0, "failed": 1, "exit_code": 1,
+      "suite_sha256": "4102BAC1A6899273BA8909E06A5AEC42A5968F5AC19B2966B953174DDE4420A9",
+      "artifact_sha256": "C18534741B3071F83F2039F7881E478C0FFE7D24E1C253DE728FECC0123F97A7",
+      "diagnostic": "Conflict: fork seed differs from its allocated publication"
+    },
+    {
+      "name": "local_swarm_recovery",
+      "passed": 9, "failed": 0, "exit_code": 0,
+      "suite_sha256": "BCEBFC0FBA6FFA70E453FDBADA24570D9BCB0AE647C88F4DA6E8377B5AAFE0B8",
+      "artifact_sha256": "BE14335802EAFEE84720ED2283BD9AE4F31C8005534DBC7201477E34177095BC",
+      "scope": "Root cancellation, ownership, changed-input rejection, retained-prefix reconciliation, and completed result replay across reopen"
+    }
+  ],
+  "scope": "Held runtime fork stack, not integrated root branch or installed GraphCoder artifacts. Allocation negatives and recursive model-driven swarm still prevent fork qualification."
+}

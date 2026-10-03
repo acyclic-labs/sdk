@@ -1,0 +1,14 @@
+{
+  "qualification": "incomplete",
+  "source": "af542942f",
+  "runtime_sha256": "F6DE5B7DA1738C7EE0B29D50AFD8B1F5360B27A441BCBA4B10992A8A530139A2",
+  "suite_sha256": "419BE51CB52DD1E419750D6C36B7AFA51529714010C73D4A121085DE79132AE1",
+  "wasm_sha256": "568B87CB08BFF9F5FF3B8A0FEA8676F30EF9921C5FF53600C4AD021A195E5900",
+  "test_handle": 71787,
+  "passed": 84,
+  "failed": 0,
+  "assertions": 478,
+  "test_types": "passed",
+  "change": "Provider option policy and nested schema getters are captured once; public ExecutionScope constructors pin detached model bindings and scope composition retains them without repeated wrapper growth.",
+  "scope": "Focused Bun runtime tests with existing source-bound WASM. The explicit undefined annotation is a type-only repair. Real cold storage missing/corrupt request and manifest tests remain required."
+}
