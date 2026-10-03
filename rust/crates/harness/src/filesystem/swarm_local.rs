@@ -2256,9 +2256,9 @@ impl PersistentLocalSwarm {
         let stream = shared_local_stream(root.join("conversation")).await?;
         let project = VolumeRef::new(
             filesystem_provider,
-            "graphcoder-recursive-project",
+            "local-project",
             VolumeClass::Project,
-            VolumeOwner::Project("graphcoder-recursive-fixture".into()),
+            VolumeOwner::Project("local-swarm".into()),
         )?;
         host.create_volume(&project).await?;
         let host_secret = local_fork_secret(&root)?;
@@ -4034,24 +4034,31 @@ fn local_fork_secret(root: &Path) -> Result<[u8; 32]> {
     entropy.update(root.to_string_lossy().as_bytes());
     entropy.update(&OperationId::new().into_bytes());
     let secret = *entropy.finalize().as_bytes();
-    match OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => {
-            file.write_all(&secret)
-                .map_err(|error| Error::Storage(error.to_string()))?;
-            Ok(secret)
+    let temporary = path.with_extension(format!("secret-{}", OperationId::new()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        file.write_all(&secret)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        file.sync_all()
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        match fs::rename(&temporary, &path) {
+            Ok(()) => Ok(secret),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let bytes = fs::read(&path)
+                    .map_err(|read_error| Error::Storage(read_error.to_string()))?;
+                bytes.try_into().map_err(|_| {
+                    Error::Conflict("persisted local fork issuer secret has the wrong length".into())
+                })
+            }
+            Err(error) => Err(Error::Storage(error.to_string())),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let bytes = fs::read(&path).map_err(|read_error| Error::Storage(read_error.to_string()))?;
-            bytes.try_into().map_err(|_| {
-                Error::Conflict("persisted local fork issuer secret has the wrong length".into())
-            })
-        }
-        Err(error) => Err(Error::Storage(error.to_string())),
-    }
+    })();
+    let _ = fs::remove_file(&temporary);
+    result
 }
 
 fn normalized_path(path: &Path) -> PathBuf {
