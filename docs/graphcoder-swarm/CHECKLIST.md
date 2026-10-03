@@ -9,7 +9,7 @@ do not substitute for full acceptance gates.
 - [x] Durable single-agent local storage composition and replay.
 - [x] Complete batch publication admission and safe reconciliation.
 - [x] Exact authoritative exchange publication and child inherited binding.
-- [x] Native sibling fork/provider-prefix scenario and stale-boundary refusal.
+- [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (positive fork attestation remains failed).
 - [x] Checked runtime model-tool provenance and disjoint completed-batch publication identity.
 - [ ] Production fork intent tools and durable child task activation.
 - [ ] Session-wide active/total/depth/step/output/time budget admission.
@@ -17,6 +17,7 @@ do not substitute for full acceptance gates.
 - [ ] Direct-parent workspace integration through the git facade, including conflicts, continue, abort, rebase and discard.
 - [ ] Scoped durable message and wait tools, cancellation and restart recovery.
 - [ ] Exact subprocess approval, explicit environment and uncertain-outcome handling.
+- [ ] Owned process and reader cleanup across normal exit, cancellation, timeout, dispatch/transport failure, adapter drop, and shutdown; verify real descendant termination/reaping where supported and preserve durable uncertainty where it cannot be proved.
 - [ ] Approved root writeback with concurrent user-edit reconciliation.
 - [ ] Complete recursive fork/effect/publication fault-injection matrix.
 - [ ] Thin terminal wrapper with explicit mock fixtures, interactive PTY and headless interfaces.
