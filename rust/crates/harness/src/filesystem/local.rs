@@ -122,35 +122,55 @@ where
     }
 
     fn validate_events(events: &[ExecutionReceiptEvent]) -> Result<()> {
-        let mut pending = Vec::<ExecutionReceiptKey>::new();
+        let mut pending = Vec::<(ExecutionReceiptKey, [u8; 32], u64)>::new();
         let mut finalized = Vec::<ExecutionReceiptKey>::new();
         for event in events {
             match event {
-                ExecutionReceiptEvent::Pending { key, .. } => {
+                ExecutionReceiptEvent::Pending {
+                    key,
+                    owner_token,
+                    generation,
+                } => {
                     if finalized.iter().any(|candidate| candidate == key)
-                        || pending.iter().any(|candidate| candidate == key)
+                        || pending.iter().any(|(candidate, _, _)| candidate == key)
                     {
                         return Err(Error::Storage(
                             "execution receipt journal contains a duplicate claim".into(),
                         ));
                     }
-                    pending.push(key.clone());
+                    pending.push((key.clone(), *owner_token, *generation));
                 }
-                ExecutionReceiptEvent::Completed { key, result, .. } => {
+                ExecutionReceiptEvent::Completed {
+                    key,
+                    result,
+                    owner_token,
+                    generation,
+                    operator_resolution: _,
+                } => {
                     result.validate()?;
                     if result.descriptor().media_type() != "application/json" {
                         return Err(Error::Storage(
                             "execution receipt result is not JSON content".into(),
                         ));
                     }
-                    if finalized.iter().any(|candidate| candidate == key)
-                        || !pending.iter().any(|candidate| candidate == key)
-                    {
+                    if finalized.iter().any(|candidate| candidate == key) {
                         return Err(Error::Storage(
                             "execution receipt terminal record is orphaned or duplicated".into(),
                         ));
                     }
-                    pending.retain(|candidate| candidate != key);
+                    let Some((_, pending_token, pending_generation)) =
+                        pending.iter().find(|(candidate, _, _)| candidate == key)
+                    else {
+                        return Err(Error::Storage(
+                            "execution receipt terminal record is orphaned or duplicated".into(),
+                        ));
+                    };
+                    if pending_token != owner_token || pending_generation != generation {
+                        return Err(Error::Conflict(
+                            "execution receipt terminal owner does not match its claim".into(),
+                        ));
+                    }
+                    pending.retain(|(candidate, _, _)| candidate != key);
                     finalized.push(key.clone());
                 }
             }
@@ -382,7 +402,9 @@ where
             loop {
                 let (tail, events) = self.events().await?;
                 if let Some(record) = self.terminal_for(&events, key).await? {
-                    let _ = record;
+                    if record.receipt == *receipt {
+                        return Ok(record.result);
+                    }
                     return Err(Error::Conflict(
                         "execution receipt claim was already finalized".into(),
                     ));
@@ -853,7 +875,12 @@ mod tests {
                 stdout: b"ack".to_vec(),
                 stderr: Vec::new(),
             };
-            store.publish(&key, &handle, &receipt).await?
+            let result = store.publish(&key, &handle, &receipt).await?;
+            // A caller may lose the publication acknowledgement after the
+            // terminal event is durable. Retrying the exact protected
+            // receipt is an idempotent replay and returns the retained ref.
+            assert_eq!(store.publish(&key, &handle, &receipt).await?, result);
+            result
         };
         let session = PersistentLocalHarness::open(
             &root,
