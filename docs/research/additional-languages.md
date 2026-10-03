@@ -35,7 +35,7 @@ Erlang (`grpcbox`), OCaml (`ocaml-grpc`) and Common Lisp (`ag-gRPC`) remain expe
 
 ## HTTP and tooling projections
 
-[OpenAPI Generator](https://openapi-generator.tech/docs/generators/) `7.25.0` supplies practical HTTP projections for Ada, C, Clojure, Crystal, Elm, GDScript, Julia, Nim, Perl, PowerShell, R and Bash, in addition to the primary languages. These are deliberately represented as HTTP-only in the inventory. The C template uses libcurl and is beta; Perl and R document JSON/XML-oriented support without protobuf; Bash now has a local installable Actors HTTP projection package generated from the Rust OpenAPI document; `research/additional-languages/openapi-targets/bash-manifest.json` records the artifact, Git Bash runtime license scope, fixture checks, and limits. It remains HTTP-only and does not claim streaming, protobuf/gRPC, retry, cancellation, or embedded behavior.
+[OpenAPI Generator](https://openapi-generator.tech/docs/generators/) `7.25.0` supplies practical HTTP projections for Ada, C, Clojure, Crystal, Elm, GDScript, Julia, Nim, Perl, PowerShell, R and Bash, in addition to the primary languages. These are deliberately represented as HTTP-only in the inventory. The C template uses libcurl and is beta; Perl and R document JSON/XML-oriented support without protobuf; Bash now has a local installable five-family HTTP projection bundle generated from the Rust OpenAPI documents; `research/additional-languages/openapi-targets/bash-manifest.json` records the artifact, ShellCheck and Git Bash license scopes, fixture checks, and limits. Stream coverage is the polling projection plus explicit recovery error handling. It remains HTTP-only and does not claim protobuf/gRPC, automatic retry, cancellation, or embedded behavior.
 
 The same generator lists k6, JMeter, Terraform provider and documentation outputs. These are execution/documentation artifacts, not languages, and are grouped under `docs-and-execution-targets` so they cannot be mistaken for package coverage.
 
@@ -47,4 +47,3 @@ Cloudflare [Forge](https://github.com/cloudflare/forge) remains a downstream Ope
 2. Run Erlang and OCaml in isolated OTP/opam environments; promote only after package and stream/recovery evidence is retained.
 3. Generate HTTP-only packages and snippets from the Rust OpenAPI projection, with explicit route and streaming limitations.
 4. Keep each target's generator/runtime lock, source revision, artifact hash, install receipt and conformance report beside the generated documentation bundle.
-

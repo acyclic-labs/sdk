@@ -18,14 +18,28 @@ class Fixture(BaseHTTPRequestHandler):
             self._reply(401, {"code": "unauthenticated"})
             return
         if self.path == "/v1/actors/invoke":
-            assert payload["actorId"] == "actor-1", payload
             assert payload["body"] == "AQID", payload
-            assert payload["url"] == "https://example.test", payload
-            self._reply(200, {"body": "AQID", "status": 200, "headers": []})
+            self._reply(200, {"family": "actors", "body": "AQID"})
             return
-        if self.path == "/v1/actors/checkpoint":
-            assert payload["actorId"] == "actor-1", payload
-            self._reply(200, {"actorId": "actor-1", "configurationRevision": "18446744073709551615"})
+        if self.path == "/v1/workers/deployments/prod/invoke":
+            assert payload["body"] == "AQID", payload
+            self._reply(200, {"family": "workers", "body": "AQID"})
+            return
+        if self.path == "/v1/stream/read":
+            assert payload["path"] == "root", payload
+            if payload.get("limit") == 0:
+                self._reply(503, {"code": "unavailable", "retryable": True})
+            else:
+                self._reply(200, {"family": "stream", "records": [{"body": "AQID"}]})
+            return
+        if self.path == "/v2/objects/objects/put":
+            assert payload["body"] == "AQID", payload
+            self._reply(200, {"family": "objects", "body": "AQID"})
+            return
+        if self.path == "/v1/inference/runs/generate":
+            assert payload["context"] == "AQID", payload
+            assert payload["maximumOutput"] == "18446744073709551615", payload
+            self._reply(200, {"family": "inference", "maximumOutput": payload["maximumOutput"]})
             return
         self.send_error(404)
 

@@ -1,12 +1,18 @@
 {
-  "receipt_version": 1,
+  "receipt_version": 2,
   "recorded_at": "2026-10-03",
   "target": "bash",
-  "qualification": "Rust-owned Actors OpenAPI HTTP projection prototype",
+  "qualification": "Rust-owned five-family OpenAPI HTTP projection prototype",
   "source": {
-    "contract": "Rust sdk-openapi-prototype Actors document",
-    "projection_sha256": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
-    "fixture_sha256": "34B9EA4DA9D269B4AF51ACFA133254446B09802CA4E21FEBC506734B995DF0BF",
+    "contract": "Rust sdk-openapi-prototype explicit HTTP family documents",
+    "projection_sha256": {
+      "actors": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
+      "workers": "090821C087D43A6813E6A0457B448303FD131FD7E9FB1FC76301261DB4551A77",
+      "stream": "9EE98891DF2D54503FA6CF058B849E89482422062FA5A5575A046A14038A1E4D",
+      "objects": "34D1FC4DD0A909122BFEAB8FA349B746FFF1451CCD8D4CC760EE7EA970BBBC6A",
+      "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
+    },
+    "fixture_sha256": "AFD0438AD9856A5AC6AD8622490DEB913B6E805CA98E23A2F0CE2546F6F5244E",
     "generator_script": "research/additional-languages/openapi-targets/qualify-bash.ps1"
   },
   "generator": {
@@ -22,33 +28,46 @@
     "license": "GPL-3.0-or-later",
     "scope": "qualification runtime only"
   },
+  "lint": {
+    "name": "ShellCheck",
+    "version": "0.11.0",
+    "source": "https://github.com/koalaman/shellcheck/releases/tag/v0.11.0",
+    "license": "GPL-3.0-or-later",
+    "archive_sha256": "8A4E35AB0B331C85D73567B12F2A444DF187F483E5079CEFFA6BDA1FAA2E740E",
+    "status": "passed for all five generated client.sh files"
+  },
   "artifact": {
-    "name": "acyclic-actors-bash-0.1.0.zip",
-    "sha256": "9BE2593626D34BBF352A72489FC7F869F82FD69D7BA422C05AE1A21076BEFD65",
+    "name": "acyclic-http-bash-0.1.0.zip",
+    "sha256": "D6AA33319F59DB4A4D0FD6072A6FFD5D98570FE7AE51D64FDA9431D40830DCB7",
     "publication": "local-only ignored output",
-    "install": "unzip and invoke client.sh with Bash 4.3+ and curl"
+    "install": "unzip and invoke each family client.sh with Bash 4.3+ and curl"
   },
   "tests": {
     "fixture": "research/additional-languages/openapi-targets/bash-fixture.py",
     "status": "passed",
+    "families": ["actors", "workers", "stream", "objects", "inference"],
     "operations": [
-      "invokeActor bearer header and bytes/base64 AQID",
-      "checkpointActor max uint64 represented as the textual value 18446744073709551615",
-      "invokeActor canonical unauthenticated 401 body"
+      "Actors invokeActor bearer header and bytes/base64 AQID",
+      "Workers invokeDeployment alias path, bearer header, and bytes/base64 AQID",
+      "Stream read polling success plus explicit retryable 503 error response",
+      "Objects putObject bytes/base64 AQID",
+      "Inference runsGenerate bytes/base64 context and maximumOutput 18446744073709551615",
+      "Actors unauthenticated 401 body"
     ],
-    "ci_policy": "release-or-explicit-qualification only"
+    "ci_policy": "release-or-explicit-qualification only",
+    "generation_mode": "Rust projections generated and hashed; final fixture rerun used SkipRustGeneration while concurrent wire edits were active"
   },
   "license_scope": {
     "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
-    "runtime": "Git for Windows Bash GPL-3.0-or-later, used only for the local qualification",
+    "runtime": "Git for Windows Bash GPL-3.0-or-later, used only for local qualification",
+    "lint": "ShellCheck GPL-3.0-or-later, used only for local qualification",
     "transport": "curl license remains a separate runtime dependency"
   },
   "limits": [
-    "HTTP/JSON projection only; this does not qualify protobuf/gRPC or embedded SDK behavior",
-    "Actors projection has no streaming route, so streaming and cancellation remain unqualified",
-    "The generated Bash client does not implement SDK retry policy; the fixture does not claim automatic recovery",
-    "shellcheck is not installed on this host and remains an explicit follow-up"
+    "HTTP/JSON projections only; this does not qualify protobuf/gRPC or embedded SDK behavior",
+    "Stream evidence is the Rust polling projection and a retryable error response; the generated Bash client performs no automatic retry or recovery",
+    "TLS, deadlines, cancellation, idempotency policy and non-idempotent replay were not qualified by this shell client",
+    "The five-family fixture exercises representative routes, not every operation or model validation vector"
   ],
   "publication": "local-only"
 }
-

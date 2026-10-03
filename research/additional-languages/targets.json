@@ -853,7 +853,7 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "Rust-derived Actors OpenAPI projection now generates an installable Bash/curl package; this remains HTTP-only evidence."
+        "notes": "Rust-derived OpenAPI projections generate an installable Bash/curl bundle for all five explicit HTTP families; this remains HTTP-only evidence."
       },
       "embedded": {
         "level": "none",
@@ -869,9 +869,9 @@
       },
       "package": {
         "ecosystem": "shell script",
-        "artifact": "acyclic-actors-bash-0.1.0.zip",
+        "artifact": "acyclic-http-bash-0.1.0.zip",
         "installable": true,
-        "notes": "Actors HTTP projection package is installable from a local archive; receipt: openapi-targets/bash-manifest.json."
+        "notes": "Five-family HTTP projection bundle is installable from a local archive; receipt: openapi-targets/bash-manifest.json."
       },
       "evidence": [
         {
@@ -880,12 +880,11 @@
         },
         {
           "url": "openapi-targets/bash-manifest.json",
-          "claim": "Rust-derived Actors package and fixture passed locally; scope remains HTTP projection only."
+          "claim": "Rust-derived five-family package and fixture passed locally; scope remains HTTP projection only."
         }
       ],
       "outstanding": [
-        "Run shellcheck when the tool is available.",
-        "Extend qualification to a Rust-derived streaming-capable family before making broader transport claims.",
+        "Extend qualification to a Rust-derived streaming-capable family before making broader transport claims; current Stream evidence is polling plus an explicit recovery error.",
         "Keep protobuf/gRPC and embedded behavior unqualified."
       ]
     },
@@ -1013,7 +1012,4 @@
   ],
   "catalogued_at": "2026-10-03"
 }
-
-
-
 
