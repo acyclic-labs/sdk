@@ -90,7 +90,10 @@ same boundary immediately before the provider join. When the caller also
 needs the authenticated receipt, the receipt variant consumes the exact child
 and notice values used for that publication.
 Native root writeback has a corresponding notice-bound method for the same
-pre-join validation requirement.
+pre-join validation requirement. `ProjectMergeRecovery` records the immutable
+intent before the provider join, the receipt after provider success, and the
+completion only after the conversation Stream append; reopening returns the
+same receipt for publication retry without replanning mutable heads.
 
 Use the `*_for_child` variants when a model-facing request carries a child
 conversation identity. They revalidate that the current parent reducer has a
