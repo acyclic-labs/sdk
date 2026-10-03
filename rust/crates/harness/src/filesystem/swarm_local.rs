@@ -15,14 +15,17 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry},
     executor::TurnOutput,
     fork::{ForkReport, ForkSeed},
+    interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
-    interaction::{InteractionKind, InteractionResolution, InteractionResponse, InteractionTicket},
     registry::ComponentIdentity,
     resources::GenerationRef,
     runtime::TaskRunLimits,
     store::StreamAggregate,
-    tool::{ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult},
+    tool::{
+        ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
+        ToolRegistry, ToolResult,
+    },
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
@@ -74,8 +77,7 @@ pub struct LocalSwarmBindings {
     /// Live cancellation bridge for admitted tasks.
     pub cancellation: Option<Arc<dyn crate::communication_tools::WaitCancellationSource>>,
     /// Owner mediated publication of completed model/tool batches.
-    pub model_batch_publisher:
-        Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
+    pub model_batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
     /// Owner-prepared model fork plans made available to the authenticated
     /// model-facing fork tool.
     pub model_fork_plans: Option<Arc<LocalModelForkPlans>>,
@@ -341,7 +343,10 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 )
                 .await?;
             self.plans
-                .mark_completed(publication.operation_id, crate::contract::canonical_json_digest(&publication)?)
+                .mark_completed(
+                    publication.operation_id,
+                    crate::contract::canonical_json_digest(&publication)?,
+                )
                 .await
         })
     }
@@ -384,7 +389,11 @@ struct LocalForkToolExecutor {
 
 impl ToolExecutor for LocalForkToolExecutor {
     fn execute<'a>(&'a self, _invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
-        Box::pin(async { Err(Error::Unsupported("local fork requires model batch context".into())) })
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "local fork requires model batch context".into(),
+            ))
+        })
     }
 
     fn execute_in_model_batch<'a>(
@@ -394,8 +403,10 @@ impl ToolExecutor for LocalForkToolExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+            let input: LocalForkToolInput =
+                serde_json::from_value(invocation.arguments).map_err(|error| {
+                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
+                })?;
             if input.fork_operation != context.publication_operation()
                 || input.child_operation == input.fork_operation
             {
@@ -403,11 +414,9 @@ impl ToolExecutor for LocalForkToolExecutor {
                     "local fork tool identity is not bound to this completed model batch".into(),
                 ));
             }
-            let plan = self
-                .plans
-                .get(input.fork_operation)
-                .await
-                .ok_or_else(|| Error::Unauthorized("local fork plan is not owner admitted".into()))?;
+            let plan = self.plans.get(input.fork_operation).await.ok_or_else(|| {
+                Error::Unauthorized("local fork plan is not owner admitted".into())
+            })?;
             if plan.parent != self.parent
                 || plan.request.parent_operation != context.parent_operation
                 || plan.request.parent_step != context.step
@@ -450,7 +459,8 @@ fn local_fork_tool(parent: TaskId, plans: Arc<LocalModelForkPlans>) -> Tool {
         definition: ToolDefinition {
             name: "acyclic.fork_child".into(),
             revision: "1".into(),
-            description: "Request an owner-prepared recursive child after this model batch completes".into(),
+            description:
+                "Request an owner-prepared recursive child after this model batch completes".into(),
             input_schema: json!({
                 "type": "object",
                 "required": ["fork_operation", "child_operation", "task", "prompt"],
@@ -548,7 +558,9 @@ impl LocalForkRequest {
         if self.parent.into_bytes() == [0; 16]
             || self.parent_operation.into_bytes() == [0; 16]
             || self.child_operation.into_bytes() == [0; 16]
-            || self.fork_operation.is_some_and(|value| value.into_bytes() == [0; 16])
+            || self
+                .fork_operation
+                .is_some_and(|value| value.into_bytes() == [0; 16])
         {
             return Err(Error::Invalid(
                 "local fork identities must be nonzero".into(),
@@ -791,8 +803,13 @@ enum StoredEvent {
         #[serde(default)]
         output_digest: Option<[u8; 32]>,
     },
-    ForkFailed { child: TaskId, reason: String },
-    ForkCancelled { child: TaskId },
+    ForkFailed {
+        child: TaskId,
+        reason: String,
+    },
+    ForkCancelled {
+        child: TaskId,
+    },
 }
 
 impl From<StoredPhase> for LocalSessionPhase {
@@ -1104,13 +1121,8 @@ impl PersistentLocalSwarm {
             .cloned()
             .collect();
         let harness = self.open_session(task).await?;
-        let conversation = harness
-            .conversation_state(self.config.limits)
-            .await?;
-        let workspace_generation = match harness
-            .list_private_directory("", None, None, 1)
-            .await
-        {
+        let conversation = harness.conversation_state(self.config.limits).await?;
+        let workspace_generation = match harness.list_private_directory("", None, None, 1).await {
             Ok(page) => Some(page.generation),
             Err(Error::NotFound(_)) => None,
             Err(error) => return Err(error),
@@ -1199,16 +1211,17 @@ impl PersistentLocalSwarm {
         for event in events {
             match event.payload {
                 crate::core::EventPayload::InteractionOpened { ticket }
-                    if ticket.kind == InteractionKind::Approval => {
-                        approvals.insert(
-                            ticket.id,
-                            LocalSwarmApproval {
-                                task,
-                                ticket,
-                                resolution: None,
-                            },
-                        );
-                    }
+                    if ticket.kind == InteractionKind::Approval =>
+                {
+                    approvals.insert(
+                        ticket.id,
+                        LocalSwarmApproval {
+                            task,
+                            ticket,
+                            resolution: None,
+                        },
+                    );
+                }
                 crate::core::EventPayload::InteractionResolved { resolution } => {
                     if let Some(approval) = approvals.get_mut(&resolution.id) {
                         approval.resolution = Some(resolution);
@@ -1254,7 +1267,9 @@ impl PersistentLocalSwarm {
         body: &[u8],
     ) -> Result<LocalSwarmMessage> {
         if body.len() > self.config.limits.file_bytes as usize {
-            return Err(Error::Invalid("swarm message exceeds the configured file bound".into()));
+            return Err(Error::Invalid(
+                "swarm message exceeds the configured file bound".into(),
+            ));
         }
         let sender_session = self.session(sender).await?;
         let recipient_session = self.session(recipient).await?;
@@ -1267,11 +1282,10 @@ impl PersistentLocalSwarm {
                 "swarm messages require a direct parent or child recipient".into(),
             ));
         };
-        let host = self
-            .bindings
-            .communication_host
-            .clone()
-            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let host =
+            self.bindings.communication_host.clone().ok_or_else(|| {
+                Error::Unsupported("durable communication host is not bound".into())
+            })?;
         let harness = self.open_session(sender).await?;
         let payload = harness
             .storage()
@@ -1307,11 +1321,10 @@ impl PersistentLocalSwarm {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<crate::scheduler::InboxItem>> {
-        let host = self
-            .bindings
-            .communication_host
-            .clone()
-            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let host =
+            self.bindings.communication_host.clone().ok_or_else(|| {
+                Error::Unsupported("durable communication host is not bound".into())
+            })?;
         DurableCommunication::new(host)
             .inbox(task, after_sequence, limit)
             .await
@@ -1326,7 +1339,9 @@ impl PersistentLocalSwarm {
             return Ok(session);
         }
         if session.phase == LocalSessionPhase::Completed {
-            return Err(Error::Conflict("completed local swarm task cannot be cancelled".into()));
+            return Err(Error::Conflict(
+                "completed local swarm task cannot be cancelled".into(),
+            ));
         }
         let registry = self
             .registry
@@ -1408,8 +1423,9 @@ impl PersistentLocalSwarm {
                 "durable child completion artifact digest changed".into(),
             ));
         }
-        let output: TurnOutput = serde_json::from_slice(&bytes)
-            .map_err(|error| Error::Storage(format!("invalid child completion artifact: {error}")))?;
+        let output: TurnOutput = serde_json::from_slice(&bytes).map_err(|error| {
+            Error::Storage(format!("invalid child completion artifact: {error}"))
+        })?;
         if reference.operation
             != self
                 .requests
@@ -1673,7 +1689,8 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        self.verify_admitted_task(child, Some(request.parent)).await?;
+        self.verify_admitted_task(child, Some(request.parent))
+            .await?;
         self.sessions.lock().await.insert(child, harness.clone());
         self.activate_child_with_harness(
             request,
@@ -1715,9 +1732,9 @@ impl PersistentLocalSwarm {
         let child_authority = request.child_authority.as_ref().ok_or_else(|| {
             Error::Invalid("typed fork publication requires child authority".into())
         })?;
-        let child_agent = request.child_agent.ok_or_else(|| {
-            Error::Invalid("typed fork publication requires child agent".into())
-        })?;
+        let child_agent = request
+            .child_agent
+            .ok_or_else(|| Error::Invalid("typed fork publication requires child agent".into()))?;
         if child_authority != &report.request.child || child_agent != report.request.child_agent {
             return Err(Error::Conflict(
                 "fork report child binding differs from fork request".into(),

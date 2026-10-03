@@ -354,7 +354,7 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             return Err(Error::Invalid("swarm usage operation is empty".into()));
         }
         IdempotencyKey::new(dispatch_id.0.clone())?;
-        let provider = source.provider_identity();
+        let provider = source.provider_identity().to_owned();
         if provider.is_empty() || provider.len() > 255 || provider.chars().any(char::is_control) {
             return Err(Error::Invalid(
                 "swarm usage provider identity is invalid".into(),

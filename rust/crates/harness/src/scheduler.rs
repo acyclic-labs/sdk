@@ -1616,7 +1616,7 @@ impl Scheduler {
                 "terminal or cancelled swarm session cannot be taken over".into(),
             ));
         }
-        let observed = budget.takeover(expected_owner, owner.clone())?;
+        let observed = budget.takeover(expected_owner, owner.owner.clone())?;
         if observed != owner {
             return Err(Error::Conflict(
                 "swarm takeover generation does not advance exactly once".into(),

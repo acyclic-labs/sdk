@@ -486,13 +486,13 @@ where
                 self.stage_history_json(
                     operation,
                     &format!("{path}.json"),
-                    &ToolResult { value: actual.clone() },
-                ).await?,
-                self.stage_history_json(
-                    operation,
-                    &format!("{path}-projection.json"),
-                    &actual,
-                ).await?,
+                    &ToolResult {
+                        value: actual.clone(),
+                    },
+                )
+                .await?,
+                self.stage_history_json(operation, &format!("{path}-projection.json"), &actual)
+                    .await?,
             ));
         }
         let mut rejection = None;

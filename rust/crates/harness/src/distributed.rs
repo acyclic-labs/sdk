@@ -792,7 +792,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         }
         self.apply_internal(
             operation_id,
-            idempotency_key,
+            idempotency_key.clone(),
             SchedulerEvent::SwarmDispatchStarted {
                 operation_id,
                 dispatch_id: idempotency_key.clone(),

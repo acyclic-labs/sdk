@@ -7,8 +7,7 @@ use crate::{
     conversation::{
         Attachment, ContentGrant, ContentPublisher, ContentResidencyVerifier, ConversationMessage,
         ConversationState, FileRef, Limits, MessageKind, ReferencedAttachments, VolumeClass,
-        VolumeOperation,
-        VolumeOwner, VolumeRef,
+        VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, Event, SchemaRegistry, Scope,
@@ -767,7 +766,11 @@ where
             .iter()
             .chain(seed.reference_grants.iter().map(|grant| &grant.file))
             .chain(seed.attachment_manifests.iter())
-                .chain(seed.model_boundary.iter().flat_map(|boundary| boundary.files.iter()))
+            .chain(
+                seed.model_boundary
+                    .iter()
+                    .flat_map(|boundary| boundary.files.iter()),
+            )
         {
             if file.volume().provider() != &host.provider {
                 return Err(Error::Unauthorized(
@@ -831,13 +834,24 @@ where
     ) -> Result<Self> {
         let session_id = SessionId::new();
         Self::from_providers_with_session_and_reads(
-            agent, maximum_file_bytes, host, stream, volume,
-            conversation, issuer, inherited_reads, session_id,
-        ).await
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            inherited_reads,
+            session_id,
+        )
+        .await
     }
 
     /// Composes providers with an explicit durable session identity.
-    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority boundaries remain explicit"
+    )]
     pub async fn from_providers_with_session(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -849,12 +863,23 @@ where
         session_id: SessionId,
     ) -> Result<Self> {
         Self::from_providers_with_session_and_reads(
-            agent, maximum_file_bytes, host, stream, volume,
-            conversation, issuer, Capabilities::new(std::iter::empty::<String>()), session_id,
-        ).await
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            Capabilities::new(std::iter::empty::<String>()),
+            session_id,
+        )
+        .await
     }
 
-    #[allow(clippy::too_many_arguments, reason = "authority boundaries remain explicit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "authority boundaries remain explicit"
+    )]
     async fn from_providers_with_session_and_reads(
         agent: AgentId,
         maximum_file_bytes: u64,
@@ -1598,10 +1623,7 @@ where
     /// Opens the existing authoritative conversation aggregate with its
     /// owner-bound verifier. Fork publishers use this path so a child issuer
     /// can never be mistaken for the parent's conversation authority.
-    pub async fn conversation_aggregate(
-        &self,
-        limits: Limits,
-    ) -> Result<StreamAggregate<P>> {
+    pub async fn conversation_aggregate(&self, limits: Limits) -> Result<StreamAggregate<P>> {
         self.open_conversation(limits).await
     }
 
