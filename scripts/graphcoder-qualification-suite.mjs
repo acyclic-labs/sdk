@@ -107,7 +107,9 @@ function loadConfig(path) {
       fresh: item.fresh,
     };
   });
-  if (normalizedArtifacts.some(item => typeof item.fresh !== "boolean")) fail("every artifact must declare fresh");
+  if (normalizedArtifacts.some(item => item.fresh !== true)) fail("every artifact must declare fresh: true");
+  const timeoutMs = config.timeout_ms === undefined ? 120_000 : config.timeout_ms;
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) fail("timeout_ms must be a positive integer");
   return {
     id,
     descriptor: typeof config.descriptor === "string" && config.descriptor.trim() !== "" ? config.descriptor : id,
@@ -116,6 +118,7 @@ function loadConfig(path) {
     command: { executable, args: [...command.args], cwd, env: { ...env } },
     artifacts: normalizedArtifacts,
     expected_exit_code: config.expected_exit_code === undefined ? 0 : config.expected_exit_code,
+    timeout_ms: timeoutMs,
     started_at: config.started_at,
     output: config.output === undefined ? ".qualification/suites" : config.output,
   };
@@ -144,6 +147,7 @@ function capture(configPath) {
     shell: false,
     windowsHide: true,
     maxBuffer: 64 * 1024 * 1024,
+    timeout: config.timeout_ms,
   });
   const completedAt = new Date().toISOString();
   const stdout = typeof result.stdout === "string" ? result.stdout : "";
@@ -162,6 +166,7 @@ function capture(configPath) {
     execution_kind: config.execution_kind,
     command: { ...config.command, env: Object.keys(config.command.env).sort() },
     expected_exit_code: config.expected_exit_code,
+    timeout_ms: config.timeout_ms,
     consumed_artifacts: config.artifacts.map(item => ({ path: item.path, sha256: before.get(item.path) })),
   };
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { flag: "wx" });
