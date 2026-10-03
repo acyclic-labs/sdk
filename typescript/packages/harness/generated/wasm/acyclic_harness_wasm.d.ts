@@ -323,7 +323,7 @@ export interface WasmModelRequestWire {
     model: WasmModelWire;
     messages: WasmModelMessageWire[];
     tools: WasmModelToolDefinitionWire[];
-    max_output_tokens: number | undefined;
+    max_output_tokens: number | null;
 }
 
 export interface WasmModelToolDefinitionWire {
@@ -797,11 +797,14 @@ export function validateToolDefinition(definition: any): void;
 export function validateToolInvocation(definition: any, invocation: any): void;
 
 /**
+ * Validates a model-visible projected tool result against its pinned schema.
+ */
+export function validateToolProjection(definition: any, result: any): void;
+
+/**
  * Validates one successful tool result against its registered definition.
  */
 export function validateToolResult(definition: any, result: any): void;
-/** Validates a model-visible projected tool result against its pinned schema. */
-export function validateToolProjection(definition: any, result: any): void;
 
 /**
  * Applies the same JSON Schema admission used by Rust tool execution before
@@ -904,6 +907,7 @@ export interface InitOutput {
     readonly validateTaskRequirements: (a: any) => [number, number];
     readonly validateToolDefinition: (a: any) => [number, number];
     readonly validateToolInvocation: (a: any, b: any) => [number, number];
+    readonly validateToolProjection: (a: any, b: any) => [number, number];
     readonly validateToolResult: (a: any, b: any) => [number, number];
     readonly validateToolValue: (a: any, b: any) => [number, number, number];
     readonly validateUserInput: (a: any) => [number, number];

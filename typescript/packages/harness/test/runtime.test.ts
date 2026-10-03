@@ -617,7 +617,7 @@ describe("typed agent runtime", () => {
     expect(typedValue).toBe(2);
     expect(() => selected.tool({ ...second })).toThrow("not registered");
     await selected.run("select");
-    expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {} }]);
+    expect(visible).toEqual([{ name: "versioned-tool", revision: "2", description: "second", inputSchema: {}, outputSchema: {}, modelOutputSchema: {} }]);
     expect(() => Harness.builder(contracts).tool(first).tool(first)).toThrow("conflicting registration");
     expect(() => builder.selectModelTool("versioned-tool", "3")).toThrow("not registered");
   });

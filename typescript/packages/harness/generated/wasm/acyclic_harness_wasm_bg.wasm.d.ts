@@ -37,6 +37,7 @@ export const validateTaskChildrenPage: (a: any) => [number, number, number];
 export const validateTaskRequirements: (a: any) => [number, number];
 export const validateToolDefinition: (a: any) => [number, number];
 export const validateToolInvocation: (a: any, b: any) => [number, number];
+export const validateToolProjection: (a: any, b: any) => [number, number];
 export const validateToolResult: (a: any, b: any) => [number, number];
 export const validateToolValue: (a: any, b: any) => [number, number, number];
 export const validateUserInput: (a: any) => [number, number];

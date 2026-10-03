@@ -31,6 +31,7 @@ function modelRequest(): WasmModelRequestWire {
     tools: [{
       name: "fork", revision: "1", description: "create a child",
       input_schema: { type: "object" }, output_schema: { type: "object" },
+      model_output_schema: { type: "object" },
     }],
     max_output_tokens: 100,
   };
@@ -50,6 +51,7 @@ test("stale WASM modules fail compatibility checks before model dispatch", () =>
   expect(() => assertHarnessWasmExports({ ...harnessWasm, validateUserInput: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, admitModelEvent: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, prepareModelRequest: undefined })).toThrow("required validators");
+  expect(() => assertHarnessWasmExports({ ...harnessWasm, validateToolProjection: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports({ ...harnessWasm, WasmContentStore: undefined })).toThrow("required validators");
   expect(() => assertHarnessWasmExports(rawWasmExports)).not.toThrow();
   expect(() => assertHarnessWasmExports({ ...rawWasmExports, wasmcontentstore_stage: undefined })).toThrow("required validators");
