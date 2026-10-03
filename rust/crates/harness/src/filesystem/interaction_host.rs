@@ -3,7 +3,10 @@
 use super::{FilesystemContentVerifier, FilesystemHost, InternalContentClass};
 use crate::{
     Error, IdempotencyKey, InteractionId, OperationId, Result,
-    conversation::{ContentGrant, FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
+    conversation::{
+        ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
+    },
     core::{Action, ApplyResult, Authority, AuthorityVerifier, Command, SchemaRegistry, Scope},
     interaction::{
         ApprovalBinding, Interaction, InteractionKind, InteractionOutcome, InteractionResolution,
@@ -16,6 +19,47 @@ use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{StreamClient, StreamProvider};
 use std::sync::Arc;
 use uuid::Uuid;
+
+// Private to interaction admission; never installed on a model reader.
+struct InteractionContentVerifier<A, O> {
+    ordinary: FilesystemContentVerifier<A, O>,
+    host: Arc<FilesystemHost<A, O>>,
+    volume: VolumeRef,
+    grant: ContentGrant,
+    maximum_bytes: u64,
+}
+
+impl<A, O> ContentResidencyVerifier for InteractionContentVerifier<A, O>
+where
+    A: AsyncAuthorityStore + Send + Sync + 'static,
+    O: AsyncObjectStore + Send + Sync + 'static,
+{
+    fn verify<'a>(&'a self, reference: &'a FileRef) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.read(reference).await.map(|_| ()) })
+    }
+
+    fn read<'a>(
+        &'a self,
+        reference: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            if reference.path().starts_with(".system/interactions/") {
+                self.host
+                    .read_internal_content(
+                        reference,
+                        &self.volume,
+                        &self.grant,
+                        InternalContentClass::Interaction,
+                        self.maximum_bytes,
+                    )
+                    .await
+                    .map(|bytes| bytes.to_vec())
+            } else {
+                self.ordinary.read(reference).await
+            }
+        })
+    }
+}
 
 /// Stages participant data privately and commits only references to one conversation history.
 pub struct FilesystemInteractionHost<P, A, O> {
@@ -365,12 +409,12 @@ where
         let bytes = self
             .host
             .read_internal_content(
-                    &ticket.request,
-                    &self.private_volume,
-                    &grant,
-                    super::InternalContentClass::Interaction,
-                    self.maximum_bytes,
-                )
+                &ticket.request,
+                &self.private_volume,
+                &grant,
+                super::InternalContentClass::Interaction,
+                self.maximum_bytes,
+            )
             .await?;
         Ok(Some(ticket.validate_request_bytes(&bytes)?))
     }
@@ -456,12 +500,23 @@ where
     }
 
     async fn aggregate(&self) -> Result<StreamAggregate<P>> {
-        let verifier = FilesystemContentVerifier::new(
-            Arc::clone(&self.host),
-            self.verifier.clone(),
-            self.owner_scope.clone(),
-            self.maximum_bytes,
-        )?;
+        let verifier = InteractionContentVerifier {
+            ordinary: FilesystemContentVerifier::new(
+                Arc::clone(&self.host),
+                self.verifier.clone(),
+                self.owner_scope.clone(),
+                self.maximum_bytes,
+            )?,
+            host: Arc::clone(&self.host),
+            volume: self.private_volume.clone(),
+            grant: ContentGrant::verify(
+                &self.verifier,
+                &self.owner_scope,
+                &self.private_volume,
+                VolumeOperation::Read,
+            )?,
+            maximum_bytes: self.maximum_bytes,
+        };
         let aggregate = StreamAggregate::open(
             &self.stream,
             self.authority.clone(),

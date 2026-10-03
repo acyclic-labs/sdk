@@ -996,7 +996,10 @@ impl PersistentLocalHarness {
 
     /// Reads the current authoritative conversation projection for host
     /// adapters without starting a model worker.
-    pub async fn conversation_state(&self, limits: crate::conversation::Limits) -> Result<crate::conversation::ConversationState> {
+    pub async fn conversation_state(
+        &self,
+        limits: crate::conversation::Limits,
+    ) -> Result<crate::conversation::ConversationState> {
         self.storage.conversation_state(limits).await
     }
 

@@ -1877,7 +1877,9 @@ pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
     }
     let bytes = journal.load(reference).await?;
     reference.descriptor().verify(&bytes).map_err(|error| {
-        Error::Storage(format!("execution journal content descriptor is invalid: {error}"))
+        Error::Storage(format!(
+            "execution journal content descriptor is invalid: {error}"
+        ))
     })?;
     let parsed: Value = serde_json::from_slice(&bytes)
         .map_err(|error| Error::Storage(format!("execution journal JSON is invalid: {error}")))?;
