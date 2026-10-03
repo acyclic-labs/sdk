@@ -126,5 +126,15 @@
     "command": "cargo test -p acyclic-graphcoder-cli -j2 -- --nocapture",
     "suite_sha256": "6cbd21b99d882aff06231258f05fcf345b4eb6757cb72b2853740f7440ff76c4",
     "artifact_sha256": "4630458d227cd233798f9ac3070dad1f652a9120ac65c902f7dede3b674af7aa"
+  },
+  "prepared_dispatch_followup": {
+    "source": "a9ca8ff4",
+    "terminal_handle": 66153,
+    "exit_code": 1,
+    "status": "compile-failed-no-tests-executed",
+    "failure": "model_fork_boundary.rs:60 crate::model_input unavailable in integration-test crate",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_recursive_fork --test model_fork_boundary --test local_model_swarm --test local_swarm_recovery -j2 --no-fail-fast -- --nocapture",
+    "suite_sha256": "1de05b584bb68ca4795bf03501ab0e712dc8e97d9c0f1bed6e89fd08c925ffd2",
+    "model_contract_sha256": "e5d63403f03b286f6b312f49274d38a6b7a744372fa71f2d7a760409698087e7"
   }
 }
