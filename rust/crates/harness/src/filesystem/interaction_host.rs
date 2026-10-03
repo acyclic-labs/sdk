@@ -217,7 +217,7 @@ where
             _ => None,
         };
         let reference = self.stage(id, "request", request).await?;
-        self.validate_internal_ref(&reference, id, "request", None)?;
+        self.validate_internal_ref(&reference, id, "request", None, None)?;
         let ticket = InteractionTicket {
             id: interaction_uuid(id)?,
             kind: request.kind(),
@@ -249,7 +249,13 @@ where
                 response,
             )
             .await?;
-        self.validate_internal_ref(&reference, id, "answer", Some(expected_version))?;
+        self.validate_internal_ref(
+            &reference,
+            id,
+            "answer",
+            Some(expected_version),
+            Some(operation_id),
+        )?;
         Ok(reference)
     }
 
@@ -260,6 +266,7 @@ where
         scope: Scope,
         ticket: InteractionTicket,
     ) -> Result<ApplyResult> {
+        self.validate_ticket_admission(&ticket).await?;
         self.execute(operation_id, scope, Action::OpenInteraction { ticket })
             .await
     }
@@ -271,6 +278,8 @@ where
         scope: Scope,
         resolution: InteractionResolution,
     ) -> Result<ApplyResult> {
+        self.validate_resolution_admission(operation_id, &scope, &resolution)
+            .await?;
         self.execute(
             operation_id,
             scope,
@@ -404,7 +413,7 @@ where
         let Some((ticket, _)) = self.read(id).await? else {
             return Ok(None);
         };
-        self.validate_internal_ref(&ticket.request, id, "request", None)?;
+        self.validate_internal_ref(&ticket.request, id, "request", None, None)?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -432,7 +441,13 @@ where
         let InteractionOutcome::Answered { answer } = resolution.outcome else {
             return Ok(None);
         };
-        self.validate_internal_ref(&answer, id, "answer", Some(resolution.expected_version))?;
+        self.validate_internal_ref(
+            &answer,
+            id,
+            "answer",
+            Some(resolution.expected_version),
+            None,
+        )?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -461,7 +476,13 @@ where
         let Some(detail) = resolution.detail else {
             return Ok(None);
         };
-        self.validate_internal_ref(&detail, id, "answer", Some(resolution.expected_version))?;
+        self.validate_internal_ref(
+            &detail,
+            id,
+            "answer",
+            Some(resolution.expected_version),
+            None,
+        )?;
         let grant = ContentGrant::verify(
             &self.verifier,
             &self.owner_scope,
@@ -512,6 +533,7 @@ where
         id: InteractionId,
         role: &str,
         expected_version: Option<u64>,
+        expected_operation: Option<OperationId>,
     ) -> Result<()> {
         reference.validate()?;
         if reference.volume() != &self.private_volume
@@ -524,16 +546,105 @@ where
         let prefix = format!(".system/interactions/{id}/");
         let valid_path = match (role, expected_version) {
             ("request", None) => reference.path() == format!("{prefix}request.json"),
-            ("answer", Some(version)) => reference
-                .path()
-                .strip_prefix(&format!("{prefix}answer-{version}-"))
-                .is_some_and(|suffix| suffix.ends_with(".json") && suffix.len() > 5),
+            ("answer", Some(version)) => {
+                let Some(suffix) = reference
+                    .path()
+                    .strip_prefix(&format!("{prefix}answer-{version}-"))
+                else {
+                    return Err(Error::Unauthorized(
+                        "interaction answer artifact has an invalid operation path".into(),
+                    ));
+                };
+                let Some(operation) = suffix.strip_suffix(".json") else {
+                    return Err(Error::Unauthorized(
+                        "interaction answer artifact is not canonical JSON".into(),
+                    ));
+                };
+                if operation.is_empty()
+                    || expected_operation.is_some_and(|expected| operation != expected.to_string())
+                {
+                    return Err(Error::Unauthorized(
+                        "interaction answer artifact has an invalid operation identity".into(),
+                    ));
+                }
+                true
+            }
             _ => false,
         };
         if !valid_path {
             return Err(Error::Unauthorized(format!(
                 "interaction {role} artifact has an invalid id, role, or version path"
             )));
+        }
+        Ok(())
+    }
+
+    async fn validate_ticket_admission(&self, ticket: &InteractionTicket) -> Result<()> {
+        ticket.validate()?;
+        let id = InteractionId::parse(&ticket.id.to_string())?;
+        self.validate_internal_ref(&ticket.request, id, "request", None, None)?;
+        let grant = ContentGrant::verify(
+            &self.verifier,
+            &self.owner_scope,
+            ticket.request.volume(),
+            VolumeOperation::Read,
+        )?;
+        let bytes = self
+            .host
+            .read_internal_content(
+                &ticket.request,
+                ticket.request.volume(),
+                &grant,
+                InternalContentClass::Interaction,
+                self.maximum_bytes,
+            )
+            .await?;
+        ticket.validate_request_bytes(&bytes)?;
+        Ok(())
+    }
+
+    async fn validate_resolution_admission(
+        &self,
+        operation_id: OperationId,
+        scope: &Scope,
+        resolution: &InteractionResolution,
+    ) -> Result<()> {
+        self.verifier.verify(scope)?;
+        if !scope.capabilities().contains("interaction:resolve")
+            || !scope
+                .capabilities()
+                .contains(&format!("interaction:respond:{}", resolution.id))
+        {
+            return Err(Error::Unauthorized(
+                "scope lacks the exact interaction resolution grant".into(),
+            ));
+        }
+        let id = InteractionId::parse(&resolution.id.to_string())?;
+        let Some((ticket, _)) = self.read(id).await? else {
+            return Err(Error::NotFound(format!("interaction {id}")));
+        };
+        self.validate_internal_ref(&ticket.request, id, "request", None, None)?;
+        resolution.validate(&ticket)?;
+        match (&resolution.outcome, &resolution.detail) {
+            (InteractionOutcome::Answered { answer }, None) => {
+                self.validate_internal_ref(
+                    answer,
+                    id,
+                    "answer",
+                    Some(resolution.expected_version),
+                    Some(operation_id),
+                )?;
+            }
+            (_, Some(detail)) => {
+                self.validate_internal_ref(
+                    detail,
+                    id,
+                    "answer",
+                    Some(resolution.expected_version),
+                    Some(operation_id),
+                )?;
+            }
+            _ => {}
         }
         Ok(())
     }
