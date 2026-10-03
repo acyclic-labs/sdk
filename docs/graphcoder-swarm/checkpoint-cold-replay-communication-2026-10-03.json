@@ -1,0 +1,21 @@
+{
+  "source": "41951fc1",
+  "handle": 86818,
+  "exit_code": 0,
+  "cold_replay": {
+    "artifact_sha256": "335362FFF7716AAAADA234E24CB5F48ABA39407FA680EC13E0278653D2C0F020",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --lib reopen_recovers_completed_turn_without_dispatch -j2 -- --nocapture",
+    "failed": 0,
+    "suite_sha256": "2DA05CC2528318F9A6ED2CE6CA2ACAF7DEF8966D944C18E4DC55A5422402FC82",
+    "passed": 1
+  },
+  "communication": {
+    "artifact_sha256": "87D112F606E5B9B9D91508809FD15750C41CC32836B556AE42122D9CCD0E6A24",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --test communication_local -j2 -- --nocapture",
+    "failed": 0,
+    "suite_sha256": "93B4A901D6E77083273C1532568A83AC94F5644CF7B12014C264176AF189590B",
+    "passed": 2
+  },
+  "scope": "Cold completed Harness turn replay with zero dispatch, plus real local communication ordering/restart/authorization/timeout/cancellation. Not model-selected swarm communication or full fault qualification.",
+  "qualification": "incomplete"
+}
