@@ -2034,7 +2034,7 @@ describe("typed agent runtime", () => {
       async *generate(request) {
         observed = request.messages;
         const canonical = JSON.parse(request.canonical.requestJson) as {
-          messages: readonly { readonly content: unknown }[];
+          messages: readonly ModelMessage[];
         };
         expect(observed[0]?.content).toEqual(canonical.messages[0]?.content);
         yield { kind: "completed" as const, metadata: {} };
