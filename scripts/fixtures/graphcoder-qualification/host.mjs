@@ -93,6 +93,11 @@ function handle(request) {
       });
     case "list_approvals":
       return respond(request, { session_id: sessionId, items: [approval()] });
+    case "operator_approve":
+      if (params.operator_token !== process.env.GRAPHCODER_OPERATOR_TOKEN) return fail(request, "denied", "operator credential is invalid");
+      if (params.approval_id !== "approval-1" || params.session_id !== sessionId) return fail(request, "not_found", "approval was not found");
+      approvalState = params.approved === true ? "approved" : "declined";
+      return respond(request, {});
     case "resolve_approval":
       if (params.approval_id !== "approval-1") return fail(request, "not_found", "approval was not found");
       approvalState = params.approved === true ? "approved" : "declined";

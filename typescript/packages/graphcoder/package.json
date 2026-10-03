@@ -40,7 +40,7 @@
     }
   },
   "scripts": {
-    "build": "bun x tsc -p tsconfig.json",
+    "build": "bun x tsc -p tsconfig.json --composite false --incremental false",
     "check": "bun x tsc -p tsconfig.json --noEmit",
     "test": "bun test test"
   },
