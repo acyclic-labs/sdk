@@ -2896,7 +2896,7 @@ impl PersistentLocalSwarm {
             || seed.parent != report.request.parent
             || seed.child != report.request.child
             || seed.child_agent != report.request.child_agent
-            || publication.operation_id != fork_operation
+            || child_fork_operation(publication.operation_id, request.child_operation) != fork_operation
         {
             return Err(Error::Conflict(
                 "published fork seed or model publication has the wrong operation binding".into(),
