@@ -10,20 +10,21 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
 use acyclic_harness::{
-    Error as HarnessError, OperationId, TaskId,
     conversation::Limits,
     filesystem::{LocalSessionPhase, LocalSwarmConfig, PersistentLocalSwarm},
+    interaction::InteractionResponse,
     model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -210,11 +211,21 @@ impl Runtime {
             "start_session" => self.start_session(&request.params).await,
             "open_session" => self.open_session(&request.params, false).await,
             "resume_session" => self.open_session(&request.params, true).await,
-            "read_activity" | "read_messages" | "send_message" | "list_approvals"
-            | "resolve_approval" | "cancel_session" | "list_changes" | "read_change"
-            | "read_file" | "approve_writeback" => Err(DispatchError::unsupported(
-                "the durable local constructor does not expose this projection yet",
-            )),
+            "read_activity" => self.read_activity(&request.params).await,
+            "read_messages" => self.read_messages(&request.params).await,
+            "send_message" => {
+                self.send_message(&request.request_id, &request.params)
+                    .await
+            }
+            "list_approvals" => self.list_approvals(&request.params).await,
+            "resolve_approval" => self.resolve_approval(&request.params).await,
+            "cancel_session" => self.cancel_session(&request.params).await,
+            "read_file" => self.read_file(&request.params).await,
+            "list_changes" | "read_change" | "approve_writeback" => {
+                Err(DispatchError::unsupported(
+                    "the durable local constructor does not expose this projection yet",
+                ))
+            }
             _ => Err(DispatchError::invalid("unknown GraphCoder method")),
         };
         match result {
@@ -314,6 +325,208 @@ impl Runtime {
         self.snapshot_from_session(session).await
     }
 
+    async fn read_activity(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let (after, limit) = page_bounds(params)?;
+        let after_revision = parse_cursor(after, "activity cursor")?;
+        let events = self
+            .swarm
+            .read_activity(task, after_revision, limit)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let next = (events.len() == limit)
+            .then(|| events.last().map(|event| event.revision.to_string()))
+            .flatten();
+        let items = events.into_iter().map(activity_event).collect::<Vec<_>>();
+        Ok(page_result(task, items, next))
+    }
+
+    async fn read_messages(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let (after, limit) = page_bounds(params)?;
+        let after_sequence = parse_cursor(after, "message cursor")?;
+        let messages = self
+            .swarm
+            .read_messages(task, after_sequence, limit)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let generation = self
+            .swarm
+            .list_files(task, "system", None, None, 1)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .generation;
+        let mut items = Vec::with_capacity(messages.len());
+        for message in messages {
+            let body = self
+                .swarm
+                .read_file(task, message.content.path(), Some(&generation))
+                .await
+                .map_err(DispatchError::from_harness)
+                .and_then(|(_, bytes)| {
+                    String::from_utf8(bytes)
+                        .map_err(|_| DispatchError::invalid("message content is not UTF-8"))
+                })?;
+            items.push(json!({
+                "id": message.id.to_string(),
+                "sequence": message.sequence.to_string(),
+                "session_id": task.to_string(),
+                "sender_id": task.to_string(),
+                "recipient_id": task.to_string(),
+                "body": body,
+                "delivered_at": Value::Null,
+            }));
+        }
+        let next = (items.len() == limit)
+            .then(|| messages_last_sequence(&items))
+            .flatten();
+        Ok(page_result(task, items, next))
+    }
+
+    async fn send_message(&self, request_id: &str, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let session = task_from_value(params, "session_id")?;
+        let sender = task_from_value(params, "sender_id")?;
+        let recipient = task_from_value(params, "recipient_id")?;
+        let body = required_text(params, "body")?;
+        if body.is_empty() || body.len() > 64 * 1024 {
+            return Err(DispatchError::invalid(
+                "message body must be between 1 and 64 KiB",
+            ));
+        }
+        if sender != session && recipient != session {
+            return Err(DispatchError::invalid(
+                "message participants must include the requested session",
+            ));
+        }
+        let message_id = operation_for(request_id);
+        let message = self
+            .swarm
+            .send_message(sender, recipient, message_id, body.as_bytes())
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(json!({
+            "id": message.message_id.to_string(),
+            "session_id": session.to_string(),
+            "sender_id": message.sender.to_string(),
+            "recipient_id": message.recipient.to_string(),
+            "body": body,
+            "delivered_at": Value::Null,
+        }))
+    }
+
+    async fn list_approvals(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let (after, limit) = page_bounds(params)?;
+        let approvals = self
+            .swarm
+            .list_approvals(task)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let start = after
+            .map(|cursor| {
+                approvals
+                    .iter()
+                    .position(|approval| approval.ticket.id.to_string() == cursor)
+                    .map(|index| index + 1)
+                    .ok_or_else(|| DispatchError::invalid("approval cursor is unknown"))
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let selected = approvals
+            .into_iter()
+            .skip(start)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let next = (selected.len() == limit)
+            .then(|| {
+                selected
+                    .last()
+                    .map(|approval| approval.ticket.id.to_string())
+            })
+            .flatten();
+        let items = selected.into_iter().map(approval_value).collect::<Vec<_>>();
+        Ok(page_result(task, items, next))
+    }
+
+    async fn resolve_approval(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let approved = params
+            .get("approved")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
+        self.swarm
+            .resolve_approval(
+                task,
+                id,
+                InteractionResponse::Approval {
+                    approved,
+                    reason: None,
+                },
+            )
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let approval = self
+            .swarm
+            .list_approvals(task)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .into_iter()
+            .find(|approval| approval.ticket.id == id)
+            .ok_or_else(|| {
+                DispatchError::from_harness(HarnessError::NotFound("approval".into()))
+            })?;
+        Ok(approval_value(approval))
+    }
+
+    async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let session = self
+            .swarm
+            .cancel(task)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        self.snapshot_from_session(session).await
+    }
+
+    async fn read_file(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let path = required_text(params, "path")?;
+        let requested_generation = required_text(params, "generation")?;
+        let page = self
+            .swarm
+            .list_files(task, "system", None, None, 1)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        let generation = generation_token(&page.generation);
+        if generation != requested_generation {
+            return Err(DispatchError {
+                code: "stale",
+                message: "file generation does not match the current workspace generation".into(),
+            });
+        }
+        let (file, bytes) = self
+            .swarm
+            .read_file(task, path, Some(&page.generation))
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(json!({
+            "session_id": task.to_string(),
+            "path": path,
+            "media_type": file.descriptor().media_type(),
+            "bytes": bytes,
+            "generation": generation,
+        }))
+    }
+
     async fn snapshot(&self, task: TaskId) -> Result<Value, DispatchError> {
         let session = self
             .swarm
@@ -344,9 +557,15 @@ impl Runtime {
         Ok(json!({
             "summary": session_summary(session),
             "agents": agents,
-            // Workspace generation is deliberately a stable zero until the
-            // constructor exposes its Filesystem generation projection.
-            "workspace_generation": "0",
+            "workspace_generation": self
+                .swarm
+                .session_snapshot(session.task)
+                .await
+                .map_err(DispatchError::from_harness)?
+                .workspace_generation
+                .as_ref()
+                .map(generation_token)
+                .unwrap_or_else(|| "0".to_owned()),
         }))
     }
 }
@@ -437,6 +656,100 @@ fn page_bounds(params: &Value) -> Result<(Option<&str>, usize), DispatchError> {
             .ok_or_else(|| DispatchError::invalid("page limit must be between 1 and 1024"))
     })?;
     Ok((after, limit))
+}
+
+fn parse_cursor(value: Option<&str>, label: &str) -> Result<u64, DispatchError> {
+    value
+        .unwrap_or("0")
+        .parse::<u64>()
+        .map_err(|_| DispatchError::invalid(format!("{label} must be an unsigned decimal")))
+}
+
+fn generation_token<T: Serialize>(generation: &T) -> String {
+    let bytes = serde_json::to_vec(generation).unwrap_or_default();
+    let digest = blake3::hash(&bytes);
+    let mut token = [0_u8; 16];
+    token.copy_from_slice(&digest.as_bytes()[..16]);
+    u128::from_le_bytes(token).to_string()
+}
+
+fn page_result(task: TaskId, items: Vec<Value>, next: Option<String>) -> Value {
+    let mut result = json!({
+        "session_id": task.to_string(),
+        "items": items,
+    });
+    if let Some(next) = next {
+        result["next"] = Value::String(next);
+    }
+    result
+}
+
+fn messages_last_sequence(items: &[Value]) -> Option<String> {
+    items
+        .last()
+        .and_then(|item| item.get("sequence"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn activity_event(event: acyclic_harness::core::Event) -> Value {
+    let kind = match &event.payload {
+        acyclic_harness::core::EventPayload::ConversationMessageAppended { .. } => "message",
+        acyclic_harness::core::EventPayload::InteractionOpened { .. }
+        | acyclic_harness::core::EventPayload::InteractionResolved { .. } => "approval",
+        acyclic_harness::core::EventPayload::ForkPublished { .. } => "agent",
+        acyclic_harness::core::EventPayload::ProjectMergePublished { .. } => "workspace",
+        _ => "model",
+    };
+    json!({
+        "sequence": event.revision.to_string(),
+        "id": event.operation_id.to_string(),
+        "kind": kind,
+        "actor_id": Value::Null,
+        "text": serde_json::to_string(&event.payload).unwrap_or_else(|_| "{}".to_owned()),
+        "at": "0",
+    })
+}
+
+fn approval_value(approval: acyclic_harness::filesystem::LocalSwarmApproval) -> Value {
+    let (operation_id, action_digest) = approval
+        .ticket
+        .approval
+        .as_ref()
+        .map(|binding| {
+            (
+                binding.operation_id.to_string(),
+                binding
+                    .action_digest
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>(),
+            )
+        })
+        .unwrap_or_else(|| ("".to_owned(), "".to_owned()));
+    let state = approval
+        .resolution
+        .as_ref()
+        .map(|resolution| match &resolution.outcome {
+            acyclic_harness::interaction::InteractionOutcome::Approved => "approved",
+            acyclic_harness::interaction::InteractionOutcome::Declined => "declined",
+            acyclic_harness::interaction::InteractionOutcome::Cancelled => "cancelled",
+            acyclic_harness::interaction::InteractionOutcome::Expired => "expired",
+            acyclic_harness::interaction::InteractionOutcome::Denied => "denied",
+            acyclic_harness::interaction::InteractionOutcome::Answered { .. }
+            | acyclic_harness::interaction::InteractionOutcome::Indeterminate { .. } => "pending",
+        })
+        .unwrap_or("pending");
+    json!({
+        "id": approval.ticket.id.to_string(),
+        "session_id": approval.task.to_string(),
+        "agent_id": approval.task.to_string(),
+        "operation_id": operation_id,
+        "action_digest": action_digest,
+        "description": "approval",
+        "state": state,
+        "created_at": "0",
+    })
 }
 
 fn operation_for(request_id: &str) -> OperationId {
@@ -649,11 +962,13 @@ mod tests {
         .await;
         assert_eq!(started["ok"], true);
         assert_eq!(started["result"]["summary"]["state"], "completed");
-        assert_eq!(started["result"]["workspace_generation"], "0");
+        assert!(started["result"]["workspace_generation"]
+            .as_str()
+            .is_some_and(|generation| !generation.is_empty()));
     }
 
     #[tokio::test]
-    async fn json_lines_runs_stage_fixture_and_keeps_unexposed_methods_typed() {
+    async fn json_lines_runs_stage_fixture_and_reads_staged_file_through_sdk() {
         let root = tempfile::tempdir().expect("temporary root");
         let runtime = Arc::new(
             Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
@@ -689,23 +1004,34 @@ mod tests {
         )
         .await;
         assert_eq!(retried["ok"], true, "{retried}");
-        let attachment = &retried["result"]["outcome"]["attachments"][0];
-        assert_eq!(attachment["file"]["path"], "graphcoder-fixture.txt");
-        assert_eq!(attachment["file"]["display_name"], "graphcoder-fixture.txt");
-        assert_eq!(attachment["file"]["descriptor"]["media_type"], "text/plain");
-        assert_eq!(attachment["file"]["descriptor"]["byte_length"], 13);
-        assert_eq!(
-            attachment["file"]["descriptor"]["sha256"],
-            json!([
-                0x6f, 0x18, 0x86, 0x95, 0x7c, 0xff, 0xd5, 0x20, 0xa3, 0x9e, 0x7f, 0x0c, 0x30, 0xd6,
-                0xd3, 0xe9, 0x9c, 0x74, 0x9f, 0x30, 0x0b, 0x13, 0x1d, 0x75, 0x83, 0xda, 0x85, 0x43,
-                0x77, 0xef, 0x8a, 0x4d
-            ])
-        );
         let session_id = retried["result"]["summary"]["id"]
             .as_str()
             .expect("stage session id")
             .to_owned();
+        let generation = retried["result"]["workspace_generation"]
+            .as_str()
+            .expect("stage workspace generation")
+            .to_owned();
+        let file = exchange(
+            reopened.clone(),
+            json!({
+                "request_id":"stage-file",
+                "method":"read_file",
+                "params":{
+                    "session_id": session_id,
+                    "path":"graphcoder-fixture.txt",
+                    "generation": generation
+                }
+            }),
+        )
+        .await;
+        assert_eq!(file["ok"], true);
+        assert_eq!(file["result"]["path"], "graphcoder-fixture.txt");
+        assert_eq!(file["result"]["media_type"], "text/plain");
+        assert_eq!(
+            file["result"]["bytes"],
+            json!([119, 114, 105, 116, 101, 32, 102, 105, 120, 116, 117, 114, 101])
+        );
         let resumed = exchange(
             reopened.clone(),
             json!({
@@ -726,8 +1052,10 @@ mod tests {
             }),
         )
         .await;
-        assert_eq!(activity["ok"], false);
-        assert_eq!(activity["error"]["code"], "unsupported");
+        assert_eq!(activity["ok"], true);
+        assert!(activity["result"]["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
     }
 
     #[tokio::test]
