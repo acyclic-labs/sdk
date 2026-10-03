@@ -1,5 +1,5 @@
 //! Durable local Harness composition using public Stream and Filesystem providers.
-use super::{FilesystemHost, HarnessStorage};
+use super::{FilesystemForkVerifier, FilesystemHost, HarnessStorage};
 use crate::{
     AgentId, ConversationId, Error, OperationId, Result,
     conversation::{
@@ -11,7 +11,7 @@ use crate::{
         ExecutionClaim, ExecutionReceipt, ExecutionReceiptKey, ExecutionReceiptRecord,
         ExecutionReceiptStore,
     },
-    fork::ForkSeed,
+    fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
     model::{Model, ModelProvider},
     resources::ProviderRef,
     store::StreamAggregate,
@@ -398,13 +398,14 @@ impl PersistentLocalHarness {
         let storage = DurableHarnessStorage::from_providers(
             agent,
             limits.file_bytes,
-            host,
+            host.clone(),
             stream,
             volume,
             conversation,
             issuer,
         )
-        .await?;
+        .await?
+        .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
         let bundle = storage
             .builder()
@@ -436,13 +437,14 @@ impl PersistentLocalHarness {
         limits.validate()?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
-            host,
+            host.clone(),
             stream,
             issuer,
             parent,
             seed,
         )
-        .await?;
+        .await?
+        .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
         let bundle = storage
             .builder()
@@ -527,13 +529,14 @@ impl PersistentLocalHarness {
         let storage = DurableHarnessStorage::from_providers(
             descriptor.agent,
             limits.file_bytes,
-            host,
+            host.clone(),
             stream,
             descriptor.private_volume,
             descriptor.conversation,
             issuer,
         )
-        .await?;
+        .await?
+        .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
         let tools = storage.default_tools(limits)?;
         let bundle = storage
             .builder()
@@ -591,6 +594,20 @@ impl PersistentLocalHarness {
             maximum_bytes,
         )?))
     }
+}
+
+fn local_fork_verifier(
+    host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    maximum_bytes: u64,
+) -> Result<Arc<CompositeForkVerifier>> {
+    let filesystem = Arc::new(FilesystemForkVerifier::new(host, maximum_bytes)?);
+    let stream = Arc::new(StreamHistoryForkVerifier::new(ProviderRef::new(
+        "local", "stream", "2",
+    )?)?);
+    Ok(Arc::new(CompositeForkVerifier::new(vec![
+        filesystem as Arc<dyn ForkSeedVerifier>,
+        stream as Arc<dyn ForkSeedVerifier>,
+    ])?))
 }
 
 #[cfg(test)]

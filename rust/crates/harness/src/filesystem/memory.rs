@@ -839,6 +839,7 @@ where
                     "conversation:append".to_owned(),
                     "conversation:select_context".to_owned(),
                     "interaction:open".to_owned(),
+                    "fork:publish".to_owned(),
                     read_capability.clone(),
                     write_capability.clone(),
                 ]
