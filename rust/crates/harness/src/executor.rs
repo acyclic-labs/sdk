@@ -525,7 +525,7 @@ impl StockExecutor {
                 ExecutionEvent::ModelInputPrepared { step, .. } => {
                     if !prepared_steps.insert(*step) {
                         return Err(Error::Storage(
-                            "model input preparation is duplicated (preparation duplicated)".into(),
+                            "duplicate prepared model input: preparation is duplicated".into(),
                         ));
                     }
                     if started_steps.contains(step) {

@@ -4230,7 +4230,12 @@ mod tests {
     impl ModelProvider for MockModel {
         fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
             self.requests.lock().expect("request lock").push(request);
-            self.calls.fetch_add(1, Ordering::SeqCst);
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call > 0 {
+                return Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                })]));
+            }
             Box::pin(futures::stream::iter([
                 Ok(ModelEvent::Content {
                     delta: "completed child exchange".into(),
@@ -4294,7 +4299,7 @@ mod tests {
             .expect_err("seedless fork must not dispatch a child");
         assert!(error.to_string().contains("typed fork publication"));
         assert_eq!(swarm.sessions().await.len(), 1);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
 

@@ -738,7 +738,6 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
     ) -> BoxFuture<'a, Result<WaitCompletion>> {
         Box::pin(async move {
             request.validate(None)?;
-            request.validate_completion(&completion)?;
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
             if let Some(retained) = Self::retained(&events, &request)? {
@@ -750,6 +749,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                     "wait completion has no retained admission".into(),
                 ));
             }
+            request.validate_completion(&completion)?;
             let append = self
                 .append(
                     &stream,
@@ -781,6 +781,15 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             retained.completion.ok_or_else(|| {
                 Error::Storage("wait completion was not retained after append".into())
             })
+        })
+    }
+
+    fn cancel<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<WaitCompletion>> {
+        Box::pin(async move {
+            if let Some(completion) = self.open(request.clone()).await? {
+                return Ok(completion);
+            }
+            self.complete(request, WaitCompletion::Cancelled).await
         })
     }
 }
