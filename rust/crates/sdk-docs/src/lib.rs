@@ -2883,7 +2883,14 @@ fn rustdoc_signature(
 ) -> Option<serde_json::Value> {
     let (kind, value) = inner.iter().next()?;
     let signature = match kind.as_str() {
-        "function" | "assoc_const" | "assoc_type" | "macro" => value.clone(),
+        // Keep the complete compiler-provided shape for declarations whose
+        // value carries the semantic type/expression/signature. In rustdoc
+        // JSON constants are keyed as `constant` (associated constants use
+        // `assoc_const`), so treating only `const` as a signature silently
+        // drops the type of every module-level constant.
+        "function" | "assoc_const" | "assoc_type" | "constant" | "static" | "macro" => {
+            value.clone()
+        }
         "struct" | "enum" | "union" | "trait" | "type" => {
             let object = value.as_object()?;
             let mut selected = serde_json::Map::new();
@@ -3645,7 +3652,7 @@ mod tests {
                     "crate_id": 0,
                     "name": "demo",
                     "visibility": "public",
-                    "inner": {"module": {"items": [2, 3, 4]}}
+                    "inner": {"module": {"items": [2, 3, 4, 8]}}
                 },
                 "2": {
                     "crate_id": 0,
@@ -3686,6 +3693,18 @@ mod tests {
                     "visibility": "public",
                     "docs": "The request identifier.",
                     "inner": {"struct_field": {"primitive": "u64"}}
+                },
+                "8": {
+                    "crate_id": 0,
+                    "name": "MAX_REQUESTS",
+                    "visibility": "public",
+                    "docs": "The maximum number of requests.",
+                    "inner": {
+                        "constant": {
+                            "type": {"primitive": "usize"},
+                            "const": "64"
+                        }
+                    }
                 }
             }
         });
@@ -3706,6 +3725,24 @@ mod tests {
         assert!(items
             .iter()
             .any(|item| item.name == "connect" && item.kind == "function"));
+        let max_requests = items
+            .iter()
+            .find(|item| item.name == "MAX_REQUESTS")
+            .expect("module-level constant should be retained");
+        assert_eq!(max_requests.kind, "constant");
+        assert_eq!(
+            max_requests.module_path.as_deref(),
+            Some("demo::MAX_REQUESTS")
+        );
+        assert_eq!(
+            max_requests
+                .signature
+                .as_ref()
+                .and_then(|signature| signature.get("type"))
+                .and_then(|value| value.get("primitive"))
+                .and_then(serde_json::Value::as_str),
+            Some("usize")
+        );
         let connect = items.iter().find(|item| item.name == "connect").unwrap();
         assert_eq!(
             connect.module_path.as_deref(),
