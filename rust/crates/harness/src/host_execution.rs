@@ -22,6 +22,8 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, RecvTimeoutError},
+        Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -33,6 +35,7 @@ const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_ENVIRONMENT_ENTRIES: usize = 256;
 const MAX_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 const MAX_FAILURE_BYTES: usize = 4096;
+const READER_GRACE: Duration = Duration::from_millis(250);
 
 /// Environment values admitted for a process.
 ///
@@ -314,11 +317,49 @@ pub enum RunnerOutcome {
     },
 }
 
+/// Cooperative cancellation signal owned by an admitted operation.
+#[derive(Clone, Debug, Default)]
+pub struct ExecutionCancellation {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl ExecutionCancellation {
+    /// Creates a fresh signal in the not-cancelled state.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Requests cancellation of the running operation.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// Returns whether cancellation has been requested.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
 /// Replaceable process runner boundary.  A sandbox provider can implement this
 /// later without changing approval or Harness effect semantics.
 pub trait ExecutionRunner: Send + Sync {
     /// Runs the exact admitted command.
     fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome>;
+
+    /// Runs with a cooperative cancellation signal.
+    fn run_with_cancellation(
+        &self,
+        request: &ExecutionSpec,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<RunnerOutcome> {
+        if cancellation.is_cancelled() {
+            return Ok(RunnerOutcome::Cancelled {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
+        self.run(request)
+    }
 }
 
 /// Native host process runner.  It never inherits the caller environment.
@@ -327,7 +368,21 @@ pub struct NativeExecutionRunner;
 
 impl ExecutionRunner for NativeExecutionRunner {
     fn run(&self, request: &ExecutionSpec) -> Result<RunnerOutcome> {
+        self.run_with_cancellation(request, &ExecutionCancellation::new())
+    }
+
+    fn run_with_cancellation(
+        &self,
+        request: &ExecutionSpec,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<RunnerOutcome> {
         request.validate()?;
+        if cancellation.is_cancelled() {
+            return Ok(RunnerOutcome::Cancelled {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            });
+        }
         let mut command = Command::new(&request.executable);
         command
             .args(&request.arguments)
@@ -356,19 +411,35 @@ impl ExecutionRunner for NativeExecutionRunner {
         let deadline = request
             .timeout_ms
             .map(|ms| Instant::now() + Duration::from_millis(ms));
-        let timed_out;
+        let termination;
         loop {
             if overflow.load(Ordering::Acquire) {
                 let _ = child.kill();
                 let _ = child.wait();
-                timed_out = false;
+                termination = Termination::Overflow;
+                break;
+            }
+            if cancellation.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                termination = Termination::Cancelled;
                 break;
             }
             if let Some(status) = child.try_wait().map_err(|error| {
                 Error::Storage(format!("failed waiting for approved process: {error}"))
             })? {
-                let stdout = join_reader(stdout_thread)?;
-                let stderr = join_reader(stderr_thread)?;
+                let stdout = receive_reader(&stdout_thread)?;
+                let stderr = receive_reader(&stderr_thread)?;
+                if overflow.load(Ordering::Acquire) {
+                    return Err(Error::Invalid(
+                        "approved process output exceeded its limit".into(),
+                    ));
+                }
+                let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
+                    return Ok(RunnerOutcome::Unknown {
+                        reason: "process descendants retained output handles".into(),
+                    });
+                };
                 return Ok(RunnerOutcome::Exited {
                     status_code: status.code(),
                     stdout,
@@ -378,61 +449,95 @@ impl ExecutionRunner for NativeExecutionRunner {
             if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                 let _ = child.kill();
                 let _ = child.wait();
-                timed_out = true;
+                termination = Termination::TimedOut;
                 break;
             }
             thread::sleep(Duration::from_millis(5));
         }
-        let stdout = join_reader(stdout_thread)?;
-        let stderr = join_reader(stderr_thread)?;
+        let stdout = receive_reader(&stdout_thread)?;
+        let stderr = receive_reader(&stderr_thread)?;
         if overflow.load(Ordering::Acquire) {
             return Err(Error::Invalid(
                 "approved process output exceeded its limit".into(),
             ));
         }
-        if timed_out {
-            Ok(RunnerOutcome::TimedOut { stdout, stderr })
-        } else {
-            Ok(RunnerOutcome::Cancelled { stdout, stderr })
+        let (Some(stdout), Some(stderr)) = (stdout, stderr) else {
+            return Ok(RunnerOutcome::Unknown {
+                reason: "process descendants retained output handles".into(),
+            });
+        };
+        match termination {
+            Termination::TimedOut => Ok(RunnerOutcome::TimedOut { stdout, stderr }),
+            Termination::Cancelled => Ok(RunnerOutcome::Cancelled { stdout, stderr }),
+            Termination::Overflow => unreachable!("overflow is returned above"),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Termination {
+    TimedOut,
+    Cancelled,
+    Overflow,
 }
 
 fn spawn_reader<R: Read + Send + 'static>(
     mut reader: R,
     remaining: Arc<std::sync::atomic::AtomicUsize>,
     overflow: Arc<AtomicBool>,
-) -> thread::JoinHandle<Result<Vec<u8>>> {
+) -> Receiver<Result<Vec<u8>>> {
+    let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let read = reader.read(&mut buffer).map_err(|error| {
-                Error::Storage(format!("failed reading process output: {error}"))
-            })?;
-            if read == 0 {
-                break;
+        let result = (|| {
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 8192];
+            loop {
+                let read = reader.read(&mut buffer).map_err(|error| {
+                    Error::Storage(format!("failed reading process output: {error}"))
+                })?;
+                if read == 0 {
+                    break;
+                }
+                let consumed =
+                    remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
+                        available.checked_sub(read)
+                    });
+                if consumed.is_err() {
+                    overflow.store(true, Ordering::Release);
+                    break;
+                }
+                bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
+                    Error::Storage("process reader returned an invalid length".into())
+                })?);
             }
-            let consumed =
-                remaining.fetch_update(Ordering::AcqRel, Ordering::Acquire, |available| {
-                    available.checked_sub(read)
-                });
-            if consumed.is_err() {
-                overflow.store(true, Ordering::Release);
-                break;
-            }
-            bytes.extend_from_slice(buffer.get(..read).ok_or_else(|| {
-                Error::Storage("process reader returned an invalid length".into())
-            })?);
-        }
-        Ok(bytes)
-    })
+            Ok(bytes)
+        })();
+        let _ = sender.send(result);
+    });
+    receiver
 }
 
-fn join_reader(handle: thread::JoinHandle<Result<Vec<u8>>>) -> Result<Vec<u8>> {
-    handle
-        .join()
-        .map_err(|_| Error::Storage("process output reader panicked".into()))?
+fn receive_reader(receiver: &Receiver<Result<Vec<u8>>>) -> Result<Option<Vec<u8>>> {
+    match receiver.recv_timeout(READER_GRACE) {
+        Ok(result) => result.map(Some),
+        Err(RecvTimeoutError::Timeout) => Ok(None),
+        Err(RecvTimeoutError::Disconnected) => Err(Error::Storage(
+            "process output reader disconnected without a result".into(),
+        )),
+    }
+}
+
+/// Verifies that an execution request was approved by the durable owner.
+///
+/// The serialized `approved` flag is request data and is never sufficient on
+/// its own.  Implementations should authenticate the owner record and bind it
+/// to the operation, request digest, and current session before returning.
+pub trait ExecutionApprovalVerifier: Send + Sync {
+    /// Authenticates the persisted approval or denial record.
+    fn verify<'a>(
+        &'a self,
+        approval: &'a ExecutionApproval,
+    ) -> BoxFuture<'a, Result<()>>;
 }
 
 /// Host-bound provider that adapts approved processes to Harness effects.
@@ -440,6 +545,8 @@ pub struct NativeExecutionProvider {
     resolver: Arc<dyn ContentResidencyVerifier>,
     publisher: Arc<dyn ContentPublisher>,
     runner: Arc<dyn ExecutionRunner>,
+    approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
+    active: Mutex<BTreeMap<OperationId, ExecutionCancellation>>,
     provider_id: String,
 }
 
@@ -449,6 +556,7 @@ impl NativeExecutionProvider {
         resolver: Arc<dyn ContentResidencyVerifier>,
         publisher: Arc<dyn ContentPublisher>,
         runner: Arc<dyn ExecutionRunner>,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<Self> {
         if publisher.volume().class() != crate::conversation::VolumeClass::AgentPrivate {
             return Err(Error::Unauthorized(
@@ -459,6 +567,8 @@ impl NativeExecutionProvider {
             resolver,
             publisher,
             runner,
+            approval_verifier,
+            active: Mutex::new(BTreeMap::new()),
             provider_id: "harness.native-execution.v1".into(),
         })
     }
@@ -467,8 +577,29 @@ impl NativeExecutionProvider {
     pub fn native(
         resolver: Arc<dyn ContentResidencyVerifier>,
         publisher: Arc<dyn ContentPublisher>,
+        approval_verifier: Arc<dyn ExecutionApprovalVerifier>,
     ) -> Result<Self> {
-        Self::new(resolver, publisher, Arc::new(NativeExecutionRunner))
+        Self::new(
+            resolver,
+            publisher,
+            Arc::new(NativeExecutionRunner),
+            approval_verifier,
+        )
+    }
+
+    /// Requests cancellation of a currently running operation.
+    ///
+    /// Durable cancellation admission remains the Harness owner's job; this
+    /// method only signals the already admitted native attempt.
+    pub fn cancel(&self, operation_id: OperationId) -> bool {
+        let Ok(active) = self.active.lock() else {
+            return false;
+        };
+        let Some(cancellation) = active.get(&operation_id).cloned() else {
+            return false;
+        };
+        cancellation.cancel();
+        true
     }
 
     #[allow(
@@ -476,6 +607,32 @@ impl NativeExecutionProvider {
         reason = "the provider boundary validates, executes, stages, and maps one exact effect attempt"
     )]
     async fn dispatch_inner(&self, request: EffectDispatch) -> Result<EffectObservation> {
+        if request.provider.as_str() != self.provider_id {
+            return Err(Error::Unauthorized(
+                "execution dispatch names a different provider".into(),
+            ));
+        }
+        if request.effect_kind != "host.process" {
+            return Err(Error::Invalid(
+                "native execution provider only accepts host.process effects".into(),
+            ));
+        }
+        if request.guarantee != EffectGuarantee::AtMostOnce {
+            return Err(Error::Invalid(
+                "native execution requires the at-most-once guarantee".into(),
+            ));
+        }
+        let expected_request_digest = crate::core::effect_request_digest(
+            &request.provider,
+            request.guarantee,
+            &request.effect_kind,
+            &request.request,
+        )?;
+        if request.request_digest != expected_request_digest {
+            return Err(Error::Conflict(
+                "execution dispatch request digest is stale or forged".into(),
+            ));
+        }
         if request.request.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid(
                 "approved execution request must be JSON content".into(),
@@ -492,8 +649,25 @@ impl NativeExecutionProvider {
                 "execution approval operation does not match effect identity".into(),
             ));
         }
+        self.approval_verifier.verify(&approval).await?;
         let receipt = if approval.approved {
-            match self.runner.run(&approval.request)? {
+            let cancellation = ExecutionCancellation::new();
+            self.active
+                .lock()
+                .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
+                .insert(approval.operation_id, cancellation.clone());
+            let runner = Arc::clone(&self.runner);
+            let execution_request = approval.request.clone();
+            let outcome = tokio::task::spawn_blocking(move || {
+                runner.run_with_cancellation(&execution_request, &cancellation)
+            })
+            .await
+            .map_err(|error| Error::Storage(format!("approved process task failed: {error}")));
+            self.active
+                .lock()
+                .map_err(|_| Error::Storage("active execution registry is poisoned".into()))?
+                .remove(&approval.operation_id);
+            match outcome?? {
                 RunnerOutcome::Exited {
                     status_code: Some(0),
                     stdout,
@@ -554,17 +728,21 @@ impl NativeExecutionProvider {
             .await?;
         let status = match receipt {
             ExecutionReceipt::Succeeded { .. } => EffectStatus::Succeeded { result },
-            ExecutionReceipt::Failed { status_code, .. } => EffectStatus::Failed {
+            ExecutionReceipt::Failed { status_code, .. } => EffectStatus::FailedWithReceipt {
                 message: format!("process exited with status {status_code:?}"),
+                result,
             },
-            ExecutionReceipt::TimedOut { .. } => EffectStatus::Failed {
+            ExecutionReceipt::TimedOut { .. } => EffectStatus::FailedWithReceipt {
                 message: "process timed out".into(),
+                result,
             },
-            ExecutionReceipt::Cancelled { .. } => EffectStatus::Failed {
+            ExecutionReceipt::Cancelled { .. } => EffectStatus::FailedWithReceipt {
                 message: "process cancelled".into(),
+                result,
             },
-            ExecutionReceipt::Denied { reason } => EffectStatus::Failed {
+            ExecutionReceipt::Denied { reason } => EffectStatus::FailedWithReceipt {
                 message: format!("execution denied: {reason}"),
+                result,
             },
         };
         Ok(EffectObservation {
@@ -674,6 +852,22 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct TestApprovalVerifier;
+
+    impl ExecutionApprovalVerifier for TestApprovalVerifier {
+        fn verify<'a>(
+            &'a self,
+            _approval: &'a ExecutionApproval,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            async { Ok(()) }.boxed()
+        }
+    }
+
+    fn approval_verifier() -> Arc<dyn ExecutionApprovalVerifier> {
+        Arc::new(TestApprovalVerifier)
+    }
+
     #[derive(Clone)]
     struct FixedRunner(RunnerOutcome);
 
@@ -747,17 +941,58 @@ mod tests {
 
     #[test]
     fn native_runner_clears_host_environment_and_captures_real_output() -> Result<()> {
+        let sentinel = if cfg!(windows) { "SystemRoot" } else { "PATH" };
+        assert!(std::env::var_os(sentinel).is_some());
         let mut request = spec();
         if cfg!(windows) {
-            request.arguments = vec!["/C".into(), "echo graphcoder-approved".into()];
+            request.arguments = vec![
+                "/C".into(),
+                format!(
+                    "if defined {sentinel} (exit /b 7) else (echo graphcoder-approved)"
+                ),
+            ];
         } else {
-            request.arguments = vec!["-c".into(), "printf graphcoder-approved".into()];
+            request.arguments = vec![
+                "-c".into(),
+                format!(
+                    "if [ -n \"${sentinel}:-\" ]; then exit 7; else printf graphcoder-approved; fi"
+                ),
+            ];
         }
         let output = NativeExecutionRunner.run(&request)?;
         let expected = if cfg!(windows) {
             b"graphcoder-approved\r\n".to_vec()
         } else {
             b"graphcoder-approved".to_vec()
+        };
+        assert_eq!(
+            output,
+            RunnerOutcome::Exited {
+                status_code: Some(0),
+                stdout: expected,
+                stderr: Vec::new()
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn native_runner_passes_only_explicit_environment_values() -> Result<()> {
+        const SENTINEL: &str = "GRAPH_CODER_EXPLICIT_SENTINEL_8A4D";
+        let mut request = spec();
+        let mut variables = BTreeMap::new();
+        variables.insert(SENTINEL.into(), "exact-value".into());
+        request.environment = ExecutionEnvironment::explicit(variables)?;
+        if cfg!(windows) {
+            request.arguments = vec!["/C".into(), format!("echo %{SENTINEL}%")];
+        } else {
+            request.arguments = vec!["-c".into(), format!("printf \"%${SENTINEL}\"")];
+        }
+        let output = NativeExecutionRunner.run(&request)?;
+        let expected = if cfg!(windows) {
+            b"exact-value\r\n".to_vec()
+        } else {
+            b"exact-value".to_vec()
         };
         assert_eq!(
             output,
@@ -806,6 +1041,47 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn native_runner_rechecks_overflow_after_fast_process_exit() -> Result<()> {
+        for _ in 0..64 {
+            let mut request = spec();
+            request.max_output_bytes = 1;
+            if cfg!(windows) {
+                request.arguments = vec!["/C".into(), "echo overflow".into()];
+            } else {
+                request.arguments = vec!["-c".into(), "printf overflow".into()];
+            }
+            assert!(matches!(
+                NativeExecutionRunner.run(&request),
+                Err(Error::Invalid(message)) if message.contains("output")
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn native_runner_cancellation_kills_a_running_process() -> Result<()> {
+        let mut request = spec();
+        request.timeout_ms = Some(10_000);
+        if cfg!(windows) {
+            request.executable = format!(
+                r"{}\System32\ping.exe",
+                std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+            );
+            request.arguments = vec!["-n".into(), "30".into(), "127.0.0.1".into()];
+        } else {
+            request.arguments = vec!["-c".into(), "sleep 5".into()];
+        }
+        let cancellation = ExecutionCancellation::new();
+        let signal = cancellation.clone();
+        let handle = thread::spawn(move || {
+            NativeExecutionRunner.run_with_cancellation(&request, &signal)
+        });
+        cancellation.cancel();
+        assert!(matches!(handle.join().expect("runner thread panicked")?, RunnerOutcome::Cancelled { .. }));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn provider_stages_success_and_never_retries_unknown_outcomes() -> Result<()> {
         let operation = OperationId::from_bytes([13; 16]);
@@ -819,6 +1095,13 @@ mod tests {
                 stdout: b"ok".to_vec(),
                 stderr: Vec::new(),
             })),
+            approval_verifier(),
+        )?;
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
         )?;
         let dispatch = EffectDispatch {
             provider: provider.id().into(),
@@ -827,7 +1110,7 @@ mod tests {
             effect_kind: "host.process".into(),
             request: request_file,
             guarantee: EffectGuarantee::AtMostOnce,
-            request_digest: [15; 32],
+            request_digest,
         };
         let observation = provider.dispatch(dispatch).await?;
         assert!(matches!(observation.status, EffectStatus::Succeeded { .. }));
@@ -851,6 +1134,13 @@ mod tests {
             Arc::new(FixedRunner(RunnerOutcome::Unknown {
                 reason: "host restarted".into(),
             })),
+            approval_verifier(),
+        )?;
+        let unknown_request_digest = crate::core::effect_request_digest(
+            unknown.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &unknown_request,
         )?;
         let observation = unknown
             .dispatch(EffectDispatch {
@@ -860,7 +1150,7 @@ mod tests {
                 effect_kind: "host.process".into(),
                 request: unknown_request,
                 guarantee: EffectGuarantee::AtMostOnce,
-                request_digest: [17; 32],
+                request_digest: unknown_request_digest,
             })
             .await?;
         assert_eq!(observation.status, EffectStatus::Indeterminate);
@@ -880,6 +1170,13 @@ mod tests {
             Arc::new(FixedRunner(RunnerOutcome::Unknown {
                 reason: "must not run".into(),
             })),
+            approval_verifier(),
+        )?;
+        let denied_request_digest = crate::core::effect_request_digest(
+            denied_provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &denied_request,
         )?;
         let observation = denied_provider
             .dispatch(EffectDispatch {
@@ -889,12 +1186,12 @@ mod tests {
                 effect_kind: "host.process".into(),
                 request: denied_request,
                 guarantee: EffectGuarantee::AtMostOnce,
-                request_digest: [19; 32],
+                request_digest: denied_request_digest,
             })
             .await?;
         assert!(matches!(
             observation.status,
-            EffectStatus::Failed { ref message } if message.contains("owner declined")
+            EffectStatus::FailedWithReceipt { ref message, .. } if message.contains("owner declined")
         ));
         let staged = denied_content.staged.lock().unwrap();
         let receipt: ExecutionReceipt = serde_json::from_slice(staged.first().unwrap()).unwrap();

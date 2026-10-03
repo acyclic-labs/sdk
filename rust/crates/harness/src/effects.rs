@@ -277,6 +277,18 @@ impl EffectRegistry {
             let schema_bytes = resolver.read(&effect.result_schema).await?;
             let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
             validate_result_bytes(&schema, result, &bytes)?;
+        } else if let EffectStatus::FailedWithReceipt { result, .. } = &observation.status {
+            let resolver = self.result_resolver.as_ref().ok_or_else(|| {
+                Error::Unsupported("effect failure receipt resolver is not bound".into())
+            })?;
+            let bytes = resolver.read(result).await?;
+            result.validate()?;
+            if result.descriptor().media_type() != "application/json" {
+                return Err(Error::Invalid(
+                    "effect failure receipt must be JSON content".into(),
+                ));
+            }
+            result.descriptor().verify(&bytes)?;
         }
         issuer.attest_effect(
             effect_id,

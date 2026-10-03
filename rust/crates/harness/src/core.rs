@@ -506,6 +506,13 @@ pub enum EffectStatus {
         /// Stable failure description.
         message: String,
     },
+    /// Effect completed with a known failure and an inspectable typed receipt.
+    FailedWithReceipt {
+        /// Stable failure description.
+        message: String,
+        /// Pinned JSON receipt produced before the failure was exposed.
+        result: FileRef,
+    },
     /// Provider cannot determine the externally visible outcome.
     Indeterminate,
 }
@@ -514,7 +521,10 @@ impl EffectStatus {
     pub(crate) fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Succeeded { .. } | Self::Failed { .. } | Self::Indeterminate
+            Self::Succeeded { .. }
+                | Self::Failed { .. }
+                | Self::FailedWithReceipt { .. }
+                | Self::Indeterminate
         )
     }
 }
@@ -3066,7 +3076,7 @@ pub(crate) fn canonical_intent(command: &Command) -> Result<[u8; 32]> {
     crate::contract::canonical_json_digest(command)
 }
 
-fn effect_request_digest(
+pub(crate) fn effect_request_digest(
     provider: &str,
     guarantee: EffectGuarantee,
     effect_kind: &str,
@@ -3076,11 +3086,18 @@ fn effect_request_digest(
 }
 
 fn validate_effect_result(status: &EffectStatus) -> Result<()> {
-    if let EffectStatus::Succeeded { result } = status {
-        result.validate()?;
-        if result.descriptor().media_type() != "application/json" {
-            return Err(Error::Invalid("effect result must be JSON content".into()));
+    let result = match status {
+        EffectStatus::Succeeded { result } | EffectStatus::FailedWithReceipt { result, .. } => {
+            result
         }
+        EffectStatus::Planned
+        | EffectStatus::Dispatched
+        | EffectStatus::Failed { .. }
+        | EffectStatus::Indeterminate => return Ok(()),
+    };
+    result.validate()?;
+    if result.descriptor().media_type() != "application/json" {
+        return Err(Error::Invalid("effect result must be JSON content".into()));
     }
     Ok(())
 }
