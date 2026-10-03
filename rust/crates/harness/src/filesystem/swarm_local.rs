@@ -23,7 +23,7 @@ use crate::{
         ResourceRevision,
     },
     interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
-    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRequest, ModelRole},
+    model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
@@ -3949,16 +3949,28 @@ impl PersistentLocalSwarm {
         Ok(())
     }
 
-    /// Checks the provider-owned model option policy without touching durable
-    /// state. This is deliberately part of the publication barrier so an
-    /// invalid or drifted policy cannot be discovered after child allocation.
+    /// Checks the provider-owned model option policy without constructing a
+    /// fabricated model request or invoking provider admission. This is
+    /// deliberately part of the publication barrier so an invalid or drifted
+    /// policy cannot be discovered after child allocation.
     fn verify_model_provider_binding(&self) -> Result<()> {
-        self.provider.admit(&ModelRequest {
-            model: self.config.model.clone(),
-            messages: Vec::new(),
-            tools: Vec::new(),
-            max_output_tokens: None,
-        })
+        if let Some(policy) = self.provider.model_option_policy() {
+            return policy.validate(&self.config.model.options);
+        }
+        let empty = self.config.model.options.is_null()
+            || self
+                .config
+                .model
+                .options
+                .as_object()
+                .is_some_and(|value| value.is_empty());
+        if empty {
+            Ok(())
+        } else {
+            Err(Error::Invalid(
+                "model options require a registered provider policy".into(),
+            ))
+        }
     }
 
     /// Replays the exact admitted request after a process interruption.
