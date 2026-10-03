@@ -48,6 +48,46 @@ pub struct TransportOption {
     pub bearer_auth: bool,
 }
 
+/// Transport adapters available in a built SDK or advertised by an endpoint.
+///
+/// Generated facades should populate these bits from their compiled adapter
+/// set and endpoint handshake before calling [`select_transport`]. This keeps
+/// a contract-qualified fallback from selecting an adapter that is not
+/// installed or a transport the endpoint did not advertise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransportAvailability {
+    /// Native gRPC is available.
+    pub grpc: bool,
+    /// Browser gRPC-Web is available.
+    pub grpc_web: bool,
+    /// Rust-owned HTTP JSON is available.
+    pub http_json: bool,
+}
+
+impl TransportAvailability {
+    /// Every transport adapter is available.
+    pub const ALL: Self = Self {
+        grpc: true,
+        grpc_web: true,
+        http_json: true,
+    };
+
+    /// No transport adapter is available.
+    pub const NONE: Self = Self {
+        grpc: false,
+        grpc_web: false,
+        http_json: false,
+    };
+
+    const fn supports(self, kind: TransportKind) -> bool {
+        match kind {
+            TransportKind::Grpc => self.grpc,
+            TransportKind::GrpcWeb => self.grpc_web,
+            TransportKind::HttpJson => self.http_json,
+        }
+    }
+}
+
 /// Ordered transport options for one family and runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeTransportPolicy {
@@ -81,6 +121,10 @@ pub struct TransportSelectionRequest {
     pub runtime: ClientRuntime,
     /// Required operation capabilities.
     pub requirements: TransportRequirements,
+    /// Adapters compiled into the selected SDK facade.
+    pub installed: TransportAvailability,
+    /// Transports advertised or negotiated by the endpoint.
+    pub endpoint: TransportAvailability,
     /// An explicit transport override. Overrides are validated before a call.
     pub override_kind: Option<TransportKind>,
 }
@@ -110,17 +154,21 @@ pub enum TransportSelectionError {
 /// Select a transport from one Rust-owned family view.
 ///
 /// Selection is deterministic: native consumers prefer gRPC, while browser
-/// consumers consider only gRPC-Web and HTTP JSON. An explicit override is
-/// checked against the same capability requirements and fails before any
-/// request is sent. Selection does not retry, downgrade after an authorization
-/// or application error, or replay a non-idempotent operation.
+/// consumers consider only gRPC-Web and HTTP JSON. The result is the first
+/// option supported by the family, installed in the SDK, and advertised by
+/// the endpoint. An explicit override is checked against the same capability
+/// requirements and fails before any request is sent. Selection does not
+/// retry, downgrade after an authorization or application error, or replay a
+/// non-idempotent operation.
 pub fn select_transport(
     family: &'static crate::family_registry::FamilyView,
     request: TransportSelectionRequest,
 ) -> Result<TransportSelection, TransportSelectionError> {
     let options = family.transport.for_runtime(request.runtime).options;
     let compatible = |option: &&TransportOption| {
-        (!request.requirements.streaming || option.streaming)
+        request.installed.supports(option.kind)
+            && request.endpoint.supports(option.kind)
+            && (!request.requirements.streaming || option.streaming)
             && (!request.requirements.bearer_auth || option.bearer_auth)
     };
 
@@ -258,6 +306,8 @@ mod tests {
                 streaming: false,
                 bearer_auth: true,
             },
+            installed: TransportAvailability::ALL,
+            endpoint: TransportAvailability::ALL,
             override_kind: None,
         }
     }
@@ -293,6 +343,16 @@ mod tests {
             select_transport_by_name("objects", native).unwrap().kind,
             TransportKind::HttpJson
         );
+        native.installed = TransportAvailability {
+            grpc: false,
+            grpc_web: false,
+            http_json: true,
+        };
+        native.endpoint = native.installed;
+        assert_eq!(
+            select_transport_by_name("objects", native).unwrap().kind,
+            TransportKind::HttpJson
+        );
     }
 
     #[test]
@@ -315,6 +375,8 @@ mod tests {
                     streaming: true,
                     bearer_auth: true,
                 },
+                installed: TransportAvailability::ALL,
+                endpoint: TransportAvailability::ALL,
                 override_kind: None,
             })
             .unwrap()

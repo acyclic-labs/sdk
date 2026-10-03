@@ -32,7 +32,8 @@ pub use family_registry::{
 };
 pub use transport::{
     select_transport, select_transport_by_name, ClientRuntime, FamilyTransportPolicy,
-    RuntimeTransportPolicy, TransportKind, TransportOption, TransportRequirements,
+    RuntimeTransportPolicy, TransportAvailability, TransportKind, TransportOption,
+    TransportRequirements,
     TransportSelection, TransportSelectionError, TransportSelectionRequest,
 };
 pub use filesystem::{
