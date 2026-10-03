@@ -2241,6 +2241,28 @@ async fn facade_two_children_grandchild_integrates_upward_with_approval() -> Res
         host.generation_ref_id(root_plan.target_head())?,
     )?;
     let request = RootWritebackRequest::new(approval, root_scope.clone());
+    let root_before_swapped_plan = host.resolve(&root_head.workspace).await?;
+    let swapped_plan_result = root_facade
+        .apply_project_merge_for_child_with_notice(
+            host.as_ref(),
+            &root_reducer,
+            &child_b_authority,
+            &child_b_project,
+            &root_plan,
+            OperationId::from_bytes([200; 16]),
+            &root_notice,
+        )
+        .await;
+    assert!(
+        swapped_plan_result.is_err(),
+        "a valid plan cannot be applied with a sibling authority/project"
+    );
+    let root_after_swapped_plan = host.resolve(&root_head.workspace).await?;
+    assert_eq!(
+        root_after_swapped_plan.generation,
+        root_before_swapped_plan.generation,
+        "rejecting a swapped plan must precede target mutation"
+    );
     assert!(
         root_facade
             .apply_project_merge_for_child_with_notice(
