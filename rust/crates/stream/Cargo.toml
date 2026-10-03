@@ -60,7 +60,7 @@ acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls", "stream"], optional = true }
 
 [build-dependencies]
-acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
 
