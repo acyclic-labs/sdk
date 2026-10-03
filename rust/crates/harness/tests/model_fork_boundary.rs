@@ -63,6 +63,7 @@ impl ModelProvider for CapturedModel {
                 request
                     .messages
                     .iter()
+                    .rev()
                     .find_map(|message| match &message.content {
                         ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
                             ModelContentPart::File { file, .. } => Some(file.clone()),
@@ -119,6 +120,78 @@ impl ModelProvider for CapturedModel {
     }
     fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async { Ok(None) })
+    }
+}
+
+/// Captures the executor's durable publication admission without inventing a
+/// second fork path. The child publication is subsequently verified through
+/// HarnessStorage and attached to the typed recursive fork request.
+struct RecordingPublisher {
+    identity: ComponentIdentity,
+    admission: Mutex<Option<ModelBatchPublication>>,
+}
+impl RecordingPublisher {
+    fn new(index: u8) -> Self {
+        Self {
+            identity: ComponentIdentity {
+                name: format!("test.recursive-model-batch-{index}"),
+                version: "1".into(),
+                digest: [index.saturating_add(1); 32],
+            },
+            admission: Mutex::new(None),
+        }
+    }
+
+    fn admission(&self) -> Result<ModelBatchPublication> {
+        self.admission
+            .lock()
+            .map_err(|_| Error::Storage("recursive publication lock is poisoned".into()))?
+            .clone()
+            .ok_or_else(|| Error::Storage("recursive model publication was not admitted".into()))
+    }
+}
+impl ModelBatchPublisher for RecordingPublisher {
+    fn identity(&self) -> ComponentIdentity {
+        self.identity.clone()
+    }
+
+    fn guarantee(&self) -> EffectGuarantee {
+        EffectGuarantee::AtMostOnce
+    }
+
+    fn publish<'a>(&'a self, request: ModelBatchPublication) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let mut admission = self
+                .admission
+                .lock()
+                .map_err(|_| Error::Storage("recursive publication lock is poisoned".into()))?;
+            if let Some(existing) = &*admission {
+                if existing != &request {
+                    return Err(Error::Conflict(
+                        "recursive model publication identity changed".into(),
+                    ));
+                }
+            } else {
+                *admission = Some(request);
+            }
+            Ok(())
+        })
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        request: ModelBatchPublication,
+    ) -> BoxFuture<'a, Result<Option<()>>> {
+        Box::pin(async move {
+            let admission = self
+                .admission
+                .lock()
+                .map_err(|_| Error::Storage("recursive publication lock is poisoned".into()))?;
+            Ok(admission
+                .as_ref()
+                .filter(|existing| *existing == &request)
+                .map(|_| ()))
+        })
     }
 }
 
@@ -578,7 +651,14 @@ impl ForkAtBatch {
                 )
                 .await?;
             let storage = self
-                .verified_child_storage(&parent, &seed, child_issuer.clone(), &boundary, &admission, index)
+                .verified_child_storage(
+                    &parent,
+                    &seed,
+                    child_issuer.clone(),
+                    &boundary,
+                    &admission,
+                    index,
+                )
                 .await?;
             let suffix = vec![ModelMessage {
                 role: ModelRole::System,
@@ -591,12 +671,14 @@ impl ForkAtBatch {
                 .get(index as usize)
                 .cloned()
                 .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
+            let child_publisher = Arc::new(RecordingPublisher::new(index));
             let bundle = storage
                 .inherited_builder(boundary.clone(), suffix, child_model, self.limits)?
                 .tools(storage.default_tools(self.limits)?)
                 .grant("tool:call:acyclic.read_file")
                 .grant("tool:call:acyclic.stage_file")
                 .grant("tool:call:acyclic.list_files")
+                .batch_publisher(child_publisher.clone())
                 .limits(self.limits)
                 .build()?;
             let child_operation = OperationId::from_bytes([index + 60; 16]);
@@ -613,24 +695,14 @@ impl ForkAtBatch {
                 .run_conversation(&bundle, child_operation, child_input, Vec::new(), 3)
                 .await?;
             if index == 0 {
-                let child_boundary = storage
-                    .completed_model_boundary(child_operation, 0, self.limits)
-                    .await?
-                    .ok_or_else(|| Error::Storage("recursive child boundary missing".into()))?;
-                // Reconstruct the direct parent's authoritative post-turn
-                // conversation. The aggregate used for spawn is intentionally
-                // only the pre-turn binding and must not become a stale fork
-                // parent after the child model exchange.
-                let child_parent = storage
-                    .completed_conversation(child_operation, 0, self.limits)
-                    .await?;
+                let child_admission = child_publisher.admission()?;
                 self.publish_grandchild(
-                    child_parent,
+                    &storage,
+                    child_admission,
                     child_authority,
                     child_issuer,
                     child_scope,
                     project,
-                    child_boundary,
                 )
                 .await?;
             }
@@ -641,13 +713,18 @@ impl ForkAtBatch {
 
     async fn publish_grandchild(
         &self,
-        mut parent: StreamAggregate<LocalStream>,
+        storage: &DurableHarnessStorage,
+        admission: ModelBatchPublication,
         parent_authority: Authority,
         parent_issuer: AuthorityIssuer,
         parent_scope: acyclic_harness::core::Scope,
         parent_project: VolumeRef,
-        boundary: CompletedModelBoundary,
     ) -> Result<()> {
+        let verified = storage
+            .verified_model_fork_boundary(&admission, self.limits)
+            .await?;
+        let boundary = verified.boundary().clone();
+        let (_, mut parent) = verified.into_parts();
         let provider = parent_project.provider().clone();
         let forks = Arc::new(CompositeForkVerifier::new(vec![
             Arc::new(FilesystemForkVerifier::new(
@@ -660,7 +737,29 @@ impl ForkAtBatch {
         ])?);
         parent = parent.with_fork_verifier(forks.clone());
         let project_head = self.host.create_volume(&parent_project).await?;
-        let pinned_generation = project_head.generation.clone();
+        let source_before = self.host.resolve(&project_head.workspace).await?;
+        let seeded_source = self
+            .host
+            .apply(
+                &source_before.workspace,
+                Some(&source_before.generation),
+                &[WorkspaceMutation::PutFile {
+                    path: "/recursive-same-path.txt".into(),
+                    bytes: b"old parent generation".to_vec(),
+                }],
+                &IdempotencyKey::new("recursive-parent-seed")?,
+            )
+            .await?;
+        let pinned_generation = seeded_source.generation.clone();
+        let old_source_bytes = self
+            .host
+            .read(
+                &seeded_source.workspace,
+                Some(&pinned_generation),
+                "/recursive-same-path.txt",
+                self.limits.file_bytes,
+            )
+            .await?;
         let grandchild_agent = AgentId::from_bytes([90; 16]);
         let grandchild_authority = Authority {
             kind: AggregateKind::Conversation,
@@ -732,6 +831,14 @@ impl ForkAtBatch {
             model_boundary: None,
         };
 
+        let verified_references = storage
+            .verified_model_fork_boundary(&admission, self.limits)
+            .await?;
+        let mut request = request;
+        storage
+            .attach_model_fork_references(&verified_references, &mut request)
+            .await?;
+
         // A provider-shaped boundary without an attestation from the bound
         // provider must be refused before the child aggregate is visible.
         let mut forged = request.clone();
@@ -742,41 +849,9 @@ impl ForkAtBatch {
         assert!(parent.prepare_fork(&preparer, forged).await.is_err());
 
         let report = parent.prepare_fork(&preparer, request).await?;
-        let preview_seed = report.clone().into_seed()?;
-        let reference_capabilities = preview_seed.reference_capabilities(grandchild_agent)?;
-        let mut capabilities = vec![
-            "conversation:bind".to_owned(),
-            "conversation:append".to_owned(),
-            private.capability(VolumeOperation::Read)?,
-            private.capability(VolumeOperation::Write)?,
-            project.capability(VolumeOperation::Read)?,
-        ];
-        capabilities.extend(reference_capabilities.iter().map(str::to_owned));
-        let child_scope = grandchild_issuer.root_for_agent(
-            grandchild_agent,
-            "grandchild",
-            Capabilities::new(capabilities),
-        );
-        let mut child = StreamAggregate::open(
-            &self.stream,
-            grandchild_authority.clone(),
-            grandchild_issuer.verifier(),
-            SchemaRegistry::new(),
-        )
-        .await?
-        .with_fork_verifier(forks)
-        .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
-            self.host.clone(),
-            grandchild_issuer.verifier(),
-            child_scope.clone(),
-            self.limits.file_bytes,
-        )?))
-        .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(
-            self.host.clone(),
-        )));
-        child
-            .spawn_from_report(&mut parent, report, parent_scope, child_scope.clone())
-            .await?;
+        let seed = report.clone().into_seed()?;
+        self.assert_child_unbound(&seed, &grandchild_issuer).await?;
+        parent.publish_fork_report(report, parent_scope).await?;
 
         // Mutating the source path after capture advances its generation. A
         // stale reopen is denied, while the already pinned fork remains valid.
@@ -793,6 +868,17 @@ impl ForkAtBatch {
             )
             .await?;
         assert_ne!(source.generation, pinned_generation);
+        assert_eq!(
+            self.host
+                .read(
+                    &source.workspace,
+                    Some(&source.generation),
+                    "/recursive-same-path.txt",
+                    self.limits.file_bytes,
+                )
+                .await?,
+            b"new parent generation"
+        );
         assert!(self
             .host
             .read(
@@ -804,16 +890,29 @@ impl ForkAtBatch {
             .await
             .is_err());
 
-        let storage = HarnessStorage::from_providers(
-            grandchild_agent,
+        let storage = HarnessStorage::from_published_fork(
             self.limits.file_bytes,
             self.host.clone(),
             self.stream.clone(),
-            private,
-            grandchild_authority,
             grandchild_issuer,
+            &parent,
+            &seed,
         )
         .await?;
+        let child_project_workspace =
+            workspace_ref(project.provider().clone(), &project.storage_name()?)?;
+        let child_project = self.host.resolve(&child_project_workspace).await?;
+        assert_eq!(
+            self.host
+                .read(
+                    &child_project.workspace,
+                    Some(&child_project.generation),
+                    "/recursive-same-path.txt",
+                    self.limits.file_bytes,
+                )
+                .await?,
+            old_source_bytes
+        );
         let suffix = vec![ModelMessage {
             role: ModelRole::System,
             content: ModelContent::Text(
@@ -871,11 +970,14 @@ impl ForkAtBatch {
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             result.get("text").and_then(Value::as_str),
-            Some("root request")
+            Some("grandchild explicit UTF-8 input α🦀\n")
         );
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert_eq!(projection, Value::String("root request".into()));
+        assert_eq!(
+            projection,
+            Value::String("grandchild explicit UTF-8 input α🦀\n".into())
+        );
         let captured = self.grandchild.requests.lock().unwrap();
         assert!(captured.len() >= 2);
         let actual = PreparedModelInput::prepare(captured[0].clone(), self.limits)?;
