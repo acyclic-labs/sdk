@@ -4402,6 +4402,157 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
+    struct RecordingCommunicationHost {
+        observed: Mutex<Vec<TaskId>>,
+    }
+
+    impl crate::runtime::DurableTaskHost for RecordingCommunicationHost {
+        fn observe_admission<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+            Box::pin(async move {
+                self.observed
+                    .lock()
+                    .expect("communication host lock")
+                    .push(task_id);
+                let schema = json!({"type":"object"});
+                crate::runtime::TaskAdmissionRecord::from_parts(
+                    OperationId::from_bytes(task_id.into_bytes()),
+                    "communication.test",
+                    "1",
+                    json!({}),
+                    schema.clone(),
+                    schema,
+                    &BTreeSet::new(),
+                    &[7; 32],
+                    None,
+                    Capabilities::default(),
+                    Limits::default(),
+                    TaskRunLimits::default(),
+                    None,
+                    None,
+                    None,
+                )
+            })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<crate::Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct ImmediateWaitStore {
+        opened: Mutex<Vec<crate::communication::WaitRequest>>,
+        completed: Mutex<Vec<crate::communication::WaitCompletion>>,
+    }
+
+    impl crate::communication::DurableWaitStore for ImmediateWaitStore {
+        fn open<'a>(
+            &'a self,
+            request: crate::communication::WaitRequest,
+        ) -> BoxFuture<'a, Result<Option<crate::communication::WaitCompletion>>> {
+            Box::pin(async move {
+                self.opened
+                    .lock()
+                    .expect("wait store lock")
+                    .push(request);
+                Ok(None)
+            })
+        }
+
+        fn complete<'a>(
+            &'a self,
+            _request: crate::communication::WaitRequest,
+            completion: crate::communication::WaitCompletion,
+        ) -> BoxFuture<'a, Result<crate::communication::WaitCompletion>> {
+            Box::pin(async move {
+                self.completed
+                    .lock()
+                    .expect("wait store lock")
+                    .push(completion.clone());
+                Ok(completion)
+            })
+        }
+    }
+
+    struct CommunicationModel {
+        calls: AtomicUsize,
+    }
+
+    impl ModelProvider for CommunicationModel {
+        fn generate<'a>(
+            &'a self,
+            _prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) > 0 {
+                return Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                })]));
+            }
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::ToolCall {
+                    call_id: "wait-call".into(),
+                    name: crate::communication_tools::WAIT_TOOL_NAME.into(),
+                    arguments: json!({
+                        "kind": "deadline",
+                        "deadline_epoch_ms": 1,
+                    }),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn model_wait_uses_the_authenticated_task_in_persistent_swarm() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let host = Arc::new(RecordingCommunicationHost {
+            observed: Mutex::new(Vec::new()),
+        });
+        let waits = Arc::new(ImmediateWaitStore {
+            opened: Mutex::new(Vec::new()),
+            completed: Mutex::new(Vec::new()),
+        });
+        let bindings = LocalSwarmBindings::communication(host.clone(), Some(waits.clone()), None);
+        let model = Model::new("mock", "communication", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model_and_bindings(
+            root.path(),
+            model,
+            Arc::new(CommunicationModel { calls: AtomicUsize::new(0) }),
+            Limits::default(),
+            bindings,
+        )
+        .await?;
+        let root_task = swarm.root_task().await?;
+        swarm.run_root(OperationId::from_bytes([82; 16]), "wait for the deadline").await?;
+        let observed = host.observed.lock().expect("communication host lock");
+        assert_eq!(observed.len(), 2);
+        assert!(observed.iter().all(|task| *task == root_task));
+        assert_eq!(waits.opened.lock().expect("wait store lock").len(), 1);
+        assert_eq!(
+            waits.completed.lock().expect("wait store lock").as_slice(),
+            &[crate::communication::WaitCompletion::Deadline]
+        );
+        Ok(())
+    }
+
     impl ModelProvider for MockModel {
         fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
