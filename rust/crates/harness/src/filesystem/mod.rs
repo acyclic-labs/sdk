@@ -42,6 +42,8 @@ mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;
 pub use interaction_host::FilesystemInteractionHost;
+mod model_fork;
+pub use model_fork::VerifiedModelForkBoundary;
 mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
@@ -54,7 +56,7 @@ pub use local::{DurableHarnessStorage, PersistentLocalHarness};
 mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use swarm_local::{
-    LocalForkOutcome, LocalForkRequest, LocalSessionPhase, LocalSwarmConfig,
+    LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration, LocalSessionPhase, LocalSwarmConfig,
     LocalSwarmSession, PersistentLocalSwarm,
 };
 

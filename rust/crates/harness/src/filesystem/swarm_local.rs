@@ -8,12 +8,14 @@
 
 use super::{FilesystemHost, PersistentLocalHarness};
 use crate::{
+    batch_publication::ModelBatchPublication,
     Error, OperationId, Result, TaskId,
     conversation::Limits,
     core::{AuthorityIssuer, Capabilities, SchemaRegistry},
     executor::TurnOutput,
     fork::{ForkReport, ForkSeed},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
+    model_input::{CompletedModelBoundary, InheritedModelContext},
     runtime::TaskRunLimits,
     store::StreamAggregate,
 };
@@ -150,6 +152,25 @@ pub struct LocalForkOutcome {
     pub output: TurnOutput,
 }
 
+/// Persisted declaration of the exact inherited model prefix and child suffix.
+/// The declaration is reconstructed as an `InheritedModelContext` only after
+/// the parent publication and child seed have been recovered.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalInheritedModelDeclaration {
+    /// Completed parent exchange pinned at the fork boundary.
+    pub boundary: CompletedModelBoundary,
+    /// Explicit child task/identity/fresh-scratch messages.
+    pub suffix: Vec<ModelMessage>,
+}
+
+impl LocalInheritedModelDeclaration {
+    /// Validates and reconstructs the context stage used by model admission.
+    pub fn context(&self, limits: Limits) -> Result<InheritedModelContext> {
+        InheritedModelContext::new(self.boundary.clone(), self.suffix.clone(), limits)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredSession {
@@ -193,6 +214,12 @@ enum StoredEvent {
         prompt: String,
         #[serde(default)]
         seed: Option<ForkSeed>,
+        #[serde(default)]
+        seed_digest: Option<[u8; 32]>,
+        #[serde(default)]
+        publication: Option<ModelBatchPublication>,
+        #[serde(default)]
+        declaration: Option<LocalInheritedModelDeclaration>,
     },
     ForkCompleted {
         child: TaskId,
@@ -259,6 +286,8 @@ pub struct PersistentLocalSwarm {
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
     requests: Mutex<BTreeMap<TaskId, LocalForkRequest>>,
     seeds: Mutex<BTreeMap<TaskId, ForkSeed>>,
+    publications: Mutex<BTreeMap<TaskId, ModelBatchPublication>>,
+    declarations: Mutex<BTreeMap<TaskId, LocalInheritedModelDeclaration>>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
 }
 
@@ -284,8 +313,17 @@ impl PersistentLocalSwarm {
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
         let mut seeds = BTreeMap::new();
+        let mut publications = BTreeMap::new();
+        let mut declarations = BTreeMap::new();
         for record in records {
-            apply_record(&mut sessions, &mut requests, &mut seeds, record)?;
+            apply_record(
+                &mut sessions,
+                &mut requests,
+                &mut seeds,
+                &mut publications,
+                &mut declarations,
+                record,
+            )?;
         }
         if sessions.is_empty() {
             let root_task = TaskId::new();
@@ -329,6 +367,8 @@ impl PersistentLocalSwarm {
             records: Mutex::new(sessions),
             requests: Mutex::new(requests),
             seeds: Mutex::new(seeds),
+            publications: Mutex::new(publications),
+            declarations: Mutex::new(declarations),
             sessions: Mutex::new(opened),
         })
     }
@@ -490,6 +530,9 @@ impl PersistentLocalSwarm {
                 task: request.task.clone(),
                 prompt: request.prompt.clone(),
                 seed: None,
+                seed_digest: None,
+                publication: None,
+                declaration: None,
             },
         )
         .await?;
@@ -520,18 +563,46 @@ impl PersistentLocalSwarm {
             ));
         }
         let parent_session = self.session(request.parent).await?;
-        let boundary = self
-            .open_session(request.parent)
-            .await?
-            .storage()
-            .completed_model_boundary(
-                request.parent_operation,
-                request.parent_step,
-                self.config.limits,
-            )
-            .await?
-            .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        let parent_harness = self.open_session(request.parent).await?;
+        let publication = self.publications.lock().await.get(&child).cloned();
+        let declaration = self.declarations.lock().await.get(&child).cloned();
+        let declared_suffix = declaration.as_ref().map(|value| value.suffix.clone());
+        let (boundary, verified_parent) = match (publication, declaration) {
+            (Some(publication), Some(declaration)) => {
+                let inherited = declaration.context(self.config.limits)?;
+                let verified = parent_harness
+                    .storage()
+                    .verified_inherited_model_fork_boundary(
+                        &publication,
+                        self.config.limits,
+                        &inherited,
+                    )
+                    .await?;
+                let (boundary, parent) = verified.into_parts();
+                (boundary, Some(parent))
+            }
+            (None, None) => (
+                parent_harness
+                    .storage()
+                    .completed_model_boundary(
+                        request.parent_operation,
+                        request.parent_step,
+                        self.config.limits,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        Error::Conflict("fork requires a completed model boundary".into())
+                    })?,
+                None,
+            ),
+            _ => {
+                return Err(Error::Conflict(
+                    "typed child publication and declaration must be persisted together".into(),
+                ));
+            }
+        };
+        let storage_parent = verified_parent.as_ref().unwrap_or(parent);
         let existing = self.records.lock().await.get(&child).cloned();
         let new_admission = match existing {
             None => true,
@@ -564,6 +635,9 @@ impl PersistentLocalSwarm {
                     task: request.task.clone(),
                     prompt: request.prompt.clone(),
                     seed: Some(seed.clone()),
+                    seed_digest: Some(fork_seed_digest(seed)?),
+                    publication: None,
+                    declaration: None,
                 },
             )
             .await?;
@@ -593,7 +667,7 @@ impl PersistentLocalSwarm {
             host,
             stream,
             issuer,
-            parent,
+            storage_parent,
             seed,
         )
         .await
@@ -605,8 +679,93 @@ impl PersistentLocalSwarm {
             }
         };
         self.sessions.lock().await.insert(child, harness.clone());
-        self.activate_child_with_harness(request, child, registry, boundary, harness)
+        self.activate_child_with_harness(
+            request,
+            child,
+            registry,
+            boundary,
+            harness,
+            declared_suffix,
+        )
             .await
+    }
+
+    async fn preadmit_published_child(
+        &self,
+        request: &LocalForkRequest,
+        seed: &ForkSeed,
+        publication: ModelBatchPublication,
+        declaration: LocalInheritedModelDeclaration,
+    ) -> Result<()> {
+        request.validate()?;
+        seed.validate()?;
+        declaration.context(self.config.limits)?;
+        if publication.parent_operation != request.parent_operation
+            || publication.step != request.parent_step
+        {
+            return Err(Error::Conflict(
+                "published model boundary does not match fork request".into(),
+            ));
+        }
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        if let Some(existing) = self.records.lock().await.get(&child).cloned() {
+            if self.requests.lock().await.get(&child) != Some(request)
+                || self.seeds.lock().await.get(&child) != Some(seed)
+            {
+                return Err(Error::Conflict(
+                    "existing typed child admission differs from retry".into(),
+                ));
+            }
+            if existing.phase == LocalSessionPhase::Completed {
+                return Err(Error::Conflict("child operation is already complete".into()));
+            }
+            if self.publications.lock().await.get(&child) != Some(&publication)
+                || self.declarations.lock().await.get(&child) != Some(&declaration)
+            {
+                return Err(Error::Conflict(
+                    "existing typed declaration differs from retry".into(),
+                ));
+            }
+            return Ok(());
+        }
+        let parent = self.session(request.parent).await?;
+        let registry = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::ForkAdmitted {
+                parent: request.parent,
+                parent_operation: request.parent_operation,
+                parent_step: request.parent_step,
+                child,
+                child_operation: request.child_operation,
+                task: request.task.clone(),
+                prompt: request.prompt.clone(),
+                seed: Some(seed.clone()),
+                seed_digest: Some(fork_seed_digest(seed)?),
+                publication: Some(publication.clone()),
+                declaration: Some(declaration.clone()),
+            },
+        )
+        .await?;
+        self.records.lock().await.insert(
+            child,
+            LocalSwarmSession {
+                task: child,
+                parent: Some(request.parent),
+                depth: parent.depth + 1,
+                task_description: request.task.clone(),
+                operation: Some(request.child_operation),
+                phase: LocalSessionPhase::Activating,
+            },
+        );
+        self.requests.lock().await.insert(child, request.clone());
+        self.seeds.lock().await.insert(child, seed.clone());
+        self.publications.lock().await.insert(child, publication);
+        self.declarations.lock().await.insert(child, declaration);
+        Ok(())
     }
 
     /// Publishes a prepared report through the typed parent/child aggregates,
@@ -654,6 +813,59 @@ impl PersistentLocalSwarm {
         .await
     }
 
+    /// Persists the exact model publication and recursive declaration before
+    /// publishing the typed fork, then activates from the resulting seed.
+    pub async fn publish_and_activate_child_with_publication(
+        &self,
+        request: LocalForkRequest,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &mut StreamAggregate<LocalStream>,
+        report: ForkReport,
+        publication: ModelBatchPublication,
+        declaration: LocalInheritedModelDeclaration,
+    ) -> Result<LocalForkOutcome> {
+        request.validate()?;
+        let preview = report.clone().into_seed()?;
+        self.preadmit_published_child(&request, &preview, publication, declaration)
+            .await?;
+        let mut child = StreamAggregate::open(
+            &stream,
+            preview.child.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        let parent_scope = self
+            .open_session(request.parent)
+            .await?
+            .storage()
+            .owner_scope()
+            .clone();
+        let child_scope = issuer.root_for_agent(
+            preview.child_agent,
+            "fork-bind",
+            Capabilities::new(["conversation:bind".to_owned()]),
+        );
+        let seed = match child
+            .spawn_from_report(parent, report, parent_scope, child_scope)
+            .await
+        {
+            Ok(seed) => seed,
+            Err(error) => {
+                self.mark_failed(
+                    TaskId::from_bytes(request.child_operation.into_bytes()),
+                    error.to_string(),
+                )
+                .await?;
+                return Err(error);
+            }
+        };
+        self.activate_published_child(request, host, stream, issuer, parent, &seed)
+            .await
+    }
+
     async fn activate_child(
         &self,
         request: LocalForkRequest,
@@ -668,7 +880,7 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        self.activate_child_with_harness(request, child, stream, boundary, harness)
+        self.activate_child_with_harness(request, child, stream, boundary, harness, None)
             .await
     }
 
@@ -679,14 +891,17 @@ impl PersistentLocalSwarm {
         stream: acyclic_stream::Stream<LocalStream>,
         boundary: crate::model_input::CompletedModelBoundary,
         harness: Arc<PersistentLocalHarness>,
+        declared_suffix: Option<Vec<ModelMessage>>,
     ) -> Result<LocalForkOutcome> {
-        let suffix = vec![ModelMessage {
-            role: ModelRole::System,
-            content: ModelContent::Text(format!(
-                "child task: {}; parent: {}; identity: {}; fresh scratch: true",
-                request.task, request.parent, child
-            )),
-        }];
+        let suffix = declared_suffix.unwrap_or_else(|| {
+            vec![ModelMessage {
+                role: ModelRole::System,
+                content: ModelContent::Text(format!(
+                    "child task: {}; parent: {}; identity: {}; fresh scratch: true",
+                    request.task, request.parent, child
+                )),
+            }]
+        });
         let bundle = match harness
             .storage()
             .inherited_builder(
@@ -877,6 +1092,10 @@ fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
     root.join("tasks").join(task.to_string())
 }
 
+fn fork_seed_digest(seed: &ForkSeed) -> Result<[u8; 32]> {
+    crate::contract::canonical_json_digest(seed)
+}
+
 async fn load_records(
     stream: &acyclic_stream::Stream<LocalStream>,
 ) -> Result<Vec<StoredRecord>> {
@@ -934,6 +1153,8 @@ fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
     requests: &mut BTreeMap<TaskId, LocalForkRequest>,
     seeds: &mut BTreeMap<TaskId, ForkSeed>,
+    publications: &mut BTreeMap<TaskId, ModelBatchPublication>,
+    declarations: &mut BTreeMap<TaskId, LocalInheritedModelDeclaration>,
     record: StoredRecord,
 ) -> Result<()> {
     match record.event {
@@ -952,6 +1173,9 @@ fn apply_record(
             task,
             prompt,
             seed,
+            seed_digest,
+            publication,
+            declaration,
             ..
         } => {
             let parent_session = sessions
@@ -980,7 +1204,18 @@ fn apply_record(
                 },
             );
             if let Some(seed) = seed {
+                if let Some(expected) = seed_digest {
+                    if fork_seed_digest(&seed)? != expected {
+                        return Err(Error::Conflict("persisted fork seed digest changed".into()));
+                    }
+                }
                 seeds.insert(child, seed);
+            }
+            if let Some(publication) = publication {
+                publications.insert(child, publication);
+            }
+            if let Some(declaration) = declaration {
+                declarations.insert(child, declaration);
             }
         }
         StoredEvent::ForkCompleted { child, operation } => {
