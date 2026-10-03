@@ -613,6 +613,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         limits: SwarmBudgetLimits,
         swarm_owner: SwarmOwnerFence,
         request: SwarmForkRequest,
+        admission_reference: FileRef,
         reservation: Reservation,
     ) -> Result<CoordinatorApply> {
         self.refresh().await?;
@@ -655,6 +656,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 limits,
                 owner: swarm_owner,
                 request,
+                admission_reference,
                 reservation,
             },
         )
@@ -685,6 +687,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .scheduler
             .operation(admission.operation_id)
             .ok_or_else(|| Error::NotFound(format!("operation {}", admission.operation_id)))?;
+        let stored_admission = self.load_json(&operation.spec.state).await?;
+        let stored_admission = TaskAdmissionRecord::from_canonical_value(stored_admission)?;
+        if stored_admission != *admission {
+            return Err(Error::Conflict(
+                "supplied admission differs from the host-issued canonical record".into(),
+            ));
+        }
         if operation.spec.dependencies != admission.dependencies {
             return Err(Error::Conflict(
                 "task admission dependencies differ from scheduler declaration".into(),
@@ -715,6 +724,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             limits,
             swarm_owner,
             request,
+            operation.spec.state.clone(),
             reservation,
         )
         .await

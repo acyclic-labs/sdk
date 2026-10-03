@@ -341,6 +341,9 @@ pub enum SchedulerEvent {
         owner: SwarmOwnerFence,
         /// Canonical resource reservation request.
         request: SwarmForkRequest,
+        /// Durable canonical task admission envelope staged before this
+        /// event; replay verifies the declaration still points at it.
+        admission_reference: FileRef,
         /// Existing scheduler lease reservation.
         reservation: Reservation,
     },
@@ -953,6 +956,7 @@ impl Scheduler {
                 limits,
                 owner,
                 request,
+                admission_reference,
                 reservation,
             } => {
                 let mut next = self.clone();
@@ -960,7 +964,14 @@ impl Scheduler {
                     operation_id,
                     reservation: reservation.clone(),
                 })?;
-                next.apply_swarm_admitted(session_id, limits, owner, request, reservation)?;
+                next.apply_swarm_admitted(
+                    session_id,
+                    limits,
+                    owner,
+                    request,
+                    admission_reference,
+                    reservation,
+                )?;
                 *self = next;
             }
             SchedulerEvent::SwarmDispatchStarted {
@@ -1157,6 +1168,7 @@ impl Scheduler {
         limits: SwarmBudgetLimits,
         owner: SwarmOwnerFence,
         request: SwarmForkRequest,
+        admission_reference: FileRef,
         reservation: Reservation,
     ) -> Result<()> {
         let expected_resources = canonical_swarm_resources(request.resources);
@@ -1166,6 +1178,7 @@ impl Scheduler {
             .ok_or_else(|| Error::NotFound(format!("operation {}", request.operation_id)))?;
         if operation.spec.resources != expected_resources
             || reservation.admitted != expected_resources
+            || operation.spec.state != admission_reference
         {
             return Err(Error::Conflict(
                 "scheduler and swarm reservations must use canonical resources".into(),
@@ -2114,6 +2127,7 @@ mod tests {
             limits,
             owner: owner.clone(),
             request,
+            admission_reference: spec(child, Orchestration::Leaf)?.state,
             reservation: lease,
         })?;
         assert_eq!(
