@@ -2,7 +2,9 @@
 #![cfg(feature = "filesystem-local")]
 #![allow(clippy::too_many_lines)]
 
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
+use acyclic_fs::{
+    AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions, MemoryGitCompatStore, WorkspaceId,
+};
 use acyclic_harness::conversation::{
     Attachment, ContentGrant, ConversationMessage, MessageKind, ReferencedAttachments, VolumeClass,
     VolumeOperation, VolumeOwner, VolumeRef,
@@ -11,14 +13,13 @@ use acyclic_harness::core::{
     Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry,
 };
 use acyclic_harness::filesystem::{
-    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemForkVerifier, FilesystemHost,
-    FilesystemProjectMergeVerifier, FilesystemProjectWorkspaces, WorkspaceMutation, workspace_ref,
+    FilesystemContentVerifier, FilesystemForkPreparer, FilesystemForkVerifier, FilesystemGitFacade,
+    FilesystemHost, FilesystemProjectMergeVerifier, WorkspaceMutation, workspace_ref,
 };
 use acyclic_harness::fork::{
     CompositeForkVerifier, ForkPreparation, ForkRequest, ForkSelection, ResourceRevision,
     StreamHistoryForkVerifier,
 };
-use acyclic_harness::merge::{ProjectJoinOutcome, ProjectWorkspaceProvider};
 use acyclic_harness::resources::{ProviderRef, StreamRef};
 use acyclic_harness::store::StreamAggregate;
 use acyclic_harness::{AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result};
@@ -57,6 +58,7 @@ fn scope(
             "conversation:append".to_owned(),
             "fork:publish".to_owned(),
             "project:merge".to_owned(),
+            "project:writeback".to_owned(),
             project.capability(VolumeOperation::Read)?,
             project.capability(VolumeOperation::Write)?,
             private.capability(VolumeOperation::Read)?,
@@ -276,14 +278,14 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             stream_provider.clone(),
             parent_reader,
         )?;
-        let parent_workspaces = (level == DEPTH)
+        let parent_facade = (level == DEPTH)
             .then(|| {
-                FilesystemProjectWorkspaces::new(
-                    &host,
-                    aggregate.reducer(),
-                    &issuer.verifier(),
-                    &grant_scope,
+                FilesystemGitFacade::new(
+                    WorkspaceId::from_bytes(identity(100 + level)),
+                    MemoryGitCompatStore::new(),
                     project.clone(),
+                    issuer.verifier(),
+                    grant_scope.clone(),
                 )
             })
             .transpose()?;
@@ -493,8 +495,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             merge_parent_scope = Some(grant_scope.clone());
             merge_parent_project = Some(project.clone());
             merge_child_authority = Some(child_authority.clone());
-            let parent_workspaces =
-                parent_workspaces.ok_or_else(|| Error::Invalid("missing merge binding".into()))?;
+            let parent_facade =
+                parent_facade.ok_or_else(|| Error::Invalid("missing Git facade".into()))?;
             let notice = host
                 .put_content(
                     &project,
@@ -522,32 +524,25 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 tool_call_id: None,
                 extensions: Default::default(),
             };
-            let plan = parent_workspaces
-                .prepare_project_merge(
-                    &grant_scope,
-                    aggregate.reducer(),
-                    &child_authority,
-                    &child_project,
-                )
+            let plan = parent_facade
+                .prepare_project_merge(host.as_ref(), aggregate.reducer(), &child_project)
                 .await?;
-            let (ProjectJoinOutcome::Applied(receipt)
-            | ProjectJoinOutcome::AlreadyApplied(receipt)) = plan
-                .apply(
-                    &grant_scope,
-                    OperationId::from_bytes([91; 16]),
-                    &child_authority,
-                    &merge_message,
-                    &[],
-                )
-                .await?
-            else {
-                return Err(Error::Conflict(
-                    "final local project merge was not applied".into(),
-                ));
-            };
+            let operation_id = OperationId::from_bytes([91; 16]);
+            let outcome = parent_facade
+                .apply_project_merge(host.as_ref(), aggregate.reducer(), &plan, operation_id)
+                .await?;
+            let receipt = parent_facade.merge_receipt(
+                host.as_ref(),
+                aggregate.reducer(),
+                &plan,
+                &outcome,
+                child_authority.clone(),
+                operation_id,
+                merge_message,
+            )?;
             aggregate
                 .execute(Command {
-                    operation_id: OperationId::from_bytes([91; 16]),
+                    operation_id,
                     idempotency_key: IdempotencyKey::new("publish-final-merge")?,
                     expected_revision: aggregate.reducer().revision(),
                     scope: grant_scope.clone(),

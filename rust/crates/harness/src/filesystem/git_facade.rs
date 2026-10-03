@@ -6,16 +6,20 @@
 //! volume.  This keeps the model-facing `acyclic git` surface small while all
 //! lifecycle and integration effects still go through typed SDK operations.
 
-use super::super::merge::{ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan};
+use super::super::merge::{
+    ProjectConflictSelection, ProjectJoinOutcome, ProjectJoinPlan, ProjectMergeReceipt,
+};
+use super::{ParentMergePlan, ParentProjectController, WorkspaceObservation};
 use crate::{
-    Error, OperationId, Result,
+    Error, IdempotencyKey, OperationId, Result,
     conversation::{ConversationMessage, VolumeClass, VolumeOperation, VolumeRef},
-    core::{Authority, AuthorityVerifier, Scope},
+    core::{Authority, AuthorityVerifier, Reducer, Scope},
     resources::GenerationRef,
 };
 use acyclic_fs::{
-    GitCommand, GitCommandOutput, GitCompatRepository, GitCompatRunError, GitCompatStore,
-    GitFilesystemExecutor, IntoGitTreeRef, WorkspaceId,
+    AsyncAuthorityStore, AsyncObjectStore, ConflictSide, GitCommand, GitCommandOutput,
+    GitCompatRepository, GitCompatRunError, GitCompatStore, GitFilesystemExecutor, IntoGitTreeRef,
+    JoinOutcome, MergeConflict, MergeDriverRegistry, MergePlan, MergeResolutionCache, WorkspaceId,
 };
 
 /// Capability required to authorize an exact root writeback approval.
@@ -171,7 +175,7 @@ impl<S> FilesystemGitFacade<S> {
         self.repository
             .run_argv(argv, workspace_tree, default_author, now_seconds, executor)
             .await
-            .map_err(map_run_error)
+            .map_err(|error| map_run_error(&error))
     }
 
     /// Executes one already parsed typed command under the same authority.
@@ -188,7 +192,7 @@ impl<S> FilesystemGitFacade<S> {
         self.repository
             .run(command, workspace_tree, executor)
             .await
-            .map_err(map_run_error)
+            .map_err(|error| map_run_error(&error))
     }
 
     /// Resumes a pending merge/rebase transition under the same caller scope.
@@ -203,7 +207,7 @@ impl<S> FilesystemGitFacade<S> {
         self.repository
             .resume(executor)
             .await
-            .map_err(map_run_error)
+            .map_err(|error| map_run_error(&error))
     }
 
     /// Returns whether the exact scope can publish root changes.
@@ -212,6 +216,190 @@ impl<S> FilesystemGitFacade<S> {
         self.scope
             .capabilities()
             .contains(ROOT_WRITEBACK_CAPABILITY)
+    }
+
+    /// Forks a project through the authenticated parent controller.
+    ///
+    /// The facade is only the model-facing entrypoint.  Parent authority,
+    /// lineage, generation pinning, and durable publication remain owned by
+    /// `ParentProjectController` and the Filesystem provider.
+    pub async fn fork_project<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        source_generation: &GenerationRef,
+        child: &VolumeRef,
+        idempotency_key: &IdempotencyKey,
+    ) -> Result<WorkspaceObservation>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller
+            .fork_project(source_generation, child, idempotency_key)
+            .await
+    }
+
+    /// Inspects a direct child's changes under the authenticated parent.
+    pub async fn prepare_project_merge<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        child: &VolumeRef,
+    ) -> Result<ParentMergePlan<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller.prepare_project_merge(child).await
+    }
+
+    /// Publishes a previously inspected direct-child plan under parent authority.
+    pub async fn apply_project_merge<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller.apply_project_merge(plan, operation_id).await
+    }
+
+    /// Converts a successful provider join into the authenticated Harness
+    /// receipt used to publish the parent conversation's merge event.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "receipt construction binds the provider outcome to every authenticated input"
+    )]
+    pub fn merge_receipt<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        outcome: &JoinOutcome<A, O>,
+        child: Authority,
+        operation_id: OperationId,
+        notice: ConversationMessage,
+    ) -> Result<ProjectMergeReceipt>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller.merge_receipt(plan, outcome, child, operation_id, notice)
+    }
+
+    /// Describes exact conflicts in an inspected child merge plan.
+    pub async fn describe_project_merge_conflicts<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        conflicts: &[MergeConflict],
+        truncated: bool,
+    ) -> Result<MergePlan>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller
+            .describe_project_merge_conflicts(plan, conflicts, truncated)
+            .await
+    }
+
+    /// Applies explicit conflict-side choices through the provider's typed join.
+    pub async fn apply_project_merge_sides<A, O>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller
+            .apply_project_merge_sides(plan, operation_id, selections)
+            .await
+    }
+
+    /// Resolves conflicts with registered immutable-input drivers.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "driver resolution keeps the inspected plan and retry inputs explicit"
+    )]
+    pub async fn apply_project_merge_with_drivers<A, O, C>(
+        &self,
+        host: &super::FilesystemHost<A, O>,
+        parent: &Reducer,
+        plan: &ParentMergePlan<A, O>,
+        operation_id: OperationId,
+        registry: &MergeDriverRegistry,
+        cache: &mut C,
+        replanning: bool,
+    ) -> Result<JoinOutcome<A, O>>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+        C: MergeResolutionCache,
+    {
+        let controller = ParentProjectController::new(
+            host,
+            parent,
+            &self.verifier,
+            &self.scope,
+            self.volume.clone(),
+        )?;
+        controller
+            .apply_project_merge_with_drivers(plan, operation_id, registry, cache, replanning)
+            .await
     }
 
     /// Applies a previously inspected project join only with an exact approval.
@@ -282,9 +470,8 @@ impl<S> FilesystemGitFacade<S> {
                 self.require_capability("project:merge")
             }
             "branch" if argv.len() == 1 => self.require_read(),
-            "branch" | "switch" => self.require_fork(),
             "checkout" if argv.iter().any(|arg| arg == "--") => self.require_write(),
-            "checkout" => self.require_fork(),
+            "branch" | "switch" | "checkout" => self.require_fork(),
             "reset" | "restore" | "clean" | "stash" | "cherry-pick" | "revert" | "tag"
             | "apply" | "commit" | "add" => self.require_write(),
             _ => Err(Error::Invalid(format!(
@@ -306,7 +493,8 @@ impl<S> FilesystemGitFacade<S> {
             | GitCommand::SymbolicRef { .. }
             | GitCommand::MergeBase { .. }
             | GitCommand::LsFiles
-            | GitCommand::CheckIgnore { .. } => self.require_read(),
+            | GitCommand::CheckIgnore { .. }
+            | GitCommand::Branch { create: None } => self.require_read(),
             GitCommand::Merge { .. }
             | GitCommand::MergeContinue
             | GitCommand::MergeAbort
@@ -314,7 +502,6 @@ impl<S> FilesystemGitFacade<S> {
                 self.require_write()?;
                 self.require_capability("project:merge")
             }
-            GitCommand::Branch { create: None } => self.require_read(),
             GitCommand::Branch { create: Some(_) } | GitCommand::Switch { .. } => {
                 self.require_fork()
             }
@@ -350,7 +537,7 @@ impl<S> FilesystemGitFacade<S> {
     }
 }
 
-fn map_run_error<S, E>(error: GitCompatRunError<S, E>) -> Error
+fn map_run_error<S, E>(error: &GitCompatRunError<S, E>) -> Error
 where
     S: std::error::Error,
     E: std::error::Error,
