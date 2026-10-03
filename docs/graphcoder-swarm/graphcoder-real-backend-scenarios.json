@@ -1,0 +1,77 @@
+{
+  "protocol": "acyclic.graphcoder.real-backend-scenarios.v1",
+  "purpose": "Production GraphCoder terminal qualification over a durable local Harness bridge",
+  "backend": {
+    "transport": "HarnessGraphCoderTransport",
+    "provider": "PersistentLocalSwarm",
+    "model": "deterministic mock provider",
+    "fixture_policy": "The mock fixture identity is explicit in start_session and the session descriptor; fixture-only GraphCoder transport evidence cannot satisfy native or PTY rows.",
+    "bridge_policy": "The bridge process is supplied by the host and must expose only the documented JSON-lines request/response methods. It must not start workers for list_sessions or hydrate workspace bodies for summary reads."
+  },
+  "session": {
+    "headless_commands": [
+      "start inspect the repository",
+      "list",
+      "activity",
+      "messages",
+      "approvals",
+      "approve {{approval_id}} yes",
+      "changes",
+      "diff README.md",
+      "file README.md",
+      "writeback {{writeback_operation_id}} {{workspace_generation}} yes",
+      "cancel",
+      "resume {{session_id}}",
+      "cancel"
+    ],
+    "pty_commands": [
+      "start inspect the repository",
+      "activity",
+      "messages",
+      "approvals",
+      "approve {{approval_id}} yes",
+      "changes",
+      "diff README.md",
+      "file README.md",
+      "writeback {{writeback_operation_id}} {{workspace_generation}} yes",
+      "cancel",
+      "resume {{session_id}}",
+      "cancel",
+      "quit"
+    ],
+    "substitutions": {
+      "approval_id": "the pending root approval returned by list_approvals",
+      "writeback_operation_id": "the operation identity bound to that approval",
+      "workspace_generation": "the generation returned by list_changes and unchanged until approved writeback"
+    },
+    "required_markers": [
+      "session summary and root agent",
+      "activity page loaded only after activity command",
+      "message page loaded only after messages command",
+      "approval transitions to approved",
+      "change generation and unified diff",
+      "file media type and bytes",
+      "writeback applied only with matching operation and generation",
+      "cancellation and resume state transitions",
+      "interactive prompt and clean quit"
+    ]
+  },
+  "wire_assertions": [
+    "list_sessions returns summaries and does not start a worker",
+    "start_session records the explicit model fixture and creates durable root state",
+    "open_session and resume_session reopen the same persisted session",
+    "history, messages, approvals, changes, diffs, and file bodies are separately paged or requested",
+    "read_file and read_change reject a stale workspace generation",
+    "send_message rejects invalid targets and preserves delivery identity/order",
+    "approve_writeback rejects an unapproved operation and a stale generation",
+    "bridge response request_id exactly matches the request identity",
+    "the bridge process receives no host credentials through implicit environment inheritance"
+  ],
+  "evidence": {
+    "headless_execution_kind": "native",
+    "pty_execution_kind": "pty",
+    "package_execution_kind": "package",
+    "artifact_binding": "Each suite descriptor must list the exact GraphCoder package artifact and bridge executable consumed. The suite record must carry the artifact SHA-256, qualified source commit/tree, build ID, build timestamp, and unchanged post-run digest.",
+    "failure_policy": "A nonzero headless, PTY, bridge, marker, or provenance assertion is failed evidence. Compilation, fixture-only output, missing PTY support, and skipped backend execution remain unmet requirements."
+  }
+}
