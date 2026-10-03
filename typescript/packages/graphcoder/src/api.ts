@@ -155,6 +155,17 @@ export interface GraphCoderTransport {
   approveWriteback(input: WritebackApproval): Promise<WritebackReceipt>;
 }
 
+/** Public text ceilings keep direct native and terminal callers bounded. */
+export const MAX_PROMPT_BYTES = 64 * 1024;
+export const MAX_MESSAGE_BODY_BYTES = 64 * 1024;
+export const MAX_OPERATION_ID_BYTES = 256;
+
+export function checkedPublicText(value: unknown, label: string, maximumBytes: number): string {
+  if (typeof value !== "string" || value.trim() === "") throw new GraphCoderError("invalid_input", `${label} must be nonempty text`);
+  if (new TextEncoder().encode(value).byteLength > maximumBytes) throw new GraphCoderError("invalid_input", `${label} exceeds its UTF-8 byte limit`);
+  return value;
+}
+
 export class GraphCoderError extends Error {
   override readonly name = "GraphCoderError";
 
@@ -244,7 +255,7 @@ function pageQuery(after: string | undefined, limit: number | undefined): PageQu
 export class GraphCoderUi {
   #state: GraphCoderUiState = initialState;
   #queue: Promise<void> = Promise.resolve();
-  #cancelEpoch = 0;
+  #commandEpoch = 0;
 
   constructor(readonly transport: GraphCoderTransport) {}
 
@@ -265,38 +276,41 @@ export class GraphCoderUi {
 
   async #cancelNow(): Promise<GraphCoderUiState> {
     const session = this.#requireSelected();
-    this.#cancelEpoch += 1;
+    const epoch = ++this.#commandEpoch;
     // Detach queued presentation work immediately. The durable owner still
     // receives the cancellation below, while commands submitted after the
     // cancellation are never chained behind a request that may not resolve.
     this.#queue = Promise.resolve();
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {
-      this.#select(await this.transport.cancelSession(session.summary.id));
+      const snapshot = await this.transport.cancelSession(session.summary.id);
+      if (epoch !== this.#commandEpoch) return this.state();
+      this.#select(snapshot);
       this.#state = { ...this.#state, pending: false };
       return this.state();
     } catch (error) {
       const normalized = error instanceof GraphCoderError
         ? error
         : new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
+      if (epoch !== this.#commandEpoch) return this.state();
       this.#state = { ...this.#state, pending: false, error: normalized };
       throw normalized;
     }
   }
 
   async #dispatchOne(command: GraphCoderUiCommand): Promise<void> {
-    const epoch = this.#cancelEpoch;
+    const epoch = ++this.#commandEpoch;
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {
-      await this.#dispatch(command);
-      if (epoch !== this.#cancelEpoch) {
+      await this.#dispatch(command, epoch);
+      if (epoch !== this.#commandEpoch) {
         // A cancelled request may finish later. Its projection is stale and
         // must never overwrite the cancellation or a newer command.
         return;
       }
       this.#state = { ...this.#state, pending: false };
     } catch (error) {
-      if (epoch !== this.#cancelEpoch) {
+      if (epoch !== this.#commandEpoch) {
         return;
       }
       const normalized = error instanceof GraphCoderError
@@ -307,67 +321,82 @@ export class GraphCoderUi {
     }
   }
 
-  async #dispatch(command: GraphCoderUiCommand): Promise<void> {
+  async #dispatch(command: GraphCoderUiCommand, epoch: number): Promise<void> {
     switch (command.kind) {
       case "list_sessions": {
         const page = await this.transport.listSessions(pageQuery(command.after, command.limit));
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, sessions: command.after ? [...this.#state.sessions, ...page.items] : page.items, sessionsNext: page.next };
         return;
       }
       case "start_session": {
-        if (command.prompt.trim() === "") throw new GraphCoderError("invalid_input", "session prompt must not be empty");
-        const input: { prompt: string; operationId: string; modelFixture?: string } = { prompt: command.prompt, operationId: checkedId(command.operationId, "operation id") };
+        const input: { prompt: string; operationId: string; modelFixture?: string } = { prompt: checkedPublicText(command.prompt, "session prompt", MAX_PROMPT_BYTES), operationId: checkedPublicText(command.operationId, "operation id", MAX_OPERATION_ID_BYTES) };
         if (command.modelFixture !== undefined) input.modelFixture = command.modelFixture;
         const snapshot = await this.transport.startSession(input);
+        if (epoch !== this.#commandEpoch) return;
         this.#select(snapshot);
         return;
       }
-      case "open_session":
-        this.#select(await this.transport.openSession(checkedId(command.sessionId, "session id") as SessionId));
+      case "open_session": {
+        const snapshot = await this.transport.openSession(checkedId(command.sessionId, "session id") as SessionId);
+        if (epoch !== this.#commandEpoch) return;
+        this.#select(snapshot);
         return;
-      case "resume_session":
-        this.#select(await this.transport.resumeSession(checkedId(command.sessionId, "session id") as SessionId));
+      }
+      case "resume_session": {
+        const snapshot = await this.transport.resumeSession(checkedId(command.sessionId, "session id") as SessionId);
+        if (epoch !== this.#commandEpoch) return;
+        this.#select(snapshot);
         return;
+      }
       case "load_activity": {
         const session = this.#requireSelected();
         const page = await this.transport.readActivity(session.summary.id, pageQuery(command.after, command.limit));
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, activity: command.after ? [...this.#state.activity, ...page.items] : page.items, activityNext: page.next };
         return;
       }
       case "load_messages": {
         const session = this.#requireSelected();
         const page = await this.transport.readMessages(session.summary.id, pageQuery(command.after, command.limit));
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, messages: command.after ? [...this.#state.messages, ...page.items] : page.items, messagesNext: page.next };
         return;
       }
       case "send_message": {
         const session = this.#requireSelected();
-        if (command.body.trim() === "") throw new GraphCoderError("invalid_input", "message body must not be empty");
+        checkedPublicText(command.body, "message body", MAX_MESSAGE_BODY_BYTES);
         const message = await this.transport.sendMessage({ sessionId: session.summary.id, senderId: command.senderId, recipientId: command.recipientId, body: command.body });
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, messages: [...this.#state.messages, message] };
         return;
       }
       case "load_approvals": {
         const session = this.#requireSelected();
         const page = await this.transport.listApprovals(session.summary.id, pageQuery(command.after, command.limit));
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, approvals: command.after ? [...this.#state.approvals, ...page.items] : page.items, approvalsNext: page.next };
         return;
       }
       case "resolve_approval": {
         const session = this.#requireSelected();
         const approval = await this.transport.resolveApproval({ approvalId: checkedId(command.approvalId, "approval id") as ApprovalId, approved: command.approved, sessionId: session.summary.id });
+        if (epoch !== this.#commandEpoch) return;
         if (approval.sessionId !== session.summary.id) throw new GraphCoderError("transport", "approval response is not bound to the selected session");
         this.#state = { ...this.#state, approvals: this.#state.approvals.map(item => item.id === approval.id ? approval : item) };
         return;
       }
       case "cancel_session": {
         const session = this.#requireSelected();
-        this.#select(await this.transport.cancelSession(session.summary.id));
+        const snapshot = await this.transport.cancelSession(session.summary.id);
+        if (epoch !== this.#commandEpoch) return;
+        this.#select(snapshot);
         return;
       }
       case "list_changes": {
         const session = this.#requireSelected();
         const changes = await this.transport.listChanges(session.summary.id);
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, changes: changes.items, changesGeneration: changes.generation, changeBody: undefined, fileBody: undefined };
         return;
       }
@@ -376,6 +405,7 @@ export class GraphCoderUi {
         const generation = command.generation ?? this.#state.changesGeneration;
         if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a diff");
         const changeBody = await this.transport.readChange(session.summary.id, checkedPath(command.path), generation);
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, changeBody };
         return;
       }
@@ -384,6 +414,7 @@ export class GraphCoderUi {
         const generation = command.generation ?? this.#state.changesGeneration;
         if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes before reading a file");
         const fileBody = await this.transport.readFile(session.summary.id, checkedPath(command.path), generation);
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, fileBody };
         return;
       }
@@ -392,7 +423,8 @@ export class GraphCoderUi {
         if (typeof command.expectedGeneration !== "bigint" || command.expectedGeneration < 0n) {
           throw new GraphCoderError("invalid_input", "writeback generation must be a nonnegative bigint");
         }
-        const receipt = await this.transport.approveWriteback({ sessionId: session.summary.id, operationId: checkedId(command.operationId, "operation id"), expectedGeneration: command.expectedGeneration, approved: command.approved });
+        const receipt = await this.transport.approveWriteback({ sessionId: session.summary.id, operationId: checkedPublicText(command.operationId, "operation id", MAX_OPERATION_ID_BYTES), expectedGeneration: command.expectedGeneration, approved: command.approved });
+        if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, writeback: receipt };
         return;
       }

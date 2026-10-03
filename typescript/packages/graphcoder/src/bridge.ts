@@ -1,5 +1,9 @@
 import {
   GraphCoderError,
+  checkedPublicText,
+  MAX_MESSAGE_BODY_BYTES,
+  MAX_OPERATION_ID_BYTES,
+  MAX_PROMPT_BYTES,
   agentId,
   approvalId,
   messageId,
@@ -167,13 +171,11 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async startSession(input: StartSessionInput): Promise<SessionSnapshot> {
-    if (typeof input.operationId !== "string" || input.operationId.trim() === "") {
-      throw new GraphCoderError("invalid_input", "operation id must be nonempty text");
-    }
-    const operationId = input.operationId;
+    const prompt = checkedPublicText(input.prompt, "session prompt", MAX_PROMPT_BYTES);
+    const requestedOperationId = checkedPublicText(input.operationId, "operation id", MAX_OPERATION_ID_BYTES);
     const params: GraphCoderWireParams<"start_session"> = input.modelFixture === undefined
-      ? { prompt: input.prompt, operation_id: operationId }
-      : { prompt: input.prompt, operation_id: operationId, model_fixture: input.modelFixture };
+      ? { prompt, operation_id: requestedOperationId }
+      : { prompt, operation_id: requestedOperationId, model_fixture: input.modelFixture };
     return decodeSnapshot(await this.#call("start_session", params));
   }
 
@@ -194,7 +196,8 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async sendMessage(input: { readonly sessionId: SessionSnapshot["summary"]["id"]; readonly senderId: AgentSummary["id"]; readonly recipientId: AgentSummary["id"]; readonly body: string }): Promise<GraphMessage> {
-    const message = decodeMessage(await this.#call("send_message", { session_id: input.sessionId, sender_id: input.senderId, recipient_id: input.recipientId, body: input.body }));
+    const body = checkedPublicText(input.body, "message body", MAX_MESSAGE_BODY_BYTES);
+    const message = decodeMessage(await this.#call("send_message", { session_id: input.sessionId, sender_id: input.senderId, recipient_id: input.recipientId, body }));
     if (message.sessionId !== input.sessionId || message.senderId !== input.senderId || message.recipientId !== input.recipientId || message.body !== input.body) {
       throw new GraphCoderError("transport", "send message response is not bound to its request");
     }
@@ -241,16 +244,17 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async approveWriteback(input: WritebackApproval): Promise<WritebackReceipt> {
+    const requestedOperationId = checkedPublicText(input.operationId, "operation id", MAX_OPERATION_ID_BYTES);
     const result = await this.#call("approve_writeback", {
       session_id: input.sessionId,
-      operation_id: input.operationId,
+      operation_id: requestedOperationId,
       expected_generation: checkedGeneration(input.expectedGeneration, "writeback generation"),
       approved: input.approved,
     });
     const operationId = text(result.operation_id, "writeback operation id");
     const responseSession = sessionId(text(result.session_id, "writeback session id"));
     const responseGeneration = wireBigInt(result.generation, "writeback generation");
-    if (operationId !== input.operationId || responseSession !== input.sessionId || responseGeneration !== input.expectedGeneration || typeof result.applied !== "boolean") {
+    if (operationId !== requestedOperationId || responseSession !== input.sessionId || responseGeneration !== input.expectedGeneration || typeof result.applied !== "boolean") {
       throw new GraphCoderError("transport", "writeback response is not bound to its request");
     }
     return { operationId, sessionId: responseSession, generation: responseGeneration, applied: result.applied };
@@ -394,7 +398,7 @@ function decodeActivity(value: unknown): ActivityEvent {
 
 function decodeMessage(value: unknown): GraphMessage {
   const raw = record(value, "message");
-  return { id: messageId(text(raw.id, "message id")), sessionId: sessionId(text(raw.session_id, "message session id")), senderId: agentId(text(raw.sender_id, "message sender id")), recipientId: agentId(text(raw.recipient_id, "message recipient id")), body: text(raw.body, "message body"), deliveredAt: raw.delivered_at === null ? null : text(raw.delivered_at, "message delivery timestamp") };
+  return { id: messageId(text(raw.id, "message id")), sessionId: sessionId(text(raw.session_id, "message session id")), senderId: agentId(text(raw.sender_id, "message sender id")), recipientId: agentId(text(raw.recipient_id, "message recipient id")), body: checkedPublicText(raw.body, "message body", MAX_MESSAGE_BODY_BYTES), deliveredAt: raw.delivered_at === null ? null : text(raw.delivered_at, "message delivery timestamp") };
 }
 
 function decodeApproval(value: unknown): ApprovalRequest {

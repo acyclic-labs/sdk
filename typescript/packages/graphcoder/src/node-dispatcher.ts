@@ -13,7 +13,7 @@ export interface NodeGraphCoderDispatcherOptions {
 export const DEFAULT_NODE_DISPATCHER_LINE_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_NODE_DISPATCHER_IN_FLIGHT = 64;
 
-type NodeFrame = { readonly kind: "line"; readonly value: string } | { readonly kind: "too_long" };
+type NodeFrame = { readonly kind: "line"; readonly value: string } | { readonly kind: "too_long" } | { readonly kind: "invalid_utf8" };
 
 /** Serves the native dispatcher over newline-delimited JSON. */
 export async function runNodeGraphCoderDispatcher(options: NodeGraphCoderDispatcherOptions): Promise<void> {
@@ -29,7 +29,9 @@ export async function runNodeGraphCoderDispatcher(options: NodeGraphCoderDispatc
     while (pending.size >= maximumInFlight) await Promise.race(pending);
     const response = frame.kind === "too_long"
       ? JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line exceeds the configured size" } })
-      : await dispatcher.dispatchLine(frame.value);
+      : frame.kind === "invalid_utf8"
+        ? JSON.stringify({ request_id: "", ok: false, error: { code: "invalid_input", message: "request line is not valid UTF-8" } })
+        : await dispatcher.dispatchLine(frame.value);
     const write = new Promise<void>((resolve, reject) => output.write(`${response}\n`, error => error == null ? resolve() : reject(error)));
     pending.add(write);
     void write.finally(() => pending.delete(write));
@@ -74,14 +76,24 @@ async function* boundedFrames(input: Readable, maximumLineBytes: number): AsyncG
       buffer = Buffer.concat([buffer, part]);
       if (newline >= 0) {
         offset = newline + 1;
-        const value = buffer.toString("utf8");
+        const value = decodeUtf8(buffer);
         buffer = Buffer.alloc(0);
-        yield { kind: "line", value: value.endsWith("\r") ? value.slice(0, -1) : value };
+        yield value === undefined
+          ? { kind: "invalid_utf8" }
+          : { kind: "line", value: value.endsWith("\r") ? value.slice(0, -1) : value };
       } else {
         offset = bytes.length;
       }
     }
   }
   if (tooLong) yield { kind: "too_long" };
-  else if (buffer.length > 0) yield { kind: "line", value: buffer.toString("utf8") };
+  else if (buffer.length > 0) {
+    const value = decodeUtf8(buffer);
+    yield value === undefined ? { kind: "invalid_utf8" } : { kind: "line", value };
+  }
+}
+
+function decodeUtf8(value: Buffer): string | undefined {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(value); }
+  catch { return undefined; }
 }

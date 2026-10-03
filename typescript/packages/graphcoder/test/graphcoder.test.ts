@@ -61,6 +61,15 @@ describe("GraphCoder UI transport boundary", () => {
     expect(requests[0]?.params).toEqual({ prompt: "inspect", operation_id: "op-stable-1", model_fixture: "stage" });
   });
 
+  test("public prompt, message, and operation inputs enforce UTF-8 byte ceilings", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await expect(ui.dispatch({ kind: "start_session", operationId: "op-bounds", prompt: "x".repeat(64 * 1024 + 1) })).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(ui.dispatch({ kind: "start_session", operationId: "é".repeat(129), prompt: "inspect" })).rejects.toMatchObject({ code: "invalid_input" });
+    await ui.dispatch({ kind: "start_session", operationId: "op-bounds-2", prompt: "inspect" });
+    await expect(ui.dispatch({ kind: "send_message", senderId: agentId("a"), recipientId: agentId("b"), body: "x".repeat(64 * 1024 + 1) })).rejects.toMatchObject({ code: "invalid_input" });
+  });
+
   test("bridge rejects mismatched response identity and preserves typed backend errors", async () => {
     const mismatched = new BridgeGraphCoderTransport({ request: async () => ({ request_id: "wrong", ok: true, result: { items: [] } }) });
     await expect(mismatched.listSessions()).rejects.toMatchObject({ code: "transport" });
@@ -261,6 +270,25 @@ describe("GraphCoder UI transport boundary", () => {
     expect(following.selectedSession?.summary.state).toBe("cancelled");
     expect(transport.calls.map(call => call.method)).toEqual(["startSession", "cancelSession", "readMessages"]);
     void stuck;
+  });
+
+  test("a newer open wins if cancellation finishes later", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", operationId: "op-race", prompt: "inspect" });
+    let finishCancel!: () => void;
+    const originalCancel = transport.cancelSession.bind(transport);
+    transport.cancelSession = async id => {
+      await new Promise<void>(resolve => { finishCancel = resolve; });
+      return originalCancel(id);
+    };
+    const cancelling = ui.dispatch({ kind: "cancel_session" });
+    await Promise.resolve();
+    const opened = await ui.dispatch({ kind: "open_session", sessionId: sessionId("session-1") });
+    expect(opened.selectedSession?.summary.state).toBe("running");
+    finishCancel();
+    await cancelling;
+    expect(ui.state().selectedSession?.summary.state).toBe("running");
   });
 });
 

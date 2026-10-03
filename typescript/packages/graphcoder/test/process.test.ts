@@ -66,6 +66,16 @@ describe("JSON-lines process bridge", () => {
     bridge.close();
   });
 
+  test("retires a cancelled request id until its late response is consumed", async () => {
+    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const pending = bridge.request(request("reused", 50));
+    expect(bridge.cancel("reused")).toBe(true);
+    await expect(pending).rejects.toMatchObject({ code: "transport" });
+    await expect(bridge.request(request("reused"))).rejects.toMatchObject({ code: "invalid_input" });
+    await new Promise<void>(resolve => setTimeout(resolve, 80));
+    bridge.close();
+  });
+
   test("rejects pending calls on clean EOF and reports malformed output", async () => {
     const eof = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
     await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });

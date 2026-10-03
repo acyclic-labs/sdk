@@ -39,6 +39,7 @@ const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
 /// Requests beyond this window wait for an earlier response task to finish,
 /// so a producer cannot turn a slow model call into unbounded host memory.
 const MAX_IN_FLIGHT: usize = 64;
+const MAX_CONTROL_IN_FLIGHT: usize = 8;
 
 /// Runtime configuration. The model is intentionally a deterministic fixture:
 /// production model adapters are selected by a future host package.
@@ -824,16 +825,19 @@ where
     R: tokio::io::AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    let mut input = BufReader::new(input);
+    let input = BufReader::new(input);
+    let mut frames = BoundedFrames::new(input);
     let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
     let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
+    let mut control_jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
     loop {
-        while jobs.len() >= MAX_IN_FLIGHT {
-            if let Some(job) = jobs.next().await {
-                job.map_err(std::io::Error::other)??;
-            }
+        while let Some(job) = jobs.next().now_or_never().flatten() {
+            job.map_err(std::io::Error::other)??;
         }
-        let Some(frame) = read_bounded_frame(&mut input).await? else {
+        while let Some(job) = control_jobs.next().now_or_never().flatten() {
+            job.map_err(std::io::Error::other)??;
+        }
+        let Some(frame) = frames.next().await? else {
             break;
         };
         let line = match frame {
@@ -841,35 +845,50 @@ where
             BoundedFrame::TooLong => {
                 let response = WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
                 let output = output.clone();
-                jobs.push(tokio::spawn(async move {
-                    let mut output = output.lock().await;
-                    write_response(&mut *output, &response).await
-                }));
+                write_direct_error(&output, response).await?;
                 continue;
             }
             BoundedFrame::InvalidUtf8 => {
                 let response = WireResponse::error("", "invalid_input", "request line is not valid UTF-8");
                 let output = output.clone();
-                jobs.push(tokio::spawn(async move {
-                    let mut output = output.lock().await;
-                    write_response(&mut *output, &response).await
-                }));
+                write_direct_error(&output, response).await?;
                 continue;
             }
         };
-        let runtime = runtime.clone();
-        let output = output.clone();
-        jobs.push(tokio::spawn(async move {
-            let response = match serde_json::from_str::<WireRequest>(&line) {
-                Ok(request) => runtime.dispatch(request).await,
-                Err(error) => WireResponse::error(
-                    request_id_from_malformed_line(&line)
-                        .as_deref()
-                        .unwrap_or(""),
+        let request = match serde_json::from_str::<WireRequest>(&line) {
+            Ok(request) => request,
+            Err(error) => {
+                let response = WireResponse::error(
+                    request_id_from_malformed_line(&line).as_deref().unwrap_or(""),
                     "invalid_input",
                     format!("invalid request: {error}"),
-                ),
-            };
+                );
+                write_direct_error(&output, response).await?;
+                continue;
+            }
+        };
+        let is_control = request.method == "cancel_session";
+        if is_control && control_jobs.len() >= MAX_CONTROL_IN_FLIGHT {
+            write_direct_error(
+                &output,
+                WireResponse::error(&request.request_id, "invalid_input", "control request limit reached"),
+            )
+            .await?;
+            continue;
+        }
+        if !is_control && jobs.len() >= MAX_IN_FLIGHT {
+            write_direct_error(
+                &output,
+                WireResponse::error(&request.request_id, "invalid_input", "in-flight request limit reached"),
+            )
+            .await?;
+            continue;
+        }
+        let runtime = runtime.clone();
+        let output = output.clone();
+        let target = if is_control { &mut control_jobs } else { &mut jobs };
+        target.push(tokio::spawn(async move {
+            let response = runtime.dispatch(request).await;
             let mut output = output.lock().await;
             write_response(&mut *output, &response).await
         }));
@@ -877,7 +896,21 @@ where
     while let Some(job) = jobs.next().await {
         job.map_err(std::io::Error::other)??;
     }
+    while let Some(job) = control_jobs.next().await {
+        job.map_err(std::io::Error::other)??;
+    }
     output.lock().await.flush().await
+}
+
+async fn write_direct_error<W>(
+    output: &Arc<Mutex<tokio::io::BufWriter<W>>>,
+    response: WireResponse,
+) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let mut output = output.lock().await;
+    write_response(&mut *output, &response).await
 }
 
 enum BoundedFrame {
@@ -886,53 +919,64 @@ enum BoundedFrame {
     InvalidUtf8,
 }
 
-/// Read one JSON-lines frame without allowing a peer to force an allocation
-/// proportional to an unbounded line. Oversized frames are drained through
-/// their newline so the following request can still be processed.
-async fn read_bounded_frame<R: AsyncBufRead + Unpin>(
-    input: &mut R,
-) -> std::io::Result<Option<BoundedFrame>> {
-    let mut bytes = Vec::new();
-    let mut too_long = false;
-    loop {
-        let available = input.fill_buf().await?;
+struct BoundedFrames<R> {
+    input: R,
+    bytes: Vec<u8>,
+    discarding: bool,
+}
+
+impl<R: AsyncBufRead + Unpin> BoundedFrames<R> {
+    fn new(input: R) -> Self {
+        Self {
+            input,
+            bytes: Vec::new(),
+            discarding: false,
+        }
+    }
+
+    async fn next(&mut self) -> std::io::Result<Option<BoundedFrame>> {
+        loop {
+        let available = self.input.fill_buf().await?;
         if available.is_empty() {
-            if bytes.is_empty() && !too_long {
+            if self.discarding {
+                self.discarding = false;
                 return Ok(None);
             }
-            return Ok(Some(if too_long {
-                BoundedFrame::TooLong
-            } else {
-                match String::from_utf8(bytes) {
-                    Ok(line) => BoundedFrame::Line(line),
-                    Err(_) => BoundedFrame::InvalidUtf8,
-                }
+            if self.bytes.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                Ok(line) => BoundedFrame::Line(line),
+                Err(_) => BoundedFrame::InvalidUtf8,
             }));
         }
         let newline = available.iter().position(|byte| *byte == b'\n');
         let consumed = newline.map_or(available.len(), |index| index + 1);
         let content_len = newline.map_or(available.len(), |index| index);
-        if !too_long {
-            let remaining = MAX_LINE_BYTES.saturating_sub(bytes.len());
-            if content_len > remaining {
-                too_long = true;
-                bytes.clear();
-            } else {
-                bytes.extend_from_slice(&available[..content_len]);
+        if self.discarding {
+            self.input.consume(consumed);
+            if newline.is_some() {
+                self.discarding = false;
             }
+            continue;
         }
-        input.consume(consumed);
+        let remaining = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
+        if content_len > remaining {
+            self.input.consume(consumed);
+            self.bytes.clear();
+            self.discarding = newline.is_none();
+            return Ok(Some(BoundedFrame::TooLong));
+        }
+        self.bytes.extend_from_slice(&available[..content_len]);
+        self.input.consume(consumed);
         if newline.is_some() {
-            return Ok(Some(if too_long {
-                BoundedFrame::TooLong
-            } else {
-                match String::from_utf8(bytes) {
-                    Ok(line) => BoundedFrame::Line(line),
-                    Err(_) => BoundedFrame::InvalidUtf8,
-                }
+            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                Ok(line) => BoundedFrame::Line(line),
+                Err(_) => BoundedFrame::InvalidUtf8,
             }));
         }
     }
+}
 }
 
 fn request_id_from_malformed_line(line: &str) -> Option<String> {
@@ -979,16 +1023,32 @@ mod tests {
             writer.write_all(b"\n{}\n").await.expect("next frame writes");
             writer.shutdown().await.expect("input closes");
         });
-        let mut reader = BufReader::new(reader);
+        let mut reader = BoundedFrames::new(BufReader::new(reader));
         assert!(matches!(
-            read_bounded_frame(&mut reader).await.expect("frame reads"),
+            reader.next().await.expect("frame reads"),
             Some(BoundedFrame::TooLong)
         ));
         assert!(matches!(
-            read_bounded_frame(&mut reader).await.expect("frame reads"),
+            reader.next().await.expect("frame reads"),
             Some(BoundedFrame::Line(line)) if line == "{}"
         ));
         writer_task.await.expect("writer task joins");
+    }
+
+    #[tokio::test]
+    async fn bounded_frames_reject_unterminated_input_before_eof() {
+        let (mut writer, reader) = tokio::io::duplex(MAX_LINE_BYTES + 1);
+        writer
+            .write_all(&vec![b'x'; MAX_LINE_BYTES + 1])
+            .await
+            .expect("unterminated frame writes");
+        let mut reader = BoundedFrames::new(BufReader::new(reader));
+        assert!(matches!(
+            reader.next().await.expect("frame reads"),
+            Some(BoundedFrame::TooLong)
+        ));
+        writer.shutdown().await.expect("input closes");
+        assert!(reader.next().await.expect("frame reads").is_none());
     }
 
     async fn exchange(runtime: Arc<Runtime>, request: Value) -> Value {

@@ -83,6 +83,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#closed) return Promise.reject(new GraphCoderError("transport", "bridge process is closed"));
     try { checkedRequestId(request.request_id); }
     catch (error) { return Promise.reject(error instanceof GraphCoderError ? error : new GraphCoderError("invalid_input", String(error))); }
+    if (this.#cancelled.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `request id ${request.request_id} is retired after cancellation`));
     if (this.#pending.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `duplicate bridge request id ${request.request_id}`));
     if (this.#pending.size >= this.#maximumPendingRequests) return Promise.reject(new GraphCoderError("transport", "bridge pending request limit reached"));
     let line: string;

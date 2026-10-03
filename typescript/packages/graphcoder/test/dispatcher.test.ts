@@ -55,4 +55,15 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     expect(responses[0]).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
     expect(responses[1]).toEqual({ request_id: "r8", ok: true, result: { items: [] } });
   });
+
+  test("node entrypoint rejects invalid UTF-8 before JSON decoding", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const lines: string[] = [];
+    output.on("data", chunk => lines.push(String(chunk)));
+    const serving = runNodeGraphCoderDispatcher({ transport: createMockTransport(), input, output });
+    input.end(Buffer.from([0xc3, 0x28, 0x0a]));
+    await serving;
+    expect(JSON.parse(lines.join("").trim())).toMatchObject({ request_id: "", ok: false, error: { code: "invalid_input" } });
+  });
 });

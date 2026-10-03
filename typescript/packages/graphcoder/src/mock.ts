@@ -1,5 +1,9 @@
 import {
   GraphCoderError,
+  checkedPublicText,
+  MAX_MESSAGE_BODY_BYTES,
+  MAX_OPERATION_ID_BYTES,
+  MAX_PROMPT_BYTES,
   type ActivityEvent,
   type AgentId,
   type AgentSummary,
@@ -85,11 +89,11 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
 
   startSession(input: StartSessionInput): Promise<SessionSnapshot> {
     this.calls.push({ method: "startSession" });
-    if (input.operationId.trim() === "") return Promise.reject(new GraphCoderError("invalid_input", "operation id must not be empty"));
+    try { checkedPublicText(input.operationId, "operation id", MAX_OPERATION_ID_BYTES); } catch (error) { return Promise.reject(error); }
     if (input.modelFixture !== undefined && input.modelFixture !== this.#fixture) {
       return Promise.reject(new GraphCoderError("unsupported", `mock fixture ${input.modelFixture} is unavailable`));
     }
-    if (input.prompt.trim() === "") return Promise.reject(new GraphCoderError("invalid_input", "session prompt must not be empty"));
+    try { checkedPublicText(input.prompt, "session prompt", MAX_PROMPT_BYTES); } catch (error) { return Promise.reject(error); }
     const number = this.#nextSession++;
     const sessionId = `session-${number}` as SessionId;
     const rootAgentId = `agent-${number}-root` as AgentId;
@@ -147,7 +151,7 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
 
   sendMessage(input: { readonly sessionId: SessionId; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }): Promise<GraphMessage> {
     this.calls.push({ method: "sendMessage", sessionId: input.sessionId });
-    if (input.body.trim() === "") return Promise.reject(new GraphCoderError("invalid_input", "message body must not be empty"));
+    try { checkedPublicText(input.body, "message body", MAX_MESSAGE_BODY_BYTES); } catch (error) { return Promise.reject(error); }
     const session = this.#session(input.sessionId);
     const message: GraphMessage = { id: `message-${this.#nextMessage++}` as MessageId, sessionId: input.sessionId, senderId: input.senderId, recipientId: input.recipientId, body: input.body, deliveredAt: nowIso(this.#now) };
     session.messages.push(message);
