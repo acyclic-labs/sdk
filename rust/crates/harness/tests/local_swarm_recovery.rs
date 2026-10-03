@@ -448,6 +448,49 @@ async fn local_handles_do_not_dispatch_the_same_operation_twice() -> Result<()> 
 }
 
 #[tokio::test]
+async fn local_different_operation_cannot_dispatch_while_root_is_admitted() -> Result<()> {
+    let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    prepare_local_root(root.path()).await?;
+    let provider = RecoveryProvider::blocked();
+    let first = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let second = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let first_operation = OperationId::new();
+    let first_run = tokio::spawn(async move {
+        first
+            .run_root(first_operation, "the first admitted operation")
+            .await
+    });
+    provider.wait_for_calls(1).await;
+
+    let second_result = second
+        .run_root(OperationId::new(), "a different operation")
+        .await;
+    assert!(matches!(second_result, Err(Error::Conflict(_))));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    provider.release();
+    let first_result = timeout(Duration::from_secs(2), first_run)
+        .await
+        .expect("admitted root did not finish after provider release")
+        .expect("admitted root task panicked")?;
+    assert_eq!(first_result.text, "durable local result");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Result<()> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     prepare_local_root(root.path()).await?;
@@ -490,5 +533,71 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
         LocalSessionPhase::Cancelled,
         "a completion that was already in flight must not replace the durable cancellation"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_reopened_handles_replay_one_cancelled_terminal_state() -> Result<()> {
+    let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    prepare_local_root(root.path()).await?;
+    let provider = RecoveryProvider::blocked();
+    let first = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let canceller = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let task = first.root_task().await?;
+    let operation = OperationId::new();
+    let running = tokio::spawn(async move {
+        first.run_root(operation, "cancel exactly once").await
+    });
+    provider.wait_for_calls(1).await;
+    canceller.cancel(task).await?;
+    provider.release();
+    let _ = timeout(Duration::from_secs(2), running)
+        .await
+        .expect("cancelled root did not finish after provider release")
+        .expect("cancelled root task panicked");
+    drop(canceller);
+
+    let left = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let right = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+    )
+    .await?;
+    let (left, right) = tokio::join!(
+        left.run_root(operation, "cancel exactly once"),
+        right.run_root(operation, "cancel exactly once"),
+    );
+    assert!(matches!(left, Err(Error::Conflict(_))));
+    assert!(matches!(right, Err(Error::Conflict(_))));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+
+    let final_state = PersistentLocalSwarm::open_shared_with_model(
+        root.path(),
+        model()?,
+        provider,
+        Limits::default(),
+    )
+    .await?;
+    assert_eq!(final_state.session(task).await?.phase, LocalSessionPhase::Cancelled);
     Ok(())
 }
