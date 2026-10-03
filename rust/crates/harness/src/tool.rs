@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
 /// Version of the structured model-visible admission feedback envelope.
-pub const TOOL_REJECTION_FEEDBACK_VERSION: u32 = 1;
+pub const TOOL_REJECTION_FEEDBACK_VERSION: u32 = 2;
 const TOOL_REJECTION_ERROR_MAX_BYTES: usize = 2_048;
 
 /// Durable, model-visible evidence that a tool call was refused before effect
@@ -33,11 +33,18 @@ pub struct ToolRejectionFeedback {
     pub arguments_digest: [u8; 32],
     /// Canonical digest of the pinned input schema used for validation.
     pub schema_digest: [u8; 32],
+    /// Digest of the exact bounded error text shown to the model.
+    pub error_digest: [u8; 32],
 }
 
 impl ToolRejectionFeedback {
     /// Creates feedback for a schema-invalid invocation.
-    pub fn invalid_arguments(invocation: &ToolInvocation, schema: &Value) -> Result<Self> {
+    pub fn invalid_arguments(
+        invocation: &ToolInvocation,
+        schema: &Value,
+        error: &str,
+    ) -> Result<Self> {
+        validate_rejection_error(error)?;
         Ok(Self {
             version: TOOL_REJECTION_FEEDBACK_VERSION,
             kind: "invalid_arguments".into(),
@@ -45,6 +52,7 @@ impl ToolRejectionFeedback {
             name: invocation.name.clone(),
             arguments_digest: crate::contract::canonical_json_digest(&invocation.arguments)?,
             schema_digest: crate::contract::canonical_json_digest(schema)?,
+            error_digest: crate::contract::canonical_json_digest(&error)?,
         })
     }
 
@@ -57,6 +65,11 @@ impl ToolRejectionFeedback {
             ));
         }
         Self::validate_identity(&self.call_id, &self.name)?;
+        if self.error_digest != crate::contract::canonical_json_digest(&error)? {
+            return Err(Error::Conflict(
+                "tool rejection feedback error differs from its authenticated payload".into(),
+            ));
+        }
         Ok(serde_json::json!({
             "kind": "tool_rejection",
             "error": error,
@@ -91,6 +104,11 @@ impl ToolRejectionFeedback {
         {
             return Err(Error::Invalid(
                 "tool rejection feedback version or kind is invalid".into(),
+            ));
+        }
+        if feedback.error_digest != crate::contract::canonical_json_digest(&error)? {
+            return Err(Error::Conflict(
+                "tool rejection feedback error digest does not match its payload".into(),
             ));
         }
         Self::validate_identity(&feedback.call_id, &feedback.name)?;
@@ -566,8 +584,11 @@ mod tests {
             name: "example.echo".into(),
             arguments: json!({"value": 1}),
         };
-        let feedback =
-            ToolRejectionFeedback::invalid_arguments(&invocation, &json!({"type": "object"}))?;
+        let feedback = ToolRejectionFeedback::invalid_arguments(
+            &invocation,
+            &json!({"type": "object"}),
+            "invalid",
+        )?;
         let value = feedback.to_model_value("invalid")?;
         assert_eq!(
             ToolRejectionFeedback::from_model_value(&value)?,
@@ -590,6 +611,12 @@ mod tests {
             ToolRejectionFeedback::from_model_value(&json!({"rejection": "business-value"}))?,
             None
         );
+        let mut changed_error = value.clone();
+        changed_error["error"] = json!("another error");
+        assert!(matches!(
+            ToolRejectionFeedback::from_model_value(&changed_error),
+            Err(Error::Conflict(_))
+        ));
         assert!(matches!(
             feedback.to_model_value(&"x".repeat(2_049)),
             Err(Error::Invalid(_))

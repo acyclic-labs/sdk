@@ -301,6 +301,10 @@ fn validate_exchanges(
                         let definition = definitions
                             .get(name.as_str())
                             .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                        let error = value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| Error::Invalid("rejection error is missing".into()))?;
                         let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
                             &crate::tool::ToolInvocation {
                                 operation_id: crate::OperationId::new(),
@@ -309,6 +313,7 @@ fn validate_exchanges(
                                 arguments: call.arguments.clone(),
                             },
                             &definition.input_schema,
+                            error,
                         )?;
                         if feedback != expected {
                             return Err(Error::Conflict(
@@ -397,39 +402,7 @@ fn validate_rejection_evidence(
         .iter()
         .map(|tool| (tool.name.as_str(), tool))
         .collect::<BTreeMap<_, _>>();
-    let mut malformed = BTreeMap::new();
-    for message in &request.messages {
-        let parts = match &message.content {
-            ModelContent::Text(_) => &[][..],
-            ModelContent::Part(part) => std::slice::from_ref(part),
-            ModelContent::Parts(parts) => parts.as_slice(),
-        };
-        for part in parts {
-            let ModelContentPart::ToolCall {
-                call_id,
-                name,
-                arguments,
-            } = part
-            else {
-                continue;
-            };
-            let Some(definition) = definitions.get(name.as_str()) else {
-                continue;
-            };
-            if crate::tool::validate_value(&definition.input_schema, arguments, "tool input")
-                .is_err()
-            {
-                if malformed
-                    .insert(call_id.as_str(), (name.as_str(), arguments))
-                    .is_some()
-                {
-                    return Err(Error::Conflict(
-                        "rejection evidence contains a duplicate malformed call identity".into(),
-                    ));
-                }
-            }
-        }
-    }
+    let mut pending = BTreeMap::new();
     let mut observed = Vec::new();
     for message in &request.messages {
         let parts = match &message.content {
@@ -438,53 +411,94 @@ fn validate_rejection_evidence(
             ModelContent::Parts(parts) => parts.as_slice(),
         };
         for part in parts {
-            let ModelContentPart::ToolResult {
-                call_id,
-                name,
-                value,
-            } = part
-            else {
-                continue;
-            };
-            let Some((called_name, arguments)) = malformed.get(call_id.as_str()) else {
-                continue;
-            };
-            if *called_name != name.as_str() {
-                return Err(Error::Conflict(
-                    "rejection feedback changed the rejected tool".into(),
-                ));
+            match part {
+                ModelContentPart::ToolCall { call_id, name, arguments } => {
+                    crate::tool::ToolInvocation::validate_identity(call_id, name)?;
+                    if message.role != ModelRole::Assistant {
+                        return Err(Error::Invalid("tool call has invalid model role".into()));
+                    }
+                    let definition = definitions.get(name.as_str()).ok_or_else(|| {
+                        Error::Invalid("tool call names an unregistered tool".into())
+                    })?;
+                    let malformed = crate::tool::validate_value(
+                        &definition.input_schema,
+                        arguments,
+                        "tool input",
+                    )
+                    .is_err();
+                    if pending
+                        .insert(call_id.clone(), (name.clone(), arguments.clone(), malformed))
+                        .is_some()
+                    {
+                        return Err(Error::Conflict(
+                            "rejection evidence contains a duplicate pending call identity".into(),
+                        ));
+                    }
+                }
+                ModelContentPart::ToolResult { call_id, name, value } => {
+                    if message.role != ModelRole::Tool {
+                        return Err(Error::Invalid("tool result has invalid model role".into()));
+                    }
+                    let Some((called_name, arguments, malformed)) = pending.remove(call_id) else {
+                        return Err(Error::Invalid("tool result is not paired".into()));
+                    };
+                    if called_name != *name {
+                        return Err(Error::Conflict(
+                            "rejection feedback changed the rejected tool".into(),
+                        ));
+                    }
+                    let definition = definitions
+                        .get(name.as_str())
+                        .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
+                    let feedback = crate::tool::ToolRejectionFeedback::from_model_value(value)?;
+                    let invocation = crate::tool::ToolInvocation {
+                        operation_id: crate::OperationId::new(),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments,
+                    };
+                    if malformed {
+                        let Some(feedback) = feedback else {
+                            return Err(Error::Invalid(
+                                "malformed tool call lacks typed rejection evidence".into(),
+                            ));
+                        };
+                        let error = value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| Error::Invalid("rejection error is missing".into()))?;
+                        let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
+                            &invocation,
+                            &definition.input_schema,
+                            error,
+                        )?;
+                        if feedback != expected {
+                            return Err(Error::Conflict(
+                                "rejection feedback does not match the rejected call".into(),
+                            ));
+                        }
+                        observed.push(feedback);
+                    } else {
+                        if feedback.is_some() {
+                            return Err(Error::Invalid(
+                                "valid tool call cannot carry rejection feedback".into(),
+                            ));
+                        }
+                        crate::tool::validate_value(
+                            &definition.model_output_schema,
+                            value,
+                            "tool projection",
+                        )?;
+                    }
+                }
+                _ => {}
             }
-            let Some(feedback) = crate::tool::ToolRejectionFeedback::from_model_value(value)?
-            else {
-                return Err(Error::Invalid(
-                    "malformed tool call lacks typed rejection evidence".into(),
-                ));
-            };
-            let invocation = crate::tool::ToolInvocation {
-                operation_id: crate::OperationId::new(),
-                call_id: call_id.clone(),
-                name: name.clone(),
-                arguments: (*arguments).clone(),
-            };
-            let definition = definitions
-                .get(name.as_str())
-                .ok_or_else(|| Error::Storage("tool definition disappeared".into()))?;
-            let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
-                &invocation,
-                &definition.input_schema,
-            )?;
-            if feedback != expected {
-                return Err(Error::Conflict(
-                    "rejection feedback does not match the rejected call".into(),
-                ));
-            }
-            observed.push(feedback);
         }
     }
-    if observed.len() != malformed.len()
-        || rejections.len() != malformed.len()
-        || observed != rejections
-    {
+    if !pending.is_empty() {
+        return Err(Error::Invalid("rejection evidence has an unfinished tool call".into()));
+    }
+    if observed.len() != rejections.len() || observed != rejections {
         return Err(Error::Conflict(
             "rejection feedback does not exactly match the pinned malformed calls".into(),
         ));
@@ -832,6 +846,7 @@ mod tests {
         let feedback = crate::tool::ToolRejectionFeedback::invalid_arguments(
             &invocation,
             &definition.input_schema,
+            "invalid",
         )?;
         malformed.messages[3] = ModelMessage {
             role: ModelRole::Tool,

@@ -716,10 +716,7 @@ where
                     "additionalProperties": false
                 }),
                 model_output_schema: json!({
-                    "type": "object",
-                    "properties": {"file": {"type": "object"}, "text": {"type": "string"}},
-                    "required": ["file", "text"],
-                    "additionalProperties": false
+                    "type": "string"
                 }),
             },
             executor: implementation.clone(),

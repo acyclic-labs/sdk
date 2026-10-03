@@ -170,6 +170,9 @@ pub enum ExecutionEvent {
         step: u32,
         /// Stable provider/model-owned call identity.
         call_id: String,
+        /// Canonical digest of the complete admitted invocation. Call IDs
+        /// alone are insufficient to bind a replayed result to its arguments.
+        invocation_digest: [u8; 32],
         /// Pinned private JSON file containing the validated result.
         result: FileRef,
         /// Pinned private JSON file containing the model-visible projection.
@@ -1021,9 +1024,11 @@ impl StockExecutor {
             &invocation.arguments,
             "tool input",
         ) {
+            let error_text = error.to_string();
             let feedback = ToolRejectionFeedback::invalid_arguments(
                 &invocation,
                 &tool.definition.input_schema,
+                &error_text,
             )?;
             self.record_tool_rejection(
                 journal,
@@ -1039,7 +1044,7 @@ impl StockExecutor {
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: invocation.call_id.clone(),
                     name: invocation.name.clone(),
-                    value: feedback.to_model_value(&error.to_string())?,
+                    value: feedback.to_model_value(&error_text)?,
                 }),
             };
             message.content.validate_limits(self.limits)?;
@@ -1077,8 +1082,9 @@ impl StockExecutor {
                 call_id,
                 result,
                 projection,
+                invocation_digest,
             } if *event_step == step && call_id == &invocation.call_id => {
-                Some((result.clone(), projection.clone()))
+                Some((result.clone(), projection.clone(), *invocation_digest))
             }
             _ => None,
         });
@@ -1088,6 +1094,11 @@ impl StockExecutor {
             ));
         }
         let (result, projection) = if let Some(completed) = completed_tool {
+            if completed.2 != crate::contract::canonical_json_digest(&invocation)? {
+                return Err(Error::Conflict(
+                    "completed tool result is bound to another invocation".into(),
+                ));
+            }
             (
                 load_json::<ToolResult>(journal, &completed.0).await?,
                 load_json::<Value>(journal, &completed.1).await?,
@@ -1376,6 +1387,7 @@ impl StockExecutor {
                     ExecutionEvent::ToolCompleted {
                         step,
                         call_id: invocation.call_id.clone(),
+                        invocation_digest: crate::contract::canonical_json_digest(&invocation)?,
                         result: result_ref,
                         projection: projection_ref,
                     },

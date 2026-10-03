@@ -461,6 +461,14 @@ pub trait DurableWaitStore: Send + Sync {
         request: WaitRequest,
         completion: WaitCompletion,
     ) -> BoxFuture<'a, Result<WaitCompletion>>;
+
+    /// Persists an explicit cancellation declaration before the caller is
+    /// allowed to observe the cancelled outcome. Hosts may invoke this from a
+    /// task cancellation endpoint before a process restart; the retained
+    /// completion is then returned by [`Self::open`] during recovery.
+    fn cancel<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<WaitCompletion>> {
+        self.complete(request, WaitCompletion::Cancelled)
+    }
 }
 
 const WAIT_EVENT_CONTRACT: &str = "harness.wait-event.v1";
@@ -878,6 +886,21 @@ impl DurableCommunication {
                 }
             }
         }
+    }
+
+    /// Durably declares cancellation for one admitted wait. This endpoint is
+    /// intentionally separate from the live watch bridge so a cancellation
+    /// request survives process loss and can be replayed after restart.
+    pub async fn cancel(&self, request: WaitRequest) -> Result<WaitCompletion> {
+        request.validate(None)?;
+        self.authorize_wait(&request).await?;
+        let waits = self.waits.as_ref().ok_or_else(|| {
+            Error::Unsupported("wait cancellation requires an owner-retained durable wait store".into())
+        })?;
+        request.validate_completion(&WaitCompletion::Cancelled)?;
+        let completion = waits.cancel(request.clone()).await?;
+        request.validate_completion(&completion)?;
+        Ok(completion)
     }
 
     async fn finish(
@@ -1665,6 +1688,35 @@ mod tests {
             reopened.complete(request, WaitCompletion::TimedOut).await?,
             WaitCompletion::Cancelled
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn explicit_wait_cancellation_is_replayed_after_restart() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let request = WaitRequest {
+            operation_id: operation(42),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 10,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(43)),
+        };
+        let host = host(BTreeMap::new())?;
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider.clone(),
+        )));
+        let communication = DurableCommunication::new(host).with_wait_store(store);
+        assert_eq!(
+            communication.cancel(request.clone()).await?,
+            WaitCompletion::Cancelled
+        );
+        let reopened_store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider));
+        let reopened = reopened_store.open(request).await?;
+        assert_eq!(reopened, Some(WaitCompletion::Cancelled));
         Ok(())
     }
 }

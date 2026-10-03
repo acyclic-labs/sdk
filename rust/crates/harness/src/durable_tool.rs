@@ -326,11 +326,19 @@ impl DurableToolRunner {
                     call_id,
                     result,
                     projection,
+                    invocation_digest,
                 } if dispatched
                     && completed.is_none()
                     && failed.is_none()
                     && *call_id == invocation.call_id =>
                 {
+                    if *invocation_digest
+                        != crate::contract::canonical_json_digest(&invocation)?
+                    {
+                        return Err(Error::Conflict(
+                            "completed tool result is bound to another invocation".into(),
+                        ));
+                    }
                     completed = Some((result.clone(), projection.clone()));
                 }
                 ExecutionEvent::ToolFailed {
@@ -630,6 +638,7 @@ impl DurableToolRunner {
                 ExecutionEvent::ToolCompleted {
                     step: 0,
                     call_id: invocation.call_id,
+                    invocation_digest: crate::contract::canonical_json_digest(&invocation)?,
                     result: result_ref,
                     projection: projection_ref,
                 },

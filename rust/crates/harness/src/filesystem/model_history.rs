@@ -428,13 +428,16 @@ where
         tools: &[crate::tool::ToolDefinition],
         records: &[ExecutionRecord],
     ) -> Result<(FileRef, FileRef)> {
-        if let Some((result, projection)) = records.iter().find_map(|record| match &record.event {
+        if let Some((result, projection, invocation_digest)) = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolCompleted {
                 step: candidate,
                 call_id: call,
                 result,
                 projection,
-            } if *candidate == step && call == &invocation.call_id => Some((result, projection)),
+                invocation_digest,
+            } if *candidate == step && call == &invocation.call_id => {
+                Some((result, projection, invocation_digest))
+            }
             _ => None,
         }) {
             let definition = tools
@@ -443,6 +446,11 @@ where
                 .ok_or_else(|| {
                     Error::Storage("completed result lacks pinned tool definition".into())
                 })?;
+            if *invocation_digest != crate::contract::canonical_json_digest(invocation)? {
+                return Err(Error::Conflict(
+                    "completed result is bound to another invocation".into(),
+                ));
+            }
             let actual_result: crate::tool::ToolResult =
                 load_json(self.journal.as_ref(), result).await?;
             crate::tool::validate_value(
@@ -511,6 +519,10 @@ where
         let expected = crate::tool::ToolRejectionFeedback::invalid_arguments(
             invocation,
             &definition.input_schema,
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::Invalid("rejection error is missing".into()))?,
         )?;
         if durable != expected {
             return Err(Error::Conflict(
