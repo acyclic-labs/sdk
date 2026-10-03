@@ -41,6 +41,22 @@ struct MethodMetadata {
     response_fields: Vec<FieldMetadata>,
 }
 
+/// Complete native gRPC method projection. Unlike `MethodMetadata`, this is
+/// emitted for families without an HTTP projection as well, so a native
+/// adapter can consume the Rust descriptor without maintaining a second RPC
+/// table in TypeScript.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct GrpcMethodMetadata {
+    rpc_name: String,
+    rpc: String,
+    request_type: String,
+    response_type: String,
+    client_streaming: bool,
+    server_streaming: bool,
+    request_fields: Vec<FieldMetadata>,
+    response_fields: Vec<FieldMetadata>,
+}
+
 /// Rust-owned capability, error, and validation policy for one public RPC.
 /// This remains separate from `MethodMetadata` because families without an
 /// HTTP projection still expose their complete operation policy here.
@@ -84,6 +100,7 @@ struct ServiceMetadata {
     remote_policy: Option<RemotePolicyMetadata>,
     operations: Vec<OperationMetadata>,
     methods: Vec<MethodMetadata>,
+    grpc_methods: Vec<GrpcMethodMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -407,6 +424,28 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;
+    let mut grpc_methods = Vec::new();
+    for file in &set.file {
+        let package = file.package.as_deref().unwrap_or_default();
+        for service in &file.service {
+            let service_name = service.name.as_deref().unwrap_or_default();
+            for method in &service.method {
+                let rpc_name = method.name.as_deref().unwrap_or_default();
+                let request_type = short_type(method.input_type.as_deref().unwrap_or_default());
+                let response_type = short_type(method.output_type.as_deref().unwrap_or_default());
+                grpc_methods.push(GrpcMethodMetadata {
+                    rpc_name: rpc_name.to_owned(),
+                    rpc: format!("{package}.{service_name}/{rpc_name}"),
+                    request_type: request_type.clone(),
+                    response_type: response_type.clone(),
+                    client_streaming: method.client_streaming(),
+                    server_streaming: method.server_streaming(),
+                    request_fields: fields_for(&set, &request_type)?,
+                    response_fields: fields_for(&set, &response_type)?,
+                });
+            }
+        }
+    }
     let operations = spec
         .operations
         .iter()
@@ -486,6 +525,7 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         },
         operations,
         methods,
+        grpc_methods,
     })
 }
 
@@ -807,6 +847,18 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
     output.push_str(&format!(
         "{{\n{methods}\n}} as const satisfies Record<string, RustOwnedMethodMetadata>;\n\n"
     ));
+    output.push_str("export interface RustOwnedGrpcMethodMetadata { readonly rpcName: string; readonly rpc: string; readonly requestType: string; readonly responseType: string; readonly clientStreaming: boolean; readonly serverStreaming: boolean; readonly requestFields: readonly RustOwnedFieldMetadata[]; readonly responseFields: readonly RustOwnedFieldMetadata[]; }\n\n");
+    let grpc_methods = service.grpc_methods.iter().map(|method| {
+        let fields = |items: &[FieldMetadata]| items.iter().map(|field| {
+            let oneof = field.oneof.as_deref().map_or_else(|| "undefined".to_owned(), |value| format!("{value:?}"));
+            format!("{{ name: {:?}, jsonName: {:?}, number: {}, wireType: {:?}, repeated: {}, optional: {}, oneof: {}, proto3Optional: {} }}", field.name, field.json_name, field.number, field.wire_type, field.repeated, field.optional, oneof, field.proto3_optional)
+        }).collect::<Vec<_>>().join(", ");
+        format!("  {}: {{ rpcName: {:?}, rpc: {:?}, requestType: {:?}, responseType: {:?}, clientStreaming: {}, serverStreaming: {}, requestFields: [{}], responseFields: [{}] }}", method.rpc_name, method.rpc_name, method.rpc, method.request_type, method.response_type, method.client_streaming, method.server_streaming, fields(&method.request_fields), fields(&method.response_fields))
+    }).collect::<Vec<_>>().join(",\n");
+    output.push_str(&format!(
+        "export const {}_GRPC_METHODS = {{\n{grpc_methods}\n}} as const satisfies Record<string, RustOwnedGrpcMethodMetadata>;\n\n",
+        service.family.to_ascii_uppercase(),
+    ));
     if service.remote_policy.is_some() {
         output.push_str(&format!(
             "export const {family}_ROUTES = {constant};\n\n",
@@ -1093,6 +1145,7 @@ mod tests {
             .find(|service| service.family == "machines")
             .expect("Machines is exported from the Rust registry");
         assert_eq!(machines.methods.len(), 0);
+        assert_eq!(machines.grpc_methods.len(), 19);
         assert_eq!(machines.modeled_operations, 19);
         assert!(!machines.http_projection);
         for family in ["filesystem", "harness"] {
