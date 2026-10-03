@@ -67,3 +67,19 @@ must still persist bounded child admission and gate activation on publication.
 
 The executor admission identity is now acyclic.stock.v3. Earlier executor
 journals are refused before dispatch; this change does not migrate them.
+`FilesystemGitFacade` is the small model-facing bridge for Git-shaped workspace
+commands. It binds one authenticated project scope and delegates parsing,
+generation transitions, merge/rebase sequencers, conflict continuation, and
+recovery to `acyclic-fs::GitCompatRepository`; it never invokes a system Git
+process or copies directories. Read commands require the exact project read
+capability. Mutating commands require project write, and merge/rebase
+transitions additionally require `project:merge`. `resume` uses the same
+durable pending transition and executor identity after restart.
+
+Root writeback is a separate explicit boundary. `RootWritebackApproval` binds
+one operation ID to the inspected child generation and expected root target,
+and requires the parent scope's `project:writeback` grant. The approval is
+checked again immediately before `ProjectJoinPlan::apply`, so a plan from a
+different child, generation, operation, or scope cannot publish into the root.
+The underlying provider continues to own parent-only authorization, conflict
+resolution, CAS publication, continuation, abort, rebase, and recovery.
