@@ -183,6 +183,26 @@ describe("GraphCoder UI transport boundary", () => {
     expect(ui.state().writeback).toMatchObject({ applied: true, generation: 1n });
   });
 
+  test("sends host operator approval before the public resolution", async () => {
+    const transport = createMockTransport();
+    const order: string[] = [];
+    const resolveApproval = transport.resolveApproval.bind(transport);
+    const operatorTransport = transport as typeof transport & {
+      operatorApprove: (input: { readonly approvalId: ReturnType<typeof approvalId>; readonly approved: boolean; readonly sessionId: ReturnType<typeof sessionId> }) => Promise<void>;
+    };
+    operatorTransport.operatorApprove = async () => { order.push("operator"); };
+    transport.resolveApproval = async input => {
+      order.push("resolve");
+      return await resolveApproval(input);
+    };
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", operationId: "op-operator-1", prompt: "edit the README" });
+    await ui.dispatch({ kind: "load_approvals" });
+    const approval = ui.state().approvals[0]!;
+    await ui.dispatch({ kind: "resolve_approval", approvalId: approval.id, approved: true });
+    expect(order).toEqual(["operator", "resolve"]);
+  });
+
   test("rejects invalid targets and stale selection without fabricating UI state", async () => {
     const transport = createMockTransport();
     const ui = new GraphCoderUi(transport);

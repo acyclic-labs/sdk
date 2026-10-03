@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { GraphCoderError } from "./api.js";
 import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
 
@@ -13,6 +14,8 @@ export interface GraphCoderProcessBridgeOptions {
   readonly maximumPendingRequests?: number;
   /** Optional host-defined wire cancellation control for a pending request. */
   readonly cancelMessage?: (requestId: string) => GraphCoderWireRequest | undefined;
+  /** Host-only operator credential; generated when omitted and never model-visible. */
+  readonly operatorToken?: string;
   readonly onDiagnostic?: (event: GraphCoderProcessDiagnostic) => void;
 }
 
@@ -45,6 +48,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #maximumLineBytes: number;
   readonly #maximumPendingRequests: number;
   readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
+  readonly #operatorToken: string;
   readonly #cancelled = new Set<string>();
   readonly #cancelControls = new Map<string, string>();
   #stdoutBuffer = Buffer.alloc(0);
@@ -61,9 +65,11 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     }
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.#cancelMessage = options.cancelMessage;
+    this.#operatorToken = options.operatorToken ?? randomUUID();
+    if (this.#operatorToken.trim() === "") throw new GraphCoderError("invalid_input", "operator token must be nonempty");
     const spawnOptions: SpawnOptions = {
       cwd: options.cwd,
-      env: options.env ?? {},
+      env: { ...(options.env ?? {}), GRAPHCODER_OPERATOR_TOKEN: this.#operatorToken },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     };
@@ -109,6 +115,25 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
         reject(new GraphCoderError("transport", `bridge request write failed: ${error instanceof Error ? error.message : String(error)}`));
       }
     });
+  }
+
+  /**
+   * Sends the authenticated host decision on the private operator channel.
+   * The public resolve request follows only after this control response.
+   */
+  async operatorApprove(input: { readonly approvalId: string; readonly approved: boolean; readonly sessionId: string }): Promise<void> {
+    const request = {
+      request_id: `operator:${randomUUID()}`,
+      method: "operator_approve",
+      params: {
+        session_id: input.sessionId,
+        approval_id: input.approvalId,
+        approved: input.approved,
+        operator_token: this.#operatorToken,
+      },
+    } as unknown as GraphCoderWireRequest;
+    const response = await this.request(request);
+    if (!response.ok) throw new GraphCoderError(response.error.code, response.error.message);
   }
 
   /** Rejects one request while leaving the process available for later work. */

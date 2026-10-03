@@ -146,6 +146,8 @@ export interface GraphCoderTransport {
   readMessages(sessionId: SessionId, query?: PageQuery): Promise<MessagePage>;
   sendMessage(input: { readonly sessionId: SessionId; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }): Promise<GraphMessage>;
   listApprovals(sessionId: SessionId, query?: PageQuery): Promise<ApprovalPage>;
+  /** Host-only operator control, kept outside the public GraphCoder request payload. */
+  operatorApprove?(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId: SessionId }): Promise<void>;
   resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId: SessionId }): Promise<ApprovalRequest>;
   cancelSession(sessionId: SessionId): Promise<SessionSnapshot>;
   listChanges(sessionId: SessionId): Promise<{ readonly generation: bigint; readonly items: readonly ChangeSummary[] }>;
@@ -390,7 +392,9 @@ export class GraphCoderUi {
       }
       case "resolve_approval": {
         const session = this.#requireSelected();
-        const approval = await this.transport.resolveApproval({ approvalId: checkedId(command.approvalId, "approval id") as ApprovalId, approved: command.approved, sessionId: session.summary.id });
+        const input = { approvalId: checkedId(command.approvalId, "approval id") as ApprovalId, approved: command.approved, sessionId: session.summary.id };
+        await this.transport.operatorApprove?.(input);
+        const approval = await this.transport.resolveApproval(input);
         if (epoch !== this.#commandEpoch) return;
         if (approval.sessionId !== session.summary.id) throw new GraphCoderError("transport", "approval response is not bound to the selected session");
         this.#state = { ...this.#state, approvals: this.#state.approvals.map(item => item.id === approval.id ? approval : item) };

@@ -30,6 +30,7 @@ use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -64,6 +65,9 @@ struct Args {
     /// Explicit deterministic model fixture.
     #[arg(long, default_value = "echo")]
     model_fixture: String,
+    /// Private host-to-runtime credential for operator control messages.
+    #[arg(long, env = "GRAPHCODER_OPERATOR_TOKEN", hide = true)]
+    operator_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -286,6 +290,15 @@ struct Runtime {
     /// Host-only approval authority. The terminal receives a callback for the
     /// exact pending invocation and never creates an issuer or scope itself.
     approval_authorizer: ApprovalAuthorizer,
+    operator_token: Option<String>,
+    operator_choices: Arc<Mutex<BTreeMap<String, OperatorChoice>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct OperatorChoice {
+    operation: OperationId,
+    action_digest: [u8; 32],
+    approved: bool,
 }
 
 /// The immutable identity presented to the host approval boundary.
@@ -435,6 +448,8 @@ impl Runtime {
             swarm,
             model_fixture: fixture,
             approval_authorizer,
+            operator_token: args.operator_token.clone(),
+            operator_choices: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -458,6 +473,7 @@ impl Runtime {
                     .await
             }
             "list_approvals" => self.list_approvals(&request.params).await,
+            "operator_approve" => self.operator_approve(&request.params).await,
             "resolve_approval" => self.resolve_approval(&request.params).await,
             "cancel_session" => self.cancel_session(&request.params).await,
             "read_file" => self.read_file(&request.params).await,
@@ -695,6 +711,66 @@ impl Runtime {
         Ok(page_result(task, items, next))
     }
 
+    /// Records an operator-origin decision from the private control channel.
+    /// Public GraphCoder requests cannot mint this decision because they do
+    /// not carry the process-local operator credential.
+    async fn operator_approve(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let token = required_text(params, "operator_token")?;
+        let expected = self.operator_token.as_deref().ok_or_else(|| {
+            DispatchError::unsupported("operator control is not configured")
+        })?;
+        if token != expected {
+            return Err(DispatchError {
+                code: "denied",
+                message: "operator control credential is invalid".into(),
+            });
+        }
+        let task = task_from_value(params, "session_id")?;
+        let id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let approved = params
+            .get("approved")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| DispatchError::invalid("approved must be boolean"))?;
+        let approval = self
+            .swarm
+            .list_approvals(task)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .into_iter()
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
+            .ok_or_else(|| {
+                DispatchError::from_harness(HarnessError::NotFound(format!(
+                    "local swarm approval {id}"
+                )))
+            })?;
+        if approval.resolution.is_some() {
+            return Err(DispatchError {
+                code: "stale",
+                message: "approval is no longer pending operator choice".into(),
+            });
+        }
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            DispatchError::from_harness(HarnessError::Invalid(
+                "approval ticket has no exact operation binding".into(),
+            ))
+        })?;
+        self.operator_choices.lock().await.insert(
+            approval_key(task, id),
+            OperatorChoice {
+                operation: binding.operation_id,
+                action_digest: binding.action_digest,
+                approved,
+            },
+        );
+        Ok(json!({
+            "session_id": task.to_string(),
+            "approval_id": id.to_string(),
+            "approved": approved,
+        }))
+    }
+
     async fn resolve_approval(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
@@ -721,6 +797,25 @@ impl Runtime {
                 "approval ticket has no exact operation binding".into(),
             ))
         })?;
+        let choice = self
+            .operator_choices
+            .lock()
+            .await
+            .get(&approval_key(task, id))
+            .cloned()
+            .ok_or_else(|| DispatchError {
+                code: "denied",
+                message: "approval requires an authenticated operator choice".into(),
+            })?;
+        if choice.approved != approved
+            || choice.operation != binding.operation_id
+            || choice.action_digest != binding.action_digest
+        {
+            return Err(DispatchError {
+                code: "denied",
+                message: "operator choice does not match the pending approval".into(),
+            });
+        }
         let responder = (self.approval_authorizer)(PendingApproval {
             task,
             interaction: id,
@@ -742,6 +837,10 @@ impl Runtime {
             )
             .await
             .map_err(DispatchError::from_harness)?;
+        self.operator_choices
+            .lock()
+            .await
+            .remove(&approval_key(task, id));
         let approval = self
             .swarm
             .list_approvals(task)
@@ -944,6 +1043,10 @@ fn generation_token<T: Serialize>(generation: &T) -> String {
     let mut token = [0_u8; 16];
     token.copy_from_slice(&digest.as_bytes()[..16]);
     u128::from_le_bytes(token).to_string()
+}
+
+fn approval_key(task: TaskId, id: InteractionId) -> String {
+    format!("{task}:{id}")
 }
 
 fn page_result(task: TaskId, items: Vec<Value>, next: Option<String>) -> Value {
@@ -1378,6 +1481,7 @@ mod tests {
         Args {
             root,
             model_fixture: fixture.to_owned(),
+            operator_token: None,
         }
     }
 
@@ -1595,6 +1699,33 @@ mod tests {
             })
             .await;
         assert!(matches!(empty_operation, WireResponse::Err { error: WireError { code: "invalid_input", .. }, .. }));
+    }
+
+    #[tokio::test]
+    async fn operator_control_rejects_public_or_wrong_credentials() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let mut args = runtime_args(root.path().to_owned(), "echo");
+        args.operator_token = Some("operator-secret".to_owned());
+        let runtime = Runtime::open(&args).await.expect("runtime opens");
+        let response = runtime
+            .dispatch(WireRequest {
+                request_id: "operator-wrong-token".into(),
+                method: "operator_approve".into(),
+                params: json!({
+                    "operator_token": "model-supplied",
+                    "session_id": "not-a-task",
+                    "approval_id": "not-an-interaction",
+                    "approved": true,
+                }),
+            })
+            .await;
+        assert!(matches!(
+            response,
+            WireResponse::Err {
+                error: WireError { code: "denied", .. },
+                ..
+            }
+        ));
     }
 
     #[tokio::test]

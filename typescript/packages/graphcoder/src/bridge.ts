@@ -96,6 +96,12 @@ export type GraphCoderWireResponse =
 /** A native, terminal, JSON-lines, or WASM host can implement this one call. */
 export interface GraphCoderBridge {
   request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse>;
+  /** Host-only operator control; never encoded as a public GraphCoder request. */
+  operatorApprove?(input: {
+    readonly approvalId: string;
+    readonly approved: boolean;
+    readonly sessionId: string;
+  }): Promise<void>;
 }
 
 /** Shared wire limit. Rust hosts validate UTF-8 bytes, so JS hosts must too. */
@@ -213,6 +219,10 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
     const approval = decodeApproval(await this.#call("resolve_approval", params));
     if (approval.id !== input.approvalId || approval.sessionId !== input.sessionId) throw new GraphCoderError("transport", "approval response is not bound to its request");
     return approval;
+  }
+
+  async operatorApprove(input: { readonly approvalId: ApprovalRequest["id"]; readonly approved: boolean; readonly sessionId: SessionSummary["id"] }): Promise<void> {
+    await this.#bridge.operatorApprove?.(input);
   }
 
   async cancelSession(id: SessionSnapshot["summary"]["id"]): Promise<SessionSnapshot> {
