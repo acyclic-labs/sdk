@@ -7,8 +7,8 @@ use crate::{
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::ResourceRevision,
     merge::{
-        ProjectConflict, ProjectConflictSelection, ProjectConflictSide, ProjectJoinOutcome,
-        ProjectJoinPlan, ProjectWorkspaceProvider,
+        ProjectConflict, ProjectConflictSelection, ProjectConflictSide, ProjectJoinLineage,
+        ProjectJoinOutcome, ProjectJoinPlan, ProjectWorkspaceProvider,
     },
     resources::{GenerationRef, ProviderRef},
 };
@@ -162,6 +162,7 @@ where
             Ok(Box::new(FilesystemProjectJoinPlan {
                 binding: self.clone(),
                 plan,
+                lineage: ProjectJoinLineage::new(child.clone(), child_project.clone()),
                 child: child.clone(),
                 source,
                 target,
@@ -173,6 +174,7 @@ where
 struct FilesystemProjectJoinPlan<A, O> {
     binding: FilesystemProjectWorkspaces<A, O>,
     plan: ParentMergePlan<A, O>,
+    lineage: ProjectJoinLineage,
     // Publication was authenticated against the current parent reducer during
     // preparation. The plan keeps only the child identity; its Filesystem
     // generations remain the independent CAS boundary for application.
@@ -196,6 +198,33 @@ where
 
     fn target_project(&self) -> Option<&VolumeRef> {
         Some(self.binding.project())
+    }
+
+    fn child_project(&self) -> Option<&VolumeRef> {
+        Some(self.plan.child_project())
+    }
+
+    fn child_authority(&self) -> Option<&Authority> {
+        Some(&self.child)
+    }
+
+    fn lineage(&self) -> Option<&ProjectJoinLineage> {
+        Some(&self.lineage)
+    }
+
+    fn validate_notice_content<'a>(
+        &'a self,
+        notice: &'a ConversationMessage,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            super::git_facade::validate_merge_notice_content(
+                &self.binding.host,
+                &self.binding.verifier,
+                &self.binding.scope,
+                notice,
+            )
+            .await
+        })
     }
 
     fn apply<'a>(
@@ -223,6 +252,7 @@ where
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }
+            self.validate_notice_content(notice).await?;
             let controller = self.binding.controller();
             let outcome = if selections.is_empty() {
                 controller

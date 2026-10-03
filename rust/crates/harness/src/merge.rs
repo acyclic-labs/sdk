@@ -55,6 +55,36 @@ pub struct ProjectConflictSelection {
     pub side: ProjectConflictSide,
 }
 
+/// Unforgeable direct-child binding retained by a provider-created join plan.
+/// The constructor is crate-private so a generic model-facing plan cannot
+/// claim parent lineage from project names or generation references alone.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectJoinLineage {
+    child: Authority,
+    child_project: VolumeRef,
+}
+
+impl ProjectJoinLineage {
+    pub(crate) fn new(child: Authority, child_project: VolumeRef) -> Self {
+        Self {
+            child,
+            child_project,
+        }
+    }
+
+    /// Conversation authority captured at direct-child preparation.
+    #[must_use]
+    pub const fn child(&self) -> &Authority {
+        &self.child
+    }
+
+    /// Child project volume captured at direct-child preparation.
+    #[must_use]
+    pub const fn child_project(&self) -> &VolumeRef {
+        &self.child_project
+    }
+}
+
 /// Explicit result of an inspected project-only join attempt.
 pub enum ProjectJoinOutcome {
     /// An immutable target generation was published and may be noticed in history.
@@ -90,6 +120,36 @@ pub trait ProjectJoinPlan: Send + Sync {
     /// writeback refuses plans that do not expose this binding.
     fn target_project(&self) -> Option<&VolumeRef> {
         None
+    }
+    /// Returns the direct child project captured by an authenticated plan.
+    /// Generic writeback refuses plans that do not expose this lineage
+    /// binding, because a project capability alone cannot authorize a sibling
+    /// or descendant publication.
+    fn child_project(&self) -> Option<&VolumeRef> {
+        None
+    }
+    /// Returns the conversation authority captured when this plan was
+    /// prepared. This keeps the child identity bound to the provider plan
+    /// through the final model-facing apply call.
+    fn child_authority(&self) -> Option<&Authority> {
+        None
+    }
+    /// Returns the provider-issued, non-forgeable direct-child binding.
+    fn lineage(&self) -> Option<&ProjectJoinLineage> {
+        None
+    }
+    /// Authenticates every notice file reference before provider mutation.
+    /// Generic plans must opt into this provider-owned check; the default
+    /// rejects publication rather than allowing metadata-only admission.
+    fn validate_notice_content<'a>(
+        &'a self,
+        _notice: &'a ConversationMessage,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async {
+            Err(Error::Unauthorized(
+                "join plan has no notice content admission boundary".into(),
+            ))
+        })
     }
     /// Applies the inspected project-only join under the parent's authority.
     fn apply<'a>(

@@ -2135,6 +2135,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         if current != pending {
             return Err(GitCompatError::StaleTransition.into());
         }
+        if let Some(expected_workspace) = action_expected_workspace_tree(&pending.action) {
+            executor
+                .validate_workspace_tree(expected_workspace)
+                .await
+                .map_err(GitCompatRunError::Executor)?;
+        }
         // Recovery is still a fresh effect dispatch. Validate the executor
         // lease before invoking the retained action, then validate it again
         // before publishing the observed result.
@@ -2204,6 +2210,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
+        validate_action_result::<S::Error>(&action, &result).map_err(GitCompatRunError::Compat)?;
         if let Some(transition) = transition {
             let completed = self.complete_transition_result(transition, &result).await?;
             return Ok(if matches!(completed, GitCommandOutput::NoOp) {
@@ -2604,6 +2611,31 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 }
 
+fn validate_action_result<E: std::error::Error + 'static>(
+    action: &GitFilesystemAction,
+    result: &GitFilesystemResult,
+) -> Result<(), GitCompatError<E>> {
+    let requires_tree = matches!(
+        action,
+        GitFilesystemAction::RestoreGeneration { .. }
+            | GitFilesystemAction::RestorePaths { .. }
+            | GitFilesystemAction::ApplyPatch { .. }
+            | GitFilesystemAction::Clean { dry_run: false, .. }
+            | GitFilesystemAction::SwitchWorkspace { .. }
+    );
+    if requires_tree && !matches!(result, GitFilesystemResult::Applied { tree: Some(_), .. }) {
+        return Err(GitCompatError::InvalidState);
+    }
+    if !matches!(action, GitFilesystemAction::CaptureCommit { .. })
+        && let Some(expected_workspace) = action_workspace_id(action)
+        && let Some(tree) = result.resulting_tree()
+        && tree.workspace_id() != expected_workspace
+    {
+        return Err(GitCompatError::WorkspaceMismatch);
+    }
+    Ok(())
+}
+
 fn validate_completion_result<E: std::error::Error + 'static>(
     state: &GitCompatState,
     pending: &GitPendingTransition,
@@ -2615,19 +2647,19 @@ fn validate_completion_result<E: std::error::Error + 'static>(
         | (
             GitPendingMutation::Switch { .. },
             GitFilesystemAction::SwitchWorkspace { .. },
-            GitFilesystemResult::Applied { .. },
+            GitFilesystemResult::Applied { tree: Some(_), .. },
         )
         | (
             GitPendingMutation::Reset { .. }
             | GitPendingMutation::StashPush { .. }
             | GitPendingMutation::StashPop { .. },
             GitFilesystemAction::RestoreGeneration { .. },
-            GitFilesystemResult::Applied { .. },
+            GitFilesystemResult::Applied { tree: Some(_), .. },
         )
         | (
             GitPendingMutation::Bisect { .. },
             GitFilesystemAction::RestoreGeneration { .. },
-            GitFilesystemResult::Applied { .. },
+            GitFilesystemResult::Applied { tree: Some(_), .. },
         )
         | (
             GitPendingMutation::Join { .. } | GitPendingMutation::ApplyCommit { .. },
@@ -2653,52 +2685,150 @@ fn validate_completion_result<E: std::error::Error + 'static>(
             | GitFilesystemAction::RestorePaths { .. }
             | GitFilesystemAction::ApplyPatch { .. }
             | GitFilesystemAction::Clean { dry_run: false, .. },
-            GitFilesystemResult::Applied { .. },
+            GitFilesystemResult::Applied { tree: Some(_), .. },
         ) => true,
         _ => false,
     };
     if !valid_result {
         return Err(GitCompatError::InvalidState);
     }
-    let workspace_id = state
-        .current()
-        .map_err(|_| GitCompatError::InvalidState)?
-        .workspace_id;
-    match result {
-        GitFilesystemResult::Captured { tree, proof, .. } => {
-            let GitPendingMutation::CaptureCommit { workspace_tree, .. } = &pending.mutation else {
-                return Err(GitCompatError::WorkspaceMismatch);
-            };
-            let previous_tree = match &pending.mutation {
-                GitPendingMutation::CaptureCommit { expected_head, .. } => {
-                    expected_head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree))
+    if let Some(expected_workspace) = action_workspace_id(&pending.action) {
+        match result {
+            GitFilesystemResult::Captured { tree, proof, .. } => {
+                let GitPendingMutation::CaptureCommit { workspace_tree, .. } = &pending.mutation
+                else {
+                    return Err(GitCompatError::WorkspaceMismatch);
+                };
+                let previous_tree = match &pending.mutation {
+                    GitPendingMutation::CaptureCommit { expected_head, .. } => expected_head
+                        .and_then(|id| state.commits.get(&id).map(|commit| commit.tree)),
+                    _ => None,
+                };
+                let reused_head = proof.is_none() && previous_tree == Some(*tree);
+                let valid_capture =
+                    capture_proof_valid(*tree, *workspace_tree, proof.as_ref(), previous_tree)
+                        && proof
+                            .as_ref()
+                            .is_none_or(|proof| proof.operation_id == pending.id.operation_id());
+                if !reused_head && !valid_capture {
+                    return Err(GitCompatError::WorkspaceMismatch);
                 }
-                _ => None,
-            };
-            let reused_head = proof.is_none() && previous_tree == Some(*tree);
-            let valid_capture =
-                capture_proof_valid(*tree, *workspace_tree, proof.as_ref(), previous_tree)
-                    && proof
-                        .as_ref()
-                        .is_none_or(|proof| proof.operation_id == pending.id.operation_id());
-            if !reused_head && !valid_capture {
-                return Err(GitCompatError::WorkspaceMismatch);
             }
+            GitFilesystemResult::Applied {
+                tree: Some(tree), ..
+            } if tree.workspace_id() == expected_workspace => {}
+            GitFilesystemResult::Forked { workspace_id } if *workspace_id == expected_workspace => {
+            }
+            _ => return Err(GitCompatError::WorkspaceMismatch),
         }
-        _ if result
-            .resulting_tree()
-            .is_some_and(|tree| tree.workspace_id() != workspace_id) =>
-        {
-            return Err(GitCompatError::WorkspaceMismatch);
-        }
-        _ => {}
     }
     if let GitPendingMutation::CaptureCommit { workspace_tree, .. } = pending.mutation
-        && workspace_tree.workspace_id() != workspace_id
+        && workspace_tree.workspace_id()
+            != state
+                .current()
+                .map_err(|_| GitCompatError::InvalidState)?
+                .workspace_id
     {
         return Err(GitCompatError::WorkspaceMismatch);
     }
     Ok(())
+}
+
+fn action_workspace_id(action: &GitFilesystemAction) -> Option<WorkspaceId> {
+    match action {
+        GitFilesystemAction::CaptureCommit { workspace_tree, .. }
+        | GitFilesystemAction::Diff {
+            to: workspace_tree, ..
+        }
+        | GitFilesystemAction::Grep {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::Clean {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::CheckIgnore {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::Join {
+            target_tree: workspace_tree,
+            ..
+        } => Some(workspace_tree.workspace_id()),
+        GitFilesystemAction::RestoreGeneration {
+            tree,
+            expected_workspace_tree,
+            ..
+        } => Some((*expected_workspace_tree).unwrap_or(*tree).workspace_id()),
+        GitFilesystemAction::RestorePaths {
+            tree,
+            expected_workspace_tree,
+            ..
+        } => Some((*expected_workspace_tree).unwrap_or(*tree).workspace_id()),
+        GitFilesystemAction::ApplyPatch {
+            expected_workspace_tree,
+            ..
+        } => expected_workspace_tree.map(|tree| tree.workspace_id()),
+        GitFilesystemAction::ApplyCommit { base, source, .. } => {
+            (*base).or(*source).map(|tree| tree.workspace_id())
+        }
+        GitFilesystemAction::SwitchWorkspace { workspace_id } => Some(*workspace_id),
+        GitFilesystemAction::Blame { .. }
+        | GitFilesystemAction::Archive { .. }
+        | GitFilesystemAction::Bisect { .. }
+        | GitFilesystemAction::RevParse { .. }
+        | GitFilesystemAction::SymbolicRef { .. }
+        | GitFilesystemAction::MergeBase { .. }
+        | GitFilesystemAction::LsFiles => None,
+    }
+}
+
+fn action_expected_workspace_tree(action: &GitFilesystemAction) -> Option<GitTreeRef> {
+    match action {
+        GitFilesystemAction::CaptureCommit { workspace_tree, .. }
+        | GitFilesystemAction::Diff {
+            to: workspace_tree, ..
+        }
+        | GitFilesystemAction::Grep {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::Clean {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::CheckIgnore {
+            tree: workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::Join {
+            target_tree: workspace_tree,
+            ..
+        } => Some(*workspace_tree),
+        GitFilesystemAction::RestoreGeneration {
+            expected_workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::RestorePaths {
+            expected_workspace_tree,
+            ..
+        }
+        | GitFilesystemAction::ApplyPatch {
+            expected_workspace_tree,
+            ..
+        } => *expected_workspace_tree,
+        GitFilesystemAction::ApplyCommit { base, source, .. } => (*base).or(*source),
+        GitFilesystemAction::ForkBranch { source_tree, .. } => Some(*source_tree),
+        GitFilesystemAction::SwitchWorkspace { .. }
+        | GitFilesystemAction::Blame { .. }
+        | GitFilesystemAction::Archive { .. }
+        | GitFilesystemAction::Bisect { .. }
+        | GitFilesystemAction::RevParse { .. }
+        | GitFilesystemAction::SymbolicRef { .. }
+        | GitFilesystemAction::MergeBase { .. }
+        | GitFilesystemAction::LsFiles => None,
+    }
 }
 
 fn capture_proof_valid(
@@ -2854,6 +2984,7 @@ fn validate_git_references(
         return Err(());
     }
     if let Some(pending) = &state.pending {
+        validate_pending_transition(state, pending)?;
         let valid = match &pending.mutation {
             GitPendingMutation::CaptureCommit {
                 workspace_tree,
@@ -2884,6 +3015,137 @@ fn validate_git_references(
         }
     }
     Ok(())
+}
+
+/// Checks that a recovered filesystem action and its deferred compatibility
+/// mutation describe the same transition. Both fields are persisted together;
+/// accepting a mismatched pair would let a corrupt journal apply one effect
+/// and publish a different branch, head, or stash update after restart.
+fn validate_pending_transition(
+    state: &GitCompatState,
+    pending: &GitPendingTransition,
+) -> Result<(), ()> {
+    let current = state.current().map_err(|_| ())?;
+    let valid = match (&pending.action, &pending.mutation) {
+        (_, GitPendingMutation::NoOp) => true,
+        (
+            GitFilesystemAction::CaptureCommit {
+                workspace_tree,
+                message,
+                author,
+                authored_at_seconds,
+                expected_head,
+                ..
+            },
+            GitPendingMutation::CaptureCommit {
+                workspace_tree: mutation_tree,
+                message: mutation_message,
+                author: mutation_author,
+                authored_at_seconds: mutation_time,
+                expected_head: mutation_head,
+            },
+        ) => {
+            workspace_tree == mutation_tree
+                && message == mutation_message
+                && author == mutation_author
+                && authored_at_seconds == mutation_time
+                && expected_head == mutation_head
+        }
+        (
+            GitFilesystemAction::ForkBranch {
+                branch,
+                head,
+                switch,
+                source_tree,
+            },
+            GitPendingMutation::ForkBranch {
+                branch: mutation_branch,
+                head: mutation_head,
+                switch: mutation_switch,
+            },
+        ) => {
+            branch == mutation_branch
+                && head == mutation_head
+                && switch == mutation_switch
+                && source_tree.workspace_id() == current.workspace_id
+        }
+        (
+            GitFilesystemAction::SwitchWorkspace { workspace_id },
+            GitPendingMutation::Switch { branch },
+        ) => state
+            .branches
+            .get(branch)
+            .is_some_and(|target| target.workspace_id == *workspace_id),
+        (
+            GitFilesystemAction::RestoreGeneration {
+                tree,
+                paths: Some(_),
+                ..
+            },
+            GitPendingMutation::Reset { head },
+        ) => state
+            .commits
+            .get(head)
+            .is_some_and(|commit| commit.tree == *tree),
+        (
+            GitFilesystemAction::RestoreGeneration {
+                tree, paths: None, ..
+            },
+            GitPendingMutation::StashPush { tree: dirty_tree },
+        ) => {
+            tree.workspace_id() == current.workspace_id
+                && dirty_tree.workspace_id() == current.workspace_id
+        }
+        (
+            GitFilesystemAction::RestoreGeneration {
+                tree, paths: None, ..
+            },
+            GitPendingMutation::StashPop { tree: stash_tree },
+        ) => tree == stash_tree && tree.workspace_id() == current.workspace_id,
+        (
+            GitFilesystemAction::Join {
+                source_workspace,
+                rebase,
+                ..
+            },
+            GitPendingMutation::Join {
+                source_head,
+                source_branch,
+                rebase: mutation_rebase,
+            },
+        ) => state.branches.get(source_branch).is_some_and(|source| {
+            source.workspace_id == *source_workspace
+                && source.head == *source_head
+                && rebase == mutation_rebase
+        }),
+        (
+            GitFilesystemAction::ApplyCommit {
+                commit, reverse, ..
+            },
+            GitPendingMutation::ApplyCommit {
+                commit: mutation_commit,
+                reverse: mutation_reverse,
+            },
+        ) => {
+            state.commits.contains_key(commit)
+                && commit == mutation_commit
+                && reverse == mutation_reverse
+        }
+        (
+            GitFilesystemAction::RestoreGeneration {
+                tree,
+                expected_workspace_tree,
+                ..
+            },
+            GitPendingMutation::Bisect { .. },
+        ) => {
+            tree.workspace_id() == current.workspace_id
+                && expected_workspace_tree
+                    .is_none_or(|expected| expected.workspace_id() == current.workspace_id)
+        }
+        _ => false,
+    };
+    valid.then_some(()).ok_or(())
 }
 
 fn action_operation_id(
@@ -5969,6 +6231,41 @@ mod tests {
                 .map(Clone::clone)
                 .map_err(|_| TestExecutorError)
         }
+    }
+
+    #[test]
+    fn pending_action_and_mutation_must_describe_same_transition() {
+        let workspace_id = WorkspaceId::from_bytes([41; 16]);
+        let tree = GitTreeRef::exact(workspace_id, GenerationId::from_bytes([42; 32]));
+        let state = GitCompatState::new("main", workspace_id);
+        let valid = GitPendingTransition {
+            id: GitTransitionId::from_bytes([43; 16]),
+            action: GitFilesystemAction::CaptureCommit {
+                workspace_tree: tree,
+                head_tree: None,
+                head_workspace_tree: Box::new(None),
+                tracked_paths: BTreeSet::new(),
+                message: "message".into(),
+                author: "author".into(),
+                authored_at_seconds: 7,
+                expected_head: None,
+            },
+            mutation: GitPendingMutation::CaptureCommit {
+                workspace_tree: tree,
+                message: "message".into(),
+                author: "author".into(),
+                authored_at_seconds: 7,
+                expected_head: None,
+            },
+        };
+        assert!(validate_pending_transition(&state, &valid).is_ok());
+
+        let mut forged = valid;
+        forged.mutation = GitPendingMutation::ApplyCommit {
+            commit: GitCommitId::from_bytes([44; 32]),
+            reverse: false,
+        };
+        assert!(validate_pending_transition(&state, &forged).is_err());
     }
 
     fn generation(byte: u8) -> GenerationId {
