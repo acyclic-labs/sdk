@@ -67,7 +67,7 @@ function caseStatus(evidence, suiteById) {
   return "passed";
 }
 
-function assemble(configPath) {
+export function assemble(configPath, { gitOps } = {}) {
   const config = readJson(configPath);
   if (!config || typeof config !== "object") fail("config must be an object");
   const matrixPath = config.matrix ?? "docs/graphcoder-swarm/requirements.json";
@@ -83,7 +83,7 @@ function assemble(configPath) {
     if (!Array.isArray(suites) || suites.some(suite => typeof suite !== "string" || suite.trim() === "")) fail(`cases[${index}].suites must be nonempty strings`);
     bindings.set(id, suites);
   }
-  const receipt = makePendingReceipt(matrixPath);
+  const receipt = makePendingReceipt(matrixPath, gitOps === undefined ? {} : { gitOps });
   receipt.suites = records.suites;
   receipt.artifacts = records.artifacts;
   receipt.cases = matrix.entries.map(entry => {
@@ -98,7 +98,7 @@ function assemble(configPath) {
     flaky: receipt.cases.filter(record => record.status === "flaky").length,
     missing: receipt.cases.filter(record => record.status === "pending" || record.status === "not-run").length,
   };
-  validateReceipt(matrix, receipt, { final: false, matrixPath });
+  validateReceipt(matrix, receipt, gitOps === undefined ? { final: false, matrixPath } : { final: false, matrixPath, gitOps });
   const output = nonempty(config.output, "output");
   writeFileSync(resolve(output), `${JSON.stringify(receipt, null, 2)}\n`, { flag: "wx" });
   process.stdout.write(`${JSON.stringify({ output: resolve(output), requirements: matrix.entries.length, suites: receipt.suites.length, artifacts: receipt.artifacts.length, pending: receipt.gate.missing }, null, 2)}\n`);
