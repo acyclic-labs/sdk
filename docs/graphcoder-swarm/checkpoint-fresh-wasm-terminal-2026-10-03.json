@@ -50,6 +50,33 @@
     "source": "d55ed91f",
     "handle": 81567,
     "command": "cargo test -p acyclic-graphcoder-cli -j2 -- --nocapture",
-    "status": "live compilation; no result yet"
+    "status": "compile failed; no native terminal test results",
+    "failures": [
+      "Imported Harness Result shadowed standard Result; repaired8e2d11f7",
+      "Authorizer lacked Clone; repaired1a50de8b"
+    ],
+    "followup_handle": 56780,
+    "followup_exit_code": 1
+  },
+  "full_graphcoder_wrapper": {
+    "source": "7ebfd61e",
+    "passed": 49,
+    "failed": 0,
+    "exit_code": 0,
+    "assertions": 150,
+    "suites": [
+      {
+        "path": "typescript/packages/graphcoder/test/graphcoder.test.ts",
+        "sha256": "bdde85efdf967206a0516e1148ade16fd87b5575ccce16fcd0db5c25c158d3bb"
+      },
+      {
+        "path": "typescript/packages/graphcoder/test/process.test.ts",
+        "sha256": "4dd18d75140bbbb5dad2bc0eed68e5a42fe8d24ee98efd4f1f941a35944c6ff5"
+      },
+      {
+        "path": "typescript/packages/graphcoder/test/dispatcher.test.ts",
+        "sha256": "a741ee0a6cd75ca94de96aafd40764e0448e28c5dff85a25d16abb92efba5989"
+      }
+    ]
   }
 }
