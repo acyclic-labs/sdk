@@ -9,7 +9,7 @@ description = "Bounded Rust-owned Filesystem and Harness embedded behavior proof
 [workspace]
 
 [features]
-default = ["filesystem"]
+default = ["filesystem", "harness"]
 filesystem = ["dep:acyclic-fs"]
 harness = ["dep:acyclic-harness"]
 

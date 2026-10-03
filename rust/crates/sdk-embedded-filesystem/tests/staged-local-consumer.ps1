@@ -50,7 +50,7 @@ edition = "2024"
 [workspace]
 
 [features]
-default = ["filesystem"]
+default = ["filesystem", "harness"]
 filesystem = ["dep:acyclic-fs"]
 harness = ["dep:acyclic-harness"]
 
@@ -62,7 +62,7 @@ tokio = { version = "1.48.0", default-features = false, features = ["macros", "r
 "@ | Set-Content -LiteralPath $consumerManifest
 
 $env:CARGO_TARGET_DIR = $targetDir
-cargo test --manifest-path $consumerManifest --offline --features harness
+cargo test --manifest-path $consumerManifest --offline
 if ($LASTEXITCODE -ne 0) {
     throw "staged local Filesystem/Harness consumer failed with exit code $LASTEXITCODE"
 }
@@ -101,7 +101,7 @@ if (Test-Path $EmbeddedBundle) {
             $env:CARGO_HOME = Join-Path $EmbeddedBundle "cargo-home"
             $env:CARGO_TARGET_DIR = $targetDir
             Push-Location $EmbeddedBundle
-            cargo test --manifest-path $bundleManifest --features harness --offline --locked
+            cargo test --manifest-path $bundleManifest --offline --locked
             if ($LASTEXITCODE -ne 0) {
                 throw "embedded bundle consumer failed with exit code $LASTEXITCODE"
             }
