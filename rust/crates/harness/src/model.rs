@@ -312,6 +312,12 @@ pub struct ModelAttempt {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
+    /// Validates immutable input before a new dispatch or recovered attempt.
+    /// This hook must not perform I/O or mutate the request.
+    fn admit(&self, _request: &ModelRequest) -> Result<()> {
+        Ok(())
+    }
+
     /// Starts one request and yields ordered model events.
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>>;
 

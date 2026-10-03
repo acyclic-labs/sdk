@@ -46,8 +46,13 @@ mod project_workspaces;
 pub use project_workspaces::FilesystemProjectWorkspaces;
 mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+mod local;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub use local::{DurableHarnessStorage, PersistentLocalHarness};
+
 mod memory;
-pub use memory::{LocalHarness, MemoryHarnessStorage};
+pub use memory::{HarnessStorage, LocalHarness, MemoryHarnessStorage};
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
 pub struct FilesystemSchedulerPayloadStore<A, O> {

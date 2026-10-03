@@ -5,7 +5,7 @@ filesystem operations, subprocesses, journals and terminal interaction must be r
 
 | ID | Contract | Verification | Status |
 |---|---|---|---|
-| INPUT-01 | Canonical ordered requests and content manifests | model_input manifest tests | TESTED, dispatch integration pending |
+| INPUT-01 | Canonical ordered requests and content manifests | model_input manifest tests | TESTED, actual provider capture matches persisted manifest |
 | INPUT-02 | Complete tool exchanges at fork boundary | fork_requires_complete_matching_tool_exchange | TESTED |
 | INPUT-03 | Reject aggregate overflow without truncation | aggregate_limit_does_not_silently_truncate | TESTED |
 | INPUT-04 | No hidden retrieval, summaries or UI/sibling input | provider-capture E2E | PENDING |
@@ -29,7 +29,7 @@ filesystem operations, subprocesses, journals and terminal interaction must be r
 | EFFECT-03 | Unknown command outcomes never rerun automatically | subprocess crash E2E | PENDING |
 | EFFECT-04 | Exact host command approval, explicit environment | process policy E2E | PENDING |
 | EFFECT-05 | Stale writers/generations cannot mutate | fencing E2E | PENDING |
-| HOST-01 | Durable local composition, reopen/resume | host lifecycle E2E | PENDING |
+| HOST-01 | Durable local composition, reopen/resume | reopen_recovers_completed_turn_without_dispatch | TESTED single-agent lifecycle; swarm resume pending |
 | CLI-01 | Interactive and headless public interface | PTY/installed artifact E2E | PENDING |
 | CLI-02 | Input/tree/activity/messages/approval/cancel/diff | terminal scenario E2E | PENDING |
 | LOAD-01 | Lazy pages/content/diffs and no eager worker startup | instrumented load tests | PENDING |

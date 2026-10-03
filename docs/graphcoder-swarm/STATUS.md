@@ -11,16 +11,21 @@ Branch: codex/graphcoder-sdk. No merge/publication.
 - Fork-prefix capture rejects incomplete tool exchanges.
 - Stock executor persists input manifests before model dispatch.
 - Provider-capture integration verifies actual received input against the persisted manifest.
+- Provider admission enforces pinned prefixes before dispatch and recovered attempts.
+- Memory and persistent compositions share the same provider-neutral storage implementation.
+- Persistent session descriptors pin identities, authority keys, model and limits.
+- Reopening replays completed turns without model redispatch; changed prompt/configuration fails.
 
 ## Verification
 - Existing Harness baseline: 176 passed.
 - Shared-input integration: 181 passed.
 - Filesystem-local suite after manifest and provider-capture integration: 195 passed.
+- Durable local composition and prefix admission: 197 passed.
 - None of these results qualify the complete swarm or terminal product.
 
 ## Next
 Connect prefix enforcement to child execution and existing fork publication.
-Provide durable local composition, scoped swarm communication and git integration,
+Extend durable composition with scoped swarm communication and git integration,
 effect recovery, terminal app, and installed-artifact acceptance evidence.
 
 The locked requirements matrix remains authoritative. No Cloud, web UI,

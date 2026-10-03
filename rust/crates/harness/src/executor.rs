@@ -451,6 +451,7 @@ impl StockExecutor {
             },
             self.limits,
         )?;
+        self.provider.admit(prepared.request())?;
         let request_digest = prepared.manifest().request_digest;
         let manifest_key = format!("model:{step}:input");
         let manifest = stage_json(

@@ -37,8 +37,6 @@ use std::{
 use uuid::Uuid;
 
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
-type MemoryJournal =
-    FilesystemExecutionJournal<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
 
 fn new_memory_store(
     volume: &VolumeRef,
@@ -57,18 +55,22 @@ fn new_memory_store(
 
 /// A fully bound in-process journal and owner-private file volume. Its data is
 /// deliberately ephemeral; durable deployments bind persistent providers.
-pub struct MemoryHarnessStorage {
-    journal: Arc<MemoryJournal>,
-    content_verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
-    publisher: Arc<MemoryContentPublisher>,
-    host: Arc<MemoryHost>,
+pub type MemoryHarnessStorage =
+    HarnessStorage<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
+
+/// Provider-neutral local Harness composition; caches are disposable.
+pub struct HarnessStorage<P, A, O> {
+    journal: Arc<FilesystemExecutionJournal<P, A, O>>,
+    content_verifier: Arc<FilesystemContentVerifier<A, O>>,
+    publisher: Arc<FilesystemContentPublisher<A, O>>,
+    host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     read_capability: String,
     write_capability: String,
     write: ContentGrant,
     scope: Scope,
     issuer: AuthorityIssuer,
-    stream: StreamClient<MemoryStream>,
+    stream: StreamClient<P>,
     conversation: Authority,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -185,8 +187,8 @@ struct ReadFileInput {
     file: FileRef,
 }
 
-struct LocalReadFileTool {
-    verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
+struct LocalReadFileTool<A, O> {
+    verifier: Arc<FilesystemContentVerifier<A, O>>,
     maximum_bytes: u64,
 }
 
@@ -199,8 +201,8 @@ struct StageFileInput {
     display_name: String,
 }
 
-struct LocalStageFileTool {
-    publisher: Arc<MemoryContentPublisher>,
+struct LocalStageFileTool<A, O> {
+    publisher: Arc<FilesystemContentPublisher<A, O>>,
     maximum_bytes: u64,
 }
 
@@ -213,8 +215,8 @@ struct ListFilesInput {
     maximum_entries: u32,
 }
 
-struct LocalListFilesTool {
-    verifier: Arc<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>>,
+struct LocalListFilesTool<A, O> {
+    verifier: Arc<FilesystemContentVerifier<A, O>>,
     volume: VolumeRef,
     maximum_bytes: u64,
     observed: tokio::sync::Mutex<HashMap<OperationId, (ToolInvocation, ToolResult)>>,
@@ -234,7 +236,11 @@ fn require_volume_grant(
     Ok(())
 }
 
-impl ToolExecutor for LocalListFilesTool {
+impl<A, O> ToolExecutor for LocalListFilesTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         require_volume_grant(scope, &self.volume, VolumeOperation::Read)
     }
@@ -340,13 +346,21 @@ impl ToolExecutor for LocalListFilesTool {
     }
 }
 
-impl ToolProjection for LocalListFilesTool {
+impl<A, O> ToolProjection for LocalListFilesTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         Ok(result.value.clone())
     }
 }
 
-impl ToolExecutor for LocalStageFileTool {
+impl<A, O> ToolExecutor for LocalStageFileTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn authorize(&self, scope: Option<&RuntimeScope>, _: &ToolInvocation) -> Result<()> {
         require_volume_grant(scope, &self.publisher.volume, VolumeOperation::Write)
     }
@@ -396,13 +410,21 @@ impl ToolExecutor for LocalStageFileTool {
     }
 }
 
-impl ToolProjection for LocalStageFileTool {
+impl<A, O> ToolProjection for LocalStageFileTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         Ok(result.value.clone())
     }
 }
 
-impl ToolExecutor for LocalReadFileTool {
+impl<A, O> ToolExecutor for LocalReadFileTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         let input: ReadFileInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("read_file input is invalid: {error}")))?;
@@ -437,7 +459,11 @@ impl ToolExecutor for LocalReadFileTool {
     }
 }
 
-impl ToolProjection for LocalReadFileTool {
+impl<A, O> ToolProjection for LocalReadFileTool<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
         let text = result
             .value
@@ -458,15 +484,19 @@ impl ToolProjection for LocalReadFileTool {
     }
 }
 
-struct MemoryContentPublisher {
-    host: Arc<MemoryHost>,
+struct FilesystemContentPublisher<A, O> {
+    host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     write: ContentGrant,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
 }
 
-impl ContentPublisher for MemoryContentPublisher {
+impl<A, O> ContentPublisher for FilesystemContentPublisher<A, O>
+where
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     fn volume(&self) -> &VolumeRef {
         &self.volume
     }
@@ -509,7 +539,12 @@ impl ContentPublisher for MemoryContentPublisher {
     }
 }
 
-impl MemoryHarnessStorage {
+impl<P, A, O> HarnessStorage<P, A, O>
+where
+    P: acyclic_stream::StreamProvider + Send + Sync + 'static,
+    A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
+    O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
+{
     /// Builds the local ref-only file tools against this exact owner volume.
     /// Callers composing a custom builder can use this registry unchanged.
     pub fn default_tools(&self, limits: Limits) -> Result<ToolRegistry> {
@@ -628,30 +663,30 @@ impl MemoryHarnessStorage {
         }
     }
 
-    /// Creates an agent-owned private volume and a bound conversation before
-    /// any turn or interaction can publish a reference.
-    pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
-        if maximum_file_bytes == 0 {
+    /// Composes persistent or memory providers around an existing private volume.
+    /// The caller owns stable agent/conversation identities and issuer recovery.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
+    pub async fn from_providers(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+    ) -> Result<Self> {
+        if maximum_file_bytes == 0
+            || volume.class() != VolumeClass::AgentPrivate
+            || volume.owner() != &VolumeOwner::Agent(agent)
+        {
             return Err(Error::Invalid(
-                "memory Harness file limit must be positive".into(),
+                "storage requires an owner-private volume".into(),
             ));
         }
-        let provider = ProviderRef::new("local", "filesystem", "2")?;
-        let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-        let volume = VolumeRef::new(
-            provider,
-            Uuid::new_v4().to_string(),
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(agent),
-        )?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
-        host.create_volume(&volume).await?;
-        let conversation = Authority {
-            kind: AggregateKind::Conversation,
-            id: ConversationId::new().to_string(),
-        };
-        let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
-        let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
         let read_capability = volume.capability(VolumeOperation::Read)?;
         let write_capability = volume.capability(VolumeOperation::Write)?;
         let scope = issuer.root_for_agent(
@@ -668,7 +703,6 @@ impl MemoryHarnessStorage {
         );
         let write =
             ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
-        let stream = StreamClient::new(Arc::new(MemoryStream::default()));
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
@@ -676,16 +710,33 @@ impl MemoryHarnessStorage {
             SchemaRegistry::new(),
         )
         .await?;
-        aggregate
-            .execute(Command {
-                operation_id: OperationId::new(),
-                idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
-                expected_revision: 0,
-                scope: scope.clone(),
-                causal_parent: None,
-                action: Action::BindConversation { agent },
-            })
-            .await?;
+        if aggregate
+            .reducer()
+            .conversation()
+            .and_then(|state| state.agent)
+            .is_none()
+        {
+            aggregate
+                .execute(Command {
+                    operation_id: OperationId::new(),
+                    idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
+                    expected_revision: 0,
+                    scope: scope.clone(),
+                    causal_parent: None,
+                    action: Action::BindConversation { agent },
+                })
+                .await?;
+        }
+        if aggregate
+            .reducer()
+            .conversation()
+            .and_then(|state| state.agent)
+            != Some(agent)
+        {
+            return Err(Error::Unauthorized(
+                "conversation belongs to another agent".into(),
+            ));
+        }
         let input = Arc::new(FilesystemContentVerifier::new(
             Arc::clone(&host),
             issuer.verifier(),
@@ -703,7 +754,7 @@ impl MemoryHarnessStorage {
             )?
             .with_input_verifier(input.clone()),
         );
-        let publisher = Arc::new(MemoryContentPublisher {
+        let publisher = Arc::new(FilesystemContentPublisher {
             host: Arc::clone(&host),
             volume: volume.clone(),
             write: write.clone(),
@@ -919,7 +970,7 @@ impl MemoryHarnessStorage {
             .await
     }
 
-    async fn open_conversation(&self, limits: Limits) -> Result<StreamAggregate<MemoryStream>> {
+    async fn open_conversation(&self, limits: Limits) -> Result<StreamAggregate<P>> {
         StreamAggregate::open(
             &self.stream,
             self.conversation.clone(),
@@ -933,7 +984,7 @@ impl MemoryHarnessStorage {
 
     async fn append_conversation(
         &self,
-        aggregate: &mut StreamAggregate<MemoryStream>,
+        aggregate: &mut StreamAggregate<P>,
         operation_id: OperationId,
         label: &str,
         action: Action,
@@ -1058,7 +1109,7 @@ impl MemoryHarnessStorage {
 
     async fn append_tool_history(
         &self,
-        aggregate: &mut StreamAggregate<MemoryStream>,
+        aggregate: &mut StreamAggregate<P>,
         operation_id: OperationId,
         user_id: Uuid,
     ) -> Result<()> {
@@ -1306,10 +1357,7 @@ impl MemoryHarnessStorage {
         }
     }
 
-    fn delegated_reader(
-        &self,
-        scope: &Scope,
-    ) -> Result<FilesystemContentVerifier<MemoryAuthorityBackend, MemoryObjectBackend>> {
+    fn delegated_reader(&self, scope: &Scope) -> Result<FilesystemContentVerifier<A, O>> {
         FilesystemContentVerifier::new(
             self.host.clone(),
             self.issuer.verifier(),
@@ -1343,7 +1391,7 @@ impl MemoryHarnessStorage {
 
     /// Opens the bound conversation's exact Stream history to host adapters.
     #[must_use]
-    pub fn stream(&self) -> &StreamClient<MemoryStream> {
+    pub fn stream(&self) -> &StreamClient<P> {
         &self.stream
     }
 
@@ -1363,6 +1411,37 @@ impl MemoryHarnessStorage {
     #[must_use]
     pub fn verifier(&self) -> crate::core::AuthorityVerifier {
         self.issuer.verifier()
+    }
+}
+
+impl HarnessStorage<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend> {
+    /// Creates ephemeral storage using the same generic composition as durable hosts.
+    pub async fn new(agent: AgentId, maximum_file_bytes: u64) -> Result<Self> {
+        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let host: Arc<MemoryHost> = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+        let volume = VolumeRef::new(
+            provider,
+            Uuid::new_v4().to_string(),
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(agent),
+        )?;
+        host.create_volume(&volume).await?;
+        let conversation = Authority {
+            kind: AggregateKind::Conversation,
+            id: ConversationId::new().to_string(),
+        };
+        let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
+        let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
+        Self::from_providers(
+            agent,
+            maximum_file_bytes,
+            host,
+            StreamClient::new(Arc::new(MemoryStream::default())),
+            volume,
+            conversation,
+            issuer,
+        )
+        .await
     }
 }
 

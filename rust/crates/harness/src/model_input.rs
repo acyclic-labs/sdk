@@ -246,6 +246,62 @@ fn validate_exchanges(messages: &[ModelMessage]) -> Result<()> {
     Ok(())
 }
 
+/// Provider boundary that enforces an inherited prefix without owning a loop.
+///
+/// The caller persists the prefix with its fork state and reconstructs this
+/// adapter on recovery. Admission is also checked before replay/reconciliation.
+pub struct PrefixBoundModelProvider {
+    prefix: FrozenModelPrefix,
+    limits: Limits,
+    provider: std::sync::Arc<dyn crate::model::ModelProvider>,
+}
+impl PrefixBoundModelProvider {
+    /// Binds an immutable prefix, local bounds, and the actual model adapter.
+    pub fn new(
+        prefix: FrozenModelPrefix,
+        limits: Limits,
+        provider: std::sync::Arc<dyn crate::model::ModelProvider>,
+    ) -> Result<Self> {
+        limits.validate()?;
+        if prefix.version != MODEL_INPUT_VERSION
+            || prefix.message_bytes.is_empty()
+            || prefix.digest != prefix_digest(prefix.binding_digest, &prefix.message_bytes)?
+        {
+            return Err(Error::Invalid(
+                "frozen model prefix integrity failed".into(),
+            ));
+        }
+        Ok(Self {
+            prefix,
+            limits,
+            provider,
+        })
+    }
+}
+impl crate::model::ModelProvider for PrefixBoundModelProvider {
+    fn admit(&self, request: &ModelRequest) -> Result<()> {
+        let input = PreparedModelInput::prepare(request.clone(), self.limits)?;
+        self.prefix.verify(&input)?;
+        input.validate_complete_exchange()?;
+        self.provider.admit(request)
+    }
+    fn generate<'a>(
+        &'a self,
+        request: ModelRequest,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        if let Err(error) = self.admit(&request) {
+            return Box::pin(futures::stream::iter(vec![Err(error)]));
+        }
+        self.provider.generate(request)
+    }
+    fn reconcile<'a>(
+        &'a self,
+        attempt: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        self.provider.reconcile(attempt)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,6 +460,43 @@ mod tests {
                 manifest.digest
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prefix_provider_rejects_before_downstream_dispatch() -> Result<()> {
+        use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
+        use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        struct Capture(AtomicUsize);
+        impl ModelProvider for Capture {
+            fn generate<'a>(&'a self, _: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Box::pin(futures::stream::empty())
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+        let input = PreparedModelInput::prepare(request()?, Limits::default())?;
+        let prefix = FrozenModelPrefix::capture(&input, input.request().messages.len())?;
+        let capture = Arc::new(Capture(AtomicUsize::new(0)));
+        let provider = PrefixBoundModelProvider::new(prefix, Limits::default(), capture.clone())?;
+        let mut child = input.request().clone();
+        child.messages.push(text("explicit child task"));
+        assert!(provider.admit(&child).is_ok());
+        assert!(provider.generate(child.clone()).next().await.is_none());
+        assert_eq!(capture.0.load(Ordering::SeqCst), 1);
+        child.messages[0] = text("changed inherited content");
+        assert!(provider.admit(&child).is_err());
+        assert!(provider.generate(child).next().await.unwrap().is_err());
+        assert_eq!(capture.0.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

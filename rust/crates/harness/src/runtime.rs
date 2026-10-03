@@ -3568,6 +3568,7 @@ impl TaskContext {
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
+        binding.provider.admit(&request)?;
         let mut stream = binding.provider.generate(request);
         loop {
             let next = match deadline {
