@@ -243,6 +243,25 @@ describe("GraphCoder UI transport boundary", () => {
     await pendingRead;
     expect(ui.state().selectedSession?.summary.state).toBe("cancelled");
   });
+
+  test("cancellation detaches later commands from a request that never resolves", async () => {
+    const transport = createMockTransport();
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", operationId: "op-stuck", prompt: "inspect" });
+    transport.readActivity = async () => await new Promise<never>(() => undefined);
+    const stuck = ui.dispatch({ kind: "load_activity" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await ui.dispatch({ kind: "cancel_session" });
+
+    const following = await Promise.race([
+      ui.dispatch({ kind: "load_messages" }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("command remained queued behind cancellation")), 500)),
+    ]);
+    expect(following.selectedSession?.summary.state).toBe("cancelled");
+    expect(transport.calls.map(call => call.method)).toEqual(["startSession", "cancelSession", "readMessages"]);
+    void stuck;
+  });
 });
 
 describe("GraphCoder terminal adapter", () => {

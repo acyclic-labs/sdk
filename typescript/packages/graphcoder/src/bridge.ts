@@ -94,6 +94,19 @@ export interface GraphCoderBridge {
   request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse>;
 }
 
+/** Shared wire limit. Rust hosts validate UTF-8 bytes, so JS hosts must too. */
+export const MAX_REQUEST_ID_BYTES = 256;
+
+export function checkedRequestId(value: unknown, label = "request_id"): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new GraphCoderError("invalid_input", `${label} must be nonempty text`);
+  }
+  if (new TextEncoder().encode(value).byteLength > MAX_REQUEST_ID_BYTES) {
+    throw new GraphCoderError("invalid_input", `${label} must be at most 256 UTF-8 bytes`);
+  }
+  return value;
+}
+
 /** Default upper bound for one bridge response envelope, in UTF-8 bytes. */
 export const DEFAULT_MAX_BRIDGE_RESPONSE_BYTES = 16 * 1024 * 1024;
 /** Protocol ceiling for one file body after a host selects a larger/chunked envelope. */
@@ -244,7 +257,7 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
   }
 
   async #call<M extends GraphCoderWireMethod>(method: M, params: GraphCoderWireParams<M>): Promise<GraphCoderWireResult<M>> {
-    const requestId = `${this.requestPrefix}-${this.#nextRequest++}`;
+    const requestId = checkedRequestId(`${this.requestPrefix}-${this.#nextRequest++}`);
     const request = { request_id: requestId, method, params } as GraphCoderWireRequest<M>;
     let response: unknown;
     try {

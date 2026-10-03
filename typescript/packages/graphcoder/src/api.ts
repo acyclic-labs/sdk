@@ -245,7 +245,6 @@ export class GraphCoderUi {
   #state: GraphCoderUiState = initialState;
   #queue: Promise<void> = Promise.resolve();
   #cancelEpoch = 0;
-  #lastCancellation: GraphCoderUiState | undefined;
 
   constructor(readonly transport: GraphCoderTransport) {}
 
@@ -267,18 +266,20 @@ export class GraphCoderUi {
   async #cancelNow(): Promise<GraphCoderUiState> {
     const session = this.#requireSelected();
     this.#cancelEpoch += 1;
+    // Detach queued presentation work immediately. The durable owner still
+    // receives the cancellation below, while commands submitted after the
+    // cancellation are never chained behind a request that may not resolve.
+    this.#queue = Promise.resolve();
     this.#state = { ...this.#state, pending: true, error: undefined };
     try {
       this.#select(await this.transport.cancelSession(session.summary.id));
       this.#state = { ...this.#state, pending: false };
-      this.#lastCancellation = this.#state;
       return this.state();
     } catch (error) {
       const normalized = error instanceof GraphCoderError
         ? error
         : new GraphCoderError("transport", error instanceof Error ? error.message : String(error));
       this.#state = { ...this.#state, pending: false, error: normalized };
-      this.#lastCancellation = this.#state;
       throw normalized;
     }
   }
@@ -289,13 +290,13 @@ export class GraphCoderUi {
     try {
       await this.#dispatch(command);
       if (epoch !== this.#cancelEpoch) {
-        if (this.#lastCancellation !== undefined) this.#state = this.#lastCancellation;
+        // A cancelled request may finish later. Its projection is stale and
+        // must never overwrite the cancellation or a newer command.
         return;
       }
       this.#state = { ...this.#state, pending: false };
     } catch (error) {
       if (epoch !== this.#cancelEpoch) {
-        if (this.#lastCancellation !== undefined) this.#state = this.#lastCancellation;
         return;
       }
       const normalized = error instanceof GraphCoderError

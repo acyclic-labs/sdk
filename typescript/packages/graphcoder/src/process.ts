@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from "node:child_process";
 import { GraphCoderError } from "./api.js";
-import type { GraphCoderBridge, GraphCoderWireRequest, GraphCoderWireResponse } from "./bridge.js";
+import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
 
 export interface GraphCoderProcessBridgeOptions {
   readonly executable: string;
@@ -9,6 +9,8 @@ export interface GraphCoderProcessBridgeOptions {
   /** Environment is explicit; omitted means an empty environment. */
   readonly env?: NodeJS.ProcessEnv;
   readonly maximumLineBytes?: number;
+  /** Maximum number of requests awaiting a response before backpressure. */
+  readonly maximumPendingRequests?: number;
   /** Optional host-defined wire cancellation control for a pending request. */
   readonly cancelMessage?: (requestId: string) => GraphCoderWireRequest | undefined;
   readonly onDiagnostic?: (event: GraphCoderProcessDiagnostic) => void;
@@ -28,6 +30,7 @@ interface PendingRequest {
 }
 
 export const DEFAULT_MAXIMUM_PROCESS_LINE_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAXIMUM_PENDING_PROCESS_REQUESTS = 64;
 
 /**
  * JSON-lines bridge for a host-owned local runtime executable.
@@ -40,6 +43,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #pending = new Map<string, PendingRequest>();
   readonly #onDiagnostic: (event: GraphCoderProcessDiagnostic) => void;
   readonly #maximumLineBytes: number;
+  readonly #maximumPendingRequests: number;
   readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
   readonly #cancelled = new Set<string>();
   readonly #cancelControls = new Map<string, string>();
@@ -50,6 +54,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     this.#maximumLineBytes = options.maximumLineBytes ?? DEFAULT_MAXIMUM_PROCESS_LINE_BYTES;
     if (!Number.isSafeInteger(this.#maximumLineBytes) || this.#maximumLineBytes < 1) {
       throw new GraphCoderError("invalid_input", "maximum process line bytes must be positive");
+    }
+    this.#maximumPendingRequests = options.maximumPendingRequests ?? DEFAULT_MAXIMUM_PENDING_PROCESS_REQUESTS;
+    if (!Number.isSafeInteger(this.#maximumPendingRequests) || this.#maximumPendingRequests < 1) {
+      throw new GraphCoderError("invalid_input", "maximum pending process requests must be positive");
     }
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.#cancelMessage = options.cancelMessage;
@@ -73,7 +81,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
 
   request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
     if (this.#closed) return Promise.reject(new GraphCoderError("transport", "bridge process is closed"));
+    try { checkedRequestId(request.request_id); }
+    catch (error) { return Promise.reject(error instanceof GraphCoderError ? error : new GraphCoderError("invalid_input", String(error))); }
     if (this.#pending.has(request.request_id)) return Promise.reject(new GraphCoderError("invalid_input", `duplicate bridge request id ${request.request_id}`));
+    if (this.#pending.size >= this.#maximumPendingRequests) return Promise.reject(new GraphCoderError("transport", "bridge pending request limit reached"));
     let line: string;
     try {
       line = `${JSON.stringify(request)}\n`;
@@ -161,7 +172,13 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       this.#finish(new GraphCoderError("transport", "bridge emitted an invalid response envelope"));
       return;
     }
-    const requestId = (value as { request_id: string }).request_id;
+    let requestId: string;
+    try { requestId = checkedRequestId((value as { request_id: unknown }).request_id, "bridge response id"); }
+    catch (error) {
+      this.#onDiagnostic({ kind: "malformed_line", text: line });
+      this.#finish(new GraphCoderError("transport", error instanceof Error ? error.message : String(error)));
+      return;
+    }
     const pending = this.#pending.get(requestId);
     if (pending === undefined) {
       const cancelledRequestId = this.#cancelControls.get(requestId);
@@ -195,6 +212,11 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   }
 
   #writeCancelControl(requestId: string, request: GraphCoderWireRequest): void {
+    try { checkedRequestId(request.request_id); }
+    catch (error) {
+      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      return;
+    }
     this.#cancelControls.set(request.request_id, requestId);
     while (this.#cancelControls.size > 4_096) this.#cancelControls.delete(this.#cancelControls.keys().next().value!);
     let line: string;

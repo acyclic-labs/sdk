@@ -15,7 +15,7 @@ import {
   type SessionSnapshot,
   type SessionSummary,
 } from "./api.js";
-import type { GraphCoderWireMethod, GraphCoderWireRequest, GraphCoderWireResponse } from "./bridge.js";
+import { checkedRequestId, type GraphCoderWireMethod, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
 
 /** Native-side JSON-lines dispatcher over an injected durable transport. */
 export class GraphCoderWireDispatcher {
@@ -63,7 +63,7 @@ export class GraphCoderWireDispatcher {
 
 function decodeRequest(value: unknown): GraphCoderWireRequest {
   const raw = record(value, "request");
-  const requestId = requiredText(raw.request_id, "request_id");
+  const requestId = checkedRequestId(raw.request_id);
   const method = requiredText(raw.method, "method");
   if (!METHODS.has(method as GraphCoderWireMethod)) throw new GraphCoderError("invalid_input", `unsupported method ${method}`);
   return { request_id: requestId, method: method as GraphCoderWireMethod, params: record(raw.params, "request params") } as GraphCoderWireRequest;

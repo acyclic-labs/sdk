@@ -80,6 +80,16 @@ describe("JSON-lines process bridge", () => {
     await expect(oversized.request(request("oversized"))).rejects.toMatchObject({ code: "transport" });
   });
 
+  test("bounds pending requests and applies the 256 UTF-8 byte request-id limit", async () => {
+    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), maximumPendingRequests: 1 });
+    const first = bridge.request(request("first", 30));
+    await expect(bridge.request(request("second"))).rejects.toMatchObject({ code: "transport" });
+    await expect(first).resolves.toMatchObject({ request_id: "first", ok: true });
+    await expect(bridge.request(request("é".repeat(129)))).rejects.toMatchObject({ code: "invalid_input" });
+    await expect(bridge.request(request("é".repeat(128)))).resolves.toMatchObject({ ok: true });
+    bridge.close();
+  });
+
   test("rejects every pending call when an otherwise valid response has no matching request", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
     const bridge = new JsonLineGraphCoderBridge({
