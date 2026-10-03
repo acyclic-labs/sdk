@@ -75,6 +75,19 @@ export interface ModelRequestEvidence {
   readonly manifestJson: string;
   readonly requestDigest: readonly number[];
 }
+/**
+ * Transport-only bytes for one native-admitted model request.
+ *
+ * The structured request projection is useful to adapters that need a
+ * provider-specific rendering (for example, file projection), but it is not
+ * the model-input wire body.  Adapters that forward the provider-neutral
+ * request must use this detached byte vector so journal metadata and runtime
+ * controls cannot enter the model request by accident.
+ */
+export interface PreparedModelTransport {
+  readonly body: readonly number[];
+  readonly requestDigest: readonly number[];
+}
 export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
   Readonly<Omit<WasmModelRequestWire, "model" | "messages" | "tools" | "max_output_tokens"> & {
     model: Model<ModelOptions>;
@@ -95,6 +108,7 @@ export type ModelRequest<ModelOptions = unknown, Content = ModelContent> =
 export type PreparedModelRequest<ModelOptions = unknown, Content = ModelContent> =
   Readonly<Omit<ModelRequest<ModelOptions, Content>, "canonical"> & {
     canonical: ModelRequestEvidence;
+    transport: PreparedModelTransport;
   }>;
 type PublicModelEvent<Event extends WasmModelEvent, Arguments, Metadata> =
   Event extends Readonly<{ kind: "tool_call" }>

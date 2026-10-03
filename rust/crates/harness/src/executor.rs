@@ -618,6 +618,7 @@ impl StockExecutor {
         step: u32,
         prior_messages: &[ModelMessage],
         rejection_evidence: &[crate::tool::ToolRejectionFeedback],
+        prior_output_bytes: u64,
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
         let mut persisted_prepared = None;
@@ -775,6 +776,7 @@ impl StockExecutor {
         let request = prepared.request().clone();
         let mut replayed_model = Vec::new();
         let mut admission = ModelEventAdmission::default();
+        let mut output_bytes = prior_output_bytes;
         for record in &records {
             if let ExecutionEvent::Model {
                 step: event_step,
@@ -784,6 +786,7 @@ impl StockExecutor {
             {
                 let event = load_json::<ModelEvent>(journal, event).await?;
                 admission.observe(&event, self.limits)?;
+                admit_model_output_bytes(&mut output_bytes, &event, self.limits)?;
                 replayed_model.push(event);
             }
         }
@@ -820,6 +823,7 @@ impl StockExecutor {
             let mut observed = replayed_model;
             for event in continuation.drain(..) {
                 admission.observe(&event, self.limits)?;
+                admit_model_output_bytes(&mut output_bytes, &event, self.limits)?;
                 let key = format!("model:{step}:{}", observed.len());
                 let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
@@ -883,6 +887,7 @@ impl StockExecutor {
             while let Some(event) = stream.next().await {
                 let event = event?;
                 admission.observe(&event, self.limits)?;
+                admit_model_output_bytes(&mut output_bytes, &event, self.limits)?;
                 let key = format!("model:{step}:{}", observed.len());
                 let reference = stage_json(journal, input.operation_id, &key, &event).await?;
                 journal
@@ -1812,20 +1817,12 @@ impl Executor for StockExecutor {
                         step,
                         &prior_messages,
                         &rejection_evidence,
+                        text.len() as u64,
                     )
                     .await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
-                            if text
-                                .len()
-                                .checked_add(delta.len())
-                                .is_none_or(|size| size as u64 > self.limits.file_bytes)
-                            {
-                                return Err(Error::Invalid(
-                                    "assistant output exceeds file limit".into(),
-                                ));
-                            }
                             text.push_str(&delta);
                         }
                         ModelEvent::ToolCall {
@@ -2047,6 +2044,26 @@ impl ModelEventAdmission {
     }
 }
 
+/// Checks cumulative user-visible model output before an event is journaled.
+/// Reasoning is intentionally excluded because it never enters `TurnOutput`;
+/// content bytes are counted across model steps by the executor.
+fn admit_model_output_bytes(
+    output_bytes: &mut u64,
+    event: &ModelEvent,
+    limits: Limits,
+) -> Result<()> {
+    let ModelEvent::Content { delta } = event else {
+        return Ok(());
+    };
+    *output_bytes = output_bytes
+        .checked_add(delta.len() as u64)
+        .ok_or_else(|| Error::Invalid("model output size overflow".into()))?;
+    if *output_bytes > limits.file_bytes {
+        return Err(Error::Invalid("assistant output exceeds file limit".into()));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2230,6 +2247,16 @@ mod tests {
         calls: AtomicUsize,
     }
 
+    struct OversizedOutputModel {
+        calls: AtomicUsize,
+    }
+
+    struct PersistedCaptureModel {
+        generate_calls: AtomicUsize,
+        reconcile_calls: AtomicUsize,
+        seen: Mutex<Vec<(Vec<u8>, crate::model_input::ModelInputManifest)>>,
+    }
+
     impl ModelProvider for ReplayModel {
         fn generate<'a>(
             &'a self,
@@ -2244,6 +2271,82 @@ mod tests {
                     metadata: json!({"finish": "stop"}),
                 }),
             ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    impl ModelProvider for OversizedOutputModel {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Content {
+                    delta: "x".repeat(4_097),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            async { Ok(None) }.boxed()
+        }
+    }
+
+    impl ModelProvider for PersistedCaptureModel {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+            self.generate_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(stream::iter(vec![
+                Ok(ModelEvent::Content {
+                    delta: "partial-".into(),
+                }),
+                Err(Error::Storage("stream interrupted".into())),
+            ]))
+        }
+
+        fn reconcile_admitted<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+            attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
+            let bytes = prepared.bytes().to_vec();
+            let manifest = prepared.manifest().clone();
+            async move {
+                if manifest.request_digest != attempt.request_digest {
+                    return Err(Error::Conflict(
+                        "reconciliation request digest changed".into(),
+                    ));
+                }
+                self.seen
+                    .lock()
+                    .map_err(|_| Error::Storage("capture lock poisoned".into()))?
+                    .push((bytes, manifest));
+                Ok(Some(vec![
+                    ModelEvent::Content {
+                        delta: "restored".into(),
+                    },
+                    ModelEvent::Completed {
+                        metadata: json!({"finish": "stop"}),
+                    },
+                ]))
+            }
+            .boxed()
         }
 
         fn reconcile<'a>(
@@ -3019,6 +3122,47 @@ mod tests {
             base.with_limits(changed).execute(input, &journal).await,
             Err(Error::Conflict(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn oversized_model_output_is_rejected_before_event_staging() -> Result<()> {
+        let model = Arc::new(OversizedOutputModel {
+            calls: AtomicUsize::new(0),
+        });
+        let executor = StockExecutor::new(
+            Model::new("example", "oversized", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        )
+        .with_limits(Limits {
+            file_bytes: 4_096,
+            render_bytes: 4_096,
+            ..Limits::default()
+        });
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([15; 16]),
+            input: ModelContent::Text("x".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+
+        assert!(matches!(
+            executor.execute(input.clone(), &journal).await,
+            Err(Error::Invalid(message)) if message == "assistant output exceeds file limit"
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+        let records = journal.replay(input.operation_id).await?;
+        assert!(records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ModelStarted { step: 0, .. }
+        )));
+        assert!(!records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::Model { step: 0, .. }
+        )));
         Ok(())
     }
 
@@ -3909,6 +4053,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_provider_reconcile_receives_persisted_request_bytes_and_manifest() -> Result<()>
+    {
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: OperationId::from_bytes([16; 16]),
+            input: ModelContent::Text("restart me".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        let first_model = Arc::new(PersistedCaptureModel {
+            generate_calls: AtomicUsize::new(0),
+            reconcile_calls: AtomicUsize::new(0),
+            seen: Mutex::new(Vec::new()),
+        });
+        let first_executor = StockExecutor::new(
+            Model::new("example", "restart", "1", Value::Null)?,
+            first_model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        assert!(matches!(
+            first_executor.execute(input.clone(), &journal).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(first_model.generate_calls.load(Ordering::SeqCst), 1);
+
+        let second_model = Arc::new(PersistedCaptureModel {
+            generate_calls: AtomicUsize::new(0),
+            reconcile_calls: AtomicUsize::new(0),
+            seen: Mutex::new(Vec::new()),
+        });
+        let second_executor = StockExecutor::new(
+            Model::new("example", "restart", "1", Value::Null)?,
+            second_model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let recovered = second_executor.execute(input.clone(), &journal).await?;
+        assert_eq!(recovered.text, "partial-restored");
+        assert_eq!(second_model.generate_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(second_model.reconcile_calls.load(Ordering::SeqCst), 1);
+
+        let records = journal.replay(input.operation_id).await?;
+        let (manifest_ref, request_ref) = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0,
+                    manifest,
+                    request,
+                } => Some((manifest.clone(), request.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("persisted model input is missing".into()))?;
+        let persisted_bytes = journal.load(&request_ref).await?;
+        let persisted_manifest = load_json::<crate::model_input::ModelInputManifest>(
+            &journal,
+            &manifest_ref,
+        )
+        .await?;
+        let seen = second_model
+            .seen
+            .lock()
+            .map_err(|_| Error::Storage("capture lock poisoned".into()))?;
+        let (reconciled_bytes, reconciled_manifest) = seen
+            .first()
+            .ok_or_else(|| Error::Storage("reconciliation did not capture input".into()))?;
+        assert_eq!(reconciled_bytes, &persisted_bytes);
+        assert_eq!(reconciled_manifest, &persisted_manifest);
+        assert_eq!(
+            *blake3::hash(reconciled_bytes).as_bytes(),
+            reconciled_manifest.request_digest
+        );
+        drop(seen);
+
+        second_executor.execute(input, &journal).await?;
+        assert_eq!(second_model.reconcile_calls.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn replay_uses_persisted_model_input_without_rerunning_context() -> Result<()> {
         let model = Arc::new(ReplayModel {
             calls: AtomicUsize::new(0),
@@ -4219,6 +4444,109 @@ mod tests {
             Err(Error::Storage(_))
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_missing_or_corrupt_pinned_manifest_before_provider() -> Result<()> {
+        let missing_model = Arc::new(ReplayModel {
+            calls: AtomicUsize::new(0),
+        });
+        let missing_executor = StockExecutor::new(
+            Model::new("example", "missing-manifest", "1", Value::Null)?,
+            missing_model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let missing_journal = Journal::default();
+        let missing_input = TurnInput {
+            operation_id: OperationId::from_bytes([17; 16]),
+            input: ModelContent::Text("missing manifest".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        missing_executor
+            .execute(missing_input.clone(), &missing_journal)
+            .await?;
+        let missing_manifest = missing_journal
+            .replay(missing_input.operation_id)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0, manifest, ..
+                } => Some(manifest),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("pinned manifest is missing".into()))?;
+        let missing_key = {
+            let stored = missing_journal
+                .1
+                .lock()
+                .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+            stored
+                .iter()
+                .find_map(|(key, (reference, _))| {
+                    (reference == &missing_manifest).then(|| key.clone())
+                })
+                .ok_or_else(|| Error::NotFound("pinned manifest bytes".into()))?
+        };
+        missing_journal
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?
+            .remove(&missing_key);
+        assert!(matches!(
+            missing_executor.execute(missing_input, &missing_journal).await,
+            Err(Error::NotFound(_))
+        ));
+        assert_eq!(missing_model.calls.load(Ordering::SeqCst), 1);
+
+        let corrupt_model = Arc::new(ReplayModel {
+            calls: AtomicUsize::new(0),
+        });
+        let corrupt_executor = StockExecutor::new(
+            Model::new("example", "corrupt-manifest", "1", Value::Null)?,
+            corrupt_model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let corrupt_journal = Journal::default();
+        let corrupt_input = TurnInput {
+            operation_id: OperationId::from_bytes([18; 16]),
+            input: ModelContent::Text("corrupt manifest".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        corrupt_executor
+            .execute(corrupt_input.clone(), &corrupt_journal)
+            .await?;
+        let corrupt_manifest = corrupt_journal
+            .replay(corrupt_input.operation_id)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0, manifest, ..
+                } => Some(manifest),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("pinned manifest is missing".into()))?;
+        let mut stored = corrupt_journal
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+        let entry = stored
+            .values_mut()
+            .find(|entry| entry.0 == corrupt_manifest)
+            .ok_or_else(|| Error::NotFound("pinned manifest bytes".into()))?;
+        entry.1 = b"null".to_vec();
+        drop(stored);
+        assert!(matches!(
+            corrupt_executor.execute(corrupt_input, &corrupt_journal).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(corrupt_model.calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 

@@ -1832,10 +1832,15 @@ describe("typed agent runtime", () => {
         expect(Object.isFrozen(request)).toBe(true);
         expect(Object.isFrozen(request.canonical)).toBe(true);
         expect(Object.isFrozen(request.canonical.requestDigest)).toBe(true);
+        expect(Object.isFrozen(request.transport)).toBe(true);
+        expect(Object.isFrozen(request.transport.body)).toBe(true);
+        expect(Object.isFrozen(request.transport.requestDigest)).toBe(true);
         expect(() => { (request as unknown as { canonical: unknown }).canonical = undefined; }).toThrow();
+        expect(() => { (request as unknown as { transport: unknown }).transport = undefined; }).toThrow();
         expect(() => { (request as unknown as { model: unknown }).model = undefined; }).toThrow();
         expect(() => { (request as unknown as { messages: unknown }).messages = []; }).toThrow();
         expect(() => { (request.canonical as { requestJson: string }).requestJson = "mutated"; }).toThrow();
+        expect(() => { (request.transport.body as number[])[0] = 0; }).toThrow();
         canonicalRequests.push(request.canonical.requestJson);
         canonicalManifests.push(request.canonical.manifestJson);
         if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; }
@@ -1862,8 +1867,8 @@ describe("typed agent runtime", () => {
     let projectionCalls = 0;
     const observed: ModelMessage[] = [];
     const serializedRequests: string[] = [];
-    const transportBodies: Uint8Array[] = [];
-    const transportDigests: Uint8Array[] = [];
+    const transportBodies: number[][] = [];
+    const transportDigests: number[][] = [];
     const tool = defineTool<null, Raw>({
       name: "private-result", revision: "1", description: "private result",
       inputSchema: { type: "null" },
@@ -1885,13 +1890,19 @@ describe("typed agent runtime", () => {
           serializedRequests.push(JSON.stringify(request));
           // The mock transport captures the exact admitted body and digest;
           // it must not reconstruct either from the mutable model projection.
-          const transportBody = new TextEncoder().encode(request.canonical.requestJson);
-          const transportDigest = contracts.digestCanonicalJson(
-            JSON.parse(new TextDecoder().decode(transportBody)),
-          );
-          expect([...transportDigest]).toEqual([...request.canonical.requestDigest]);
-          transportBodies.push(transportBody);
-          transportDigests.push(transportDigest);
+          // The mock transport receives the dedicated bytes-only control. It
+          // never serializes the structured provider facade or journal
+          // manifest, so this is an actual body capture rather than a
+          // comparison against a field copied from JSON.stringify(request).
+          const capturedBody = [...request.transport.body];
+          const capturedDigest = [...request.transport.requestDigest];
+          transportBodies.push(capturedBody);
+          transportDigests.push(capturedDigest);
+          const transportJson = new TextDecoder().decode(Uint8Array.from(capturedBody));
+          expect(contracts.digestCanonicalJson(JSON.parse(transportJson)))
+            .toEqual(Uint8Array.from(capturedDigest));
+          expect(transportJson).not.toContain("manifestJson");
+          expect(transportJson).not.toContain("signal");
           observed.push(...request.messages);
           if (modelStep === 0) {
             expect(Object.isFrozen(request.messages)).toBe(true);
@@ -1919,8 +1930,8 @@ describe("typed agent runtime", () => {
     expect(serializedRequests[1]).toContain('"modelOutputSchema"');
     expect(transportBodies).toHaveLength(2);
     expect(transportDigests).toHaveLength(2);
-    expect(transportBodies.map(value => [...value])).toEqual(
-      serializedRequests.map(serialized => [...new TextEncoder().encode(JSON.parse(serialized).canonical.requestJson)]),
+    expect(transportBodies).toEqual(
+      canonicalRequests.map(serialized => [...new TextEncoder().encode(serialized)]),
     );
     const decodedFirst = JSON.parse(serializedRequests[0]!);
     const decodedSecond = JSON.parse(serializedRequests[1]!);
@@ -2002,6 +2013,62 @@ describe("typed agent runtime", () => {
     await runtime.run(input);
     expect(contentReads).toBe(1);
     expect(observed[0]?.content).toEqual(validContent);
+  });
+
+  test("context message sources are snapshotted before canonical and provider admission", async () => {
+    let contentReads = 0;
+    let observed: readonly ModelMessage[] = [];
+    const runtime = Harness.builder(contracts).context({
+      async build() {
+        return [{
+          role: "user" as const,
+          get content(): string {
+            contentReads += 1;
+            return contentReads === 1 ? "stable context" : "forged context";
+          },
+        }];
+      },
+    }).model(testModel, {
+      async *generate(request) {
+        observed = request.messages;
+        const canonical = JSON.parse(request.canonical.requestJson) as {
+          messages: readonly { readonly content: unknown }[];
+        };
+        expect(observed[0]?.content).toBe(canonical.messages[0]?.content);
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run("ignored by context builder");
+    expect(contentReads).toBe(1);
+    expect(observed[0]?.content).toBe("stable context");
+  });
+
+  test("context builders receive the detached direct input snapshot", async () => {
+    let sourceReads = 0;
+    let observed: readonly ModelMessage[] = [];
+    const input = {
+      prompt: "",
+      get content(): readonly UserContentPart[] {
+        sourceReads += 1;
+        return [{ kind: "text", text: "stable direct content" }];
+      },
+    };
+    const runtime = Harness.builder(contracts).context({
+      async build(contextInput) {
+        expect(contextInput.content).toEqual([{ kind: "text", text: "stable direct content" }]);
+        return [{ role: "user" as const, content: contextInput.content ?? "" }];
+      },
+    }).model(testModel, {
+      async *generate(request) {
+        observed = request.messages;
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    }).build();
+    await runtime.run(input);
+    expect(sourceReads).toBe(1);
+    expect(observed[0]?.content).toEqual([{ kind: "text", text: "stable direct content" }]);
   });
 
   test("model identity and options are pinned at binding, including scoped overrides", async () => {

@@ -1669,7 +1669,7 @@ mod tests {
             .await?;
         let output = local
             .storage()
-            .run_conversation(local.bundle(), operation, content, vec![], 8)
+            .run_conversation(local.bundle(), operation, content.clone(), vec![], 8)
             .await?;
         assert_eq!(output.text, "done");
         let records = local.storage().journal().replay(operation).await?;
@@ -1701,6 +1701,18 @@ mod tests {
         );
         assert_eq!(*blake3::hash(wire_bytes).as_bytes(), *wire_digest);
         assert_eq!(wire_bytes, &crate::contract::canonical_json_bytes(received)?);
+        let input_manifest = manifest
+            .messages
+            .iter()
+            .find(|message| !message.files.is_empty())
+            .ok_or_else(|| Error::Storage("attachment is missing from input manifest".into()))?;
+        assert_eq!(input_manifest.files, vec![content.clone()]);
+        assert!(wire_bytes
+            .windows(content.path().len())
+            .any(|window| window == content.path().as_bytes()));
+        assert!(!wire_bytes
+            .windows(b"Whitespace:".len())
+            .any(|window| window == b"Whitespace:"));
         assert!(!wire_bytes
             .windows(b"metadata".len())
             .any(|window| window == b"metadata"));
