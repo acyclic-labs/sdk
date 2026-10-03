@@ -3190,6 +3190,155 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_batch_replay_excludes_future_step_rejection_evidence() -> Result<()> {
+        let executor = StockExecutor::new(
+            Model::new("example", "model", "1", Value::Null)?,
+            Arc::new(ReplayModel {
+                calls: AtomicUsize::new(0),
+            }),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let journal = Journal::default();
+        let operation = OperationId::from_bytes([80; 16]);
+        let definition = crate::tool::ToolDefinition {
+            name: "example.echo".into(),
+            revision: "1".into(),
+            description: "Echo".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"value": {"type": "string"}},
+                "additionalProperties": false,
+            }),
+            output_schema: json!({"type": "object"}),
+            model_output_schema: json!({"type": "object"}),
+        };
+        let request = ModelRequest {
+            model: executor.model.clone(),
+            messages: vec![ModelMessage {
+                role: ModelRole::User,
+                content: ModelContent::Text("hello".into()),
+            }],
+            tools: vec![definition.clone()],
+            max_output_tokens: None,
+        };
+        let prepared =
+            crate::model_input::PreparedModelInput::prepare(request.clone(), executor.limits)?;
+        let manifest =
+            stage_json(&journal, operation, "model:0:input", prepared.manifest()).await?;
+        let request_file = stage_json(&journal, operation, "model:0:request", &request).await?;
+        journal
+            .append(
+                operation,
+                "model:0:input".into(),
+                ExecutionEvent::ModelInputPrepared {
+                    step: 0,
+                    manifest,
+                    request: request_file,
+                },
+            )
+            .await?;
+
+        let current = ToolInvocation {
+            operation_id: operation,
+            call_id: "current-call".into(),
+            name: definition.name.clone(),
+            arguments: json!({"unexpected": true}),
+        };
+        let current_error =
+            validate_value(&definition.input_schema, &current.arguments, "tool input")
+                .expect_err("current call should be malformed")
+                .to_string();
+        let current_feedback = ToolRejectionFeedback::invalid_arguments(
+            &current,
+            &definition.input_schema,
+            &current_error,
+        )?;
+        executor
+            .record_tool_rejection(
+                &journal,
+                operation,
+                0,
+                &current,
+                ToolRejectionKind::InvalidArguments,
+                Some(&current_feedback),
+            )
+            .await?;
+
+        let future = ToolInvocation {
+            operation_id: operation,
+            call_id: "future-call".into(),
+            name: definition.name,
+            arguments: json!({"unexpected": "future"}),
+        };
+        let future_error =
+            validate_value(&definition.input_schema, &future.arguments, "tool input")
+                .expect_err("future call should be malformed")
+                .to_string();
+        let future_feedback = ToolRejectionFeedback::invalid_arguments(
+            &future,
+            &definition.input_schema,
+            &future_error,
+        )?;
+        let future_invocation =
+            stage_json(&journal, operation, "future:invocation", &future).await?;
+        let future_feedback_ref =
+            stage_json(&journal, operation, "future:feedback", &future_feedback).await?;
+        journal
+            .append(
+                operation,
+                "future:rejection".into(),
+                ExecutionEvent::ToolAdmissionRejected {
+                    step: 1,
+                    invocation: future_invocation,
+                    reason: ToolRejectionKind::InvalidArguments,
+                    feedback: Some(future_feedback_ref),
+                },
+            )
+            .await?;
+
+        let current_value = current_feedback.to_model_value(&current_error)?;
+        executor
+            .record_completed_batch(
+                &journal,
+                operation,
+                0,
+                &[
+                    ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: ModelContent::Part(ModelContentPart::ToolCall {
+                            call_id: current.call_id.clone(),
+                            name: current.name.clone(),
+                            arguments: current.arguments.clone(),
+                        }),
+                    },
+                    ModelMessage {
+                        role: ModelRole::Tool,
+                        content: ModelContent::Part(ModelContentPart::ToolResult {
+                            call_id: current.call_id,
+                            name: current.name,
+                            value: current_value,
+                        }),
+                    },
+                ],
+            )
+            .await?;
+        let boundary_ref = journal
+            .replay(operation)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                ExecutionEvent::ToolBatchCompleted { boundary, step: 0 } => Some(boundary),
+                _ => None,
+            })
+            .expect("current batch boundary");
+        let boundary: crate::model_input::CompletedModelBoundary =
+            load_json(&journal, &boundary_ref).await?;
+        assert_eq!(boundary.rejection_evidence, vec![current_feedback]);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn provider_receives_narrow_projection_and_replay_rejects_stale_projection() -> Result<()>
     {
         let model = Arc::new(ProjectionModel {
@@ -3630,6 +3779,89 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_duplicate_or_corrupt_pinned_model_input_before_provider() -> Result<()>
+    {
+        let model = Arc::new(ReplayModel {
+            calls: AtomicUsize::new(0),
+        });
+        let executor = StockExecutor::new(
+            Model::new("example", "replay", "1", Value::Null)?,
+            model.clone(),
+            ContextPipeline::default(),
+            ToolRegistry::default(),
+        );
+        let duplicate_journal = Journal::default();
+        let duplicate_input = TurnInput {
+            operation_id: OperationId::from_bytes([12; 16]),
+            input: ModelContent::Text("duplicate".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor
+            .execute(duplicate_input.clone(), &duplicate_journal)
+            .await?;
+        let prepared = duplicate_journal
+            .replay(duplicate_input.operation_id)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                event @ ExecutionEvent::ModelInputPrepared { step: 0, .. } => Some(event),
+                _ => None,
+            })
+            .expect("pinned model input");
+        duplicate_journal
+            .append(
+                duplicate_input.operation_id,
+                "model:0:duplicate-input".into(),
+                prepared,
+            )
+            .await?;
+        assert!(matches!(
+            executor.execute(duplicate_input, &duplicate_journal).await,
+            Err(Error::Storage(message)) if message.contains("duplicate prepared model input")
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+
+        let corrupt_journal = Journal::default();
+        let corrupt_input = TurnInput {
+            operation_id: OperationId::from_bytes([13; 16]),
+            input: ModelContent::Text("corrupt".into()),
+            selected_context: None,
+            max_steps: 1,
+        };
+        executor
+            .execute(corrupt_input.clone(), &corrupt_journal)
+            .await?;
+        let request_ref = corrupt_journal
+            .replay(corrupt_input.operation_id)
+            .await?
+            .into_iter()
+            .find_map(|record| match record.event {
+                ExecutionEvent::ModelInputPrepared {
+                    request, step: 0, ..
+                } => Some(request),
+                _ => None,
+            })
+            .expect("pinned request");
+        let mut stored = corrupt_journal
+            .1
+            .lock()
+            .map_err(|_| Error::Storage("journal lock poisoned".into()))?;
+        let entry = stored
+            .values_mut()
+            .find(|entry| entry.0 == request_ref)
+            .ok_or_else(|| Error::NotFound("pinned request bytes".into()))?;
+        entry.1 = b"null".to_vec();
+        drop(stored);
+        assert!(matches!(
+            executor.execute(corrupt_input, &corrupt_journal).await,
+            Err(Error::Storage(_))
+        ));
+        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
