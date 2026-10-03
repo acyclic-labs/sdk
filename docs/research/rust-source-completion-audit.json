@@ -26,7 +26,7 @@
     },
     {
       "id": "drift-detection",
-      "evidence": "Root executed actual drift CLI acceptance: 5 tests, 28 assertions, exit 0, 10.56 seconds. Failed stage, missing receipts and incorrect source/output receipts rejected. Genuine generated positive and missing-stage/hash-tamper negatives pending.",
+      "evidence": "Root actual CLI negatives passed 5 tests/28 assertions; retained reviewer 22875fe11 adds repeat drift and directory/file link negatives. Constructed authority-backed positive is synthetic. Real successful full generation, actual output/source tampering and clean reproducibility remain unverified.",
       "state": "partial"
     },
     {
@@ -36,7 +36,7 @@
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Native Stream 36e967c5 and Machines 7897607c implemented; mTLS policy 161d0e15. Installed runtime service tests and seamless automatic platform package selection across targets pending.",
+      "evidence": "Actual installed Windows x64 Stream addon runtime fixture f7518d29d passes TLS CA, rotation, append/idempotency, reads and follow cancellation; binary SHA7275E037DBCFE9C5E8BE83B011D490E14AA79C95951F3589AF2286ACFD62B15B. Machines direct addon tested, TypeScript fromEnv still pending. Harness installed archive and scoped real browser smoke reported; complete cross-platform native and FS/Harness browser behavior qualification remains outstanding.",
       "state": "partial"
     },
     {
@@ -46,12 +46,12 @@
     },
     {
       "id": "docs-source-coverage",
-      "evidence": "Rust-owned Harness integration/runtime guides consumed and website index c46fcd2 uses Rust descriptions. Remaining authored modules/source completeness and fresh full preview bundle pending.",
+      "evidence": "Compiler-derived module paths/signatures and portable host rustdoc profiles committed 4f8a17e57 with 23 library tests. Current generated preview still predates these fields. Actual fresh strict bundle and full source coverage remain required.",
       "state": "partial"
     },
     {
       "id": "released-versions",
-      "evidence": "Root independently verified clean exact cargo tags 0.1.2-0.1.5 with matching docs/projection hashes. Oldest release backfills and complete catalog runtime ingestion pending.",
+      "evidence": "Catalog contains real immutable cargo-v0.1.0 through cargo-v0.1.5 archives. Root verified 0.1.2-0.1.5 provenance; owners report strict older archives and live history/alias/source revision/navigation checks a90851f. Historical archives lack newer reexportTarget metadata and retain external-path fallback; full alias definition fidelity remains partial.",
       "state": "partial"
     },
     {
@@ -66,12 +66,12 @@
     },
     {
       "id": "fast-ci",
-      "evidence": "New full qualification release/manual gated; existing planner root regression 16/16 passed. Genuine fast source drift gate awaits successful generation artifact.",
+      "evidence": "Full downstream checks release/manual gated, existing planner regression16/16 passed. Root37c3e1f53 installs rustfmt/wasm target and replaces duplicate full check generation with drift after generate. Genuine complete output drift and remote runner execution still outstanding.",
       "state": "verified-scoped"
     },
     {
       "id": "public-disclaimer-removal",
-      "evidence": "Website status panels removed; root current-source audit identified remaining Inference/Objects README caveats, assigned docs owner. Historical archives remain immutable.",
+      "evidence": "Root Inference README041a441e and docs cleanup6b825135b/4f8a17e57 remove public maturity and feature-selection prose. Website disclaimer panels removed. Current full-source audit remains required; immutable historical release source remains exact.",
       "state": "in-progress"
     }
   ]
