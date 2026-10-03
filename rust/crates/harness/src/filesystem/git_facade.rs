@@ -672,9 +672,7 @@ impl<S> FilesystemGitFacade<S> {
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        let source = host.generation_ref_id(plan.source_head())?;
-        let target = host.generation_ref_id(plan.target_head())?;
-        self.verify_root_writeback(request, &source, &target)?;
+        self.verify_root_writeback_plan(request, host, plan)?;
         let controller = ParentProjectController::new(
             host,
             parent,
@@ -749,11 +747,7 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
         validate_merge_receipt_inputs(child, notice)?;
-        self.verify_root_writeback(
-            request,
-            &host.generation_ref_id(plan.source_head())?,
-            &host.generation_ref_id(plan.target_head())?,
-        )?;
+        self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, notice).await?;
         self.apply_root_writeback_plan(request, host, parent, plan, selections)
             .await
@@ -784,11 +778,7 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
-        self.verify_root_writeback(
-            request,
-            &host.generation_ref_id(plan.source_head())?,
-            &host.generation_ref_id(plan.target_head())?,
-        )?;
+        self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
         let outcome = self
             .apply_root_writeback_plan(request, host, parent, plan, selections)
@@ -881,11 +871,7 @@ impl<S> FilesystemGitFacade<S> {
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
         validate_merge_receipt_inputs(&child, &notice)?;
-        self.verify_root_writeback(
-            request,
-            &host.generation_ref_id(plan.source_head())?,
-            &host.generation_ref_id(plan.target_head())?,
-        )?;
+        self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
         // The approval was authenticated before content residency and before
         // claiming durable recovery state. Otherwise a forged or stale request
@@ -1031,6 +1017,21 @@ impl<S> FilesystemGitFacade<S> {
         let verifier = super::FilesystemProjectMergeVerifier::new(Arc::new(host.clone()));
         verifier.verify(&receipt).await?;
         Ok(receipt)
+    }
+
+    fn verify_root_writeback_plan<A, O>(
+        &self,
+        request: &RootWritebackRequest,
+        host: &super::FilesystemHost<A, O>,
+        plan: &ParentMergePlan<A, O>,
+    ) -> Result<()>
+    where
+        A: AsyncAuthorityStore,
+        O: AsyncObjectStore,
+    {
+        let source = host.generation_ref_id(plan.source_head())?;
+        let target = host.generation_ref_id(plan.target_head())?;
+        self.verify_root_writeback(request, &source, &target)
     }
 
     fn verify_root_writeback(
