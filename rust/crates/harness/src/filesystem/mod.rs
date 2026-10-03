@@ -52,7 +52,7 @@ mod local;
 pub use local::{DurableHarnessStorage, PersistentLocalHarness};
 
 mod memory;
-pub use memory::{HarnessStorage, LocalHarness, MemoryHarnessStorage};
+pub use memory::{HarnessStorage, LocalHarness, MemoryHarnessStorage, VerifiedModelForkBoundary};
 
 /// Owner-scoped scheduler result staging into one agent-private Filesystem volume.
 pub struct FilesystemSchedulerPayloadStore<A, O> {

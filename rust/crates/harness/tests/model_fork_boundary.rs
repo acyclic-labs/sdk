@@ -7,8 +7,8 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
-        ConversationMessage, Limits, MessageKind, ModelContextSelection, VolumeClass,
-        VolumeOperation, VolumeOwner, VolumeRef,
+        ConversationMessage, Limits, MessageKind, VolumeClass, VolumeOperation, VolumeOwner,
+        VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry,
@@ -27,8 +27,7 @@ use acyclic_harness::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole,
     },
-    model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
-    projection::select_model_context,
+    model_input::{FrozenModelPrefix, PreparedModelInput},
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
@@ -53,7 +52,10 @@ struct CapturedModel {
 }
 impl ModelProvider for CapturedModel {
     fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
-        self.requests.lock().unwrap().push(request);
+        self.requests
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(request);
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
         let events = if self.root && first {
             vec![
@@ -105,38 +107,42 @@ struct ForkAtBatch {
 }
 impl ForkAtBatch {
     async fn publish_children(&self, admission: ModelBatchPublication) -> Result<()> {
-        let journal = self.storage.journal();
-        let bytes = journal.load(&admission.boundary).await?;
-        admission.boundary.descriptor().verify(&bytes)?;
-        let boundary: CompletedModelBoundary =
-            serde_json::from_slice(&bytes).map_err(|error| Error::Storage(error.to_string()))?;
-        boundary.verify(self.limits)?;
-        let mut parent = self
+        // Each refusal precedes workspace preparation or child activation.
+        let mut changed = admission.clone();
+        changed.operation_id = OperationId::from_bytes([250; 16]);
+        assert!(matches!(
+            self.storage
+                .verified_model_fork_boundary(&changed, self.limits)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let mut changed = admission.clone();
+        changed.request = admission.boundary.clone();
+        assert!(matches!(
+            self.storage
+                .verified_model_fork_boundary(&changed, self.limits)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let mut changed = admission.clone();
+        changed.publisher.version.push_str("-substituted");
+        assert!(matches!(
+            self.storage
+                .verified_model_fork_boundary(&changed, self.limits)
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let (boundary, mut parent) = self
             .storage
-            .completed_conversation(admission.parent_operation, admission.step, self.limits)
-            .await?;
-        let state = parent.reducer().conversation().unwrap();
-        let selected = select_model_context(
-            state,
-            ModelContextSelection {
-                conversation_revision: state.messages.len() as u64,
-                message_ids: state.messages.iter().map(|message| message.id).collect(),
-            },
-            &FilesystemContentVerifier::new(
-                self.host.clone(),
-                self.issuer.verifier(),
-                self.storage.owner_scope().clone(),
-                self.limits.file_bytes,
-            )?,
-            self.limits.context_messages,
-            self.limits.attachments,
-            self.limits.render_bytes,
-        )
-        .await?;
-        assert_eq!(selected.messages, boundary.request.messages);
+            .verified_model_fork_boundary(&admission, self.limits)
+            .await?
+            .into_parts();
         let provider = self.project.provider().clone();
         let parent_scope = self.issuer.root_for_agent(
-            self.storage.owner_scope().agent().unwrap(),
+            self.storage
+                .owner_scope()
+                .agent()
+                .ok_or_else(|| Error::Storage("test owner agent missing".into()))?,
             "parent-publishing",
             Capabilities::new([
                 "conversation:append".to_owned(),
@@ -215,7 +221,7 @@ impl ForkAtBatch {
                     inherited_through_sequence: parent
                         .reducer()
                         .conversation()
-                        .unwrap()
+                        .ok_or_else(|| Error::Storage("test parent conversation missing".into()))?
                         .messages
                         .len() as u64,
                     maximum_inherited_messages: 64,
@@ -419,13 +425,17 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
     let boundary = storage
         .completed_model_boundary(operation, 0, limits)
         .await?
-        .unwrap();
-    let captured = children.requests.lock().unwrap();
+        .ok_or_else(|| Error::Storage("test completed boundary missing".into()))?;
+    let captured = children
+        .requests
+        .lock()
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .clone();
     assert_eq!(captured.len(), 2);
     for request in captured.iter() {
         assert_eq!(
-            &request.messages[..boundary.request.messages.len()],
-            boundary.request.messages
+            request.messages.get(..boundary.request.messages.len()),
+            Some(boundary.request.messages.as_slice())
         );
         assert_eq!(request.messages.len(), boundary.request.messages.len() + 2);
         let actual = PreparedModelInput::prepare(request.clone(), limits)?;
@@ -450,7 +460,11 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
     storage
         .run_conversation(&bundle, next_operation, next_input.clone(), Vec::new(), 3)
         .await?;
-    let requests = root_model.requests.lock().unwrap();
+    let requests = root_model
+        .requests
+        .lock()
+        .map_err(|error| Error::Storage(error.to_string()))?
+        .clone();
     assert_eq!(requests.len(), 3);
     let mut expected = boundary.request.messages.clone();
     expected.push(ModelMessage {
@@ -464,7 +478,10 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
             policy: FileProjectionPolicy::BoundedFull,
         }]),
     });
-    assert_eq!(requests[2].messages, expected);
+    assert_eq!(
+        requests.get(2).map(|request| &request.messages),
+        Some(&expected)
+    );
     drop(requests);
     assert!(matches!(
         storage.completed_conversation(operation, 0, limits).await,
@@ -601,7 +618,13 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
             )?));
     let message = ConversationMessage {
         id: uuid::Uuid::from_bytes([4; 16]),
-        sequence: aggregate.reducer().conversation().unwrap().messages.len() as u64 + 1,
+        sequence: aggregate
+            .reducer()
+            .conversation()
+            .ok_or_else(|| Error::Storage("test conversation missing".into()))?
+            .messages
+            .len() as u64
+            + 1,
         kind: MessageKind::User,
         content,
         attachments: Vec::new().into(),

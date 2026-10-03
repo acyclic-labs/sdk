@@ -36,8 +36,11 @@ use std::{
 };
 use uuid::Uuid;
 
+#[path = "model_fork.rs"]
+mod model_fork;
 #[path = "model_history.rs"]
 mod model_history;
+pub use model_fork::VerifiedModelForkBoundary;
 
 type MemoryHost = FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>;
 
