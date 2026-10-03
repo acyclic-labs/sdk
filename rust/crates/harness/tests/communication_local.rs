@@ -337,6 +337,35 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
         .wait(timeout_request.clone(), None)
         .await?;
     assert!(matches!(timed, WaitCompletion::TimedOut));
+    let pre_cancel_request = WaitRequest {
+        operation_id: OperationId::from_bytes([14; 16]),
+        waiter: parent,
+        target: WaitTarget::Messages {
+            task_id: parent,
+            after: 0,
+            limit: 8,
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: Some(OperationId::from_bytes([15; 16])),
+    };
+    assert_eq!(
+        wait_store.open(pre_cancel_request.clone()).await?,
+        None
+    );
+    assert_eq!(
+        DurableCommunication::new(host.clone())
+            .with_wait_store(wait_store.clone())
+            .cancel(pre_cancel_request.clone())
+            .await?,
+        WaitCompletion::Cancelled
+    );
+    assert_eq!(
+        DurableCommunication::new(host.clone())
+            .with_wait_store(wait_store.clone())
+            .wait(pre_cancel_request.clone(), None)
+            .await?,
+        WaitCompletion::Cancelled
+    );
     let (sender, receiver) = tokio::sync::watch::channel(false);
     let cancel_request = WaitRequest {
         operation_id: OperationId::from_bytes([13; 16]),
@@ -374,6 +403,10 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
     );
     assert_eq!(
         reopened_store.open(cancel_request).await?,
+        Some(WaitCompletion::Cancelled)
+    );
+    assert_eq!(
+        reopened_store.open(pre_cancel_request).await?,
         Some(WaitCompletion::Cancelled)
     );
     Ok(())
