@@ -149,13 +149,20 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     ));
     let session = OperationId::new();
     let owner = SwarmOwnerFence::new("worker-a", 0).expect("owner");
-    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
-        .await
-        .expect("start budget");
+    let root_dispatch = IdempotencyKey::new("root-lease").expect("root dispatch");
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner.clone(),
+        limits(),
+        root_dispatch.clone(),
+    )
+    .await
+    .expect("start budget");
     let mut root_usage = SwarmUsageReceiptIssuer::new(
         LocalMeasuredUsage,
         session,
-        IdempotencyKey::new("root-lease").expect("root dispatch"),
+        root_dispatch,
     )
     .expect("root usage issuer");
     journal
@@ -338,9 +345,15 @@ async fn local_stream_wrong_dispatch_receipt_is_rejected_before_append_and_reope
         output_bytes: 8,
         execution_time_ms: 10,
     };
-    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
-        .await
-        .expect("start budget");
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner.clone(),
+        limits(),
+        dispatch_id.clone(),
+    )
+    .await
+    .expect("start budget");
     let mut issuer = SwarmUsageReceiptIssuer::new(
         LocalMeasuredUsage,
         session,
@@ -401,9 +414,15 @@ async fn local_stream_resumed_receipt_cursor_preserves_cumulative_usage() {
         output_bytes: 24,
         execution_time_ms: 30,
     };
-    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
-        .await
-        .expect("start budget");
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner.clone(),
+        limits(),
+        dispatch_id.clone(),
+    )
+    .await
+    .expect("start budget");
     let mut issuer = SwarmUsageReceiptIssuer::new(
         LocalMeasuredUsageSequence::new("provider-a", [first_usage]),
         session,
@@ -446,7 +465,7 @@ async fn local_stream_resumed_receipt_cursor_preserves_cumulative_usage() {
 }
 
 #[tokio::test]
-async fn local_stream_sixteen_independent_providers_have_one_receipt_winner() {
+async fn local_stream_sixteen_independent_receipt_issuers_share_one_cas_append() {
     let root = tempdir().expect("temporary root");
     let stream_path = root.path().join("stream");
     let client = StreamClient::new(Arc::new(
@@ -467,9 +486,15 @@ async fn local_stream_sixteen_independent_providers_have_one_receipt_winner() {
         output_bytes: 16,
         execution_time_ms: 20,
     };
-    let mut journal = SwarmBudgetJournal::start(&client, session, owner.clone(), limits())
-        .await
-        .expect("start budget");
+    let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+        &client,
+        session,
+        owner.clone(),
+        limits(),
+        dispatch_id.clone(),
+    )
+    .await
+    .expect("start budget");
     let mut issuer = SwarmUsageReceiptIssuer::new(
         LocalMeasuredUsageSequence::new("bootstrap-provider", [first_usage]),
         session,
@@ -481,19 +506,23 @@ async fn local_stream_sixteen_independent_providers_have_one_receipt_winner() {
         .await
         .expect("bootstrap root receipt");
     drop(journal);
+    let stream = client
+        .stream(format!("harness/v2/swarm-budget/{session}"))
+        .expect("budget stream");
+    let tail_before = stream.tail().await.expect("tail before receipt race");
 
+    // LocalStream owns a path exclusively. Keep one supported provider handle
+    // and race sixteen independent provider receipt issuers/journal handles
+    // through that shared CAS stream; separate provider processes belong in
+    // the provider conformance suite.
     let results = join_all((0..16).map(|index| {
-        let stream_path = stream_path.clone();
+        let client = client.clone();
         let owner = owner.clone();
         let dispatch_id = dispatch_id.clone();
         async move {
-            let provider = LocalStream::open(stream_path, LocalStreamLimits::default())
-                .await
-                .expect("independent local stream provider");
-            let client = StreamClient::new(Arc::new(provider));
             let mut journal = SwarmBudgetJournal::open(&client, session)
                 .await
-                .expect("open independent journal");
+                .expect("open shared-provider journal");
             let mut issuer = SwarmUsageReceiptIssuer::resume(
                 LocalMeasuredUsageSequence::new(
                     format!("independent-provider-{index}"),
@@ -511,15 +540,14 @@ async fn local_stream_sixteen_independent_providers_have_one_receipt_winner() {
         }
     }))
     .await;
-    assert_eq!(
-        results.iter().filter(|result| result.is_ok()).count(),
-        1,
-        "one CAS winner must publish the next cumulative receipt"
+    assert!(
+        results.iter().any(|result| result.is_ok()),
+        "at least one independent receipt issuer must reach the CAS append"
     );
     assert_eq!(
-        results.iter().filter(|result| result.is_err()).count(),
-        15,
-        "losing independent providers must not append competing receipts"
+        stream.tail().await.expect("tail after receipt race"),
+        tail_before + 1,
+        "sixteen receipt issuers must produce one durable CAS append"
     );
 
     let reopened = SwarmBudgetJournal::open(&client, session)
@@ -610,6 +638,7 @@ fn replay_rejects_live_usage_that_exceeds_an_ancestor_ceiling() -> acyclic_harne
             session_id,
             owner: owner.clone(),
             limits,
+            root_dispatch_id: None,
         },
         SwarmBudgetEvent::ChildReserved {
             reservation: parent.clone(),
