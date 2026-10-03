@@ -17,7 +17,7 @@ Each checkpoint is source-bound and scoped. Historical runs remain in [EVIDENCE.
 
 ## Current verification and unmet gates
 
-The broader native run (handle 43700, runtime source `9497e03db`) finished: nine git-facade cases pass; recursive cases pass 2/3, including all 1,024 levels and grandchild integration. The 32-sibling case fails fork-manifest binding validation before integration. Its cause is under repair; the proposed later notice-ordering fix alone does not resolve it. See [checkpoint-recursive-native-2026-10-04.json](checkpoint-recursive-native-2026-10-04.json).
+The broader native run (handle 43700, runtime source `9497e03db`) finished: nine git-facade cases pass; recursive cases pass 2/3, including all 1,024 levels and grandchild integration. Its 32-sibling failure was a fixture child reusing its parent's identity. The corrected focused scenario passes on `8423ca7a0` (handle 79605), retaining authority checks and pinning approval after notice staging. See [checkpoint-recursive-native-2026-10-04.json](checkpoint-recursive-native-2026-10-04.json) and [checkpoint-sibling-and-transport-2026-10-04.json](checkpoint-sibling-and-transport-2026-10-04.json).
 
 Held fork stack `0cd58c9b4` failed no-run compilation (handle 78431, E0382: consuming invocation arguments before borrowing invocation for replay). That borrow was repaired in `53a07c797`; its subsequent uncommitted centralization proposal failed compilation at a different moved-event use (handle 3886). These changes remain outside the root branch. Further fork work must prove historical policy and context capture before allocation, terminal-state consistency, cancellation at durable model admission, and recursive serialized prefixes through restart.
 
