@@ -1217,15 +1217,31 @@ impl LocalModelForkPlans {
         self.completed.lock().await.get(&operation).copied()
     }
 
-    async fn replay_intent(&self, input: &LocalForkToolInput) -> Option<LocalForkIntent> {
+    async fn replay_intent(
+        &self,
+        parent: TaskId,
+        invocation: &ToolInvocation,
+        input: &LocalForkToolInput,
+    ) -> Option<LocalForkIntent> {
         self.intents
             .lock()
             .await
             .values()
             .find(|intent| {
-                intent.child_operation == input.child_operation
+                intent.parent == parent
+                    && intent.child_operation == input.child_operation
                     && intent.task == input.task
                     && intent.prompt == input.prompt
+                    && intent.call_id.as_deref() == Some(invocation.call_id.as_str())
+                    && ToolInvocation::for_model_call(
+                        intent.parent_operation,
+                        intent.parent_step,
+                        invocation.call_id.clone(),
+                        "acyclic.fork_child".into(),
+                        Value::Null,
+                    )
+                    .operation_id
+                        == invocation.operation_id
                     && input
                         .fork_operation
                         .is_none_or(|operation| operation == intent.fork_operation)
@@ -1488,7 +1504,12 @@ impl ToolExecutor for LocalForkToolExecutor {
             }
             let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
                 .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
-            let Some(intent) = self.plans.replay_intent(&input).await else {
+            invocation.validate()?;
+            let Some(intent) = self
+                .plans
+                .replay_intent(self.parent, &invocation, &input)
+                .await
+            else {
                 return Ok(None);
             };
             Ok(Some(ToolResult {
@@ -3765,6 +3786,7 @@ impl PersistentLocalSwarm {
     ) -> Result<Option<TurnOutput>> {
         let records = load_records(stream).await?;
         let mut recovered = None;
+        let mut replay_form = None;
         for record in records {
             let StoredEvent::ForkCompleted {
                 child: recorded_child,
@@ -3786,6 +3808,13 @@ impl PersistentLocalSwarm {
             }
             let output = match (output, output_ref, output_digest) {
                 (Some(output), None, digest) => {
+                    if replay_form == Some(false) {
+                        return Err(Error::Conflict(
+                            "persisted child completion mixes inline and referenced outputs"
+                                .into(),
+                        ));
+                    }
+                    replay_form = Some(true);
                     if let Some(digest) = digest {
                         let bytes = crate::contract::canonical_json_bytes(&output)?;
                         if crate::contract::canonical_json_digest(&bytes)? != digest {
@@ -3797,6 +3826,13 @@ impl PersistentLocalSwarm {
                     output
                 }
                 (None, Some(file), Some(digest)) => {
+                    if replay_form == Some(true) {
+                        return Err(Error::Conflict(
+                            "persisted child completion mixes inline and referenced outputs"
+                                .into(),
+                        ));
+                    }
+                    replay_form = Some(false);
                     let bytes = harness.storage().read(&file).await?;
                     if crate::contract::canonical_json_digest(&bytes)? != digest {
                         return Err(Error::Conflict(
@@ -4386,18 +4422,59 @@ impl PersistentLocalSwarm {
 
     async fn mark_failed(&self, task: TaskId, reason: String) -> Result<()> {
         let bounded = reason.chars().take(512).collect::<String>();
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let current = self.session(task).await?;
+        if current.phase == LocalSessionPhase::Completed {
+            return Ok(());
+        }
+        if current.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "cancelled local swarm task cannot be overwritten by failure".into(),
+            ));
+        }
+        if let LocalSessionPhase::Failed(existing) = &current.phase {
+            return if existing == &bounded {
+                Ok(())
+            } else {
+                Err(Error::Conflict(
+                    "local swarm failure reason changed during retry".into(),
+                ))
+            };
+        }
         let stream = self
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(
+        if let Err(error) = append_record_at(
             &stream,
             StoredEvent::ForkFailed {
                 child: task,
                 reason: bounded.clone(),
             },
+            observed_tail,
         )
-        .await?;
+        .await
+        {
+            self.refresh_registry_state().await?;
+            let latest = self.session(task).await?;
+            return if latest.phase == LocalSessionPhase::Completed {
+                Ok(())
+            } else if latest.phase == LocalSessionPhase::Cancelled {
+                Err(Error::Conflict(
+                    "cancelled local swarm task won the failure race".into(),
+                ))
+            } else if let LocalSessionPhase::Failed(existing) = latest.phase {
+                if existing == bounded {
+                    Ok(())
+                } else {
+                    Err(Error::Conflict(
+                        "local swarm failure reason changed during retry".into(),
+                    ))
+                }
+            } else {
+                Err(error)
+            };
+        }
         let mut records = self.records.lock().await;
         if let Some(session) = records.get_mut(&task) {
             session.phase = LocalSessionPhase::Failed(bounded);
@@ -4779,6 +4856,12 @@ fn apply_record(
             session.phase = LocalSessionPhase::Completed;
             match (output, output_ref, output_digest) {
                 (Some(output), None, digest) => {
+                    if completion_refs.contains_key(&child) {
+                        return Err(Error::Conflict(
+                            "persisted child completion mixes inline and referenced outputs"
+                                .into(),
+                        ));
+                    }
                     if let Some(digest) = digest {
                         let bytes = crate::contract::canonical_json_bytes(&output)?;
                         if crate::contract::canonical_json_digest(&bytes)? != digest {
@@ -4797,6 +4880,12 @@ fn apply_record(
                     outcomes.insert(child, output);
                 }
                 (None, Some(file), Some(digest)) => {
+                    if outcomes.contains_key(&child) {
+                        return Err(Error::Conflict(
+                            "persisted child completion mixes inline and referenced outputs"
+                                .into(),
+                        ));
+                    }
                     let value = StoredCompletionRef {
                         operation,
                         file,
@@ -4829,6 +4918,14 @@ fn apply_record(
                     session.phase,
                     LocalSessionPhase::Completed | LocalSessionPhase::Cancelled
                 ) {
+                    return Ok(());
+                }
+                if let LocalSessionPhase::Failed(existing) = &session.phase {
+                    if existing != &reason {
+                        return Err(Error::Conflict(
+                            "persisted child failure reason changed".into(),
+                        ));
+                    }
                     return Ok(());
                 }
                 session.phase = LocalSessionPhase::Failed(reason);
