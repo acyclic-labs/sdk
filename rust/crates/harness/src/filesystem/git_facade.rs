@@ -682,9 +682,15 @@ impl<S> FilesystemGitFacade<S> {
             &self.scope,
             self.volume.clone(),
         )?;
-        controller
-            .apply_project_merge_sides(plan, request.approval.operation_id, selections)
-            .await
+        if selections.is_empty() {
+            controller
+                .apply_project_merge(plan, request.approval.operation_id)
+                .await
+        } else {
+            controller
+                .apply_project_merge_sides(plan, request.approval.operation_id, selections)
+                .await
+        }
     }
 
     /// Legacy notice-less root writeback entrypoint.
