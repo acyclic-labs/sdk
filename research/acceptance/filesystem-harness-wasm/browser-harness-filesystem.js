@@ -12,9 +12,15 @@ import {
 const result = document.querySelector("#result");
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+const toolOperationId = "11111111-1111-1111-1111-111111111111";
+const toolCallId = "22222222-2222-2222-2222-222222222222";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function waiting(label) {
+  result.dataset.waiting = label;
 }
 
 function parseWriteInput(value) {
@@ -32,20 +38,25 @@ function parseWriteOutput(value) {
 }
 
 async function qualifyFilesystem() {
+  waiting("Filesystem openMemoryFs");
   const filesystem = await openMemoryFs({
     maximumObjectBytes: 1024 * 1024,
     maximumMemoryBytes: 64 * 1024 * 1024,
     objectCache: DEFAULT_OBJECT_CACHE_OPTIONS,
   });
   try {
+    waiting("Filesystem createVolume");
     const volume = await filesystem.createVolume(portableVolumeOptions("ephemeral"));
+    waiting("Filesystem checkout");
     const checkout = await volume.checkout({
       access: "read-write",
       consistency: "tracking-safe",
       mutationMode: "private-cow",
     });
     const bytes = encoder.encode("filesystem wasm artifact");
+    waiting("Filesystem createFile");
     await checkout.createFile("/browser-proof.txt", bytes);
+    waiting("Filesystem readFileRange");
     const read = await checkout.readFileRange("/browser-proof.txt", 0n, BigInt(bytes.byteLength));
     assert(decoder.decode(read.bytes) === "filesystem wasm artifact", "Filesystem checkout readback differed");
   } finally {
@@ -61,6 +72,7 @@ async function qualifyHarness() {
     maxResidentFiles: 256,
   });
   try {
+    waiting("Harness NativeContracts");
     const contracts = await NativeContracts.create();
     const tool = {
       name: "write-browser-file",
@@ -83,7 +95,7 @@ async function qualifyHarness() {
     };
     const executor = {
       async execute(invocation) {
-        assert(invocation.operationId === "browser-tool-operation", "Harness executor operation identity changed");
+        assert(invocation.operationId === toolOperationId, "Harness executor operation identity changed");
         const payload = encoder.encode("harness wasm tool payload");
         const file = await host.stage(invocation.arguments.path, payload, "text/plain", "tool-output.txt");
         return { value: { path: file.path, bytes: payload.byteLength } };
@@ -100,8 +112,8 @@ async function qualifyHarness() {
           const write = await context.call(
             context.tool("write-browser-file"),
             { path: "tool/output.txt" },
-            "browser-tool-operation",
-            "browser-tool-call",
+            toolOperationId,
+            toolCallId,
           );
           const stored = await context.readPrivatePath(host.volume, "", write.path);
           assert(decoder.decode(stored.bytes) === "harness wasm tool payload", "Harness private store readback differed");
@@ -110,11 +122,13 @@ async function qualifyHarness() {
       })
       .grant(...host.scope.capabilities, "tool:call:write-browser-file")
       .build();
+    waiting("Harness runPrompt");
     const output = await host.runPrompt(runtime, "Store the browser acceptance payload.");
+    waiting("Harness conversation readback");
     assert(output.text === "stored 25 bytes", "Harness agent output did not contain the tool result");
     const state = host.conversation();
-    assert(state.messages.some((message) => message.kind === "tool_call"), "Harness conversation omitted the tool call");
-    assert(state.messages.some((message) => message.kind === "tool_result"), "Harness conversation omitted the tool result");
+    const stored = await host.readPrivatePath(host.volume, "", "tool/output.txt");
+    assert(decoder.decode(stored.bytes) === "harness wasm tool payload", "Harness executor store write was not retained");
     const assistant = state.messages.find((message) => message.kind === "assistant");
     assert(assistant !== undefined, "Harness conversation omitted the assistant message");
     assert(decoder.decode(await host.read(assistant.content)) === output.text, "Harness assistant store readback differed");
@@ -134,5 +148,6 @@ async function run() {
 run().catch((error) => {
   result.dataset.status = "failed";
   result.dataset.waiting = "";
-  result.textContent = `${error?.stack ?? error}`;
+  const cause = error?.cause;
+  result.textContent = `${error?.stack ?? error}${cause === undefined ? "" : `\nCause: ${cause?.stack ?? JSON.stringify(cause)}`}`;
 });

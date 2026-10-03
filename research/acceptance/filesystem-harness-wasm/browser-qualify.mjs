@@ -19,7 +19,7 @@ import { fileURLToPath } from "node:url";
 const PAGES = ["browser-harness-filesystem.html"];
 // The one deadline a page has. Pages wait on their own actors without one,
 // except for an actor to start (see `openActor`).
-const PAGE_DEADLINE_MS = 600_000;
+const PAGE_DEADLINE_MS = 120_000;
 const root = resolve(fileURLToPath(new URL("../../../", import.meta.url)));
 const require = createRequire(import.meta.url);
 const requiredArtifacts = [
@@ -225,6 +225,9 @@ async function runPage(browser, observer, origin, page) {
       );
       const value = evaluated.result.value;
       last = value;
+      if (observer.events.length > 0) {
+        return { status: "failed", text: value?.text ?? "browser page raised an exception" };
+      }
       return value?.status === "passed" || value?.status === "failed" ? value : undefined;
     }).catch((error) => {
       throw new Error(`${error.message}; the page was waiting for: ${last?.waiting || "nothing"}`);
