@@ -235,6 +235,63 @@
         "detached admission fixture rejects"
       ],
       "contract_scope": "tool revision FileRef artifacts and private projection replay now passed; WASM refresh and remaining failures required"
+    },
+    {
+      "suite": "native budget accounting",
+      "source": "18aeec63",
+      "command": "cargo test -p acyclic-harness --lib swarm_budget -j 2 -- --nocapture",
+      "passed": 23,
+      "failed": 0,
+      "ignored": 0,
+      "artifact_sha256": "2bdce92df9cdc98080f14bd0b2f6eae8529108e6943dac1d7c04e2bbc2582dbb",
+      "suite_sha256": "66a4bc1967c8d1f5c6a74b4dd9a86d95a9ad73f8f4b963255fa3197d6b507186",
+      "contract_scope": "native budget reducer, issuer, ancestor accounting and unit journal; runtime limiter integration and filesystem-local acceptance remain pending"
+    },
+    {
+      "suite": "native executor contracts",
+      "source": "c92eee9e",
+      "passed": 19,
+      "failed": 2,
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --lib executor -j 2 -- --nocapture",
+      "failures": [
+        "later malformed tool call feedback lacks accumulated pinned evidence",
+        "journal duplicate preparation fixture error classification mismatch"
+      ],
+      "contract_scope": "actual stock executor replay/provider projection, with required failures unresolved; executable overwritten by subsequent budget build"
+    },
+    {
+      "suite": "GraphCoder TypeScript terminal",
+      "source": "f7ce14cb",
+      "passed": 40,
+      "failed": 0,
+      "assertions": 133,
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts typescript/packages/graphcoder/test/dispatcher.test.ts typescript/packages/graphcoder/test/process.test.ts",
+      "contract_scope": "protocol source regressions; full-window control, stale queued UI, installed PTY still require verification"
+    },
+    {
+      "suite": "memory conversation",
+      "source": "a1a88d3e",
+      "passed": 23,
+      "failed": 1,
+      "assertions": 163,
+      "command": "bun test typescript/packages/harness/test/memory-conversation.test.ts",
+      "log_sha256": "b491795ba1e55d671275e178c61940ca66a0c96b94aa0dbb6066d22e30f77070",
+      "failures": [
+        "predispatch limit refusal reported as indeterminate"
+      ],
+      "contract_scope": "retained-output shortcut did not repair initial context overflow outcome; owner repair pending"
+    },
+    {
+      "suite": "local swarm recovery compile",
+      "source": "a1a23229",
+      "exit_code": 1,
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test local_swarm_recovery --no-run -j 2",
+      "failures": [
+        "private Capabilities import (fixed ff057858)",
+        "local and swarm approval wrappers still call removed unauthenticated resolver"
+      ],
+      "contract_scope": "compile failure only; no recovery scenario execution"
     }
   ],
   "input_digests": {

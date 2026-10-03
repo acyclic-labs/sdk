@@ -20,9 +20,9 @@ use acyclic_harness::{
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
 use futures::{
+    StreamExt as _,
     future::BoxFuture,
     stream::{self, BoxStream},
-    StreamExt as _,
 };
 use serde_json::{Value, json};
 use std::{
@@ -33,6 +33,7 @@ use std::{
     },
 };
 use tempfile::tempdir;
+use tokio::time::{Duration, timeout};
 
 /// A provider-side fault adapter.  `blocked` pauses the first event after the
 /// model request has been admitted, which leaves the durable local registry
@@ -74,16 +75,22 @@ impl RecoveryProvider {
     }
 
     async fn wait_for_calls(&self, expected: usize) {
-        for _ in 0..50_000 {
-            if self.calls.load(Ordering::SeqCst) >= expected {
-                return;
+        let observed = timeout(Duration::from_secs(2), async {
+            loop {
+                if self.calls.load(Ordering::SeqCst) >= expected {
+                    break self.calls.load(Ordering::SeqCst);
+                }
+                tokio::task::yield_now().await;
             }
-            tokio::task::yield_now().await;
-        }
-        panic!(
-            "provider did not receive {expected} calls (received {})",
-            self.calls.load(Ordering::SeqCst)
-        );
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "provider did not receive {expected} calls (received {})",
+                self.calls.load(Ordering::SeqCst)
+            )
+        });
+        assert!(observed >= expected);
     }
 
     fn release(&self) {
@@ -198,7 +205,12 @@ async fn local_cancellation_survives_restart_and_blocks_dispatch() -> Result<()>
         reopened.session(task).await?.phase,
         LocalSessionPhase::Cancelled
     );
-    assert!(reopened.run_root(OperationId::new(), "must not dispatch").await.is_err());
+    assert!(
+        reopened
+            .run_root(OperationId::new(), "must not dispatch")
+            .await
+            .is_err()
+    );
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
@@ -247,7 +259,12 @@ async fn local_lost_provider_reply_is_indeterminate_until_owner_reconciles() -> 
         Limits::default(),
     )
     .await?;
-    assert!(swarm.run_root(operation, "reply may be lost").await.is_err());
+    assert!(
+        swarm
+            .run_root(operation, "reply may be lost")
+            .await
+            .is_err()
+    );
     drop(swarm);
 
     let reopened = PersistentLocalSwarm::open_with_model(
@@ -366,13 +383,9 @@ async fn local_cancellation_cannot_be_overwritten_by_inflight_completion() -> Re
     drop(first);
     drop(second);
 
-    let reopened = PersistentLocalSwarm::open_with_model(
-        root.path(),
-        model()?,
-        provider,
-        Limits::default(),
-    )
-    .await?;
+    let reopened =
+        PersistentLocalSwarm::open_with_model(root.path(), model()?, provider, Limits::default())
+            .await?;
     assert_eq!(
         reopened.session(task).await?.phase,
         LocalSessionPhase::Cancelled,
