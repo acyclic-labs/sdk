@@ -1,0 +1,21 @@
+{
+  "source_snapshot": "bfd4da59e",
+  "handle": 31285,
+  "model_wait": {
+    "artifact_sha256": "3C704D504BBA5DA55E8D691AEB450CFB079EAE117FDFE7B63F9172138266911A",
+    "command": "cargo test -p acyclic-harness --features filesystem-local --lib model_wait_uses_the_authenticated_task_in_persistent_swarm -j2 -- --nocapture",
+    "suite_sha256": "0A8C5237889BC44E85AD36CD810B55E7E3A99FE5A758049623EFC4B0380656CC",
+    "passed": 1,
+    "failed": 0
+  },
+  "recursive": {
+    "repair": "f519cafc2 releases retained post-apply recovery journal",
+    "failure": "Storage(local Stream root is already open) during cold conflict reopen",
+    "exit_code": 1,
+    "passed": 1,
+    "failed": 1,
+    "artifact": "not retained separately before focused rerun"
+  },
+  "scope": "Model-invoked wait verifies owning task identity and terminal result; cold workspace conflict still failed at this source. Not full communication swarm or process qualification.",
+  "qualification": "incomplete"
+}
