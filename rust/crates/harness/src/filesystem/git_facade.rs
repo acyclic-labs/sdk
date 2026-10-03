@@ -330,7 +330,7 @@ impl<S> FilesystemGitFacade<S> {
             .await
     }
 
-    /// Publishes a previously inspected direct-child plan under parent authority.
+    /// Publishes a previously inspected project join under parent authority.
     pub(crate) async fn apply_project_merge<A, O>(
         &self,
         host: &super::FilesystemHost<A, O>,
@@ -352,27 +352,34 @@ impl<S> FilesystemGitFacade<S> {
         controller.apply_project_merge(plan, operation_id).await
     }
 
-    /// Publishes a plan only after rechecking the direct-child fork boundary.
+    /// Legacy notice-less direct-child publication entrypoint.
+    ///
+    /// This method is retained as a source-compatible guard for older callers,
+    /// but deliberately refuses to publish. Every successful merge must admit
+    /// its notice content before the provider effect, so callers must use
+    /// [`Self::apply_project_merge_for_child_with_notice`] or
+    /// [`Self::apply_project_merge_for_child_with_receipt`].
+    #[deprecated(note = "use a notice-bound direct-child merge method")]
     #[allow(
         clippy::too_many_arguments,
         reason = "publication keeps parent, child, plan, and operation identities explicit"
     )]
     pub async fn apply_project_merge_for_child<A, O>(
         &self,
-        host: &super::FilesystemHost<A, O>,
-        parent: &Reducer,
-        child: &Authority,
-        child_project: &VolumeRef,
-        plan: &ParentMergePlan<A, O>,
-        operation_id: OperationId,
+        _host: &super::FilesystemHost<A, O>,
+        _parent: &Reducer,
+        _child: &Authority,
+        _child_project: &VolumeRef,
+        _plan: &ParentMergePlan<A, O>,
+        _operation_id: OperationId,
     ) -> Result<JoinOutcome<A, O>>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
-        self.apply_project_merge(host, parent, plan, operation_id)
-            .await
+        Err(Error::Unauthorized(
+            "direct-child merge requires a validated merge notice; use apply_project_merge_for_child_with_notice or _with_receipt".into(),
+        ))
     }
 
     /// Validates the merge notice and direct-child binding immediately before
@@ -692,28 +699,35 @@ impl<S> FilesystemGitFacade<S> {
             .await
     }
 
-    /// Approved native writeback with a final direct-parent lineage fence.
+    /// Legacy notice-less root writeback entrypoint.
+    ///
+    /// This method is retained as a source-compatible guard for older callers,
+    /// but deliberately refuses to publish. Every successful root writeback
+    /// must admit its notice content before the provider effect, so callers
+    /// must use a notice-bound or receipt-bound method.
+    #[deprecated(note = "use a notice-bound root writeback method")]
     #[allow(
         clippy::too_many_arguments,
         reason = "approved writeback keeps all authority and generation inputs explicit"
     )]
     pub async fn apply_root_writeback_plan_for_child<A, O>(
         &self,
-        request: &RootWritebackRequest,
-        host: &super::FilesystemHost<A, O>,
-        parent: &Reducer,
-        child: &Authority,
-        child_project: &VolumeRef,
-        plan: &ParentMergePlan<A, O>,
-        selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
+        _request: &RootWritebackRequest,
+        _host: &super::FilesystemHost<A, O>,
+        _parent: &Reducer,
+        _child: &Authority,
+        _child_project: &VolumeRef,
+        _plan: &ParentMergePlan<A, O>,
+        _selections: std::collections::BTreeMap<MergeConflict, ConflictSide>,
     ) -> Result<JoinOutcome<A, O>>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
     {
-        self.authorize_direct_child_plan(parent, child, child_project, plan)?;
-        self.apply_root_writeback_plan(request, host, parent, plan, selections)
-            .await
+        Err(Error::Unauthorized(
+            "root writeback requires a validated merge notice; use _with_notice or _with_receipt"
+                .into(),
+        ))
     }
 
     /// Approved native writeback whose child and merge notice are validated at
