@@ -1055,6 +1055,12 @@ impl<A, O> ParentMergePlan<A, O> {
     pub const fn common_ancestor(&self) -> GenerationId {
         self.plan.common_ancestor()
     }
+
+    /// Exact child project captured by this inspected plan.
+    #[must_use]
+    pub const fn child_project(&self) -> &VolumeRef {
+        &self.child_project
+    }
 }
 
 impl<'a, A, O> ParentProjectController<'a, A, O> {
@@ -1387,6 +1393,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         notice: crate::conversation::ConversationMessage,
     ) -> Result<ProjectMergeReceipt> {
         self.require_merge_plan(plan)?;
+        if child.kind != crate::core::AggregateKind::Conversation {
+            return Err(Error::Invalid(
+                "project join child is not a conversation".into(),
+            ));
+        }
+        child.stream_path()?;
+        notice.validate()?;
+        if notice.kind != crate::conversation::MessageKind::Merge {
+            return Err(Error::Invalid("project join notice is not a merge".into()));
+        }
         let (JoinOutcome::Applied(application) | JoinOutcome::AlreadyApplied(application)) =
             outcome
         else {
