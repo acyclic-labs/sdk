@@ -122,24 +122,7 @@ where
     }
 
     fn validate_key(&self, key: &ExecutionReceiptKey) -> Result<()> {
-        if key.operation_id.into_bytes() == [0; 16]
-            || key.effect_id.into_bytes() == [0; 16]
-            || key.attempt_id.into_bytes() == [0; 16]
-            || key.request_digest == [0; 32]
-        {
-            return Err(Error::Invalid(
-                "execution receipt key contains an empty identity or request digest".into(),
-            ));
-        }
-        if key.provider != "harness.native-execution.v1"
-            || key.effect_kind != "host.process"
-            || key.guarantee != crate::core::EffectGuarantee::AtMostOnce
-        {
-            return Err(Error::Unauthorized(
-                "execution receipt key is not for the authenticated native provider".into(),
-            ));
-        }
-        Ok(())
+        key.validate()
     }
 
     async fn events(&self) -> Result<(u64, Vec<ExecutionReceiptEvent>)> {
@@ -1354,6 +1337,24 @@ impl PersistentLocalHarness {
             self.storage.content_verifier(),
             self.execution_receipt_store()?,
             self.storage.execution_approval_verifier(),
+        )
+    }
+
+    /// Authenticates an externally issued operator grant against this
+    /// reopened session's configured issuer and conversation audience.  The
+    /// resulting capability is bound to this exact session, private volume,
+    /// and operation; callers cannot redirect it to another local session.
+    pub fn authenticate_execution_resolution(
+        &self,
+        operator: &Scope,
+        operation_id: OperationId,
+    ) -> Result<ExecutionResolutionCapability> {
+        ExecutionResolutionCapability::authenticate(
+            &self.storage.verifier(),
+            operator,
+            self.storage.session_id(),
+            self.storage.volume(),
+            operation_id,
         )
     }
 

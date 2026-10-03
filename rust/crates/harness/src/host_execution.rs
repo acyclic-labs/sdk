@@ -283,9 +283,12 @@ impl ExecutionApproval {
 
     /// Checks that persisted approval bytes still name the exact request.
     pub fn validate(&self) -> Result<()> {
-        if self.session_id.into_bytes() == [0; 16] || self.interaction_id.into_bytes() == [0; 16] {
+        if self.session_id.into_bytes() == [0; 16]
+            || self.interaction_id.into_bytes() == [0; 16]
+            || self.operation_id.into_bytes() == [0; 16]
+        {
             return Err(Error::Invalid(
-                "execution approval must identify its session and interaction".into(),
+                "execution approval must identify its session, interaction, and operation".into(),
             ));
         }
         let digest = self.request.digest()?;
@@ -306,6 +309,14 @@ impl ExecutionApproval {
                     "denied execution has no bounded reason".into(),
                 ));
             }
+        }
+        if self
+            .request_locator_digest
+            .is_some_and(|digest| digest == [0; 32])
+        {
+            return Err(Error::Invalid(
+                "execution approval request location digest cannot be empty".into(),
+            ));
         }
         Ok(())
     }
@@ -436,6 +447,35 @@ pub struct ExecutionReceiptKey {
     pub request_digest: [u8; 32],
 }
 
+impl ExecutionReceiptKey {
+    /// Validates the canonical identity and provider tuple of one receipt slot.
+    ///
+    /// The operation/effect relationship is checked when the key is matched
+    /// to a dispatch.  Keeping this check local to the key also lets durable
+    /// stores reject malformed journal records before exposing them to a
+    /// provider restart path.
+    pub fn validate(&self) -> Result<()> {
+        if self.operation_id.into_bytes() == [0; 16]
+            || self.effect_id.into_bytes() == [0; 16]
+            || self.attempt_id.into_bytes() == [0; 16]
+            || self.request_digest == [0; 32]
+        {
+            return Err(Error::Invalid(
+                "execution receipt key contains an empty identity or request digest".into(),
+            ));
+        }
+        if self.provider != "harness.native-execution.v1"
+            || self.effect_kind != "host.process"
+            || self.guarantee != EffectGuarantee::AtMostOnce
+        {
+            return Err(Error::Unauthorized(
+                "execution receipt key is not for the authenticated native provider".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Durable receipt plus its host-owned result artifact.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -490,11 +530,51 @@ impl std::fmt::Debug for ExecutionResolutionCapability {
 }
 
 impl ExecutionResolutionCapability {
+    /// The generic grant required on every externally issued operator scope.
+    pub const GENERIC_CAPABILITY: &'static str = "execution:resolve";
+
+    /// Returns the canonical capability for one exact execution session.
+    pub fn session_capability(session_id: SessionId) -> String {
+        format!("execution:resolve:session:{session_id}")
+    }
+
+    /// Returns the canonical capability for one exact private volume.
+    pub fn volume_capability(volume: &VolumeRef) -> Result<String> {
+        volume.validate()?;
+        let digest = crate::contract::canonical_json_digest(volume)?;
+        Ok(format!(
+            "execution:resolve:volume:{}",
+            blake3::Hash::from_bytes(digest).to_hex()
+        ))
+    }
+
+    /// Returns the canonical capability for one exact operation.
+    pub fn operation_capability(operation_id: OperationId) -> String {
+        // Keep the original public spelling stable; the session and volume
+        // capabilities added alongside it provide the remaining exact bind.
+        format!("execution:resolve:{operation_id}")
+    }
+
+    /// Returns all exact capabilities required to resolve one native attempt.
+    pub fn capabilities_for(
+        session_id: SessionId,
+        volume: &VolumeRef,
+        operation_id: OperationId,
+    ) -> Result<[String; 4]> {
+        Ok([
+            Self::GENERIC_CAPABILITY.to_owned(),
+            Self::session_capability(session_id),
+            Self::volume_capability(volume)?,
+            Self::operation_capability(operation_id),
+        ])
+    }
+
     pub(crate) fn owner_token(
         session_id: SessionId,
         volume: &VolumeRef,
         owner_scope: &crate::core::Scope,
     ) -> Result<[u8; 32]> {
+        volume.validate()?;
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid(
                 "execution resolution session identity cannot be zero".into(),
@@ -503,7 +583,7 @@ impl ExecutionResolutionCapability {
         let mut input = Vec::with_capacity(64);
         input.extend_from_slice(b"acyclic:harness:execution-resolution:v1");
         input.extend_from_slice(&session_id.into_bytes());
-        input.extend_from_slice(volume.id().as_bytes());
+        input.extend_from_slice(&crate::contract::canonical_json_digest(volume)?);
         input.extend_from_slice(owner_scope.proof());
         Ok(*blake3::hash(&input).as_bytes())
     }
@@ -518,23 +598,24 @@ impl ExecutionResolutionCapability {
         volume: &VolumeRef,
         operation_id: OperationId,
     ) -> Result<Self> {
+        volume.validate()?;
         verifier.verify(operator)?;
+        let capabilities = Self::capabilities_for(session_id, volume, operation_id)?;
         if session_id.into_bytes() == [0; 16]
             || operation_id.into_bytes() == [0; 16]
             || operator.id().is_empty()
-            || !operator.capabilities().contains("execution:resolve")
-            || !operator
-                .capabilities()
-                .contains(&format!("execution:resolve:{operation_id}"))
+            || capabilities
+                .iter()
+                .any(|capability| !operator.capabilities().contains(capability))
         {
             return Err(Error::Unauthorized(
-                "operator scope lacks the exact execution resolution capability".into(),
+                "operator scope lacks the exact execution session, volume, and operation capabilities".into(),
             ));
         }
         let mut input = Vec::with_capacity(96);
         input.extend_from_slice(b"acyclic:harness:execution-resolution:v2");
         input.extend_from_slice(&session_id.into_bytes());
-        input.extend_from_slice(volume.id().as_bytes());
+        input.extend_from_slice(&crate::contract::canonical_json_digest(volume)?);
         input.extend_from_slice(&operation_id.into_bytes());
         input.extend_from_slice(operator.proof());
         Ok(Self {
@@ -556,8 +637,11 @@ impl ExecutionResolutionCapability {
         self.session_id == session_id
             && self.volume == *volume
             && &self.token == token
-            && operation_id
-                .is_none_or(|actual| self.operation_id.is_none_or(|expected| expected == actual))
+            && match (self.operation_id, operation_id) {
+                (Some(expected), Some(actual)) => expected == actual,
+                (Some(_), None) => false,
+                (None, _) => true,
+            }
     }
 
     pub(crate) fn principal(&self) -> &str {
@@ -664,9 +748,7 @@ pub enum ExecutionClaim {
 impl ExecutionReceiptRecord {
     /// Validates the record independently of a dispatch lookup.
     pub fn validate(&self) -> Result<()> {
-        if self.key.provider.is_empty() || self.key.effect_kind.is_empty() {
-            return Err(Error::Invalid("execution receipt key is incomplete".into()));
-        }
+        self.key.validate()?;
         self.result.validate()?;
         if self.result.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid(
