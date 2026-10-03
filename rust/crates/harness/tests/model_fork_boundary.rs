@@ -7,8 +7,8 @@ use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     batch_publication::{ModelBatchPublication, ModelBatchPublisher},
     conversation::{
-        ConversationMessage, Limits, MessageKind, VolumeClass, VolumeOperation, VolumeOwner,
-        VolumeRef,
+        ContentResidencyVerifier, ConversationMessage, Limits, MessageKind, VolumeClass,
+        VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{
         Action, AggregateKind, Authority, AuthorityIssuer, Command, EffectGuarantee, SchemaRegistry,
@@ -27,7 +27,7 @@ use acyclic_harness::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole,
     },
-    model_input::{FrozenModelPrefix, PreparedModelInput},
+    model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
@@ -106,6 +106,150 @@ struct ForkAtBatch {
     paused: bool,
 }
 impl ForkAtBatch {
+    async fn attached_reader(
+        &self,
+        seed: &acyclic_harness::fork::ForkSeed,
+        issuer: &AuthorityIssuer,
+        admission: &ModelBatchPublication,
+    ) -> Result<FilesystemContentVerifier<LocalAuthorityBackend, LocalObjectBackend>> {
+        let attached = AgentId::from_bytes([220; 16]);
+        let attached_scope = issuer.root_for_agent(
+            attached,
+            "exact-prefix-reader",
+            seed.reference_capabilities(attached)?,
+        );
+        let attached_reader = FilesystemContentVerifier::new(
+            self.host.clone(),
+            issuer.verifier(),
+            attached_scope,
+            self.limits.file_bytes,
+        )?;
+        for prefix in &seed.inherited_context {
+            attached_reader.read(prefix).await?;
+        }
+        assert!(matches!(
+            attached_reader.read(&admission.request).await,
+            Err(Error::Unauthorized(_))
+        ));
+        let ungranted_scope = issuer.root_for_agent(
+            attached,
+            "no-prefix-grants",
+            Capabilities::new(std::iter::empty::<String>()),
+        );
+        let ungranted_reader = FilesystemContentVerifier::new(
+            self.host.clone(),
+            issuer.verifier(),
+            ungranted_scope,
+            self.limits.file_bytes,
+        )?;
+        for prefix in &seed.inherited_context {
+            assert!(matches!(
+                ungranted_reader.read(prefix).await,
+                Err(Error::Unauthorized(_))
+            ));
+        }
+
+        Ok(attached_reader)
+    }
+
+    async fn verified_child_storage(
+        &self,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &acyclic_harness::fork::ForkSeed,
+        issuer: AuthorityIssuer,
+        boundary: &CompletedModelBoundary,
+        admission: &ModelBatchPublication,
+        index: u8,
+    ) -> Result<DurableHarnessStorage> {
+        let attached_reader = self.attached_reader(seed, &issuer, admission).await?;
+        let mut forged = seed.clone();
+        forged.operation_id = OperationId::from_bytes([251; 16]);
+        assert!(matches!(
+            HarnessStorage::from_published_fork(
+                self.limits.file_bytes,
+                self.host.clone(),
+                self.stream.clone(),
+                issuer.clone(),
+                parent,
+                &forged,
+            )
+            .await,
+            Err(Error::Unauthorized(_) | Error::Conflict(_))
+        ));
+        let storage = HarnessStorage::from_published_fork(
+            self.limits.file_bytes,
+            self.host.clone(),
+            self.stream.clone(),
+            issuer.clone(),
+            parent,
+            seed,
+        )
+        .await?;
+        let primary = boundary
+            .request
+            .messages
+            .iter()
+            .find_map(|message| match &message.content {
+                ModelContent::Parts(parts) => parts.iter().find_map(|part| {
+                    if let ModelContentPart::File { file, .. } = part {
+                        Some(file.clone())
+                    } else {
+                        None
+                    }
+                }),
+                _ => None,
+            })
+            .ok_or_else(|| Error::Storage("inherited primary file missing".into()))?;
+        let original = self.storage.read(&primary).await?;
+        assert_eq!(storage.read(&primary).await?, original);
+        let later = self
+            .storage
+            .stage(
+                OperationId::from_bytes([index + 110; 16]),
+                &format!("later/{index}.txt"),
+                b"later parent bytes",
+                "text/plain",
+                "later.txt",
+            )
+            .await?;
+        assert!(matches!(
+            storage.read(&later).await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert_eq!(storage.read(&primary).await?, original);
+        let child_file = storage
+            .stage(
+                OperationId::from_bytes([index + 120; 16]),
+                "scratch/private.txt",
+                b"child scratch",
+                "text/plain",
+                "private.txt",
+            )
+            .await?;
+        assert!(matches!(
+            attached_reader.read(&child_file).await,
+            Err(Error::Unauthorized(_))
+        ));
+        for prefix in &seed.inherited_context {
+            attached_reader.read(prefix).await?;
+        }
+        let reopened = HarnessStorage::from_published_fork(
+            self.limits.file_bytes,
+            self.host.clone(),
+            self.stream.clone(),
+            issuer,
+            parent,
+            seed,
+        )
+        .await?;
+        assert_eq!(reopened.read(&primary).await?, original);
+        assert!(matches!(
+            reopened.read(&later).await,
+            Err(Error::Unauthorized(_))
+        ));
+        Ok(storage)
+    }
+
     async fn publish_children(&self, admission: ModelBatchPublication) -> Result<()> {
         // Each refusal precedes workspace preparation or child activation.
         let mut changed = admission.clone();
@@ -214,7 +358,7 @@ impl ForkAtBatch {
                 parent_revision: parent.reducer().revision(),
                 child: child_authority.clone(),
                 child_agent,
-                attached_agents: Vec::new(),
+                attached_agents: vec![AgentId::from_bytes([220; 16])],
                 preparation: ForkPreparation {
                     child_project_volume: project,
                     child_private_volume: private.clone(),
@@ -265,19 +409,12 @@ impl ForkAtBatch {
             .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(
                 self.host.clone(),
             )));
-            child
+            let seed = child
                 .spawn_from_report(&mut parent, report, parent_scope.clone(), child_scope)
                 .await?;
-            let storage = HarnessStorage::from_providers(
-                child_agent,
-                self.limits.file_bytes,
-                self.host.clone(),
-                self.stream.clone(),
-                private,
-                child_authority,
-                child_issuer,
-            )
-            .await?;
+            let storage = self
+                .verified_child_storage(&parent, &seed, child_issuer, &boundary, &admission, index)
+                .await?;
             let suffix = vec![ModelMessage {
                 role: ModelRole::System,
                 content: ModelContent::Text(format!(

@@ -88,6 +88,7 @@ pub struct HarnessStorage<P, A, O> {
     host: Arc<FilesystemHost<A, O>>,
     volume: VolumeRef,
     read_capability: String,
+    inherited_reads: Capabilities,
     write_capability: String,
     write: ContentGrant,
     scope: Scope,
@@ -700,6 +701,82 @@ where
         conversation: Authority,
         issuer: AuthorityIssuer,
     ) -> Result<Self> {
+        Self::from_providers_with_reads(
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            Capabilities::new(std::iter::empty::<String>()),
+        )
+        .await
+    }
+
+    /// Opens a child with exact immutable read grants from its published seed.
+    /// This reuses typed parent publication and child binding verification;
+    /// possession of an untrusted seed alone never grants ancestor access.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
+    pub async fn from_published_fork(
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<P>,
+        seed: &crate::fork::ForkSeed,
+    ) -> Result<Self> {
+        seed.validate()?;
+        let volume = seed.child_private_volume.clone();
+        validate_storage_owner(seed.child_agent, maximum_file_bytes, &volume)?;
+        if volume.provider() != &host.provider {
+            return Err(Error::Invalid(
+                "fork private volume belongs to another provider".into(),
+            ));
+        }
+        let scope = issuer.root_for_agent(
+            seed.child_agent,
+            "fork-bind",
+            Capabilities::new(["conversation:bind".to_owned()]),
+        );
+        let mut child = StreamAggregate::open(
+            &stream,
+            seed.child.clone(),
+            issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        child.bind_published_child(parent, seed, scope).await?;
+        Self::from_providers_with_reads(
+            seed.child_agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            seed.child.clone(),
+            issuer,
+            seed.reference_capabilities(seed.child_agent)?,
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
+    async fn from_providers_with_reads(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        inherited_reads: Capabilities,
+    ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         let read_capability = volume.capability(VolumeOperation::Read)?;
@@ -707,14 +784,18 @@ where
         let scope = issuer.root_for_agent(
             agent,
             "owner",
-            Capabilities::new([
-                "conversation:bind".to_owned(),
-                "conversation:append".to_owned(),
-                "conversation:select_context".to_owned(),
-                "interaction:open".to_owned(),
-                read_capability.clone(),
-                write_capability.clone(),
-            ]),
+            Capabilities::new(
+                [
+                    "conversation:bind".to_owned(),
+                    "conversation:append".to_owned(),
+                    "conversation:select_context".to_owned(),
+                    "interaction:open".to_owned(),
+                    read_capability.clone(),
+                    write_capability.clone(),
+                ]
+                .into_iter()
+                .chain(inherited_reads.iter().map(str::to_owned)),
+            ),
         );
         let write =
             ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
@@ -783,6 +864,7 @@ where
             host,
             volume,
             read_capability,
+            inherited_reads,
             write_capability,
             write,
             scope,
@@ -809,14 +891,18 @@ where
     /// Starts a runnable local composition with this owner-controlled journal.
     #[must_use]
     pub fn builder(&self) -> crate::bundle::HarnessBuilder {
-        crate::bundle::HarnessBuilder::new()
+        let mut builder = crate::bundle::HarnessBuilder::new()
             .journal(self.journal())
             .content(ContentBindings {
                 reader: self.content_verifier.clone(),
                 writer: Some(self.publisher.clone()),
             })
             .grant(self.read_capability.clone())
-            .grant(self.write_capability.clone())
+            .grant(self.write_capability.clone());
+        for capability in self.inherited_reads.iter() {
+            builder = builder.grant(capability);
+        }
+        builder
     }
 
     /// Runs a canonical conversation turn from already staged primary content

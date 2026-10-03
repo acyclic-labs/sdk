@@ -1,0 +1,41 @@
+{
+  "kind": "checkpoint-not-final-qualification",
+  "date": "2026-10-03",
+  "platform": "windows-x86_64",
+  "complete": false,
+  "source_manifest": {
+    "Cargo.toml": "708dbfc2f7f3afde924d5c8c780d205f05e563ca2296ec9c42b03e1e31541634",
+    "Cargo.lock": "40efddb531f043339abe35d067573f8624b523b48f8fb6dc279302cb44195ff0",
+    "rust/crates/harness/src/filesystem/memory.rs": "881b21155ec215e79e8782be25f8d6cac42f827e0e031389caa99dc62d6d257d",
+    "rust/crates/harness/src/filesystem/mod.rs": "34903a379a41cc300823597658460d341b0a2591210a732e7afe519fff048435",
+    "rust/crates/harness/src/filesystem/model_fork.rs": "79404d20ac7831f95a2f45392ec26e3916142b75754d8d696bdd11efd672d962",
+    "rust/crates/harness/tests/model_fork_boundary.rs": "d5290432b7ed28bdf8e0091c684b5180b5db49e69feb846182d48739fd9eaed6"
+  },
+  "checks": [
+    {
+      "command": "cargo clippy -p acyclic-harness --features filesystem-local --locked --lib --test model_fork_boundary -j 2 -- -D warnings",
+      "outcome": "passed"
+    },
+    {
+      "command": "cargo test -p acyclic-harness --features filesystem-local --locked --test model_fork_boundary -j 2",
+      "outcome": "passed",
+      "passed": 2,
+      "failed": 0,
+      "ignored": 0,
+      "runtime_seconds": 11.78
+    }
+  ],
+  "artifact": {
+    "path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\target\\debug\\deps\\model_fork_boundary-6a2b9ef46d1107ad.exe",
+    "sha256": "4c449d9f73d552f2f347fd6e2844a4094cd337c65a8890b698ba71c087f1598d"
+  },
+  "unmet": [
+    "recursive ancestor grant propagation",
+    "recursive suffix authoritative replay",
+    "production swarm and installed full matrix"
+  ],
+  "repairs": [
+    "focused helper extraction for cognitive-complexity lint",
+    "iteration borrow repair during fixture refactor"
+  ]
+}
