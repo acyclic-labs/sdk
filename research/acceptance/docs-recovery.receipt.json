@@ -1,0 +1,19 @@
+{
+  "schema": "acyclic.acceptance.bounded.v1",
+  "result": "passed",
+  "scope": "Recovered sdk-docs compiler unit tests in the live isolated SDK worktree; later owner changes and full graph generation are excluded",
+  "revision": "b94d31ff82bff6736adc89854bd622294e5de506",
+  "source_state": "dirty-worktree",
+  "command": "cargo test --manifest-path rust/crates/sdk-docs/Cargo.toml --locked --offline",
+  "tests_passed": 12,
+  "exit_code": 0,
+  "source": {
+    "path": "rust/crates/sdk-docs/src/lib.rs",
+    "sha256": "cfb16d91bb8ab118fd05283f7ee485a1dcf8877472b3110aac1891f1612cb2bb"
+  },
+  "log": {
+    "path": "Q:/sdk/work/rust-source-root-docs-recovery.log",
+    "sha256": "be7e2a27b3c5030383a7d561c1a0daa9208e698e0d95b12a076bd98eba041821"
+  },
+  "qualifications_excluded": ["Later source reconciliation", "Strict rustdoc graph generation", "Clean-checkout reproducibility", "Installed language packages", "Website final qualification"]
+}

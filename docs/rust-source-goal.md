@@ -116,3 +116,15 @@ Fresh root integration evidence for iteration 6: full sdk-contract-wire suite pa
 - Shared build storage is being coordinated using existing targets. Fresh strict compiler profile completeness, all-family compatibility stages, source/input versus generated-output identities, clean reproducibility and final removal requirements remain outstanding.
 - No merge to main, auto-merge, registry publication or production deployment.
 Fresh root verification: after correcting two outdated assertion scopes, the complete locked offline wire suite passed 72 tests (24 unit, 48 integration across 12 suites). Bounded receipt: research/acceptance/wire-suite-latest.receipt.json; log SHA-256 a790b0fc44523bc3988825fd5629ec2f3982e08b420c65a37c7d85254f422ce3. This does not qualify subsequent concurrent edits, clean final generation, package consumers or final website coverage.
+
+## Iteration 8 — recovery and current acceptance gates
+
+- Kept all 16 agent slots occupied, replenishing completed wire, package, website and receipt review tasks. The active goal remains incomplete.
+- Checkpoint b94d31ff82bff6736adc89854bd622294e5de506 integrates model-owned wire bindings and product descriptor inputs. Later enum-value/oneof documentation and source-tracking changes remain under verification and focused checkpointing.
+- A source audit found four Rust files consisting entirely of NUL bytes. Preserved the exact damaged bytes under Q:/sdk/work/rust-source-corruption-evidence. Recovered sdk-docs from a hash-verified isolated verification snapshot and three Inference/Machines build scripts from exact b94 Git blobs, using unchanged-hash guards. The cause is not established. Later documentation compiler and build-overlay edits still require owner reconciliation.
+- Root independently ran the recovered sdk-docs locked offline suite: 12 tests passed. Its source hash and log are recorded in research/acceptance/docs-recovery.receipt.json. This qualifies the recovered compiler tests only, not full strict compiler graph generation.
+- Root independently ran native PHP Protobuf/gRPC uint64 golden checks: all nine vectors passed. Broader current-source PHP package, snippet and recovery qualification remains in its owned lane.
+- Receipt review reports 24 generation tests and production forgery gates passing. Fresh exact-source rendered snippets remain required; compiled source identity must not replace live source recomputation when checking mutations.
+- The original SDK checkout has no tracked changes. Reviewable work remains in isolated SDK and website branches. No main merge, auto-merge, registry publication or production deployment.
+
+Next bounded milestones: reconcile recovered source with later owner changes; reject corrupted authored inputs before snapshots; separate compiled and live example source identities; rebuild exact package consumers; produce all strict docs profiles from one captured revision; verify the refreshed website and record installable artifact instructions.
