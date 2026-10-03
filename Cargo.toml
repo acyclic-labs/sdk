@@ -7,6 +7,7 @@ members = [
   "rust/crates/filesystem",
   "rust/crates/filesystem-napi",
   "rust/crates/filesystem-wasm",
+  "rust/crates/graphcoder-cli",
   "rust/crates/harness",
   "rust/crates/inference",
   "rust/crates/inference-contract",
