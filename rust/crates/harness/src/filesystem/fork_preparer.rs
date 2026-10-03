@@ -773,7 +773,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 &seed.attached_agents,
                 &conversation.messages,
             )?;
-            if actual != expected || actual.canonical_bytes()?.as_slice() != bytes.as_ref() {
+            if actual.parent != expected.parent
+                || actual.parent_revision > expected.parent_revision
+                || actual.parent_agent != expected.parent_agent
+                || actual.through_sequence != expected.through_sequence
+                || actual.attached_agents != expected.attached_agents
+                || actual.messages != expected.messages
+                || actual.canonical_bytes()?.as_slice() != bytes.as_ref()
+            {
                 return Err(Error::Conflict(
                     "inherited conversation differs from the selected parent prefix".into(),
                 ));

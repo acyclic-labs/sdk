@@ -2129,22 +2129,38 @@ impl Reducer {
             ));
         }
         if let Some(file) = materialized {
-            let prefix = InheritedConversationPrefix::select(
-                self.authority.clone(),
-                self.revision,
-                parent_agent,
-                seed.inherited_through_sequence,
-                &seed.attached_agents,
-                &self.conversation.messages,
-            )?;
-            let bytes = prefix.canonical_bytes()?;
-            let expected = FileDescriptor::from_bytes(
-                &bytes,
-                "application/vnd.acyclic.harness.inherited-conversation+json",
-            )?;
-            if file.descriptor() != &expected
-                || file.display_name() != "inherited-conversation.json"
-            {
+            // A batch can publish several children against one completed
+            // transcript. The first child advances the parent stream, while
+            // later children retain the exact prefix bytes captured at the
+            // batch boundary. Accept that immutable prefix when its embedded
+            // revision is an earlier revision of this same transcript; the
+            // required History resource below still binds publication to the
+            // current predecessor revision.
+            let prefix_matches = std::iter::once(self.revision)
+                .chain(self.events.iter().rev().map(|event| event.revision))
+                .any(|revision| {
+                    let Ok(prefix) = InheritedConversationPrefix::select(
+                        self.authority.clone(),
+                        revision,
+                        parent_agent,
+                        seed.inherited_through_sequence,
+                        &seed.attached_agents,
+                        &self.conversation.messages,
+                    ) else {
+                        return false;
+                    };
+                    let Ok(bytes) = prefix.canonical_bytes() else {
+                        return false;
+                    };
+                    let Ok(expected) = FileDescriptor::from_bytes(
+                        &bytes,
+                        "application/vnd.acyclic.harness.inherited-conversation+json",
+                    ) else {
+                        return false;
+                    };
+                    file.descriptor() == &expected
+                });
+            if !prefix_matches || file.display_name() != "inherited-conversation.json" {
                 return Err(Error::Invalid(
                     "inherited conversation differs from authoritative parent history".into(),
                 ));
