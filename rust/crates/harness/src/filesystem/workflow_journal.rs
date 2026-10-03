@@ -404,15 +404,21 @@ where
                     "workflow command payload belongs to another volume".into(),
                 ));
             }
-            self.host
-                .read_internal_content(
-                    &command.payload,
-                    &self.volume,
-                    &read,
-                    InternalContentClass::Workflow,
-                    self.maximum_payload_bytes,
-                )
-                .await?;
+            if command.payload.path().starts_with(".system/") {
+                self.host
+                    .read_internal_content(
+                        &command.payload,
+                        &self.volume,
+                        &read,
+                        InternalContentClass::Workflow,
+                        self.maximum_payload_bytes,
+                    )
+                    .await?;
+            } else {
+                self.host
+                    .read_content(&command.payload, &read, self.maximum_payload_bytes)
+                    .await?;
+            }
         }
         Ok(())
     }
