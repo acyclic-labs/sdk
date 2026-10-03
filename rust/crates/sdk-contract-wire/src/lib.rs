@@ -23,8 +23,9 @@ pub mod transport;
 pub mod workers;
 
 pub use bindings::{
-    BindingFamily, BindingGenerationError, BindingOutput, BindingTransport, ProductBindingConfig,
-    descriptor_set_with_docs, generate_product_bindings, generate_rust_bindings,
+    BindingFamily, BindingGenerationError, BindingOutput, BindingTransport, NativeBindingBoundary,
+    ProductBindingConfig, descriptor_set_with_docs, generate_product_bindings,
+    generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
@@ -34,7 +35,8 @@ pub use facades::{
     FACADE_SELECTION_POLICY,
 };
 pub use family_registry::{
-    FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, explicit_http_family_views, family_view,
+    FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,
+    explicit_http_family_views, family_view, native_method_boundaries_for_family,
 };
 pub use filesystem::{
     FILESYSTEM, FILESYSTEM_OPERATION_POLICIES, FILESYSTEM_SERVICE_AVAILABILITY,

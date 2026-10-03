@@ -12,17 +12,17 @@ use std::{
 
 use prost::Message;
 use prost_types::{
-    source_code_info::Location, FileDescriptorProto, FileDescriptorSet, SourceCodeInfo,
+    FileDescriptorProto, FileDescriptorSet, SourceCodeInfo, source_code_info::Location,
 };
 
 use crate::{
-    actors_descriptor,
-    inference::{inference_descriptor, INFERENCE},
-    machines::{machines_descriptor, MACHINES},
-    objects::{objects_descriptor, OBJECTS_V2},
-    stream::{stream_descriptor, STREAM},
-    workers::{workers_descriptor, WORKERS},
-    ContractSpec, ACTORS,
+    ACTORS, ContractSpec, actors_descriptor,
+    family_registry::{NativeMethodBoundary, family_view, native_method_boundaries_for_family},
+    inference::{INFERENCE, inference_descriptor},
+    machines::{MACHINES, machines_descriptor},
+    objects::{OBJECTS_V2, objects_descriptor},
+    stream::{STREAM, stream_descriptor},
+    workers::{WORKERS, workers_descriptor},
 };
 
 /// A public contract family with a model-owned Rust descriptor.
@@ -207,6 +207,39 @@ pub struct BindingOutput {
     pub model_descriptor: Vec<u8>,
     /// Archived runtime descriptor retained for handshake identity.
     pub archived_runtime_descriptor: &'static [u8],
+}
+
+/// The native bridge input assembled from one Rust-owned family.
+///
+/// `model_descriptor` is the canonical wire input. `methods` pairs each
+/// service method with the Rust-owned operation policy so a language facade
+/// can map request-domain validation, capability, and error handling without
+/// authoring a second native operation table. The archived descriptor remains
+/// available for handshake identity and is never replaced by the model bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeBindingBoundary {
+    /// Family represented by this bridge input.
+    pub family: BindingFamily,
+    /// Canonical model descriptor used to generate native bindings.
+    pub model_descriptor: Vec<u8>,
+    /// Archived runtime descriptor retained for handshake checks.
+    pub archived_runtime_descriptor: &'static [u8],
+    /// Rust-owned transport options used to construct the native bridge.
+    pub transport: crate::transport::FamilyTransportPolicy,
+    /// Native service methods and their Rust-owned policy mapping.
+    pub methods: Vec<NativeMethodBoundary>,
+}
+
+/// Assemble the native bridge input for a family from the unified registry.
+pub fn native_binding_boundary(family: BindingFamily) -> NativeBindingBoundary {
+    let view = family_view(family.name()).expect("binding family is in FAMILY_VIEWS");
+    NativeBindingBoundary {
+        family,
+        model_descriptor: family.model_descriptor(),
+        archived_runtime_descriptor: family.archived_runtime_descriptor(),
+        transport: view.transport,
+        methods: native_method_boundaries_for_family(view),
+    }
 }
 
 /// Errors returned by the reusable prost/tonic binding entrypoint.
@@ -1325,5 +1358,51 @@ mod tests {
         assert!(!generated.model_descriptor.is_empty());
         assert!(!generated.archived_runtime_descriptor.is_empty());
         let _ = fs::remove_dir_all(output);
+    }
+
+    #[test]
+    fn machines_native_boundary_maps_every_rpc_to_wire_and_domain_policy() {
+        let boundary = native_binding_boundary(BindingFamily::Machines);
+        assert_eq!(boundary.methods.len(), 19);
+        assert_eq!(
+            boundary.archived_runtime_descriptor,
+            BindingFamily::Machines.archived_runtime_descriptor()
+        );
+        assert!(!boundary.model_descriptor.is_empty());
+        assert_eq!(boundary.transport.native.options.len(), 1);
+        assert_eq!(
+            boundary.transport.native.options[0].kind,
+            crate::transport::TransportKind::Grpc
+        );
+        assert!(boundary.transport.browser.options.is_empty());
+
+        for method in &boundary.methods {
+            let policy = method
+                .policy
+                .expect("every Machines native RPC has a Rust operation policy");
+            assert_eq!(policy.rpc, method.rpc());
+            assert!(
+                !policy.errors.is_empty(),
+                "{} has no error policy",
+                method.rpc()
+            );
+            assert!(
+                !policy.validations.is_empty(),
+                "{} has no request-domain validation map",
+                method.rpc()
+            );
+        }
+
+        let watch = boundary
+            .methods
+            .iter()
+            .find(|method| method.method == "WatchOperation")
+            .expect("Machines WatchOperation boundary");
+        assert!(watch.server_streaming);
+        assert!(!watch.client_streaming);
+        assert_eq!(
+            watch.rpc(),
+            "acyclic.machines.v1.MachinesService/WatchOperation"
+        );
     }
 }

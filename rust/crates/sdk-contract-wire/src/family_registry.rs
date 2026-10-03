@@ -5,17 +5,17 @@
 //! one family entry without maintaining a second list of contracts, routes, or
 //! policy tables.
 
-use crate::{filesystem::FILESYSTEM_OPERATION_POLICIES, harness::HARNESS_OPERATION_POLICIES};
-use crate::{
-    ContractSpec, OperationPolicy, RouteSpec, ACTORS, ACTOR_POLICIES, INFERENCE,
-    INFERENCE_POLICIES, MACHINES, MACHINES_POLICIES, OBJECTS_POLICIES, OBJECTS_V2, STREAM,
-    STREAM_POLICIES, WORKERS, WORKER_POLICIES,
-};
 use crate::transport::{
-    FamilyTransportPolicy, ACTORS_TRANSPORT, FILESYSTEM_TRANSPORT, HARNESS_TRANSPORT,
+    ACTORS_TRANSPORT, FILESYSTEM_TRANSPORT, FamilyTransportPolicy, HARNESS_TRANSPORT,
     INFERENCE_TRANSPORT, MACHINES_TRANSPORT, OBJECTS_TRANSPORT, STREAM_TRANSPORT,
     WORKERS_TRANSPORT,
 };
+use crate::{
+    ACTOR_POLICIES, ACTORS, ContractSpec, INFERENCE, INFERENCE_POLICIES, MACHINES,
+    MACHINES_POLICIES, OBJECTS_POLICIES, OBJECTS_V2, OperationPolicy, RouteSpec, STREAM,
+    STREAM_POLICIES, WORKER_POLICIES, WORKERS,
+};
+use crate::{filesystem::FILESYSTEM_OPERATION_POLICIES, harness::HARNESS_OPERATION_POLICIES};
 use prost::Message;
 
 /// The model representation used by one public family.
@@ -97,6 +97,79 @@ pub struct FamilyView {
     pub http: HttpProjection,
     /// Runtime-qualified transport options in preference order.
     pub transport: FamilyTransportPolicy,
+}
+
+/// One native RPC boundary paired with its Rust-owned domain policy.
+///
+/// The protobuf descriptor supplies the wire shape and streaming flags. The
+/// operation policy supplies capability, error, and request-domain
+/// validation rules. Keeping the pair together prevents a native facade from
+/// selecting an RPC while silently losing the Rust model's validation map.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeMethodBoundary {
+    /// Family that owns the method.
+    pub family: &'static str,
+    /// Protobuf package name.
+    pub package: &'static str,
+    /// Protobuf service name.
+    pub service: &'static str,
+    /// Protobuf method name.
+    pub method: &'static str,
+    /// Fully qualified request message name.
+    pub input: &'static str,
+    /// Fully qualified response message name.
+    pub output: &'static str,
+    /// Whether the method accepts a client stream.
+    pub client_streaming: bool,
+    /// Whether the method returns a server stream.
+    pub server_streaming: bool,
+    /// Rust-owned capability, error, and validation policy.
+    pub policy: Option<&'static OperationPolicy>,
+}
+
+impl NativeMethodBoundary {
+    /// Return the canonical protobuf RPC identity used by generated facades.
+    pub fn rpc(self) -> String {
+        format!("{}.{}/{}", self.package, self.service, self.method)
+    }
+}
+
+fn native_method_boundaries(view: FamilyView) -> Vec<NativeMethodBoundary> {
+    let Some(spec) = view.model.as_contract_spec() else {
+        return Vec::new();
+    };
+    spec.services
+        .iter()
+        .flat_map(|service| service.methods.iter().map(move |method| (service, method)))
+        .map(|(service, method)| {
+            let rpc = format!("{}.{}/{}", spec.package, service.name, method.name);
+            NativeMethodBoundary {
+                family: view.name,
+                package: spec.package,
+                service: service.name,
+                method: method.name,
+                input: method.input,
+                output: method.output,
+                client_streaming: method.client_streaming,
+                server_streaming: method.server_streaming,
+                policy: view
+                    .operation_policies
+                    .iter()
+                    .find(|policy| policy.rpc == rpc),
+            }
+        })
+        .collect()
+}
+
+/// Return the native method to policy mapping for a family.
+///
+/// A fresh vector makes this boundary safe for generators to sort or filter
+/// without mutating the static Rust registry. Families backed by a
+/// documentation-only `ContractModel` have no native RPC methods here.
+pub fn native_method_boundaries_for_family(
+    family: &'static FamilyView,
+) -> Vec<NativeMethodBoundary> {
+    native_method_boundaries(*family)
 }
 
 impl FamilyView {
