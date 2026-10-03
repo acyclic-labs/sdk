@@ -796,6 +796,7 @@ pub struct ForkRequest {
     pub selections: Vec<ForkSelection>,
     /// Present only when one provider attests a common capture boundary.
     pub boundary: Option<AttestedBoundary>,
+    /// Parent-signed exact file references from the verified completed model boundary.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_boundary: Option<ModelBoundaryReferences>,
 }

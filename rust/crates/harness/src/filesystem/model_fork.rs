@@ -14,6 +14,7 @@ use crate::{
 /// fork APIs. The caller must persist its original `ForkRequest` before dispatch.
 pub struct VerifiedModelForkBoundary<P> {
     boundary: CompletedModelBoundary,
+    publication: ModelBatchPublication,
     parent: StreamAggregate<P>,
 }
 
@@ -35,6 +36,63 @@ where
     A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
     O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
+    /// Attach only exact references declared by a durably verified model
+    /// boundary. The parent resolver checks authority and immutable content
+    /// before signing; preparation independently verifies them before allocation.
+    pub async fn attach_model_fork_references(
+        &self,
+        verified: &VerifiedModelForkBoundary<P>,
+        request: &mut crate::fork::ForkRequest,
+    ) -> Result<()> {
+        request.validate()?;
+        let parent = verified.parent.reducer();
+        if request.parent != *parent.authority()
+            || request.parent != *self.issuer.verifier().audience()
+            || request.parent_revision < parent.revision()
+        {
+            return Err(Error::Conflict(
+                "model fork request differs from verified parent boundary".into(),
+            ));
+        }
+        let messages = parent
+            .conversation()
+            .ok_or_else(|| Error::Storage("verified fork parent conversation is missing".into()))?;
+        if request.preparation.inherited_through_sequence != messages.messages.len() as u64 {
+            return Err(Error::Conflict(
+                "model fork selection differs from verified conversation".into(),
+            ));
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        let mut files = Vec::new();
+        for message in &verified.boundary.request.messages {
+            for file in message.content.file_refs() {
+                if unique.insert(file.read_capability()?) {
+                    self.content_verifier.verify(file).await?;
+                    files.push(file.clone());
+                }
+            }
+        }
+        let mut references = crate::fork::ModelBoundaryReferences {
+            publication: verified.publication.operation_id,
+            publication_digest: crate::contract::canonical_json_digest(&verified.publication)?,
+            boundary_digest: crate::contract::canonical_json_digest(&verified.boundary)?,
+            attestation: [0; 32],
+            files,
+        };
+        references.attestation = self.issuer.attest_model_boundary(
+            &request.parent,
+            &request.child,
+            request.child_agent,
+            &request.attached_agents,
+            &references,
+        )?;
+        let mut candidate = request.clone();
+        candidate.model_boundary = Some(references);
+        candidate.validate()?;
+        *request = candidate;
+        Ok(())
+    }
+
     /// Verify the exact durable admission and publish its ordered conversation
     /// results before preparing any child workspace. Refuses substituted content,
     /// unadmitted publications, incomplete exchanges, and later parent history.
@@ -156,6 +214,10 @@ where
                 ));
             }
         }
-        Ok(VerifiedModelForkBoundary { boundary, parent })
+        Ok(VerifiedModelForkBoundary {
+            boundary,
+            publication: publication.clone(),
+            parent,
+        })
     }
 }

@@ -432,7 +432,7 @@ impl ForkAtBatch {
                 self.stream_provider.clone(),
                 resolver,
             )?;
-            let request = ForkRequest {
+            let mut request = ForkRequest {
                 operation_id: OperationId::from_bytes([index + 40; 16]),
                 parent: parent.reducer().authority().clone(),
                 parent_revision: parent.reducer().revision(),
@@ -472,6 +472,21 @@ impl ForkAtBatch {
                 boundary: None,
                 model_boundary: None,
             };
+            let verified = self
+                .storage
+                .verified_model_fork_boundary(&admission, self.limits)
+                .await?;
+            self.storage
+                .attach_model_fork_references(&verified, &mut request)
+                .await?;
+            let references = request
+                .model_boundary
+                .as_ref()
+                .ok_or_else(|| Error::Storage("model boundary attestation missing".into()))?;
+            assert_eq!(references.publication, admission.operation_id);
+            assert_ne!(references.boundary_digest, [0; 32]);
+            assert!(!references.files.is_empty());
+            assert_ne!(references.attestation, [0; 32]);
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;

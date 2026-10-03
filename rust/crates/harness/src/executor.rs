@@ -541,6 +541,7 @@ impl StockExecutor {
             },
             self.limits,
         )?;
+        prepared.validate_complete_exchange()?;
         self.provider.admit(prepared.request())?;
         let request_digest = prepared.manifest().request_digest;
         let manifest_key = format!("model:{step}:input");

@@ -3647,7 +3647,7 @@ impl TaskContext {
                 (used < step_bound).then_some(used + 1)
             })
             .map_err(|_| Error::Invalid("task exceeded its model step limit".into()))?;
-        let request = crate::model_input::PreparedModelInput::prepare(
+        let prepared = crate::model_input::PreparedModelInput::prepare(
             ModelRequest {
                 model: binding.model.clone(),
                 messages,
@@ -3655,8 +3655,9 @@ impl TaskContext {
                 max_output_tokens,
             },
             self.scope.limits(),
-        )?
-        .into_request();
+        )?;
+        prepared.validate_complete_exchange()?;
+        let request = prepared.into_request();
         let mut events = Vec::new();
         let mut admission = ModelEventAdmission::default();
         let mut bytes = 0_u64;
@@ -6717,7 +6718,10 @@ mod tests {
         let deferred_value: Value = serde_json::from_str(deferred_fixture)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let deferred = TaskAdmissionRecord::from_canonical_value(deferred_value)?;
-        assert_eq!(deferred.canonical_value()["contract"], "harness.task-admission.v3");
+        assert_eq!(
+            deferred.canonical_value()["contract"],
+            "harness.task-admission.v3"
+        );
         assert_eq!(deferred.dependencies.len(), 2);
         assert_eq!(
             crate::contract::canonical_json_bytes(&deferred.canonical_value())?,

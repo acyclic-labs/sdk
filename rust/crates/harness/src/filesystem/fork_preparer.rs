@@ -13,7 +13,8 @@ use crate::{
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
         Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
-        ForkSeed, ForkSelection, InheritedConversationPrefix, ResourceRevision, SharedGrant,
+        ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant, ResourceRevision,
+        SharedGrant,
     },
     resources::{ProviderRef, WorkspaceRef},
 };
@@ -567,7 +568,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         if let Some(model_boundary) = &request.model_boundary {
             let mut granted = reference_grants
                 .iter()
-                .map(|grant| (grant.reader, grant.file.read_capability()))
+                .map(|grant| {
+                    grant
+                        .file
+                        .read_capability()
+                        .map(|capability| (grant.reader, capability))
+                })
                 .collect::<Result<BTreeSet<_>>>()?;
             let readers = std::iter::once(request.child_agent)
                 .chain(request.attached_agents.iter().copied())

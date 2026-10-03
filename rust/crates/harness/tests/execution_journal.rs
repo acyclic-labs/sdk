@@ -939,6 +939,36 @@ impl ContextStage for InjectFileContext {
     }
 }
 
+struct InjectUnpairedResult;
+
+impl ContextStage for InjectUnpairedResult {
+    fn name(&self) -> &str {
+        "test.inject-unpaired-result"
+    }
+
+    fn contract(&self) -> Value {
+        json!({"revision": 1})
+    }
+
+    fn apply<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        mut context: Context,
+    ) -> BoxFuture<'a, Result<Context>> {
+        Box::pin(async move {
+            context.messages.push(acyclic_harness::model::ModelMessage {
+                role: acyclic_harness::model::ModelRole::Tool,
+                content: ModelContent::Part(ModelContentPart::ToolResult {
+                    call_id: "orphan".into(),
+                    name: "test.tool".into(),
+                    value: Value::Null,
+                }),
+            });
+            Ok(context)
+        })
+    }
+}
+
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
     let provider = ProviderRef::new("file-input-e2e", "filesystem", "2")?;
@@ -1088,6 +1118,46 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
     assert!(
         journal
             .replay(injected_operation)
+            .await?
+            .iter()
+            .all(|record| !matches!(
+                record.event,
+                ExecutionEvent::ModelInputPrepared { .. }
+                    | ExecutionEvent::ModelStarted { .. }
+                    | ExecutionEvent::Model { .. }
+            ))
+    );
+    let orphan_operation = OperationId::from_bytes([14; 16]);
+    let orphan_executor = StockExecutor::new(
+        Model::new("test", "capture", "1", Value::Null)?,
+        model.clone(),
+        ContextPipeline::default().with(Arc::new(InjectUnpairedResult)),
+        ToolRegistry::default(),
+    );
+    assert!(matches!(
+        orphan_executor
+            .execute(
+                TurnInput {
+                    operation_id: orphan_operation,
+                    input: ModelContent::Text("ordinary input".into()),
+                    selected_context: None,
+                    max_steps: 1,
+                },
+                &journal,
+            )
+            .await,
+        Err(Error::Invalid(_))
+    ));
+    assert!(
+        model
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+    assert!(
+        journal
+            .replay(orphan_operation)
             .await?
             .iter()
             .all(|record| !matches!(
