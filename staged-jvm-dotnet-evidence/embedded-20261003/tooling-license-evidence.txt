@@ -1,0 +1,15 @@
+JVM embedded consumer tooling
+
+JNA 5.15.0
+  coordinate: net.java.dev.jna:jna:5.15.0
+  artifact: java/lib/jna-5.15.0.jar
+  sha256: A564158D28AB5127FC6A958028ED54279FE0999662C46425B6A3B09A2A52094D
+  project: https://github.com/java-native-access/jna
+  licenses: LGPL-2.1-or-later or Apache-2.0
+  license URLs: https://www.gnu.org/licenses/old-licenses/lgpl-2.1
+                https://www.apache.org/licenses/LICENSE-2.0.txt
+
+Binding choice
+  JVM: JNA maps the existing C ABI structs and exported functions; no Rust behavior is reimplemented.
+  .NET: standard DllImport/PInvoke maps the same ABI; build remains pending because no .NET SDK is installed.
+  ABI ownership: Rust crate rust/crates/sdk-embedded-prototype remains the sole implementation.

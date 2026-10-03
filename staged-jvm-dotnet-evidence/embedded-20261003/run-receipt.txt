@@ -1,0 +1,25 @@
+Embedded JVM/.NET feasibility run — 2026-10-03
+
+Rust ABI source:
+  crate=rust/crates/sdk-embedded-prototype
+  build=cargo build --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --release
+  target=Windows x64 cdylib plus generated cbindgen header
+
+JVM:
+  binding=JNA 5.15.0
+  compile=mvn -s Q:\sdk\.tmp-maven-settings.xml -f embedded-20261003/java/pom.xml -o compile
+  run=java -Djna.library.path=embedded-20261003/native -cp target/classes;jna-5.15.0.jar dev.acyclic.embedded.EmbeddedJnaConsumer
+  result=pass
+  output=JNA Rust embedded ABI checks passed: append/read/release/recovery/cancel
+
+.NET:
+  binding=standard DllImport/PInvoke
+  source=embedded-20261003/dotnet/Program.cs
+  result=not run
+  reason=available .NET hosts report no installed SDK; the retained portable target bundle has no SDK toolchain
+
+Scope:
+  The JVM run exercised the retained Rust ABI's real MemoryStream through append, finite read,
+  explicit returned-buffer release, second append recovery, follow cancellation, and stale-buffer
+  rejection. No Rust ABI source was changed. The .NET source maps the same ABI but has no binary
+  result until a .NET SDK is available.

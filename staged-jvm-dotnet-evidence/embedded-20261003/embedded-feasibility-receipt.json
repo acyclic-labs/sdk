@@ -1,0 +1,85 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.embedded-feasibility.v1",
+  "source_neutral": false,
+  "qualification": "bounded consumer feasibility against the retained Rust C ABI prototype; not a release or embedded support claim",
+  "abi": {
+    "crate": "rust/crates/sdk-embedded-prototype",
+    "manifest_sha256": "5D4251D11D381EFF86C9F7A8405AFE097EB04C8D9C9CFB4CD501CF27C70BD316",
+    "lock_sha256": "DE2979BE9D7CE21CC6AC26589C8874784A7419CFDE2A2812CE50F7BD16468EF1",
+    "source_sha256": "1CB79011293038BACA31ACCBB060205CA18007F38A72CE4942F44CFAE634D37A",
+    "build_script_sha256": "7F57007E1E4ADB82CB34517692F2EE05E250A37B8289E89282AE67C41FC8A052",
+    "build_command": "cargo build --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --release",
+    "header": {
+      "path": "native/acyclic_embedded_prototype.h",
+      "sha256": "64837E5A4E468E9748969025D3631E39B69E9DE7F77D66D26E7876247B90C109"
+    },
+    "windows_dll": {
+      "path": "native/acyclic_sdk_embedded_prototype.dll",
+      "sha256": "ABEB82529044925B1FCDF51B9F308A3964ED82DCAA60D7F6A41B5BEFF0A83211"
+    },
+    "windows_import_library": {
+      "path": "native/acyclic_sdk_embedded_prototype.dll.lib",
+      "sha256": "67AE3ED7A570C2BF1961C234B21EF1AF15204CD84C5ECAB9B499FE73C9B7EEFC"
+    }
+  },
+  "jvm_consumer": {
+    "binding": "JNA 5.15.0",
+    "source": "java/src/main/java/dev/acyclic/embedded/EmbeddedJnaConsumer.java",
+    "source_sha256": "65779475D265530E5995149670EFA53F649302841FB1E502880935CE90D87F39",
+    "pom": "java/pom.xml",
+    "pom_sha256": "10D2FA81C75D7270A1C80D845575829D8C846A8CECA3255A0BA5D0002A02C7C3",
+    "jna_jar": "java/lib/jna-5.15.0.jar",
+    "jna_jar_sha256": "A564158D28AB5127FC6A958028ED54279FE0999662C46425B6A3B09A2A52094D",
+    "license_evidence": "JNA offers LGPL-2.1-or-later or Apache-2.0; URLs are recorded in tooling-license-evidence.txt",
+    "result": "pass",
+    "checks": [
+      "ABI version",
+      "engine open and close",
+      "append copied payload",
+      "finite read and explicit returned-buffer release",
+      "second append recovery",
+      "follow cancellation",
+      "stale buffer rejection"
+    ],
+    "output": "JNA Rust embedded ABI checks passed: append/read/release/recovery/cancel"
+  },
+  "dotnet_consumer": {
+    "binding": "standard DllImport/PInvoke",
+    "source": "dotnet/Program.cs",
+    "source_sha256": "0584CB75E5986B6411314D5DF165EE62B1C1EAF6D9A3DCD1E46F600B33674F4C",
+    "project": "dotnet/EmbeddedPInvokeConsumer.csproj",
+    "project_sha256": "0E84BF4B1BCABBE2DB38093355D306E4D24765F04B23D412C967148F55642853",
+    "result": "source staged; build not executed",
+    "blocker": "available .NET hosts report no installed SDK; the retained portable target bundle contains Roslyn assemblies but no SDK toolchain",
+    "checks_planned": [
+      "ABI version",
+      "engine open and close",
+      "append copied payload",
+      "finite read and explicit returned-buffer release",
+      "second append recovery",
+      "follow cancellation",
+      "stale buffer rejection"
+    ]
+  },
+  "tooling": {
+    "java": "OpenJDK 17.0.14",
+    "jna": "5.15.0",
+    "rust": "cargo 1.98.1",
+    "dotnet_host": "8.0.6 system host; retained portable host 8.0.31",
+    "dotnet_sdk": "unavailable"
+  },
+  "run_receipt": {
+    "path": "run-receipt.txt",
+    "sha256": "67650AFF44027824FD0D3F35C82A76DF488EA5A504A939891F6E392CEB73D42A"
+  },
+  "license_evidence": {
+    "path": "tooling-license-evidence.txt",
+    "sha256": "3951D5272A2D0558C5CCD827135E93856B969FE66FA0487FD70F262F9F100B85"
+  },
+  "packaging_gaps": [
+    "The prototype stages a Windows DLL, import library, and generated header only; Linux and macOS native variants are not present.",
+    "JNA is a runtime dependency and needs license policy approval for a distributable JVM package.",
+    "The .NET source is written against the retained ABI but needs an installed SDK to produce a verified binary.",
+    "No JVM or .NET package publication or deployment is claimed."
+  ]
+}
