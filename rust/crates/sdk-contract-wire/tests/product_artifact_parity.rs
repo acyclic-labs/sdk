@@ -123,6 +123,15 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             "streaming Read policy missing from {relative}"
         );
         assert!(
+            source.contains("acyclic.machines.v1.MachinesService/WatchOperation")
+                && source.contains("machines.operations"),
+            "Machines native bridge operation metadata missing from {relative}"
+        );
+        assert!(
+            source.contains("cancellation") && source.contains("operation"),
+            "Machines cancellation metadata missing from {relative}"
+        );
+        assert!(
             source.contains("post_failure_fallback")
                 || source.contains("postFailureFallback"),
             "post-failure fallback policy missing from {relative}"
