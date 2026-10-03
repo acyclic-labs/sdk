@@ -1829,11 +1829,15 @@ describe("typed agent runtime", () => {
     const runtime = Harness.builder(contracts).host(host).tool(tool).grant("tool:call:double").model(testModel, {
       async *generate(request) {
         expect(request.canonical).toBeDefined();
+        expect(Object.isFrozen(request)).toBe(true);
         expect(Object.isFrozen(request.canonical)).toBe(true);
         expect(Object.isFrozen(request.canonical.requestDigest)).toBe(true);
+        expect(() => { (request as unknown as { canonical: unknown }).canonical = undefined; }).toThrow();
+        expect(() => { (request as unknown as { model: unknown }).model = undefined; }).toThrow();
+        expect(() => { (request as unknown as { messages: unknown }).messages = []; }).toThrow();
+        expect(() => { (request.canonical as { requestJson: string }).requestJson = "mutated"; }).toThrow();
         canonicalRequests.push(request.canonical.requestJson);
         canonicalManifests.push(request.canonical.manifestJson);
-        expect(() => { (request.canonical as { requestJson: string }).requestJson = "mutated"; }).toThrow();
         if (modelStep++ === 0) { yield { kind: "tool_call" as const, callId: "call", name: "double", arguments: 3 }; yield { kind: "completed" as const, metadata: {} }; } else { yield { kind: "content" as const, delta: "done" }; yield { kind: "completed" as const, metadata: { tokens: 1 } }; }
       },
       async reconcile() { return undefined; },
