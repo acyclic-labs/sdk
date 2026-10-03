@@ -452,30 +452,19 @@ impl PersistentLocalSwarm {
         Ok(output)
     }
 
-    /// Admits and activates one recursive child after verifying the parent's
-    /// durable completed boundary. The child model is not constructed until
-    /// after the activation record and inherited prefix have been persisted.
+    /// Rejects the legacy boundary-only fork entry point.
+    ///
+    /// Production model dispatch must use
+    /// `publish_and_activate_child_with_publication`, which persists the exact
+    /// seed, model publication, and declared recursive context before binding.
     pub async fn fork(&self, request: LocalForkRequest) -> Result<LocalForkOutcome> {
         request.validate()?;
         let parent = self.session(request.parent).await?;
         if parent.depth >= self.config.maximum_depth {
             return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
         }
-        let child = TaskId::from_bytes(request.child_operation.into_bytes());
-        let child_count = self
-            .records
-            .lock()
-            .await
-            .values()
-            .filter(|session| {
-                session.parent == Some(request.parent) && session.task != child
-            })
-            .count();
-        if child_count >= self.config.maximum_children {
-            return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
-        }
         let parent_harness = self.open_session(request.parent).await?;
-        let boundary = parent_harness
+        let _boundary = parent_harness
             .storage()
             .completed_model_boundary(
                 request.parent_operation,
@@ -484,62 +473,10 @@ impl PersistentLocalSwarm {
             )
             .await?
             .ok_or_else(|| Error::Conflict("fork requires a completed model boundary".into()))?;
-        let stream = self
-            .registry
-            .stream(REGISTRY_STREAM)
-            .map_err(|error| Error::Storage(error.to_string()))?;
-        if self.records.lock().await.contains_key(&child) {
-            let known = self.requests.lock().await.get(&child).cloned();
-            if known.as_ref() != Some(&request) {
-                return Err(Error::Conflict("child operation is already a session".into()));
-            }
-            let phase = self
-                .records
-                .lock()
-                .await
-                .get(&child)
-                .map(|session| session.phase.clone())
-                .ok_or_else(|| Error::NotFound(format!("local swarm task {child}")))?;
-            if phase == LocalSessionPhase::Completed {
-                return Err(Error::Conflict("child operation is already complete".into()));
-            }
-            self.update_session(child, |session| {
-                session.phase = LocalSessionPhase::Activating;
-            })
-            .await?;
-            return self
-                .activate_child(request, child, stream, boundary)
-                .await;
-        }
-        let child_session = LocalSwarmSession {
-            task: child,
-            parent: Some(request.parent),
-            depth: parent.depth + 1,
-            task_description: request.task.clone(),
-            operation: Some(request.child_operation),
-            phase: LocalSessionPhase::Activating,
-        };
-        append_record(
-            &stream,
-            StoredEvent::ForkAdmitted {
-                parent: request.parent,
-                parent_operation: request.parent_operation,
-                parent_step: request.parent_step,
-                child,
-                child_operation: request.child_operation,
-                task: request.task.clone(),
-                prompt: request.prompt.clone(),
-                seed: None,
-                seed_digest: None,
-                publication: None,
-                declaration: None,
-            },
-        )
-        .await?;
-        self.records.lock().await.insert(child, child_session);
-        self.requests.lock().await.insert(child, request.clone());
-
-        self.activate_child(request, child, stream, boundary).await
+        return Err(Error::Conflict(
+            "typed fork publication is required; use publish_and_activate_child_with_publication"
+                .into(),
+        ));
     }
 
     /// Activates a child after the caller has prepared and published the exact
@@ -567,6 +504,11 @@ impl PersistentLocalSwarm {
         let parent_harness = self.open_session(request.parent).await?;
         let publication = self.publications.lock().await.get(&child).cloned();
         let declaration = self.declarations.lock().await.get(&child).cloned();
+        if publication.is_none() || declaration.is_none() {
+            return Err(Error::Conflict(
+                "typed publication and recursive declaration are required; use publish_and_activate_child_with_publication".into(),
+            ));
+        }
         let declared_suffix = declaration.as_ref().map(|value| value.suffix.clone());
         let (boundary, verified_parent) = match (publication, declaration) {
             (Some(publication), Some(declaration)) => {
@@ -582,25 +524,7 @@ impl PersistentLocalSwarm {
                 let (boundary, parent) = verified.into_parts();
                 (boundary, Some(parent))
             }
-            (None, None) => (
-                parent_harness
-                    .storage()
-                    .completed_model_boundary(
-                        request.parent_operation,
-                        request.parent_step,
-                        self.config.limits,
-                    )
-                    .await?
-                    .ok_or_else(|| {
-                        Error::Conflict("fork requires a completed model boundary".into())
-                    })?,
-                None,
-            ),
-            _ => {
-                return Err(Error::Conflict(
-                    "typed child publication and declaration must be persisted together".into(),
-                ));
-            }
+            _ => unreachable!("typed publication and declaration were checked together"),
         };
         let storage_parent = verified_parent.as_ref().unwrap_or(parent);
         let existing = self.records.lock().await.get(&child).cloned();
@@ -708,6 +632,20 @@ impl PersistentLocalSwarm {
             ));
         }
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        let parent = self.session(request.parent).await?;
+        if parent.depth >= self.config.maximum_depth {
+            return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+        }
+        let child_count = self
+            .records
+            .lock()
+            .await
+            .values()
+            .filter(|session| session.parent == Some(request.parent) && session.task != child)
+            .count();
+        if child_count >= self.config.maximum_children {
+            return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+        }
         if let Some(existing) = self.records.lock().await.get(&child).cloned() {
             if self.requests.lock().await.get(&child) != Some(request)
                 || self.seeds.lock().await.get(&child) != Some(seed)
@@ -728,7 +666,6 @@ impl PersistentLocalSwarm {
             }
             return Ok(());
         }
-        let parent = self.session(request.parent).await?;
         let registry = self
             .registry
             .stream(REGISTRY_STREAM)
@@ -779,38 +716,10 @@ impl PersistentLocalSwarm {
         parent: &mut StreamAggregate<LocalStream>,
         report: ForkReport,
     ) -> Result<LocalForkOutcome> {
-        request.validate()?;
-        let preview = report.clone().into_seed()?;
-        let mut child = StreamAggregate::open(
-            &stream,
-            preview.child.clone(),
-            issuer.verifier(),
-            SchemaRegistry::new(),
-        )
-        .await?;
-        let parent_scope = self
-            .open_session(request.parent)
-            .await?
-            .storage()
-            .owner_scope()
-            .clone();
-        let child_scope = issuer.root_for_agent(
-            preview.child_agent,
-            "fork-bind",
-            Capabilities::new(["conversation:bind".to_owned()]),
-        );
-        let seed = child
-            .spawn_from_report(parent, report, parent_scope, child_scope)
-            .await?;
-        self.activate_published_child(
-            request,
-            host,
-            stream,
-            issuer,
-            parent,
-            &seed,
-        )
-        .await
+        let _ = (request, host, stream, issuer, parent, report);
+        Err(Error::Conflict(
+            "typed model publication and recursive declaration are required; use publish_and_activate_child_with_publication".into(),
+        ))
     }
 
     /// Persists the exact model publication and recursive declaration before
@@ -863,24 +772,6 @@ impl PersistentLocalSwarm {
             }
         };
         self.activate_published_child(request, host, stream, issuer, parent, &seed)
-            .await
-    }
-
-    async fn activate_child(
-        &self,
-        request: LocalForkRequest,
-        child: TaskId,
-        stream: acyclic_stream::Stream<LocalStream>,
-        boundary: crate::model_input::CompletedModelBoundary,
-    ) -> Result<LocalForkOutcome> {
-        let harness = match self.open_session(child).await {
-            Ok(harness) => harness,
-            Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
-                return Err(error);
-            }
-        };
-        self.activate_child_with_harness(request, child, stream, boundary, harness, None)
             .await
     }
 
@@ -1285,7 +1176,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recursive_local_swarm_activates_after_completed_boundary_and_reopens() -> Result<()> {
+    async fn seedless_local_fork_is_rejected_after_completed_boundary() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let provider = Arc::new(MockModel {
             calls: AtomicUsize::new(0),
@@ -1293,62 +1184,30 @@ mod tests {
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
         let operation = OperationId::new();
-        let child_operation = OperationId::new();
-        let grandchild_operation = OperationId::new();
         let limits = Limits::default();
-        let (root_task, child_task) = {
-            let swarm = PersistentLocalSwarm::open_with_model(
-                root.path(),
-                model.clone(),
-                provider.clone(),
-                limits,
-            )
-            .await?;
-            let root_task = swarm.root_task().await?;
-            swarm.run_root(operation, "root request").await?;
-            let child = swarm
-                .fork(LocalForkRequest {
-                    parent: root_task,
-                    parent_operation: operation,
-                    parent_step: 0,
-                    child_operation,
-                    task: "inspect root result".into(),
-                    prompt: "child request".into(),
-                })
-                .await?;
-            let child_session = swarm.session(child.child).await?;
-            assert_eq!(child_session.parent, Some(root_task));
-            assert_eq!(child_session.phase, LocalSessionPhase::Completed);
-            swarm
-                .fork(LocalForkRequest {
-                    parent: child.child,
-                    parent_operation: child.operation,
-                    parent_step: 0,
-                    child_operation: grandchild_operation,
-                    task: "inspect child result".into(),
-                    prompt: "grandchild request".into(),
-                })
-                .await?;
-            assert_eq!(swarm.sessions().await.len(), 3);
-            (root_task, child.child)
-        };
-        let reopened = PersistentLocalSwarm::open_with_model(
+        let swarm = PersistentLocalSwarm::open_with_model(
             root.path(),
-            model,
+            model.clone(),
             provider.clone(),
             limits,
         )
         .await?;
-        let sessions = reopened.sessions().await;
-        assert_eq!(sessions.len(), 3);
-        assert_eq!(reopened.session(root_task).await?.parent, None);
-        assert_eq!(reopened.session(child_task).await?.parent, Some(root_task));
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
-        let requests = provider.requests.lock().expect("request lock");
-        assert!(requests[1].messages.len() > requests[0].messages.len());
-        assert!(requests[2].messages.len() > requests[1].messages.len());
-        assert_eq!(requests[0].messages[0], requests[1].messages[0]);
-        assert_eq!(requests[1].messages[0], requests[2].messages[0]);
+        let root_task = swarm.root_task().await?;
+        swarm.run_root(operation, "root request").await?;
+        let error = swarm
+            .fork(LocalForkRequest {
+                parent: root_task,
+                parent_operation: operation,
+                parent_step: 0,
+                child_operation: OperationId::new(),
+                task: "must use typed publication".into(),
+                prompt: "child request".into(),
+            })
+            .await
+            .expect_err("seedless fork must not dispatch a child");
+        assert!(error.to_string().contains("typed fork publication"));
+        assert_eq!(swarm.sessions().await.len(), 1);
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
