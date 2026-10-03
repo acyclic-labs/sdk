@@ -469,7 +469,21 @@ where
                 &actual,
                 "durable tool projection",
             )?;
-            return Ok((result.clone(), projection.clone()));
+            // Execution records remain host-only. Authoritative conversation
+            // artifacts contain only the validated model projection; retaining
+            // the raw result here would disclose private executor output.
+            return Ok((
+                self.stage_history_json(
+                    operation,
+                    &format!("{path}.json"),
+                    &ToolResult { value: actual.clone() },
+                ).await?,
+                self.stage_history_json(
+                    operation,
+                    &format!("{path}-projection.json"),
+                    &actual,
+                ).await?,
+            ));
         }
         let mut rejection = None;
         for record in records {

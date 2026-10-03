@@ -1015,7 +1015,7 @@ impl StockExecutor {
         // Malformed arguments are the model's mistake to correct, not a reason to end the turn:
         // hand the validation message back as this call's own result so the next step can fix
         // them. Ending the turn instead makes the most recoverable failure in the loop fatal, and
-        // the replacement agent — fresh context, same model, same schema — repeats it exactly.
+        // the replacement agent â€” fresh context, same model, same schema â€” repeats it exactly.
         //
         // Admission refusals are durable, separately from effect dispatch.
         // The model-visible validation message is derived from its pinned schema.
@@ -1710,8 +1710,8 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    /// Emits two malformed calls — including `parameters` where the pinned
-    /// schema expects a direct argument — then a well-formed call after both
+    /// Emits two malformed calls â€” including `parameters` where the pinned
+    /// schema expects a direct argument â€” then a well-formed call after both
     /// durable rejection envelopes have been returned.
     struct SlippingModel {
         calls: AtomicUsize,
@@ -2884,9 +2884,10 @@ mod tests {
 
         // A replay uses the committed completed request and its two durable
         // rejection envelopes; it does not ask the provider to regenerate.
+        assert_eq!(model.calls.load(Ordering::SeqCst), 3);
         let replay = executor.execute(input, &journal).await?;
         assert_eq!(replay.text, "done");
-        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 3);
         Ok(())
     }
 
