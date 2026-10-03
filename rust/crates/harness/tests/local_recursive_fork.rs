@@ -1108,6 +1108,21 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                 Some(acyclic_harness::filesystem::ProjectMergeTerminal::Conflicted { .. })
             ));
             assert!(conflict_entry.receipt.is_none());
+            drop(conflict_plan);
+            drop(terminal_plan);
+            let cold_fs_options = fs_options.clone();
+            let cold_stream_root = stream_root.clone();
+            let cold_provider = provider.clone();
+            let cold_stream_provider = stream_provider.clone();
+            let cold_child_authority = child_authority.clone();
+            let cold_child_issuer = child_issuer.clone();
+            let cold_child_scope = child_scope.clone();
+            let cold_child_project = child_project.clone();
+            let cold_authority = authority.clone();
+            let cold_issuer = issuer.clone();
+            let cold_grant_scope = grant_scope.clone();
+            let cold_project = project.clone();
+            let cold_private = private.clone();
             let (reopened_host, reopened_stream, reopened_child_aggregate, reopened_aggregate) =
                 std::pin::Pin::from(Box::new(async move {
                     drop(conflict_recovery);
@@ -1120,51 +1135,51 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     drop(stream);
                     drop(host);
                     let host = Arc::new(FilesystemHost::new(
-                        Fs::local(fs_options.clone())
+                        Fs::local(cold_fs_options)
                             .await
                             .map_err(|error| Error::Storage(error.to_string()))?,
-                        provider.clone(),
+                        cold_provider,
                     )?);
                     let stream = StreamClient::new(Arc::new(
-                        LocalStream::open(&stream_root, LocalStreamLimits::default())
+                        LocalStream::open(&cold_stream_root, LocalStreamLimits::default())
                             .await
                             .map_err(|error| Error::Storage(error.to_string()))?,
                     ));
                     let child_aggregate = open_aggregate(
                         &stream,
-                        child_authority.clone(),
-                        &child_issuer,
+                        cold_child_authority.clone(),
+                        &cold_child_issuer,
                         host.clone(),
-                        child_scope.clone(),
-                        stream_provider.clone(),
+                        cold_child_scope,
+                        cold_stream_provider.clone(),
                     )
                     .await?;
                     let aggregate = open_aggregate(
                         &stream,
-                        authority.clone(),
-                        &issuer,
+                        cold_authority,
+                        &cold_issuer,
                         host.clone(),
-                        grant_scope.clone(),
-                        stream_provider.clone(),
+                        cold_grant_scope.clone(),
+                        cold_stream_provider,
                     )
                     .await?;
                     let reopened_facade = FilesystemGitFacade::new(
                         WorkspaceId::from_bytes(identity(100 + level)),
                         MemoryGitCompatStore::new(),
-                        project.clone(),
-                        issuer.verifier(),
-                        grant_scope.clone(),
+                        cold_project.clone(),
+                        cold_issuer.verifier(),
+                        cold_grant_scope.clone(),
                     )?;
                     let reopened_controller = ParentProjectController::new(
                         host.as_ref(),
                         aggregate.reducer(),
-                        &issuer.verifier(),
-                        &grant_scope,
-                        project.clone(),
+                        &cold_issuer.verifier(),
+                        &cold_grant_scope,
+                        cold_project,
                     )?;
                     let conflict_plan = reopened_controller
                         .prepare_project_merge_at(
-                            &child_project,
+                            &cold_child_project,
                             &conflict_source_generation,
                             &conflict_target_generation,
                             conflict_target_authority_head,
@@ -1173,9 +1188,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     let conflict_journal = FilesystemExecutionJournal::new(
                         stream.clone(),
                         host.clone(),
-                        private.clone(),
-                        issuer.verifier(),
-                        grant_scope.clone(),
+                        cold_private,
+                        cold_issuer.verifier(),
+                        cold_grant_scope,
                         64 * 1_024,
                     )?;
                     let conflict_recovery =
@@ -1195,8 +1210,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                             &conflict_request,
                             host.as_ref(),
                             aggregate.reducer(),
-                            child_authority.clone(),
-                            &child_project,
+                            cold_child_authority,
+                            &cold_child_project,
                             &conflict_plan,
                             std::collections::BTreeMap::new(),
                             merge_message.clone(),
