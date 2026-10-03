@@ -734,6 +734,32 @@ where
                 "fork private volume belongs to another provider".into(),
             ));
         }
+        for file in seed
+            .inherited_context
+            .iter()
+            .chain(seed.reference_grants.iter().map(|grant| &grant.file))
+            .chain(seed.attachment_manifests.iter())
+        {
+            if file.volume().provider() != &host.provider {
+                return Err(Error::Unauthorized(
+                    "fork inherited file belongs to another provider".into(),
+                ));
+            }
+        }
+        host.verify_fork_allocation(seed, &volume).await?;
+        for resource in &seed.resources {
+            if let crate::fork::ResourceRevision::Project {
+                volume: project, ..
+            } = &resource.revision
+            {
+                if project.provider() != &host.provider {
+                    return Err(Error::Unauthorized(
+                        "fork project belongs to another provider".into(),
+                    ));
+                }
+                host.verify_fork_allocation(seed, project).await?;
+            }
+        }
         let scope = issuer.root_for_agent(
             seed.child_agent,
             "fork-bind",

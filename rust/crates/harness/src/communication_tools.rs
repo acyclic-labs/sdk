@@ -1,0 +1,563 @@
+//! Version-pinned model tools for explicit task messages and waits.
+//!
+//! These tools are intentionally thin adapters over [`DurableCommunication`].
+//! Model-visible JSON contains only the requested target and explicit content
+//! references.  The sender, wait owner, operation identity, and authorization
+//! come from the authenticated [`ToolContext`], and never from model content.
+
+use crate::{
+    Error, Outcome, Result, TaskId,
+    communication::{
+        DurableCommunication, MessageRequest, MessageTarget, WaitCompletion, WaitRequest,
+        WaitTarget,
+    },
+    conversation::FileRef,
+    runtime::ToolContext,
+    tool::{
+        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
+        ToolResult,
+    },
+};
+use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+/// Stable model-visible name for explicit parent/child messages.
+pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
+/// Stable model-visible name for explicit task, inbox, or deadline waits.
+pub const WAIT_TOOL_NAME: &str = "swarm.wait";
+/// Revision of both model-facing communication contracts.
+pub const TOOL_REVISION: &str = "1";
+
+/// Message target selected by the model.  The durable layer verifies the
+/// selected relationship against immutable admissions before publishing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageToolTarget {
+    /// Deliver to the sender's direct parent.
+    Parent,
+    /// Deliver to the sender's direct child.
+    Child,
+}
+
+impl From<MessageToolTarget> for MessageTarget {
+    fn from(value: MessageToolTarget) -> Self {
+        match value {
+            MessageToolTarget::Parent => Self::Parent,
+            MessageToolTarget::Child => Self::Child,
+        }
+    }
+}
+
+/// Exact arguments accepted by the message tool.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageToolInput {
+    /// Direct parent or child task identity.
+    pub recipient: String,
+    /// Relationship the caller claims for the recipient.
+    pub target: MessageToolTarget,
+    /// Version-pinned explicit message content.
+    pub payload: FileRef,
+}
+
+/// Result exposed after a durable message has been admitted or reconciled.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MessageToolOutput {
+    /// Durable operation identity, assigned by the runtime.
+    pub message_id: String,
+    /// Recipient selected in the request.
+    pub recipient: String,
+    /// True only after the host reports observed publication.
+    pub delivered: bool,
+}
+
+/// Exact arguments accepted by the wait tool.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitToolInput {
+    /// Observe the requested direct children in request order.
+    Tasks {
+        /// Direct child task identities.
+        task_ids: Vec<String>,
+        /// Optional absolute timeout in Unix milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_epoch_ms: Option<u64>,
+    },
+    /// Observe new messages in the caller's own inbox.
+    Messages {
+        /// Last consumed sequence number.
+        after: u64,
+        /// Maximum number of messages to return.
+        limit: usize,
+        /// Optional absolute timeout in Unix milliseconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_epoch_ms: Option<u64>,
+    },
+    /// Suspend until an absolute deadline.
+    Deadline {
+        /// Absolute Unix deadline in milliseconds.
+        deadline_epoch_ms: u64,
+        /// Optional absolute timeout for the wait operation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_epoch_ms: Option<u64>,
+    },
+}
+
+/// Explicit terminal observation for one waited child.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitTaskOutput {
+    /// Child identity.
+    pub task_id: String,
+    /// Terminal state observed by the durable host.
+    pub status: WaitTaskStatus,
+    /// Successful result, if one was returned by the child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<Value>,
+    /// Failure description, if the child failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Identity requiring reconciliation when completion is uncertain.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
+/// Stable status vocabulary for waited child outcomes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitTaskStatus {
+    /// Child returned a successful value.
+    Succeeded,
+    /// Child returned a failure message.
+    Failed,
+    /// Child was cancelled.
+    Cancelled,
+    /// Child completion remains uncertain and needs reconciliation.
+    Indeterminate,
+}
+
+/// One explicit inbox record returned by a message wait.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitMessageOutput {
+    /// Gapless inbox sequence.
+    pub sequence: u64,
+    /// Sender-defined idempotency identity.
+    pub message_id: String,
+    /// Version-pinned message content.
+    pub payload: FileRef,
+}
+
+/// Typed result of a wait operation.  Cancellation and timeout are terminal
+/// values and are never represented as successful observations.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WaitToolOutput {
+    /// Child outcomes in exactly the requested order.
+    Tasks {
+        /// One result for each requested child.
+        outcomes: Vec<WaitTaskOutput>,
+    },
+    /// Newly delivered records after the requested cursor.
+    Messages {
+        /// Ordered records after the requested cursor.
+        items: Vec<WaitMessageOutput>,
+    },
+    /// The requested deadline was reached.
+    Deadline,
+    /// The caller cancelled the wait.
+    Cancelled,
+    /// The absolute timeout elapsed first.
+    TimedOut,
+}
+
+/// Returns the two model-facing communication tools bound to one durable host.
+pub fn communication_tools(host: Arc<dyn crate::runtime::DurableTaskHost>) -> Result<ToolRegistry> {
+    let mut registry = ToolRegistry::new();
+    registry.register(Tool {
+        definition: message_definition(),
+        executor: Arc::new(CommunicationExecutor {
+            host: host.clone(),
+            kind: CommunicationToolKind::Message,
+        }),
+        projection: Arc::new(CommunicationProjection),
+    })?;
+    registry.register(Tool {
+        definition: wait_definition(),
+        executor: Arc::new(CommunicationExecutor {
+            host,
+            kind: CommunicationToolKind::Wait,
+        }),
+        projection: Arc::new(CommunicationProjection),
+    })?;
+    Ok(registry)
+}
+
+/// Creates a typed model tool definition for messages.
+#[must_use]
+pub fn message_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: MESSAGE_TOOL_NAME.into(),
+        revision: TOOL_REVISION.into(),
+        description: "Send explicit version-pinned content to a direct parent or child task."
+            .into(),
+        input_schema: message_input_schema(),
+        output_schema: message_output_schema(),
+    }
+}
+
+/// Creates a typed model tool definition for waits.
+#[must_use]
+pub fn wait_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: WAIT_TOOL_NAME.into(),
+        revision: TOOL_REVISION.into(),
+        description: "Wait for named direct children, new inbox messages, or an absolute deadline."
+            .into(),
+        input_schema: wait_input_schema(),
+        output_schema: wait_output_schema(),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CommunicationToolKind {
+    Message,
+    Wait,
+}
+
+struct CommunicationExecutor {
+    host: Arc<dyn crate::runtime::DurableTaskHost>,
+    kind: CommunicationToolKind,
+}
+
+impl CommunicationExecutor {
+    async fn execute_scoped(
+        &self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> Result<ToolResult> {
+        invocation.validate()?;
+        let expected_name = match self.kind {
+            CommunicationToolKind::Message => MESSAGE_TOOL_NAME,
+            CommunicationToolKind::Wait => WAIT_TOOL_NAME,
+        };
+        if invocation.name != expected_name {
+            return Err(Error::Conflict(
+                "communication invocation names another tool".into(),
+            ));
+        }
+        let waiter = context.task().durable_task_id().ok_or_else(|| {
+            Error::Unsupported("communication tools require an admitted durable task".into())
+        })?;
+        match self.kind {
+            CommunicationToolKind::Message => {
+                let input: MessageToolInput = serde_json::from_value(invocation.arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let recipient = TaskId::parse(&input.recipient)?;
+                DurableCommunication::new(self.host.clone())
+                    .send(MessageRequest {
+                        sender: waiter,
+                        recipient,
+                        message_id: context.operation_id(),
+                        target: input.target.into(),
+                        payload: input.payload,
+                    })
+                    .await?;
+                Ok(ToolResult {
+                    value: serde_json::to_value(MessageToolOutput {
+                        message_id: context.operation_id().to_string(),
+                        recipient: recipient.to_string(),
+                        delivered: true,
+                    })
+                    .map_err(|error| Error::Invalid(error.to_string()))?,
+                })
+            }
+            CommunicationToolKind::Wait => {
+                let input: WaitToolInput = serde_json::from_value(invocation.arguments)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let timeout_epoch_ms = wait_timeout(&input);
+                let target = wait_target(&input, waiter)?;
+                let request = WaitRequest {
+                    operation_id: context.operation_id(),
+                    waiter,
+                    target,
+                    timeout_epoch_ms,
+                    cancellation_id: None,
+                };
+                let completion = DurableCommunication::new(self.host.clone())
+                    .wait(request, None)
+                    .await?;
+                Ok(ToolResult {
+                    value: serde_json::to_value(wait_output(completion))
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                })
+            }
+        }
+    }
+}
+
+impl ToolExecutor for CommunicationExecutor {
+    fn execute<'a>(&'a self, _invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "communication tools require authenticated task context".into(),
+            ))
+        })
+    }
+
+    fn execute_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            Err(Error::Unsupported(
+                "communication tools require the durable task execution path".into(),
+            ))
+        })
+    }
+
+    fn reconcile_in_model_batch<'a>(
+        &'a self,
+        context: crate::tool::ModelToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move {
+            context.validate_invocation(&invocation)?;
+            Err(Error::Unsupported(
+                "communication tools require the durable task execution path".into(),
+            ))
+        })
+    }
+
+    fn execute_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<ToolResult>> {
+        Box::pin(self.execute_scoped(context, invocation))
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        _invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "communication reconciliation requires authenticated task context".into(),
+            ))
+        })
+    }
+
+    fn reconcile_with_context<'a>(
+        &'a self,
+        context: ToolContext,
+        invocation: ToolInvocation,
+    ) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+        Box::pin(async move { self.execute_scoped(context, invocation).await.map(Some) })
+    }
+}
+
+struct CommunicationProjection;
+
+impl ToolProjection for CommunicationProjection {
+    fn project(&self, _invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+        Ok(result.value.clone())
+    }
+}
+
+fn wait_target(input: &WaitToolInput, waiter: TaskId) -> Result<WaitTarget> {
+    match input {
+        WaitToolInput::Tasks { task_ids, .. } => Ok(WaitTarget::Tasks {
+            task_ids: task_ids
+                .iter()
+                .map(|task| TaskId::parse(task))
+                .collect::<Result<Vec<_>>>()?,
+        }),
+        WaitToolInput::Messages { after, limit, .. } => Ok(WaitTarget::Messages {
+            task_id: waiter,
+            after: *after,
+            limit: *limit,
+        }),
+        WaitToolInput::Deadline {
+            deadline_epoch_ms, ..
+        } => Ok(WaitTarget::Deadline {
+            deadline_epoch_ms: *deadline_epoch_ms,
+        }),
+    }
+}
+
+fn wait_timeout(input: &WaitToolInput) -> Option<u64> {
+    match input {
+        WaitToolInput::Tasks {
+            timeout_epoch_ms, ..
+        }
+        | WaitToolInput::Messages {
+            timeout_epoch_ms, ..
+        }
+        | WaitToolInput::Deadline {
+            timeout_epoch_ms, ..
+        } => *timeout_epoch_ms,
+    }
+}
+
+fn wait_output(completion: WaitCompletion) -> WaitToolOutput {
+    match completion {
+        WaitCompletion::Tasks { outcomes } => WaitToolOutput::Tasks {
+            outcomes: outcomes
+                .into_iter()
+                .map(|(task_id, outcome)| {
+                    let mut output = WaitTaskOutput {
+                        task_id: task_id.to_string(),
+                        status: WaitTaskStatus::Cancelled,
+                        value: None,
+                        message: None,
+                        operation_id: None,
+                    };
+                    match outcome {
+                        Outcome::Succeeded(value) => {
+                            output.status = WaitTaskStatus::Succeeded;
+                            output.value = Some(value);
+                        }
+                        Outcome::Failed { message } => {
+                            output.status = WaitTaskStatus::Failed;
+                            output.message = Some(message);
+                        }
+                        Outcome::Cancelled => {}
+                        Outcome::Indeterminate { operation_id } => {
+                            output.status = WaitTaskStatus::Indeterminate;
+                            output.operation_id = Some(operation_id.to_string());
+                        }
+                    }
+                    output
+                })
+                .collect(),
+        },
+        WaitCompletion::Messages { items } => WaitToolOutput::Messages {
+            items: items
+                .into_iter()
+                .map(|item| WaitMessageOutput {
+                    sequence: item.sequence,
+                    message_id: item.message_id,
+                    payload: item.payload,
+                })
+                .collect(),
+        },
+        WaitCompletion::Deadline => WaitToolOutput::Deadline,
+        WaitCompletion::Cancelled => WaitToolOutput::Cancelled,
+        WaitCompletion::TimedOut => WaitToolOutput::TimedOut,
+    }
+}
+
+fn file_ref_schema() -> Value {
+    json!({
+        "type": "object", "additionalProperties": false,
+        "required": ["volume", "path", "version", "descriptor", "display_name"],
+        "properties": {
+            "volume": {"type":"object", "additionalProperties":false,
+                "required":["provider","id","class","owner"], "properties": {
+                    "provider": {"type":"object", "additionalProperties":false,
+                        "required":["namespace","family","version"], "properties": {
+                            "namespace":{"type":"string"}, "family":{"type":"string"}, "version":{"type":"string"}
+                        }},
+                    "id":{"type":"string"}, "class":{"type":"string", "enum":["project","agent_private","session_shared"]},
+                    "owner":{"type":"object", "additionalProperties":false, "required":["kind","id"],
+                        "properties":{"kind":{"type":"string","enum":["project","agent","session"]},"id":{}}}
+                }},
+            "path":{"type":"string"}, "version":{"type":"string"}, "display_name":{"type":"string"},
+            "descriptor":{"type":"object", "additionalProperties":false,
+                "required":["sha256","byte_length","media_type"], "properties": {
+                    "sha256":{"type":"array", "minItems":32, "maxItems":32, "items":{"type":"integer","minimum":0,"maximum":255}},
+                    "byte_length":{"type":"integer","minimum":0}, "media_type":{"type":"string"}
+                }}
+        }
+    })
+}
+
+fn message_input_schema() -> Value {
+    json!({"type":"object", "additionalProperties":false, "required":["recipient","target","payload"],
+        "properties":{"recipient":{"type":"string"}, "target":{"type":"string","enum":["parent","child"]}, "payload":file_ref_schema()}})
+}
+
+fn message_output_schema() -> Value {
+    json!({"type":"object", "additionalProperties":false, "required":["message_id","recipient","delivered"],
+        "properties":{"message_id":{"type":"string"},"recipient":{"type":"string"},"delivered":{"const":true}}})
+}
+
+fn wait_input_schema() -> Value {
+    let timeout = json!({"type":["integer","null"], "minimum":0});
+    json!({"oneOf":[
+        {"type":"object","additionalProperties":false,"required":["kind","task_ids"],"properties":{"kind":{"const":"tasks"},"task_ids":{"type":"array","minItems":1,"maxItems":64,"items":{"type":"string"}},"timeout_epoch_ms":timeout}},
+        {"type":"object","additionalProperties":false,"required":["kind","after","limit"],"properties":{"kind":{"const":"messages"},"after":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":1024},"timeout_epoch_ms":timeout}},
+        {"type":"object","additionalProperties":false,"required":["kind","deadline_epoch_ms"],"properties":{"kind":{"const":"deadline"},"deadline_epoch_ms":{"type":"integer","minimum":1},"timeout_epoch_ms":timeout}}
+    ]})
+}
+
+fn wait_output_schema() -> Value {
+    json!({"oneOf":[
+        {"type":"object","additionalProperties":false,"required":["kind","outcomes"],"properties":{"kind":{"const":"tasks"},"outcomes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task_id","status"],"properties":{"task_id":{"type":"string"},"status":{"type":"string","enum":["succeeded","failed","cancelled","indeterminate"]},"value":{},"message":{"type":"string"},"operation_id":{"type":"string"}}}}}},
+        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"payload":file_ref_schema()}}}}},
+        {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"enum":["deadline","cancelled","timed_out"]}}}
+    ]})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::OperationId;
+    use serde_json::json;
+
+    fn task(value: u8) -> TaskId {
+        TaskId::from_bytes([value; 16])
+    }
+    fn operation(value: u8) -> OperationId {
+        OperationId::from_bytes([value; 16])
+    }
+
+    #[test]
+    fn definitions_are_strict_and_stable() -> Result<()> {
+        let message = message_definition();
+        let wait = wait_definition();
+        message.validate()?;
+        wait.validate()?;
+        assert_eq!(message.digest()?, message_definition().digest()?);
+        assert!(
+            jsonschema::validator_for(&message.input_schema)
+                .unwrap()
+                .validate(&json!({"recipient":"x","target":"parent"}))
+                .is_err()
+        );
+        assert!(
+            jsonschema::validator_for(&wait.input_schema)
+                .unwrap()
+                .validate(&json!({"kind":"messages","after":0,"limit":1,"extra":true}))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wait_outputs_preserve_order_and_terminal_states() -> Result<()> {
+        let output = wait_output(WaitCompletion::Tasks {
+            outcomes: vec![
+                (task(2), Outcome::Succeeded(json!({"ok": true}))),
+                (
+                    task(3),
+                    Outcome::Indeterminate {
+                        operation_id: operation(7),
+                    },
+                ),
+            ],
+        });
+        let value =
+            serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(value["kind"], "tasks");
+        assert_eq!(value["outcomes"][0]["task_id"], task(2).to_string());
+        assert_eq!(value["outcomes"][1]["status"], "indeterminate");
+        Ok(())
+    }
+}

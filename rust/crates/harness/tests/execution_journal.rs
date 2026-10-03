@@ -9,7 +9,7 @@ use acyclic_harness::filesystem::{
 use acyclic_harness::{
     AgentId, Capabilities, Error, IdempotencyKey, InteractionId, OperationId, Outcome, Result,
     TaskId,
-    context::ContextPipeline,
+    context::{Context, ContextInput, ContextPipeline, ContextStage},
     conversation::{
         ContentGrant, FileDescriptor, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner,
         VolumeRef,
@@ -910,6 +910,35 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     Ok(())
 }
 
+struct InjectFileContext(FileRef);
+
+impl ContextStage for InjectFileContext {
+    fn name(&self) -> &str {
+        "test.inject-file"
+    }
+
+    fn contract(&self) -> Value {
+        json!({ "file": self.0 })
+    }
+
+    fn apply<'a>(
+        &'a self,
+        _: &'a ContextInput,
+        mut context: Context,
+    ) -> BoxFuture<'a, Result<Context>> {
+        Box::pin(async move {
+            context.messages.push(acyclic_harness::model::ModelMessage {
+                role: acyclic_harness::model::ModelRole::User,
+                content: ModelContent::Part(ModelContentPart::File {
+                    file: self.0.clone(),
+                    policy: FileProjectionPolicy::BoundedFull,
+                }),
+            });
+            Ok(context)
+        })
+    }
+}
+
 #[tokio::test]
 async fn typed_file_input_requires_resident_authorized_bytes_before_journaling() -> Result<()> {
     let provider = ProviderRef::new("file-input-e2e", "filesystem", "2")?;
@@ -1028,6 +1057,46 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         FileDescriptor::from_bytes(b"other", "image/png")?,
         "chart.png",
     )?;
+    let injected_operation = OperationId::from_bytes([13; 16]);
+    let injected_executor = StockExecutor::new(
+        Model::new("test", "capture", "1", Value::Null)?,
+        model.clone(),
+        ContextPipeline::default().with(Arc::new(InjectFileContext(foreign_file.clone()))),
+        ToolRegistry::default(),
+    );
+    assert!(
+        injected_executor
+            .execute(
+                TurnInput {
+                    operation_id: injected_operation,
+                    input: ModelContent::Text("ordinary input".into()),
+                    selected_context: None,
+                    max_steps: 1,
+                },
+                &journal,
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        model
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    );
+    assert!(
+        journal
+            .replay(injected_operation)
+            .await?
+            .iter()
+            .all(|record| !matches!(
+                record.event,
+                ExecutionEvent::ModelInputPrepared { .. }
+                    | ExecutionEvent::ModelStarted { .. }
+                    | ExecutionEvent::Model { .. }
+            ))
+    );
     let operation_id = OperationId::from_bytes([12; 16]);
     assert!(
         executor
