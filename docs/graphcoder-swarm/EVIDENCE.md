@@ -2,6 +2,10 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-wasm-build-2026-10-03.json](checkpoint-wasm-build-2026-10-03.json) records the fresh policy ABI build from `9fa97138`. Against that artifact, [checkpoint-harness-wasm-typescript-2026-10-03.json](checkpoint-harness-wasm-typescript-2026-10-03.json) records source `bf5b14ed`: source types passed, test types failed, and runtime tests passed 223/239. Sixteen transport cases reject an unsupported event wire version. [checkpoint-graphcoder-typescript-2026-10-03.json](checkpoint-graphcoder-typescript-2026-10-03.json) records 49 passing transport and terminal tests. These do not prove full process cleanup or installed native/PTY qualification.
+
+Process cleanup remains an unchecked gate covering owned children and readers, all exit paths, and durable uncertainty. Pending patches are under independent review; detached readers and unbounded reap paths prevent acceptance. Simplification must reuse the owning library's admission, journal, and lifecycle contracts rather than introduce parallel state.
+
 [checkpoint-local-composition-2026-10-03.json](checkpoint-local-composition-2026-10-03.json) records four passing native composition tests, including durable project/key reopening and exact recorded operator decision. [checkpoint-recursive-restart-2026-10-03.json](checkpoint-recursive-restart-2026-10-03.json) records the real recursive restart followup: one passed, one failed at the later stale-target assertion after provider reopening succeeded.
 
 [checkpoint-cli-composition-2026-10-03.json](checkpoint-cli-composition-2026-10-03.json) records the simplified native CLI: six tests passed and one stage retry failed because the reopened execution path omitted its registered model-option policy. This source-level test run does not qualify installed artifacts or PTY interaction.

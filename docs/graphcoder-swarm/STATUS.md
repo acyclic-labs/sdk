@@ -34,6 +34,8 @@ Native CLI source `3ebc129d` (runtime source `c44432dc`), handle 66011, compiled
 
 ## Other scoped evidence
 
+The fresh WASM build from `9fa97138` succeeded. Current TypeScript source checks pass, test contract compilation fails, and the runtime suite passes 223/239: sixteen transport cases fail event-version validation. GraphCoder transport and terminal tests pass 49/49. See [checkpoint-harness-wasm-typescript-2026-10-03.json](checkpoint-harness-wasm-typescript-2026-10-03.json) and [checkpoint-graphcoder-typescript-2026-10-03.json](checkpoint-graphcoder-typescript-2026-10-03.json). Process cleanup remains unqualified; native lifecycle and bridge fixes are being reviewed for detached readers, bounded reaping, and hidden launches.
+
 [checkpoint-fresh-wasm-terminal-2026-10-03.json](checkpoint-fresh-wasm-terminal-2026-10-03.json) records the earlier fresh WASM build, 100 passing Harness TypeScript tests, one native/WASM canonical equivalence test, and 49 passing GraphCoder TypeScript tests. Those artifacts predate the latest native input-policy changes and must be rebuilt. Native CLI qualification remains pending.
 
 [checkpoint-native-2026-10-03-followup.json](checkpoint-native-2026-10-03-followup.json) records the earlier complete native library run (300 passed, 3 failed) and other source-bound results. Historical checkpoints retain their original scope; they do not prove the current source passes.
