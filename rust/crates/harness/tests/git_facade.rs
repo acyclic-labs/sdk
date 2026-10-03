@@ -189,7 +189,11 @@ impl GitFilesystemExecutor for FaultExecutor {
                 }
             }
             GitFilesystemAction::ForkBranch { .. } => GitFilesystemResult::Forked {
-                workspace_id: WorkspaceId::from_bytes([31; 16]),
+                // This executor models the sequencer boundary only; it does
+                // not materialize a second filesystem workspace. Returning
+                // the current identity keeps the synthetic branch's pinned
+                // source tree valid under the production workspace fence.
+                workspace_id: self.workspace_id,
             },
             GitFilesystemAction::Join { .. } | GitFilesystemAction::ApplyCommit { .. } => {
                 GitFilesystemResult::Applied {
