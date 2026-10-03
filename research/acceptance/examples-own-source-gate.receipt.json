@@ -1,0 +1,14 @@
+{
+  "schema": "acyclic.acceptance.bounded.v1",
+  "result": "passed",
+  "scope": "Root restored and tested compiled/live identity comparison for the producer's declared source files. Full Rust path-dependency closure is not yet covered.",
+  "source_state": "dirty-worktree",
+  "command": "cargo test --manifest-path rust/crates/sdk-examples/Cargo.toml --bin sdk-examples --locked --offline",
+  "tests_passed": 4,
+  "exit_code": 0,
+  "log": {
+    "path": "Q:/sdk/work/rust-source-root-examples-gate.log",
+    "sha256": "52aa1c6f33c7ac909529cffb69ad1a5198776c7e6308d5dc69e5e836af03f92a"
+  },
+  "qualifications_excluded": ["Complete compiled Rust dependency closure", "Clean source snapshot", "Installed multilingual packages", "Exact rendered snippet execution", "Website final qualification"]
+}
