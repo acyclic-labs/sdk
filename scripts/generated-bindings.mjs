@@ -1,19 +1,136 @@
-// Canonical generation inputs and their published copies live here.
-// Every family that negotiates a protocol ships the shared handshake schema.
-export const packagedTypeScriptBindings = [
-  ["filesystem/v2/filesystem_pb", ["filesystem"]],
-  ["harness/v2/harness_pb", ["harness"]],
-  ["protocol/v1/protocol_pb", ["filesystem", "harness"]],
-  // inference_pb imports the proto2 custom options descriptor transitively.
-  ["validation/v1/options_pb", ["inference"]],
-  ["inference/v1/inference_pb", ["inference"]],
-  ["machines/v1/machines_pb", ["machines"]],
-  ["objects/v2/objects_pb", ["objects"]],
-  ["stream/v2/stream_pb", ["stream"]],
-  ["actors/v1/actors_pb", ["actors"]],
-  ["workers/v1/workers_pb", ["workers"]],
-];
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  cpSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+function filesUnder(directory) {
+  if (!existsSync(directory)) return [];
+  const files = [];
+  const visit = current => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const path = join(current, entry.name);
+      if (entry.isDirectory()) visit(path);
+      else if (entry.isFile()) files.push(path);
+    }
+  };
+  visit(directory);
+  return files;
+}
+
+function authorityManifest(rootDirectory) {
+  const path = join(rootDirectory, "rust-authority.json");
+  if (!existsSync(path)) throw new Error(`Rust authority manifest is missing: ${path}`);
+  const manifest = JSON.parse(readFileSync(path, "utf8"));
+  if (manifest.schema !== "acyclic.sdk.rust-authority.v1" || manifest.authority !== "rust") {
+    throw new Error("Rust authority manifest has an invalid identity");
+  }
+  if (!Array.isArray(manifest.families) || manifest.families.length === 0) {
+    throw new Error("Rust authority manifest has no family registry entries");
+  }
+  for (const family of manifest.families) {
+    for (const field of ["source", "descriptor", "source_sha256", "descriptor_sha256"]) {
+      if (typeof family[field] !== "string" || family[field].length === 0) {
+        throw new Error(`Rust authority family is missing ${field}`);
+      }
+    }
+  }
+  return manifest;
+}
+
+/**
+ * Export the contract model through the Rust entrypoint. The optional
+ * environment override is used by qualification fixtures; normal generation
+ * always builds the export from the current Rust source tree.
+ */
+export function rustAuthorityExport() {
+  const configured = process.env.ACYCLIC_RUST_AUTHORITY_DIR;
+  const output = configured
+    ? resolve(configured)
+    : mkdtempSync(join(tmpdir(), "acyclic-rust-authority-"));
+  if (!configured) {
+    const result = spawnSync(
+      "cargo",
+      [
+        "run",
+        "--quiet",
+        "--locked",
+        "--offline",
+        "--manifest-path",
+        join(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
+        "--",
+        "generate",
+        "--out",
+        output,
+      ],
+      { cwd: root, encoding: "utf8", env: { ...process.env, CARGO_NET_OFFLINE: "true" } },
+    );
+    if (result.error) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(`Rust authority export failed:\n${result.stdout ?? ""}\n${result.stderr ?? ""}`);
+    }
+  }
+  const manifest = authorityManifest(output);
+  // Objects v1 is a retired compatibility fixture still covered by Buf's
+  // package-output checks. It is copied into a throwaway Buf input overlay;
+  // it never participates in the Rust authority manifest.
+  const input = configured
+    ? mkdtempSync(join(tmpdir(), "acyclic-rust-authority-input-"))
+    : output;
+  if (configured) cpSync(output, input, { recursive: true });
+  const historicalObjects = join(root, "proto/objects/v1");
+  if (existsSync(historicalObjects)) {
+    cpSync(historicalObjects, join(input, "objects/v1"), { recursive: true });
+  }
+  // Buf needs a local module root for the generated source tree. The Rust
+  // exporter remains the source authority; this file is only module plumbing.
+  const bufConfig = join(input, "buf.yaml");
+  if (!existsSync(bufConfig)) {
+    writeFileSync(bufConfig, "version: v2\nmodules:\n  - path: .\n");
+  }
+  return { root: output, inputRoot: input, manifest };
+}
+
+export function rustAuthorityBufTemplate(authority) {
+  void authority;
+  // Keep the existing Buf plugin compatibility contract. Only the input
+  // module changes: its active files come from Rust and its retired Objects v1
+  // file is the explicit historical fixture copied above.
+  return join(root, "buf.gen.yaml");
+}
+
+function canonicalTypeScriptBindings() {
+  const canonical = join(root, "generated/typescript");
+  const stems = filesUnder(canonical)
+    .filter(path => path.endsWith(".js"))
+    .map(path => relative(canonical, path).replaceAll("\\", "/").slice(0, -3))
+    .sort();
+  return stems.map(stem => {
+    const packages = readdirSync(join(root, "typescript/packages"), { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .filter(name => existsSync(join(root, "typescript/packages", name, "generated/proto", `${stem}.js`)));
+    return [stem, packages];
+  });
+}
+
+// Canonical generation outputs are discovered from the generated tree and
+// package copies. This keeps package inventories in sync with Rust authority
+// additions without another authored family list.
+export const packagedTypeScriptBindings = canonicalTypeScriptBindings();
+
+// These paths are retained only for release metadata and historical package
+// compatibility. Contract generation never reads them; active inputs come
+// from rustAuthorityExport above.
 export const compatibilityArtifacts = {
   harness: {
     schemaDigest: "proto/harness/v2/harness.proto",
@@ -64,6 +181,10 @@ export const historicalCompatibilityArtifacts = {
   },
 };
 
+// Buf descriptor destinations are compatibility/package artifacts. Their
+// active source is resolved through the Rust authority manifest by
+// check-generated.mjs and generate.mjs; the legacy Objects v1 path remains an
+// explicit historical fixture.
 export const generatedDescriptors = [
   ["proto/filesystem", compatibilityArtifacts.filesystem.descriptorDigest],
   ["proto/objects/v1", "compatibility/objects/v1/objects_descriptor.bin"],

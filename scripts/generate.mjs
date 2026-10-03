@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generatedDescriptors } from "./generated-bindings.mjs";
+import { generatedDescriptors, rustAuthorityBufTemplate, rustAuthorityExport } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,10 +13,22 @@ const run = args => {
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
 
-run(["generate"]);
+const authority = rustAuthorityExport();
+const authorityInput = authority.inputRoot ?? authority.root;
+run(["generate", "--template", rustAuthorityBufTemplate(authority), "--output", root, authorityInput]);
+const authorityFor = source => {
+  const normalized = source
+    .replaceAll("\\", "/")
+    .replace(/^proto\//, "")
+    .replace(/^rust\/crates\/stream\/proto\//, "");
+  return authority.manifest.families.find(family =>
+    family.source === normalized || family.source.startsWith(`${normalized}/`));
+};
 for (const [source, destination] of generatedDescriptors) {
   mkdirSync(dirname(join(root, destination)), { recursive: true });
-  run(["build", "--path", source, "-o", join(root, destination)]);
+  const family = authorityFor(source);
+  const input = family ? join(authorityInput, family.source) : join(root, source);
+  run(["build", "--path", input, "-o", join(root, destination)]);
 }
 writeFileSync(
   join(root, "typescript/packages/filesystem/generated/descriptor-digest.js"),

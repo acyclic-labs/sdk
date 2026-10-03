@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings } from "./generated-bindings.mjs";
+import { compatibilityArtifacts, generatedDescriptors, nativeWasmVector, normalizeGeneratedRust, normalizeGeneratedTypeScript, packagedRustBindings, packagedSourceCopies, packagedTypeScriptBindings, rustAuthorityBufTemplate, rustAuthorityExport } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -132,6 +132,16 @@ const checkWasmPackage = async ([packageName, buildScript, basename]) => {
 
 const temporary = mkdtempSync(join(tmpdir(), "acyclic-sdk-codegen-"));
 try {
+  const authority = rustAuthorityExport();
+  const authorityInput = authority.inputRoot ?? authority.root;
+  const authorityFor = source => {
+    const normalized = source
+      .replaceAll("\\", "/")
+      .replace(/^proto\//, "")
+      .replace(/^rust\/crates\/stream\/proto\//, "");
+    return authority.manifest.families.find(family =>
+      family.source === normalized || family.source.startsWith(`${normalized}/`));
+  };
   for (const [source, packaged] of packagedSourceCopies) {
     if (!readFileSync(join(root, source)).equals(readFileSync(join(root, packaged)))) {
       throw new Error(`packaged source drift: ${packaged}`);
@@ -147,7 +157,7 @@ try {
   const executable = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
   const generated = spawnSync(
     executable,
-    ["generate", "--output", temporary],
+    ["generate", "--template", rustAuthorityBufTemplate(authority), "--output", temporary, authorityInput],
     { cwd: root, encoding: "utf8" },
   );
   if (generated.status !== 0) {
@@ -179,7 +189,9 @@ try {
   }
   for (const [source, destination] of generatedDescriptors) {
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
-    const built = spawnSync(executable, ["build", "--path", source, "-o", descriptor], {
+    const family = authorityFor(source);
+    const input = family ? join(authorityInput, family.source) : join(root, source);
+    const built = spawnSync(executable, ["build", "--path", input, "-o", descriptor], {
       cwd: root,
       encoding: "utf8",
     });
