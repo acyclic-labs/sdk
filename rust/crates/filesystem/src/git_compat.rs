@@ -1111,6 +1111,11 @@ pub enum GitFilesystemAction {
         /// Paths participating in a compatibility-history restore. `None`
         /// requests an exact same-workspace head restoration (for stash).
         paths: Option<BTreeSet<String>>,
+        /// Live generation that must still be current when the host applies
+        /// the restore. `None` is retained only for decoding legacy records;
+        /// new transitions always pin this compare-and-swap value.
+        #[serde(default)]
+        expected_workspace_tree: Option<GitTreeRef>,
     },
     /// Restore selected paths from an exact generation.
     RestorePaths {
@@ -1118,6 +1123,10 @@ pub enum GitFilesystemAction {
         tree: GitTreeRef,
         /// Portable paths to replace.
         paths: Vec<String>,
+        /// Live generation that must still be current when the host applies
+        /// the selected-path restore.
+        #[serde(default)]
+        expected_workspace_tree: Option<GitTreeRef>,
     },
     /// Join a source workspace into the current workspace.
     Join {
@@ -1179,6 +1188,10 @@ pub enum GitFilesystemAction {
     ApplyPatch {
         /// Opaque patch bytes.
         patch: Vec<u8>,
+        /// Live generation that must still be current when the host applies
+        /// the patch.
+        #[serde(default)]
+        expected_workspace_tree: Option<GitTreeRef>,
     },
     /// Test paths against the ignore policy in one exact live tree.
     CheckIgnore {
@@ -1254,6 +1267,14 @@ pub enum GitDirtyState {
 pub trait GitFilesystemExecutor: Send + Sync {
     /// Executor failure.
     type Error: std::error::Error + Send + Sync + 'static;
+
+    /// Confirms that the supplied live generation is still controlled by this
+    /// executor. The compatibility state owns only workspace identity; the
+    /// host adapter owns the generation compare-and-swap boundary.
+    fn validate_workspace_tree(
+        &self,
+        workspace_tree: GitTreeRef,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Confirms that the caller still owns any writer lease governing this command.
     fn validate(&self) -> impl Future<Output = Result<(), Self::Error>> + Send {
@@ -1571,11 +1592,11 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "RestoreGeneration",
-        r#"{ readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined } }"#,
+        r#"{ readonly RestoreGeneration: { readonly tree: GitTreeRef; readonly paths: readonly string[] | undefined; readonly expected_workspace_tree: GitTreeRef | undefined } }"#,
     ),
     (
         "RestorePaths",
-        r#"{ readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[] } }"#,
+        r#"{ readonly RestorePaths: { readonly tree: GitTreeRef; readonly paths: readonly string[]; readonly expected_workspace_tree: GitTreeRef | undefined } }"#,
     ),
     (
         "Join",
@@ -1603,7 +1624,7 @@ pub const GIT_COMPAT_ACTION_TYPESCRIPT_TYPES: &[(&str, &str)] = &[
     ),
     (
         "ApplyPatch",
-        r#"{ readonly ApplyPatch: { readonly patch: Uint8Array } }"#,
+        r#"{ readonly ApplyPatch: { readonly patch: Uint8Array; readonly expected_workspace_tree: GitTreeRef | undefined } }"#,
     ),
     (
         "CheckIgnore",
@@ -1954,6 +1975,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let workspace_tree = workspace_tree.into_git_tree_ref(self.workspace_id);
         self.validate_workspace_tree(workspace_tree).await?;
         executor
+            .validate_workspace_tree(workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
@@ -1961,7 +1986,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             GitCommand::MergeContinue => {
                 return self.continue_join(workspace_tree, executor).await;
             }
-            GitCommand::MergeAbort => return self.abort_join(executor).await,
+            GitCommand::MergeAbort => return self.abort_join(workspace_tree, executor).await,
             GitCommand::Add { .. } => {
                 if let Some(pending) = self.pending_transition().await? {
                     if matches!(pending.mutation, GitPendingMutation::Join { .. }) {
@@ -1999,6 +2024,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             return Err(GitCompatError::InvalidState.into());
         };
         executor
+            .validate_workspace_tree(workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        executor
             .validate()
             .await
             .map_err(GitCompatRunError::Executor)?;
@@ -2015,6 +2044,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     async fn abort_join<E: GitFilesystemExecutor>(
         &self,
+        workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         let pending = self.pending_transition().await?.ok_or_else(|| {
@@ -2026,6 +2056,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let GitFilesystemAction::Join { target_tree, .. } = pending.action else {
             return Err(GitCompatError::InvalidState.into());
         };
+        executor
+            .validate_workspace_tree(workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         let mut operation_bytes = Vec::with_capacity(21);
         operation_bytes.extend_from_slice(&pending.id.into_bytes());
         operation_bytes.extend_from_slice(b"abort");
@@ -2038,6 +2072,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 &GitFilesystemAction::RestoreGeneration {
                     tree: target_tree,
                     paths: None,
+                    expected_workspace_tree: Some(workspace_tree),
                 },
             )
             .await
@@ -2139,6 +2174,28 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             }
             other => return Ok(other),
         };
+        let pinned_workspace = match &action {
+            GitFilesystemAction::RestoreGeneration {
+                expected_workspace_tree,
+                ..
+            }
+            | GitFilesystemAction::RestorePaths {
+                expected_workspace_tree,
+                ..
+            }
+            | GitFilesystemAction::ApplyPatch {
+                expected_workspace_tree,
+                ..
+            } => *expected_workspace_tree,
+            _ => None,
+        };
+        if pinned_workspace.is_some_and(|expected| expected != workspace_tree) {
+            return Err(GitCompatRunError::Compat(GitCompatError::WorkspaceMismatch));
+        }
+        executor
+            .validate_workspace_tree(workspace_tree)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         let result = executor
             .execute(operation_id, &action)
             .await
@@ -2552,6 +2609,57 @@ fn validate_completion_result<E: std::error::Error + 'static>(
     pending: &GitPendingTransition,
     result: &GitFilesystemResult,
 ) -> Result<(), GitCompatError<E>> {
+    let valid_result = match (&pending.mutation, &pending.action, result) {
+        (GitPendingMutation::CaptureCommit { .. }, _, GitFilesystemResult::Captured { .. })
+        | (GitPendingMutation::ForkBranch { .. }, _, GitFilesystemResult::Forked { .. })
+        | (
+            GitPendingMutation::Switch { .. },
+            GitFilesystemAction::SwitchWorkspace { .. },
+            GitFilesystemResult::Applied { .. },
+        )
+        | (
+            GitPendingMutation::Reset { .. }
+            | GitPendingMutation::StashPush { .. }
+            | GitPendingMutation::StashPop { .. },
+            GitFilesystemAction::RestoreGeneration { .. },
+            GitFilesystemResult::Applied { .. },
+        )
+        | (
+            GitPendingMutation::Bisect { .. },
+            GitFilesystemAction::RestoreGeneration { .. },
+            GitFilesystemResult::Applied { .. },
+        )
+        | (
+            GitPendingMutation::Join { .. } | GitPendingMutation::ApplyCommit { .. },
+            _,
+            GitFilesystemResult::Applied {
+                tree: Some(_),
+                tracked_paths: Some(_),
+            },
+        )
+        | (
+            GitPendingMutation::NoOp,
+            GitFilesystemAction::Diff { .. }
+            | GitFilesystemAction::Blame { .. }
+            | GitFilesystemAction::Grep { .. }
+            | GitFilesystemAction::Archive { .. }
+            | GitFilesystemAction::CheckIgnore { .. }
+            | GitFilesystemAction::Clean { dry_run: true, .. },
+            GitFilesystemResult::Data { .. },
+        )
+        | (
+            GitPendingMutation::NoOp,
+            GitFilesystemAction::RestoreGeneration { .. }
+            | GitFilesystemAction::RestorePaths { .. }
+            | GitFilesystemAction::ApplyPatch { .. }
+            | GitFilesystemAction::Clean { dry_run: false, .. },
+            GitFilesystemResult::Applied { .. },
+        ) => true,
+        _ => false,
+    };
+    if !valid_result {
+        return Err(GitCompatError::InvalidState);
+    }
     let workspace_id = state
         .current()
         .map_err(|_| GitCompatError::InvalidState)?
@@ -2956,6 +3064,7 @@ fn execute_command(
             GitCommandOutput::Action(GitFilesystemAction::RestorePaths {
                 tree: commit.tree,
                 paths: expand_pathspecs(&paths, &commit.tracked_paths),
+                expected_workspace_tree: Some(workspace),
             })
         }
         GitCommand::Reset { target, mode } => {
@@ -2982,6 +3091,7 @@ fn execute_command(
                                 .cloned()
                                 .collect(),
                         ),
+                        expected_workspace_tree: Some(workspace),
                     },
                     GitPendingMutation::Reset { head: id },
                 ),
@@ -3041,7 +3151,11 @@ fn execute_command(
             let tree = head_workspace_tree.ok_or(GitCompatStateError::UnbornHead)?;
             prepare_transition(
                 state,
-                GitFilesystemAction::RestoreGeneration { tree, paths: None },
+                GitFilesystemAction::RestoreGeneration {
+                    tree,
+                    paths: None,
+                    expected_workspace_tree: Some(workspace),
+                },
                 GitPendingMutation::StashPush { tree: workspace },
             )
         }
@@ -3053,7 +3167,11 @@ fn execute_command(
                 .ok_or(GitCompatStateError::EmptyStash)?;
             prepare_transition(
                 state,
-                GitFilesystemAction::RestoreGeneration { tree, paths: None },
+                GitFilesystemAction::RestoreGeneration {
+                    tree,
+                    paths: None,
+                    expected_workspace_tree: Some(workspace),
+                },
                 GitPendingMutation::StashPop { tree },
             )
         }
@@ -3175,9 +3293,10 @@ fn execute_command(
             };
             GitCommandOutput::Action(GitFilesystemAction::Archive { tree: snapshot })
         }
-        GitCommand::Apply { patch } => {
-            GitCommandOutput::Action(GitFilesystemAction::ApplyPatch { patch })
-        }
+        GitCommand::Apply { patch } => GitCommandOutput::Action(GitFilesystemAction::ApplyPatch {
+            patch,
+            expected_workspace_tree: Some(workspace),
+        }),
         GitCommand::Bisect { arguments } => execute_bisect(state, &current, workspace, &arguments)?,
         GitCommand::RevParse { argument } => {
             let value = match argument.as_str() {
@@ -3736,6 +3855,7 @@ fn prepare_bisect_checkout(
         GitFilesystemAction::RestoreGeneration {
             tree: record.tree,
             paths: Some(paths),
+            expected_workspace_tree: None,
         },
         GitPendingMutation::Bisect {
             state: Box::new(replacement),
@@ -5789,6 +5909,7 @@ mod tests {
     struct TestExecutor {
         result: Result<GitFilesystemResult, TestExecutorError>,
         operations: Mutex<Vec<OperationId>>,
+        live_tree: Option<GitTreeRef>,
     }
 
     impl TestExecutor {
@@ -5796,6 +5917,7 @@ mod tests {
             Self {
                 result: Ok(result),
                 operations: Mutex::new(Vec::new()),
+                live_tree: None,
             }
         }
 
@@ -5803,12 +5925,35 @@ mod tests {
             Self {
                 result: Err(TestExecutorError),
                 operations: Mutex::new(Vec::new()),
+                live_tree: None,
+            }
+        }
+
+        fn requiring(result: GitFilesystemResult, live_tree: GitTreeRef) -> Self {
+            Self {
+                result: Ok(result),
+                operations: Mutex::new(Vec::new()),
+                live_tree: Some(live_tree),
             }
         }
     }
 
     impl GitFilesystemExecutor for TestExecutor {
         type Error = TestExecutorError;
+
+        async fn validate_workspace_tree(
+            &self,
+            workspace_tree: GitTreeRef,
+        ) -> Result<(), Self::Error> {
+            if self
+                .live_tree
+                .is_some_and(|expected| expected != workspace_tree)
+            {
+                Err(TestExecutorError)
+            } else {
+                Ok(())
+            }
+        }
 
         async fn execute(
             &self,
@@ -5922,6 +6067,7 @@ mod tests {
         let commit = GitCommit::new(tree(1), Vec::new(), "agent", 0, "fixture");
         let action = GitFilesystemAction::ApplyPatch {
             patch: vec![1, 2, 3],
+            expected_workspace_tree: Some(tree(1)),
         };
         let outputs = vec![
             GitCommandOutput::NoOp,
@@ -6508,10 +6654,12 @@ mod tests {
             GitFilesystemAction::RestoreGeneration {
                 tree: tree(1),
                 paths: Some(BTreeSet::from(["path".to_owned()])),
+                expected_workspace_tree: Some(tree(2)),
             },
             GitFilesystemAction::RestorePaths {
                 tree: tree(1),
                 paths: vec!["path".to_owned()],
+                expected_workspace_tree: Some(tree(2)),
             },
             GitFilesystemAction::Join {
                 target_tree: tree(1),
@@ -6542,7 +6690,10 @@ mod tests {
                 tracked_paths: BTreeSet::new(),
             },
             GitFilesystemAction::Archive { tree: tree(1) },
-            GitFilesystemAction::ApplyPatch { patch: vec![1, 2] },
+            GitFilesystemAction::ApplyPatch {
+                patch: vec![1, 2],
+                expected_workspace_tree: Some(tree(2)),
+            },
             GitFilesystemAction::CheckIgnore {
                 paths: vec!["path".to_owned()],
                 tree: tree(1),
@@ -6773,6 +6924,26 @@ mod tests {
                 .pending_transition()
                 .await
                 .expect("pending transition")
+                .map(|pending| pending.id),
+            Some(transition)
+        );
+        assert!(matches!(
+            repository
+                .complete_transition_result(
+                    transition,
+                    &GitFilesystemResult::Applied {
+                        tree: None,
+                        tracked_paths: None,
+                    },
+                )
+                .await,
+            Err(GitCompatError::InvalidState)
+        ));
+        assert_eq!(
+            repository
+                .pending_transition()
+                .await
+                .expect("pending transition after invalid result")
                 .map(|pending| pending.id),
             Some(transition)
         );
@@ -7098,6 +7269,26 @@ mod tests {
         );
         let continued = GitCompatRepository::new(workspace(), MemoryGitCompatStore::new());
         pending_merge(&continued, child).await;
+        let stale_live = TestExecutor::requiring(
+            GitFilesystemResult::Applied {
+                tree: Some(tree(2)),
+                tracked_paths: Some(BTreeSet::new()),
+            },
+            tree(2),
+        );
+        assert!(matches!(
+            continued
+                .run(GitCommand::MergeContinue, generation(3), &stale_live)
+                .await,
+            Err(GitCompatRunError::Executor(_))
+        ));
+        assert!(
+            continued
+                .pending_transition()
+                .await
+                .expect("merge remains pending after stale live tree")
+                .is_some()
+        );
         assert_eq!(
             continued
                 .run(
