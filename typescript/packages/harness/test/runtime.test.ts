@@ -38,6 +38,7 @@ import {
   type RuntimeTaskId,
   type TaskMessage,
   type ModelMessage,
+  type ModelProvider,
   type ModelToolDefinition,
   type UserContentPart,
   type FileRef,
@@ -1940,6 +1941,35 @@ describe("typed agent runtime", () => {
     expect(decodedFirst.canonical.requestJson).toBeTruthy();
     expect(decodedSecond.canonical.requestJson).toBeTruthy();
     expect(projectionCalls).toBe(1);
+  });
+
+  test("provider wrappers cannot replace the admitted transport body with their projection", async () => {
+    let innerMessages: readonly ModelMessage[] = [];
+    let capturedBody: number[] = [];
+    const inner: ModelProvider = {
+      async *generate(request) {
+        innerMessages = request.messages;
+        capturedBody = [...request.transport.body];
+        yield { kind: "completed" as const, metadata: {} };
+      },
+      async reconcile() { return undefined; },
+    };
+    const wrapper: ModelProvider = {
+      async *generate(request) {
+        yield* inner.generate({
+          ...request,
+          messages: [{ role: "user", content: "wrapper-only projection" }],
+        });
+      },
+      async reconcile(attempt) { return inner.reconcile(attempt); },
+    };
+    const runtime = Harness.builder(contracts).model(testModel, wrapper).build();
+    await runtime.run("exact transport");
+    expect(innerMessages[0]?.content).toBe("wrapper-only projection");
+    const body = JSON.parse(new TextDecoder().decode(Uint8Array.from(capturedBody))) as {
+      messages: readonly { readonly content: unknown }[];
+    };
+    expect(body.messages[0]?.content).toBe("exact transport");
   });
 
   test("oversized tool projections refuse the model step without an omission sentinel", async () => {
