@@ -173,7 +173,7 @@ try {
   }
   for (const relative of freshFiles) {
     const fresh = normalizeGeneratedTypeScript(readFileSync(join(freshTypeScript, relative), "utf8"));
-    const committed = readFileSync(join(committedTypeScript, relative), "utf8");
+    const committed = normalizeGeneratedTypeScript(readFileSync(join(committedTypeScript, relative), "utf8"));
     if (fresh !== committed) throw new Error(`generated TypeScript drift: ${relative}`);
   }
   const freshRust = join(temporary, "generated/rust");
@@ -184,7 +184,7 @@ try {
   }
   for (const relative of freshRustFiles) {
     const fresh = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(freshRust, relative), "utf8"));
-    const committed = readFileSync(join(committedRust, relative), "utf8");
+    const committed = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(committedRust, relative), "utf8"));
     if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
   }
   for (const [source, destination] of generatedDescriptors) {
