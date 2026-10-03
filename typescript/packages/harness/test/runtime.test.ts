@@ -1862,7 +1862,6 @@ describe("typed agent runtime", () => {
     let projectionCalls = 0;
     const observed: ModelMessage[] = [];
     const serializedRequests: string[] = [];
-    const requestDigests: Uint8Array[] = [];
     const transportBodies: Uint8Array[] = [];
     const transportDigests: Uint8Array[] = [];
     const tool = defineTool<null, Raw>({
@@ -1893,7 +1892,6 @@ describe("typed agent runtime", () => {
           expect([...transportDigest]).toEqual([...request.canonical.requestDigest]);
           transportBodies.push(transportBody);
           transportDigests.push(transportDigest);
-          requestDigests.push(transportDigest);
           observed.push(...request.messages);
           if (modelStep === 0) {
             expect(Object.isFrozen(request.messages)).toBe(true);
@@ -1919,11 +1917,11 @@ describe("typed agent runtime", () => {
     expect(JSON.stringify(observed[3]?.content)).not.toContain("secret");
     expect(serializedRequests.every(request => !request.includes("secret"))).toBe(true);
     expect(serializedRequests[1]).toContain('"modelOutputSchema"');
-    expect(requestDigests).toHaveLength(2);
+    expect(transportBodies).toHaveLength(2);
+    expect(transportDigests).toHaveLength(2);
     expect(transportBodies.map(value => [...value])).toEqual(
       serializedRequests.map(serialized => [...new TextEncoder().encode(JSON.parse(serialized).canonical.requestJson)]),
     );
-    expect(transportDigests.map(value => [...value])).toEqual(requestDigests.map(value => [...value]));
     const decodedFirst = JSON.parse(serializedRequests[0]!);
     const decodedSecond = JSON.parse(serializedRequests[1]!);
     expect(decodedFirst.canonical.requestJson).toBeTruthy();
