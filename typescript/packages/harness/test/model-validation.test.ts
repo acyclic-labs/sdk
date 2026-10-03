@@ -36,8 +36,11 @@ function modelRequest(): WasmModelRequestWire {
   };
 }
 
-function modelLimits(file_bytes = DEFAULT_LIMITS.file_bytes): WasmModelLimitsInput {
-  return { ...DEFAULT_LIMITS, file_bytes };
+function modelLimits(
+  file_bytes = DEFAULT_LIMITS.file_bytes,
+  render_bytes = DEFAULT_LIMITS.render_bytes,
+): WasmModelLimitsInput {
+  return { ...DEFAULT_LIMITS, file_bytes, render_bytes };
 }
 
 test("stale WASM modules fail compatibility checks before model dispatch", () => {
@@ -60,8 +63,8 @@ test("generated WASM model admission enforces the aggregate request byte limit",
   const request = modelRequest();
   const bytes = encodeCanonicalJson(request);
   expect(bytes.byteLength).toBeGreaterThan(1);
-  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength - 1))).toThrow("aggregate model request exceeds byte limit");
-  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength))).not.toThrow();
+  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength - 1, bytes.byteLength - 1))).toThrow("aggregate model request exceeds byte limit");
+  expect(() => prepareModelRequest(request, modelLimits(bytes.byteLength, bytes.byteLength))).not.toThrow();
 });
 
 test("generated WASM model admission requires complete tool-call/result pairings", () => {
