@@ -336,6 +336,7 @@ fn approval_authorizer_from_operator(
         acyclic_fs::LocalObjectBackend,
     >,
 ) -> ApprovalAuthorizer {
+    let operator = Arc::new(operator);
     Arc::new(move |pending: PendingApproval| {
         let operator = operator.clone();
         async move {
