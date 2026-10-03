@@ -6713,6 +6713,16 @@ mod tests {
             crate::contract::canonical_json_bytes(&admission.canonical_value())?,
             admission_fixture.as_bytes()
         );
+        let deferred_fixture = include_str!("../fixtures/v2/task-admission-v3.json").trim();
+        let deferred_value: Value = serde_json::from_str(deferred_fixture)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let deferred = TaskAdmissionRecord::from_canonical_value(deferred_value)?;
+        assert_eq!(deferred.canonical_value()["contract"], "harness.task-admission.v3");
+        assert_eq!(deferred.dependencies.len(), 2);
+        assert_eq!(
+            crate::contract::canonical_json_bytes(&deferred.canonical_value())?,
+            deferred_fixture.as_bytes()
+        );
         let placement_fixture = include_str!("../fixtures/v2/execution-placement.json").trim();
         let placement: ExecutionPlacement = serde_json::from_str(placement_fixture)
             .map_err(|error| Error::Invalid(error.to_string()))?;
