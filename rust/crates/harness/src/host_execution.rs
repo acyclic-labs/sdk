@@ -574,7 +574,6 @@ impl ExecutionResolutionCapability {
         volume: &VolumeRef,
         owner_scope: &crate::core::Scope,
     ) -> Result<[u8; 32]> {
-        volume.validate()?;
         if session_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid(
                 "execution resolution session identity cannot be zero".into(),
@@ -583,7 +582,10 @@ impl ExecutionResolutionCapability {
         let mut input = Vec::with_capacity(64);
         input.extend_from_slice(b"acyclic:harness:execution-resolution:v1");
         input.extend_from_slice(&session_id.into_bytes());
-        input.extend_from_slice(&crate::contract::canonical_json_digest(volume)?);
+        // Keep the v1 owner token stable for pending claims written by older
+        // local sessions. Externally issued operator capabilities below use
+        // the canonical full volume identity and are versioned separately.
+        input.extend_from_slice(volume.id().as_bytes());
         input.extend_from_slice(owner_scope.proof());
         Ok(*blake3::hash(&input).as_bytes())
     }
