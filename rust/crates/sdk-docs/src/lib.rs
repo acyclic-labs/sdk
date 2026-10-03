@@ -759,7 +759,7 @@ pub fn to_website_json(
                 .public_items
                 .iter()
                 .map(|item| {
-                    serde_json::json!({
+                    let mut projection = serde_json::json!({
                         "kind": item.kind,
                         "name": item.name,
                         "summary": item.docs.as_deref().and_then(|docs| docs.lines().next()).filter(|summary| !summary.trim().is_empty()).unwrap_or("No declaration summary was provided."),
@@ -767,8 +767,11 @@ pub fn to_website_json(
                         "sourceLine": item.source_line,
                         "conditional": item.conditional,
                         "generated": item.generated,
-                        "reexport": item.reexport,
-                    })
+                    });
+                    if let Some(reexport) = item.reexport.as_ref() {
+                        projection["reexportTarget"] = reexport_target_projection(reexport, &bundle.crates);
+                    }
+                    projection
                 })
                 .collect::<Vec<_>>();
             let referenced_paths = crate_bundle
@@ -860,6 +863,47 @@ pub fn to_website_json(
         "families": families,
     });
     Ok(serde_json::to_string_pretty(&projection)? + "\n")
+}
+
+fn reexport_target_projection(
+    target: &ReexportTarget,
+    crates: &[CrateBundle],
+) -> serde_json::Value {
+    let target_crate = crates
+        .iter()
+        .find(|crate_bundle| crate_bundle.package_name == target.package);
+    let target_name = target
+        .path
+        .as_deref()
+        .and_then(|path| path.rsplit("::").next())
+        .filter(|name| !name.is_empty());
+    let definition = target_crate.and_then(|crate_bundle| {
+        target_name.and_then(|name| {
+            crate_bundle
+                .public_items
+                .iter()
+                .enumerate()
+                .find(|(_, item)| item.name == name)
+        })
+    });
+    let family = target
+        .package
+        .strip_prefix("acyclic-")
+        .unwrap_or(&target.package);
+    serde_json::json!({
+        "package": target.package,
+        "family": family,
+        "path": target.path,
+        "source": target.source,
+        "definition": definition.map(|(index, item)| serde_json::json!({
+            "index": index,
+            "kind": item.kind,
+            "name": item.name,
+            "summary": item.docs.as_deref().and_then(|docs| docs.lines().next()).filter(|summary| !summary.trim().is_empty()).unwrap_or("No declaration summary was provided."),
+            "sourcePath": item.source_path,
+            "sourceLine": item.source_line,
+        })),
+    })
 }
 
 /// Read the Rust-owned scenario output and bind every rendered file to the
@@ -3439,6 +3483,62 @@ mod tests {
         assert_eq!(target.package, "acyclic-fs");
         assert_eq!(target.path.as_deref(), Some("Filesystem"));
         assert_eq!(target.source, "acyclic_fs::Filesystem");
+    }
+
+    #[test]
+    fn website_projection_resolves_external_definition_across_crate_graphs() {
+        let target_crate = CrateBundle {
+            package_name: "acyclic-fs".to_owned(),
+            crate_name: Some("acyclic_fs".to_owned()),
+            path: "rust/crates/filesystem".to_owned(),
+            publish: true,
+            version: Some("0.1.0".to_owned()),
+            availability: "registry-unverified".to_owned(),
+            analysis_mode: "rustdoc-json".to_owned(),
+            sources: Vec::new(),
+            guides: Vec::new(),
+            examples: Vec::new(),
+            package_instructions: Vec::new(),
+            navigation: "filesystem".to_owned(),
+            public_items: vec![PublicItem {
+                name: "Filesystem".to_owned(),
+                kind: "trait".to_owned(),
+                source_path: Some("rust/crates/filesystem/src/lib.rs".to_owned()),
+                source_line: Some(12),
+                docs: Some("Filesystem access.".to_owned()),
+                conditional: false,
+                generated: false,
+                reexport: None,
+            }],
+            graphs: Vec::new(),
+            rustdoc: None,
+            diagnostics: Vec::new(),
+            content_blake3: "content".to_owned(),
+            coverage: DocCoverage {
+                guides: 0,
+                examples: 0,
+                public_items: 1,
+                documented_items: 1,
+                conditional_items: 0,
+            },
+        };
+        let projection = reexport_target_projection(
+            &ReexportTarget {
+                package: "acyclic-fs".to_owned(),
+                path: Some("Filesystem".to_owned()),
+                source: "acyclic_fs::Filesystem".to_owned(),
+            },
+            &[target_crate],
+        );
+        assert_eq!(projection["family"], "fs");
+        assert_eq!(projection["definition"]["name"], "Filesystem");
+        assert_eq!(projection["definition"]["index"], 0);
+        assert_eq!(projection["definition"]["summary"], "Filesystem access.");
+        assert_eq!(
+            projection["definition"]["sourcePath"],
+            "rust/crates/filesystem/src/lib.rs"
+        );
+        assert_eq!(projection["definition"]["sourceLine"], 12);
     }
 
     #[test]
