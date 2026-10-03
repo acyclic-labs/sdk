@@ -22,7 +22,7 @@ The `cargo add acyclic-inference` block is a caller manifest install instruction
 cargo add acyclic-inference
 ```
 
-Connect over authenticated HTTPS with `Inference::connect(endpoint, api_key, ca_pem)`. Supply a trusted PEM CA when the service uses a private CA; transport validation remains enabled. Create or attach a Context, then use the typed operation builders to fork, edit, generate, and retain. Save the Run identity after admission so an interrupted caller can recover it. Warm commitments have their own inspect, renew, and release lifecycle.
+The remote client defaults to tonic gRPC over authenticated HTTPS through `Inference::connect(endpoint, api_key, ca_pem)`. Supply a trusted PEM CA when the service uses a private CA; transport validation remains enabled. The optional `http-codec` feature is an adapter projection for HTTP/JSON routes, not a remote-client transport override; the native client currently qualifies only gRPC, while browser HTTP/JSON selection is a separate runtime policy. Create or attach a Context, then use the typed operation builders to fork, edit, generate, and retain. Save the Run identity after admission so an interrupted caller can recover it. Warm commitments have their own inspect, renew, and release lifecycle.
 
 Native service adapters can enable `http-codec` independently of `host` and use
 `http_codec::routes`, `decode_http_request` and `encode_http_response`. Routes are

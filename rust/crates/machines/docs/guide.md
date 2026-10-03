@@ -62,7 +62,7 @@ and indeterminate outcomes. `IdempotencyKey` binds a mutation intent;
 current public model does not emit a shared `OperationPolicy` message; these
 typed Rust APIs are the source-owned operation policy.
 
-Machines exposes one gRPC service with 19 RPC methods when the `grpc` feature
+Remote Machines clients default to gRPC over HTTPS with mandatory mutual TLS through `Machines::connect` or `Machines::from_env`; an endpoint beginning with `unix:` is the explicit local socket override. The native policy has no alternate Machines transport and no browser transport is claimed. Machines exposes one gRPC service with 19 RPC methods when the `grpc` feature
 is enabled. It has no HTTP route table. gRPC binding generation is transport
 support only and does not prove that a managed endpoint is deployed.
 `ProviderAssurance::ProcessLocalSimulation` proves only deterministic

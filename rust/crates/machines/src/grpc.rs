@@ -41,8 +41,9 @@ fn owner_private_socket(
 }
 
 impl Machines {
-    /// Connects to the endpoint and credentials named by `ACYCLIC_MACHINES_ENDPOINT`,
-    /// `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
+    /// Selects the default remote gRPC-over-HTTPS client for an HTTPS endpoint, or the
+    /// explicit local Unix-socket override when the endpoint begins with `unix:`. Remote
+    /// HTTPS connections use `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
     /// `ACYCLIC_MACHINES_KEY_FILE`.
     pub async fn from_env() -> Result<Self, ProviderError> {
         let endpoint = std::env::var("ACYCLIC_MACHINES_ENDPOINT")
@@ -73,7 +74,7 @@ impl Machines {
         .await
     }
 
-    /// Connects to an HTTPS Machines endpoint with mandatory mutual TLS.
+    /// Connects the remote Machines client over gRPC on an HTTPS endpoint with mandatory mutual TLS.
     pub async fn connect(uri: &str, tls: Tls<'_>) -> Result<Self, ProviderError> {
         if !uri.starts_with("https://") {
             return Err(ProviderError::Invalid(

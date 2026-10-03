@@ -66,8 +66,7 @@ and recovery methods.
 
 The model contains five gRPC services and 14 RPC methods. The optional
 `http_codec::routes` inventory is a local descriptor projection of those
-methods; it does not mean an HTTP endpoint is mounted. `Inference::connect`
-supports an authenticated HTTPS/TLS customer connection, while deployment,
+methods; it does not mean an HTTP endpoint is mounted. `Inference::connect` selects the default tonic gRPC transport over authenticated HTTPS/TLS. The `http-codec` feature is an optional local adapter projection and does not override the remote client transport. The native Rust client currently qualifies only gRPC, so `Inference::connect` has no alternate native transport override; browser HTTP/JSON selection is a separate runtime policy. Deployment,
 authentication authority, billing, and service availability remain outside
 the crate's source qualification.
 

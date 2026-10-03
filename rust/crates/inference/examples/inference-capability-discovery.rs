@@ -1,5 +1,7 @@
 //! Compile-only capability discovery example.
 //!
+//! `Inference::connect` selects the default tonic gRPC-over-HTTPS remote client;
+//! the optional HTTP codec is an adapter projection and is not a fallback.
 //! Running this example requires a real authenticated customer endpoint and a
 //! trusted PEM CA. Package qualification therefore checks the source and does
 //! not invoke the binary or imply hosted availability.

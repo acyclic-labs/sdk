@@ -1,5 +1,8 @@
 //! Demonstrates retained idempotency, operation recovery, and terminal cancel
 //! behavior using only the deterministic process-local simulator.
+//!
+//! Remote `Machines::connect`/`Machines::from_env` selects gRPC over HTTPS with
+//! mutual TLS by default; a `unix:` endpoint is the explicit local override.
 
 use std::sync::Arc;
 
