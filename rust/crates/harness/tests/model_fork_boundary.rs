@@ -49,6 +49,11 @@ use tokio::sync::{Barrier, Notify};
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
+fn validate_observed_manifest(request: &ModelRequest, bytes: &[u8], limits: Limits) -> Result<()> {
+    let json = std::str::from_utf8(bytes).map_err(|error| Error::Invalid(error.to_string()))?;
+    acyclic_harness::model_input::validate_manifest(request.clone(), limits, None, json)
+}
+
 struct CapturedModel {
     calls: AtomicUsize,
     requests: Mutex<Vec<ModelRequest>>,
@@ -317,7 +322,7 @@ impl ForkAtBatch {
         {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
-            assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
+            validate_observed_manifest(request, manifest_bytes, self.limits)?;
             assert_eq!(*binding, prepared.manifest().binding_digest);
             assert_eq!(*binding, expected_binding);
         }
@@ -1246,7 +1251,7 @@ impl ForkAtBatch {
         {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
-            assert_eq!(manifest, &prepared.manifest_bytes()?);
+            validate_observed_manifest(request, manifest, self.limits)?;
             assert_eq!(*binding, boundary_binding);
         }
         assert_eq!(
@@ -1614,7 +1619,7 @@ impl ForkAtBatch {
         {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
-            assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
+            validate_observed_manifest(request, manifest_bytes, self.limits)?;
             assert_eq!(*binding, prepared.manifest().binding_digest);
             assert_eq!(*binding, boundary_binding);
             let inherited = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
@@ -1844,7 +1849,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
     {
         let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
         assert_eq!(bytes, prepared.bytes());
-        assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
+        validate_observed_manifest(request, manifest_bytes, limits)?;
         assert_eq!(*binding, prepared.manifest().binding_digest);
         assert_eq!(*binding, root_boundary_binding);
     }
