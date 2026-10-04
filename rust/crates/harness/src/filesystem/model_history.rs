@@ -341,7 +341,17 @@ where
                         return Err(Error::Conflict("completed result changed tool".into()));
                     }
                     let (result, projection, rejection_binding) = self
-                        .history_result(operation, step, invocation, path, value, tools, records)
+                        .history_result(
+                            operation,
+                            step,
+                            id,
+                            *call,
+                            invocation,
+                            path,
+                            value,
+                            tools,
+                            records,
+                        )
                         .await?;
                     let mut extensions = BTreeMap::new();
                     if let Some(binding) = rejection_binding {
@@ -443,6 +453,7 @@ where
             historical,
             selection,
             limits,
+            self.inherited_prefix.as_ref(),
         )
         .await
     }
@@ -451,6 +462,8 @@ where
         &self,
         operation: OperationId,
         step: u32,
+        message_id: Uuid,
+        reply_to: Uuid,
         invocation: &ToolInvocation,
         path: &str,
         value: &Value,
@@ -607,6 +620,9 @@ where
                     operation_id: operation,
                     step,
                     call_id: invocation.call_id.clone(),
+                    message_id,
+                    reply_to,
+                    invocation_digest: crate::contract::canonical_json_digest(invocation)?,
                 },
             )
             .await?;
