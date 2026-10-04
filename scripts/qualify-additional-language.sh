@@ -52,6 +52,9 @@ proto_relative=${proto#"$product_root/"}
 source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
 product_manifest="$product_root/rust-authority.json"
 [[ -f "$product_manifest" ]] || { echo 'Rust authority manifest is missing from product output' >&2; exit 1; }
+manifest_digest=$(hash_file "$product_manifest")
+export ACYCLIC_RUST_SOURCE_REVISION="$source_revision"
+export ACYCLIC_RUST_AUTHORITY_MANIFEST_SHA256="$manifest_digest"
 
 run_runtime_probe() {
   local endpoint=${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}
@@ -113,6 +116,9 @@ PY
         "$project/lib/generated" "${contract_protos[@]}" "$project/runtime_smoke.exs"
       mix run --no-start runtime_smoke.exs "$ACYCLIC_FIXTURE_GRPC_ENDPOINT"
       test -s "$project/runtime_smoke.exs"
+      test -s "$project/runtime-consumer-receipt.json"
+      rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
+      rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
     fi
     module=$(sed -n 's/^defmodule \([^ ]*\).*/\1/p' lib/generated/*_pb.ex | head -n 1)
     test -n "$module"
@@ -160,6 +166,9 @@ EOF
       erl -noshell -config config/sys -pa _build/default/lib/*/ebin \
         -eval 'case runtime_smoke:run() of ok -> halt(0); _ -> halt(1) end.'
       test -s "$project/src/runtime_smoke.erl"
+      test -s "$project/runtime-consumer-receipt.json"
+      rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
+      rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
     fi
     module=$(basename "$(find src -type f -name 'actors_pb.erl' -print -quit)" .erl)
     test -n "$module"
@@ -225,9 +234,17 @@ EOF
     if [[ -n "${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}" ]]; then
       python3 "$source_root/scripts/write-common-lisp-runtime-consumer.py" \
         "$project/generated" "${contract_protos[@]}" "$project/runtime_smoke.lisp"
+      ACYCLIC_RUNTIME_RECEIPT="$project/runtime-consumer-receipt.sexp" \
+      ACYCLIC_RUNTIME_OBSERVATION_DIR="$project/runtime-observations" \
       sbcl --non-interactive "${generated_args[@]}" \
         --load "$project/runtime_smoke.lisp" --eval '(format t "Common Lisp Rust fixture consumer passed~%")'
       test -s "$project/runtime_smoke.lisp"
+      test -s "$project/runtime-consumer-receipt.sexp"
+      rg -q ':source-revision "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.sexp"
+      python3 "$source_root/scripts/collect-runtime-observation-receipt.py" \
+        "$project" "$project/runtime-consumer-receipt.json" "$source_revision" "$manifest_digest"
+      test -s "$project/runtime-consumer-receipt.json"
+      rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
     fi
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
