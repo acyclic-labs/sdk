@@ -1664,14 +1664,14 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
             .any(|file| *file == &root_attachment)
     }));
     // Each sibling receives one read_file turn followed by its terminal
-    // continuation. The first request for each sibling is the exact fork
+    // continuation; child zero also executes a rejection follow-up. The first request for each sibling is the exact fork
     // boundary; the continuation is allowed to contain the paired result.
     let child_requests = children
         .iter()
         .map(|child| child.requests.lock().unwrap().clone())
         .collect::<Vec<_>>();
     assert_eq!(child_requests.len(), 2);
-    assert!(child_requests.iter().all(|requests| requests.len() == 2));
+    assert_eq!(child_requests.iter().map(Vec::len).collect::<Vec<_>>(), [3, 2]);
     let first_sibling = &child_requests[0][0];
     let second_sibling = &child_requests[1][0];
     assert_eq!(
