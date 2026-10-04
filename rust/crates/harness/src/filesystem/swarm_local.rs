@@ -4786,6 +4786,20 @@ fn apply_record(
             declaration,
             payload,
         } => {
+            // A typed payload reference and inline fork state are two
+            // different persistence formats.  Accepting both would let
+            // hydration silently prefer whichever representation happened
+            // to be loaded first, so reject the ambiguous record at replay.
+            if payload.is_some()
+                && (seed.is_some()
+                    || report.is_some()
+                    || publication.is_some()
+                    || declaration.is_some())
+            {
+                return Err(Error::Conflict(
+                    "persisted fork admission mixes inline state with a payload reference".into(),
+                ));
+            }
             let parent_session = sessions
                 .get(&parent)
                 .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
@@ -5022,6 +5036,81 @@ mod tests {
         sessions.get_mut(&child).expect("child projection").parent =
             Some(TaskId::from_bytes([4; 16]));
         assert!(validate_session_projection(&sessions).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn registry_rejects_mixed_inline_and_payload_fork_state() -> Result<()> {
+        let parent = TaskId::from_bytes([1; 16]);
+        let child = TaskId::from_bytes([2; 16]);
+        let child_operation = OperationId::from_bytes([3; 16]);
+        let provider = crate::resources::ProviderRef::new("test", "filesystem", "2")?;
+        let volume = VolumeRef::new(
+            provider,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(crate::AgentId::from_bytes([4; 16])),
+        )?;
+        let file = FileRef::new(
+            volume,
+            "fork-payload.json",
+            "v1",
+            crate::conversation::FileDescriptor::from_bytes(b"{}", "application/json")?,
+            "fork-payload.json",
+        )?;
+        let payload = StoredForkPayloadRef {
+            child,
+            payload: file,
+            digest: [5; 32],
+        };
+        let seed: ForkSeed = serde_json::from_str(include_str!(
+            "../../fixtures/v2/fork-seed.json"
+        ))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        let record = StoredRecord {
+            version: REGISTRY_VERSION,
+            event: StoredEvent::ForkPrepared {
+                parent,
+                parent_operation: OperationId::from_bytes([6; 16]),
+                parent_step: 0,
+                child,
+                child_operation,
+                fork_operation: None,
+                child_authority: None,
+                child_agent: None,
+                task: "child".into(),
+                prompt: "prompt".into(),
+                seed: Some(seed),
+                seed_digest: None,
+                report: None,
+                publication: None,
+                declaration: None,
+                payload: Some(payload),
+            },
+        };
+        let mut sessions = BTreeMap::new();
+        let mut requests = BTreeMap::new();
+        let mut seeds = BTreeMap::new();
+        let mut reports = BTreeMap::new();
+        let mut publications = BTreeMap::new();
+        let mut declarations = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
+        let mut completion_refs = BTreeMap::new();
+        let mut fork_payloads = BTreeMap::new();
+        let error = apply_record(
+            &mut sessions,
+            &mut requests,
+            &mut seeds,
+            &mut reports,
+            &mut publications,
+            &mut declarations,
+            &mut outcomes,
+            &mut completion_refs,
+            &mut fork_payloads,
+            record,
+        )
+        .expect_err("mixed inline/payload fork record must be rejected");
+        assert!(error.to_string().contains("mixes inline state"));
         Ok(())
     }
 
