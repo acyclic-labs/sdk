@@ -71,6 +71,7 @@ const evidencePath = resolve(process.env.GRAPHCODER_SWARM_EVIDENCE_PATH ?? resol
 const expectedFiles = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_FILES_JSON");
 const expectedApproval = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON");
 const expectedCommand = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_COMMAND_JSON");
+const expectedExecution = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_EXECUTION_JSON");
 const concurrentEdit = requiredJsonObject("GRAPHCODER_SWARM_CONCURRENT_EDIT_JSON");
 if (Object.keys(expectedFiles).length === 0) fail("GRAPHCODER_SWARM_EXPECTED_FILES_JSON must contain at least one checkout file");
 const commandApproval = requiredJsonObjectValue(expectedApproval, "command", "GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON.command");
@@ -94,11 +95,12 @@ try { bridgePath = resolveExport.resolve("@acyclic-labs/graphcoder/bridge"); }
 catch (error) { fail(`installed bridge export cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); }
 if (relative(packageRoot, bridgePath).startsWith("..") || resolve(packageRoot, bridgePath) === packageRoot) fail("installed bridge export resolved outside the package artifact root");
 const { JsonLineGraphCoderBridge } = await import(pathToFileURL(bridgePath).href);
-const bridge = new JsonLineGraphCoderBridge({ executable: bridgeExecutable, args: bridgeArgs, cwd: bridgeCwd, env: bridgeEnvironment });
+let bridge;
 const observations = [];
 let requestNumber = 0;
 let evidence;
 async function request(method, params) {
+  if (bridge === undefined) fail("bridge was not constructed");
   const requestId = `installed-swarm-${++requestNumber}`;
   const response = await bridge.request({ request_id: requestId, method, params });
   observations.push({ request_id: requestId, method, ok: response?.ok === true, error_code: response?.error?.code ?? null });
@@ -106,6 +108,7 @@ async function request(method, params) {
 }
 
 try {
+  bridge = new JsonLineGraphCoderBridge({ executable: bridgeExecutable, args: bridgeArgs, cwd: bridgeCwd, env: bridgeEnvironment });
   const listed = await request("list_sessions", {});
   responseValue(listed.response, listed.requestId, "list_sessions");
 
@@ -118,6 +121,7 @@ try {
   const rootId = snapshot.summary?.id ?? snapshot.summary?.task_id;
   if (typeof rootId !== "string") fail("start_session omitted root identity");
   const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+  if (agents.length !== 4 || new Set(agents.map(agent => agent.id)).size !== 4) fail("recursive start must publish exactly four agents with distinct identities");
   const root = agents.find(agent => agent.id === rootId && agent.parent_id === null);
   if (!root) fail("recursive start omitted the root agent tree entry");
   const childA = agents.find(agent => agent.task === "child-a" && agent.parent_id === rootId);
@@ -126,9 +130,17 @@ try {
   if (!childA || !childB || !grandchild) fail("recursive tree is not exactly root -> child-a/child-b -> grandchild");
 
   const activity = await request("read_activity", { session_id: rootId, limit: 256 });
-  responseValue(activity.response, activity.requestId, "read_activity");
+  const activityPage = object(responseValue(activity.response, activity.requestId, "read_activity"), "activity page");
   const messages = await request("read_messages", { session_id: rootId, limit: 256 });
-  responseValue(messages.response, messages.requestId, "read_messages");
+  const messagePage = object(responseValue(messages.response, messages.requestId, "read_messages"), "message page");
+  function assertOrdered(items, label) {
+    if (!Array.isArray(items) || items.length === 0) fail(`${label} is empty`);
+    const ids = items.map(item => item?.id).filter(id => typeof id === "string");
+    if (ids.length !== items.length || new Set(ids).size !== ids.length) fail(`${label} identities are missing or duplicated`);
+    for (let index = 1; index < items.length; index += 1) if (!(BigInt(items[index].sequence) > BigInt(items[index - 1].sequence))) fail(`${label} sequence is not strictly ordered`);
+  }
+  assertOrdered(activityPage.items, "activity");
+  assertOrdered(messagePage.items, "messages");
   const beforeFiles = {};
   for (const [path, expectation] of Object.entries(expectedFiles)) {
     if (!expectation || typeof expectation.before_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.before_sha256) || typeof expectation.workspace_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.workspace_sha256) || typeof expectation.after_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.after_sha256)) fail(`expected checkout file ${path} lacks valid physical/workspace SHA-256 digests`);
@@ -151,6 +163,13 @@ try {
   const resolved = await request("resolve_approval", { session_id: rootId, approval_id: command.id, approved: true });
   const resolvedApproval = object(responseValue(resolved.response, resolved.requestId, "resolve_approval"), "resolved approval");
   if (resolvedApproval.state !== "approved" || resolvedApproval.operation_id !== command.operation_id) fail("public command approval resolution is not bound to the host approval");
+  const executionActivity = await request("read_activity", { session_id: rootId, limit: 256 });
+  const executionPage = object(responseValue(executionActivity.response, executionActivity.requestId, "read_activity after command"), "execution activity page");
+  assertOrdered(executionPage.items, "execution activity");
+  const execution = executionPage.items.find(item => item?.kind === expectedExecution.activity_kind && item.operation_id === expectedExecution.operation_id);
+  if (!execution || execution.attempt_id !== expectedExecution.attempt_id || execution.request_digest !== expectedExecution.request_digest || execution.state !== "completed" || execution.cleanup_verified !== true || bytesDigest(execution.output_bytes, "native execution output") !== expectedExecution.output_sha256) fail("approved command lacks the exact durable completion receipt and cleanup outcome");
+  const executionMarker = checkoutDigest(checkoutRoot, expectedExecution.marker_path, "native execution marker");
+  if (executionMarker !== expectedExecution.marker_sha256) fail("native execution marker does not match the expected output");
 
   const changes = await request("list_changes", { session_id: rootId });
   if (changes.response?.ok !== true) fail(`list_changes is not available for installed swarm qualification: ${JSON.stringify(changes.response?.error ?? changes.response)}`);
@@ -190,18 +209,18 @@ try {
   const afterChanges = await request("list_changes", { session_id: rootId });
   const afterPage = object(responseValue(afterChanges.response, afterChanges.requestId, "list_changes after writeback"), "post-writeback change page");
   for (const [path, expectation] of Object.entries(expectedFiles)) {
-    const file = await request("read_file", { session_id: rootId, path, generation: afterPage.generation });
-    const body = responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
-    responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
+    await request("read_file", { session_id: rootId, path, generation: afterPage.generation });
     if (checkoutDigest(checkoutRoot, path, "post-writeback checkout file") !== expectation.after_sha256) fail(`checkout file ${path} does not match exact post-writeback bytes`);
   }
   if (checkoutDigest(checkoutRoot, concurrentPath, "post-writeback concurrent-edit file") !== concurrentEdit.after_sha256) fail("concurrent user edit was not preserved on disk");
 
   evidence = { protocol: "acyclic.graphcoder.installed-swarm-evidence.v1", root_id: rootId, agents, observations, recursive: true, native_approval: true, writeback: true };
 } finally {
-  bridge.close("installed recursive swarm qualification finished");
-  const exit = await bridge.waitForExit(5_000);
-  if (exit.kind !== "closed") fail(`bridge cleanup was not verified: ${JSON.stringify(exit)}`);
+  if (bridge !== undefined) {
+    bridge.close("installed recursive swarm qualification finished");
+    const exit = await bridge.waitForExit(5_000);
+    if (exit.kind !== "closed") fail(`bridge cleanup was not verified: ${JSON.stringify(exit)}`);
+  }
 }
 mkdirSync(dirname(evidencePath), { recursive: true });
 writeFileSync(evidencePath, `${JSON.stringify({ ...evidence, cleanup_verified: true }, null, 2)}\n`, { flag: "wx" });
