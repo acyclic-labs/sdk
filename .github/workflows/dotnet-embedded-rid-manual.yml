@@ -402,12 +402,12 @@ jobs:
           $expectedAsset = @($producer.native_assets | Where-Object { $_.rid -eq $env:RID })
           if ($expectedAsset.Count -ne 1) { throw "The producer manifest has no unique asset for RID $env:RID." }
           $project = $env:TEST_ROOT
+          $env:NUGET_PACKAGES = Join-Path $env:TEST_ROOT 'packages'
           dotnet new console --framework net8.0 --output $project --force --no-restore | Out-Host
           $source = $package.DirectoryName
           dotnet add $project package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source $source | Out-Host
-          dotnet restore $project | Out-Host
-          $globalPackagesLine = (& dotnet nuget locals global-packages --list | Select-String 'global-packages' | Select-Object -First 1).ToString()
-          $globalPackages = ($globalPackagesLine -split ':', 2)[1].Trim()
+          dotnet restore $project --force --no-cache | Out-Host
+          $globalPackages = $env:NUGET_PACKAGES
           $installedNativeRoot = Join-Path $globalPackages "acyclic.sdk.embedded\0.2.0-alpha.1\runtimes\$($env:RID)\native"
           $installedNative = Get-ChildItem -LiteralPath $installedNativeRoot -File | Select-Object -First 1
           if (-not $installedNative) { throw "NuGet did not install a native asset for RID $env:RID." }
@@ -477,6 +477,7 @@ jobs:
               test "$(dotnet --version)" = "8.0.425"
               apk add --no-cache git python3
               mkdir -p /tmp/embedded-consumer
+              export NUGET_PACKAGES=/tmp/embedded-packages
               package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
               test -n "$package"
               source_revision="$(git -C /src rev-parse HEAD)"
@@ -489,8 +490,8 @@ jobs:
               source="$(dirname "$package")"
               dotnet add /tmp/embedded-consumer package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source "$source"
               sed -i "s#</Project>#  <PropertyGroup><RuntimeIdentifier>$RID</RuntimeIdentifier></PropertyGroup></Project>#" /tmp/embedded-consumer/embedded-consumer.csproj
-              dotnet restore /tmp/embedded-consumer
-              global_packages="$(dotnet nuget locals global-packages --list | sed -n 's/.*: //p' | head -n 1)"
+              dotnet restore /tmp/embedded-consumer --force --no-cache
+              global_packages="$NUGET_PACKAGES"
               installed_native="$global_packages/acyclic.sdk.embedded/0.2.0-alpha.1/runtimes/$RID/native/libacyclic_sdk_embedded_prototype.so"
               test -f "$installed_native"
               test "$(sha256sum "$installed_native" | awk '{print $1}')" = "$expected_hash"
