@@ -1060,14 +1060,16 @@ impl ForkAtBatch {
                 .get(*index as usize)
                 .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
             let requests = self.assert_model_evidence(child_model, boundary_binding)?;
-            assert_eq!(requests.len(), 2);
-            assert_eq!(
-                &requests[0].messages[..boundary.request.messages.len()],
-                boundary.request.messages
-            );
-            let actual = PreparedModelInput::prepare(requests[0].clone(), self.limits)?;
-            let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
-            assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
+            assert_eq!(requests.len(), if *index == 0 { 3 } else { 2 });
+            for request in requests {
+                assert_eq!(
+                    &request.messages[..boundary.request.messages.len()],
+                    boundary.request.messages
+                );
+                let actual = PreparedModelInput::prepare(request, self.limits)?;
+                let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
+                assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
+            }
         }
         self.publications.fetch_add(1, Ordering::SeqCst);
         Ok(())
