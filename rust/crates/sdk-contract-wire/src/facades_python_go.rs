@@ -5,11 +5,8 @@
 //! default secure transport policy so consumers do not select a platform
 //! feature flag or instantiate a generated channel themselves.
 
-use super::facade_operations;
-use crate::{
-    family_registry::FAMILY_VIEWS,
-    transport::TransportKind,
-};
+use super::{FACADE_SELECTION_POLICY, facade_operations};
+use crate::{family_registry::FAMILY_VIEWS, transport::TransportKind};
 
 pub(super) fn render_python(binding: &str) -> String {
     let mut output = format!(
@@ -35,6 +32,9 @@ from .generated.workers.v1 import workers_pb2_grpc
 
 SOURCE_BINDING = "#BINDING#"
 BEST_TRANSPORT = "grpc+tls"
+SELECTION_PROBE = "#SELECTION_PROBE#"
+POST_FAILURE_FALLBACK = "#POST_FAILURE_FALLBACK#"
+REPLAY = "#REPLAY#"
 
 
 @dataclass(frozen=True)
@@ -158,7 +158,7 @@ class Client:
         await self.close()
 
 
-__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "InferenceServices", "OPERATIONS", "SOURCE_BINDING"]
+__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "InferenceServices", "OPERATIONS", "POST_FAILURE_FALLBACK", "REPLAY", "SELECTION_PROBE", "SOURCE_BINDING", "TRANSPORTS_BY_RUNTIME"]
 
 
 OPERATIONS = {
@@ -169,11 +169,26 @@ OPERATIONS = {
 TRANSPORTS = {
 #TRANSPORTS#
 }
+
+
+TRANSPORTS_BY_RUNTIME = {
+    "native": TRANSPORTS,
+    "browser": {
+#BROWSER_TRANSPORTS#
+    },
+}
 "###,
     );
     output = output.replace("#BINDING#", binding);
+    output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
+    output = output.replace(
+        "#POST_FAILURE_FALLBACK#",
+        FACADE_SELECTION_POLICY.post_failure_fallback,
+    );
+    output = output.replace("#REPLAY#", FACADE_SELECTION_POLICY.replay);
     output = output.replace("#OPERATIONS#", &python_operations());
     output = output.replace("#TRANSPORTS#", &python_transports());
+    output = output.replace("#BROWSER_TRANSPORTS#", &python_browser_transports());
     output
 }
 
@@ -208,6 +223,9 @@ import (
 
 const SourceBinding = "#BINDING#"
 const BestTransport = "grpc+tls"
+const SelectionProbe = "#SELECTION_PROBE#"
+const PostFailureFallback = "#POST_FAILURE_FALLBACK#"
+const Replay = "#REPLAY#"
 
 // Credentials configures the public facade. The zero value uses the platform
 // trust store. A client certificate enables mTLS without changing the client
@@ -331,11 +349,25 @@ var Operations = map[string]OperationPolicy{
 var Transports = map[string][]string{
 #TRANSPORTS#
 }
+
+var TransportsByRuntime = map[string]map[string][]string{
+    "native": Transports,
+    "browser": {
+#BROWSER_TRANSPORTS#
+    },
+}
 "###,
     );
     output = output.replace("#BINDING#", binding);
+    output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
+    output = output.replace(
+        "#POST_FAILURE_FALLBACK#",
+        FACADE_SELECTION_POLICY.post_failure_fallback,
+    );
+    output = output.replace("#REPLAY#", FACADE_SELECTION_POLICY.replay);
     output = output.replace("#OPERATIONS#", &go_operations());
     output = output.replace("#TRANSPORTS#", &go_transports());
+    output = output.replace("#BROWSER_TRANSPORTS#", &go_browser_transports());
     output
 }
 
@@ -395,6 +427,36 @@ fn go_transports() -> String {
     for family in FAMILY_VIEWS {
         output.push_str(&format!("    {:?}: []string{{", family.name));
         for (index, option) in family.transport.native.options.iter().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&format!("{:?}", transport_name(option.kind)));
+        }
+        output.push_str("},\n");
+    }
+    output
+}
+
+fn python_browser_transports() -> String {
+    let mut output = String::new();
+    for family in FAMILY_VIEWS {
+        output.push_str(&format!("        {:?}: [", family.name));
+        for (index, option) in family.transport.browser.options.iter().enumerate() {
+            if index != 0 {
+                output.push_str(", ");
+            }
+            output.push_str(&format!("{:?}", transport_name(option.kind)));
+        }
+        output.push_str("],\n");
+    }
+    output
+}
+
+fn go_browser_transports() -> String {
+    let mut output = String::new();
+    for family in FAMILY_VIEWS {
+        output.push_str(&format!("        {:?}: []string{{", family.name));
+        for (index, option) in family.transport.browser.options.iter().enumerate() {
             if index != 0 {
                 output.push_str(", ");
             }

@@ -280,6 +280,7 @@ fn rust_policy_source_binding() -> String {
     let mut digest = Sha256::new();
     for source in [
         include_bytes!("facades.rs").as_slice(),
+        include_bytes!("facades_python_go.rs").as_slice(),
         include_bytes!("lib.rs").as_slice(),
         include_bytes!("transport.rs").as_slice(),
         include_bytes!("family_registry.rs").as_slice(),
