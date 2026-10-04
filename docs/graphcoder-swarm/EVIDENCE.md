@@ -347,3 +347,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Native local Stream: [2/2 immutable-record conformance and cold reopen cases](checkpoint-stream-immutable-native-2026-10-04.json). Harness refresh and installed swarm qualification remain separate.
 
 - Configured Harness cache and communication: [34/34 native focused cases](checkpoint-harness-refresh-communication-native-2026-10-04.json). Includes suffix refresh, bounded anchors, rollback/missing-history rejection, invalid cold/warm limits, external writes, and authenticated communication admission. Prior compilation failures and the malformed-payload fixture failure remain recorded. Production coordinator and installed qualification remain open.
+
+- Stronger cold recursive boundary: [2/3 native failure evidence](checkpoint-cold-prefix-exclusive-reopen-failure-2026-10-04.json). Canonical manifest validation retains rejection metadata, but fresh provider reopen is attempted while the parent retains the exclusive Stream root. Genuine cold reopen and production coordinator qualification remain open.

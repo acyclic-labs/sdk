@@ -19,6 +19,8 @@ The native local Stream checks at `eeafbf7e8` pass 2/2: adversarial middle-recor
 
 ## Required integration and qualification gates
 
+The stronger recursive manifest/cold-reopen fixture at `2a8e01634` passes 2/3 cases. Fresh Stream reopen fails because the original parent publisher still retains its exclusive provider. The fixture is being moved after full original-handle release; see [cold boundary failure evidence](checkpoint-cold-prefix-exclusive-reopen-failure-2026-10-04.json). This is not a passing cold-recovery gate.
+
 At `a82a97abd`, the locked native Harness run passes 34/34 focused storage and communication cases with no ignored tests. The configured conversation cache preserves limits validation and sees external writes; suffix refresh reads bounded anchors and rejects rollback/missing history. See [current focused evidence](checkpoint-harness-refresh-communication-native-2026-10-04.json), which also retains the preceding compile failures and malformed-payload fixture failure. This supersedes the pending focused verification above; production fork publication, cold recursive recovery, and installed swarm qualification remain open.
 
 1. Preserve exact recursive prefixes and rejection evidence across child follow-up, parallel batches, deeper forks, and restart. Preserve the dedicated native fixture stack and resolve the production capture/publication revision mismatch.
