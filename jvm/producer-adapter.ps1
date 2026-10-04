@@ -63,6 +63,30 @@ if (-not (Test-Path -LiteralPath $installedPom -PathType Leaf)) {
   throw "JVM producer completed without dependency metadata: $installedPom"
 }
 Copy-Item -LiteralPath $installedPom -Destination (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom') -Force
+
+# Run the generated consumer against every emitted gRPC descriptor and retain
+# the exact scenario bytes in the producer output. The request revision is the
+# Rust orchestrator's immutable source identity; do not derive or rewrite it
+# from a mutable staged checkout.
+$requestDocument = Get-Content -Raw -LiteralPath $Request | ConvertFrom-Json
+$sourceRevision = [string]$requestDocument.source.revision
+if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') {
+  throw "Language producer request has no exact 40-character source revision: $sourceRevision"
+}
+$consumerRoot = Join-Path $output 'qualification\consumers'
+$null = New-Item -ItemType Directory -Force -Path $consumerRoot
+$consumerArtifact = Join-Path $consumerRoot 'jvm-transport.jar'
+Copy-Item -LiteralPath $jar -Destination $consumerArtifact -Force
+& $maven.Source '-B' '-ntp' '-f' $pom `
+  "-Dacyclic.schema.root=$Authority" `
+  "-Dmaven.repo.local=$mavenLocal" `
+  "-Dacyclic.source.revision=$sourceRevision" `
+  "-Dacyclic.scenario.output=$output" `
+  '-Dacyclic.consumer.artifact=qualification/consumers/jvm-transport.jar' `
+  '-Dtest=RpcScenarioEvidenceTest' 'test'
+if ($LASTEXITCODE -ne 0) {
+  throw "JVM RPC scenario evidence failed with exit code $LASTEXITCODE."
+}
 $requestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Request).Hash
 $authorityHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
 @{
