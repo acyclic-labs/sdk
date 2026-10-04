@@ -77,10 +77,11 @@ final class RpcScenarioEvidenceTest {
     Files.createDirectories(consumerRoot);
 
     List<Scenario> scenarios = new ArrayList<>();
+    Map<String, ResponseExpectation> expectations = authorityExpectations();
     for (Class<?> serviceClass : SERVICES) {
       Method descriptorMethod = serviceClass.getMethod("getServiceDescriptor");
       ServiceDescriptor descriptor = (ServiceDescriptor) descriptorMethod.invoke(null);
-      scenarios.addAll(exerciseService(descriptor, revision, consumerRoot));
+      scenarios.addAll(exerciseService(descriptor, revision, consumerRoot, expectations));
     }
     scenarios.sort(Comparator.comparing(Scenario::rpc));
     assertTrue(!scenarios.isEmpty(), "generated JVM services must expose RPCs");
@@ -126,10 +127,10 @@ final class RpcScenarioEvidenceTest {
   }
 
   private static List<Scenario> exerciseService(ServiceDescriptor descriptor, String revision,
-      Path consumerRoot) throws Exception {
+      Path consumerRoot, Map<String, ResponseExpectation> expectations) throws Exception {
     String endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT");
     if (endpoint != null && !endpoint.isBlank()) {
-      return exerciseRemoteService(descriptor, revision, endpoint);
+      return exerciseRemoteService(descriptor, revision, endpoint, expectations);
     }
     String name = InProcessServerBuilder.generateName();
     ServerServiceDefinition.Builder service = ServerServiceDefinition.builder(descriptor);
@@ -141,7 +142,7 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        int responseCount = invoke(channel, method);
+        int responseCount = invoke(channel, method, false, expectations);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
             shape(method.getType()), "in-process", responseCount));
@@ -155,13 +156,13 @@ final class RpcScenarioEvidenceTest {
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static List<Scenario> exerciseRemoteService(ServiceDescriptor descriptor, String revision,
-      String endpoint) throws Exception {
+      String endpoint, Map<String, ResponseExpectation> expectations) throws Exception {
     String target = endpoint.replaceFirst("^https?://", "");
     ManagedChannel channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        int responseCount = invoke(channel, method, true);
+        int responseCount = invoke(channel, method, true, expectations);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
             shape(method.getType()), "remote", responseCount));
@@ -204,17 +205,23 @@ final class RpcScenarioEvidenceTest {
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static int invoke(Channel channel, MethodDescriptor method) throws Exception {
-    return invoke(channel, method, false);
+    return invoke(channel, method, false, authorityExpectations());
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
-  private static int invoke(Channel channel, MethodDescriptor method, boolean remote) throws Exception {
+  private static int invoke(Channel channel, MethodDescriptor method, boolean remote,
+      Map<String, ResponseExpectation> expectations) throws Exception {
+    ResponseExpectation expectation = expectations.get(method.getFullMethodName());
+    if (expectation == null) {
+      throw new AssertionError("Rust authority has no response expectation for "
+          + method.getFullMethodName());
+    }
     Object request = remote ? requestFor(method) : empty(method.getRequestMarshaller());
     CallOptions options = CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS);
     return switch (method.getType()) {
       case UNARY -> {
         Object response = ClientCalls.blockingUnaryCall(channel, method, options, request);
-        assertPopulatedResponse(response, method.getFullMethodName());
+        assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
         yield response == null ? 0 : 1;
       }
       case SERVER_STREAMING -> {
@@ -223,13 +230,13 @@ final class RpcScenarioEvidenceTest {
         int count = 0;
         while (responses.hasNext()) {
           Object response = responses.next();
-          assertPopulatedResponse(response, method.getFullMethodName());
+          assertPopulatedResponse(response, method.getFullMethodName(), expectation, request, remote);
           count++;
         }
         yield count;
       }
-      case CLIENT_STREAMING -> streamCall(channel, method, request, false, options);
-      case BIDI_STREAMING -> streamCall(channel, method, request, true, options);
+      case CLIENT_STREAMING -> streamCall(channel, method, request, false, options, expectation, remote);
+      case BIDI_STREAMING -> streamCall(channel, method, request, true, options, expectation, remote);
       default -> throw new IllegalArgumentException("unsupported gRPC method type: " + method.getType());
     };
   }
@@ -256,19 +263,20 @@ final class RpcScenarioEvidenceTest {
   private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
       throws Exception {
     return streamCall(channel, method, request, bidi,
-        CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS));
+        CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS),
+        authorityExpectations().get(method.getFullMethodName()), false);
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static int streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
-      CallOptions options) throws Exception {
+      CallOptions options, ResponseExpectation expectation, boolean remote) throws Exception {
     CountDownLatch done = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     AtomicInteger responses = new AtomicInteger();
     StreamObserver response = new StreamObserver() {
       @Override public void onNext(Object value) {
         try {
-          assertPopulatedResponse(value, method.getFullMethodName());
+          assertPopulatedResponse(value, method.getFullMethodName(), expectation, request, remote);
           responses.incrementAndGet();
         } catch (Throwable error) {
           failure.set(error);
@@ -289,18 +297,71 @@ final class RpcScenarioEvidenceTest {
     return responses.get();
   }
 
-  private static void assertPopulatedResponse(Object response, String rpc) {
+  private static void assertPopulatedResponse(Object response, String rpc,
+      ResponseExpectation expectation, Object request, boolean remote) {
     if (!(response instanceof Message message)) {
       throw new AssertionError(rpc + " returned a non-protobuf response");
     }
+    var descriptor = message.getDescriptorForType();
+    List<String> fields = descriptor.getFields().stream()
+        .map(field -> field.getJsonName())
+        .toList();
+    assertEquals(expectation.response(), descriptor.getFullName(),
+        rpc + " response type is not the Rust authority response");
+    assertEquals(expectation.responseFields(), fields,
+        rpc + " response fields drifted from the Rust authority descriptor");
+    assertEquals(expectation.allowEmptyResponse(), fields.isEmpty(),
+        rpc + " empty-response allowance must come from the Rust descriptor");
     // The Rust descriptor is the authority for whether an operation's output
     // message has fields. A genuinely fieldless protobuf response is valid;
     // for every typed response, a default instance is evidence that the
     // fixture never exercised the Rust wire contract.
-    if (message.getDescriptorForType().getFields().isEmpty()) return;
+    if (expectation.allowEmptyResponse()) return;
     if (message.getAllFields().isEmpty() || message.getSerializedSize() == 0) {
       throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
     }
+    for (String rule : expectation.responseRules()) {
+      if (rule.endsWith("terminal.required")) requireResponseField(message, rpc, "terminal");
+      if (rule.contains("cursor.")) requireResponseField(message, rpc, "cursor");
+      if (rule.contains("identity") && remote) {
+        if (!(request instanceof Message requestMessage) || requestMessage.getAllFields().isEmpty()) {
+          throw new AssertionError(rpc + " requires a populated Rust request for identity validation");
+        }
+        assertMatchingIdentityFields(requestMessage, message, rpc);
+      }
+    }
+  }
+
+  private static void requireResponseField(Message response, String rpc, String name) {
+    var field = response.getDescriptorForType().findFieldByName(name);
+    if (field == null) field = response.getDescriptorForType().findFieldByName(toSnakeCase(name));
+    if (field == null || !response.getAllFields().containsKey(field)) {
+      throw new AssertionError(rpc + " did not return the Rust-required response field " + name);
+    }
+  }
+
+  private static void assertMatchingIdentityFields(Message request, Message response, String rpc) {
+    boolean matched = false;
+    for (var entry : request.getAllFields().entrySet()) {
+      var requestField = entry.getKey();
+      var responseField = response.getDescriptorForType().findFieldByName(requestField.getName());
+      if (responseField == null) {
+        responseField = response.getDescriptorForType().findFieldByName(requestField.getJsonName());
+      }
+      if (responseField == null) continue;
+      matched = true;
+      if (!response.getAllFields().containsKey(responseField)
+          || !response.getField(responseField).equals(entry.getValue())) {
+        throw new AssertionError(rpc + " changed Rust identity field " + requestField.getJsonName());
+      }
+    }
+    if (!matched) {
+      throw new AssertionError(rpc + " has an identity rule but no request identity field was echoed");
+    }
+  }
+
+  private static String toSnakeCase(String value) {
+    return value.replaceAll("([a-z])([A-Z])", "$1_$2").toLowerCase();
   }
 
   private static Object empty(MethodDescriptor.Marshaller<?> marshaller) {
@@ -328,25 +389,76 @@ final class RpcScenarioEvidenceTest {
   }
 
   private static Map<String, String> authorityMethods() throws IOException {
-    InputStream resource = RpcScenarioEvidenceTest.class.getClassLoader()
-        .getResourceAsStream("golden/rust-authority.json");
-    if (resource == null) throw new IOException("missing Rust authority manifest resource");
-    String manifest;
-    try (resource) {
-      manifest = new String(resource.readAllBytes(), StandardCharsets.UTF_8);
-    }
-    Pattern method = Pattern.compile(
-        "\\\"rpc\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*\\\"shape\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-    Matcher matcher = method.matcher(manifest);
+    Map<String, ResponseExpectation> expectations = authorityExpectations();
     Map<String, String> methods = new LinkedHashMap<>();
-    while (matcher.find()) {
-      String rpc = matcher.group(1);
-      String shape = matcher.group(2);
+    for (ResponseExpectation expectation : expectations.values()) {
+      String rpc = expectation.rpc();
+      String shape = expectation.shape();
       if (methods.put(rpc, shape) != null) throw new IOException("duplicate Rust authority RPC " + rpc);
     }
     if (methods.isEmpty()) throw new IOException("Rust authority manifest has no RPC methods");
     return methods;
   }
+
+  private static Map<String, ResponseExpectation> authorityExpectations() throws IOException {
+    String manifest = authorityManifest();
+    Pattern method = Pattern.compile(
+        "\\{\\\"rpc\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
+            + "\\\"shape\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
+            + "\\\"request\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
+            + "\\\"response\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
+            + "\\\"response_fields\\\"\\s*:\\s*\\[([^]]*)\\]\\s*,\\s*"
+            + "\\\"allow_empty_response\\\"\\s*:\\s*(true|false)\\s*,\\s*"
+            + "\\\"validations\\\"\\s*:\\s*\\[([^]]*)\\]\\s*,\\s*"
+            + "\\\"response_rules\\\"\\s*:\\s*\\[([^]]*)\\]\\s*\\}",
+        Pattern.DOTALL);
+    Matcher matcher = method.matcher(manifest);
+    Map<String, ResponseExpectation> expectations = new LinkedHashMap<>();
+    while (matcher.find()) {
+      String rpc = matcher.group(1);
+      ResponseExpectation expectation = new ResponseExpectation(
+          rpc,
+          matcher.group(2),
+          matcher.group(3),
+          matcher.group(4),
+          quotedValues(matcher.group(5)),
+          Boolean.parseBoolean(matcher.group(6)),
+          quotedValues(matcher.group(7)),
+          quotedValues(matcher.group(8)));
+      if (expectations.put(rpc, expectation) != null) {
+        throw new IOException("duplicate Rust authority RPC " + rpc);
+      }
+    }
+    if (expectations.isEmpty()) {
+      throw new IOException("Rust authority manifest has no semantic RPC expectations");
+    }
+    return expectations;
+  }
+
+  private static String authorityManifest() throws IOException {
+    InputStream resource = RpcScenarioEvidenceTest.class.getClassLoader()
+        .getResourceAsStream("golden/rust-authority.json");
+    if (resource == null) {
+      resource = RpcScenarioEvidenceTest.class.getClassLoader()
+          .getResourceAsStream("META-INF/rust-authority.json");
+    }
+    if (resource == null) throw new IOException("missing Rust authority manifest resource");
+    InputStream selected = resource;
+    try (selected) {
+      return new String(selected.readAllBytes(), StandardCharsets.UTF_8);
+    }
+  }
+
+  private static List<String> quotedValues(String values) {
+    Matcher matcher = Pattern.compile("\\\"([^\\\"]*)\\\"").matcher(values);
+    List<String> result = new ArrayList<>();
+    while (matcher.find()) result.add(matcher.group(1));
+    return result;
+  }
+
+  private record ResponseExpectation(String rpc, String shape, String request, String response,
+      List<String> responseFields, boolean allowEmptyResponse, List<String> validations,
+      List<String> responseRules) {}
 
   private record Scenario(String revision, String family, String rpc, String shape,
       String executionMode, int responseCount) {
