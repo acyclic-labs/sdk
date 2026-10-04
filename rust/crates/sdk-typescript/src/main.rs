@@ -95,6 +95,9 @@ struct ServiceMetadata {
     source_content_sha256: String,
     /// Digest of the Rust source bytes that emitted the descriptor.
     source_model_sha256: String,
+    handshake_route: String,
+    handshake_version: String,
+    handshake_descriptor_digest: String,
     modeled_operations: usize,
     http_projection: bool,
     remote_policy: Option<RemotePolicyMetadata>,
@@ -374,6 +377,15 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         .name
         .as_deref()
         .ok_or_else(|| Error::Missing("service name".to_owned()))?;
+    let family = acyclic_sdk_contract_wire::BindingFamily::ALL
+        .iter()
+        .copied()
+        .find(|family| family.name() == spec.family)
+        .ok_or_else(|| Error::Missing(format!("unknown binding family {}", spec.family)))?;
+    let handshake_route = acyclic_sdk_contract_wire::transport_control::handshake_http_route(
+        spec.family,
+    )
+    .ok_or_else(|| Error::Missing(format!("missing handshake route for {}", spec.family)))?;
     let methods = spec
         .routes
         .iter()
@@ -479,6 +491,13 @@ fn service_metadata(spec: RustService<'_>) -> Result<ServiceMetadata, Error> {
         descriptor_sha256: digest(&spec.descriptor),
         source_content_sha256: digest(&spec.source_content),
         source_model_sha256: digest(&spec.source_content),
+        handshake_route,
+        handshake_version: acyclic_sdk_contract_wire::transport_control::control_protocol_version(
+            family,
+        )
+        .to_owned(),
+        handshake_descriptor_digest:
+            acyclic_sdk_contract_wire::transport_control::archived_descriptor_digest(family),
         modeled_operations,
         http_projection: !spec.routes.is_empty(),
         remote_policy: match spec.family {
@@ -981,11 +1000,19 @@ fn typescript_with_paths(
         service.family.to_ascii_uppercase(),
     ));
     output.push_str(&format!(
-        "export const {}_SOURCE = {{ family: {:?}, rustCrate: {:?}, sourceKind: {:?}, sourceArtifact: {:?}, descriptorSha256: {:?}, sourceContentSha256: {:?}, sourceModelSha256: {:?}, modeledOperations: {}, httpProjection: {} }} as const;\n\n",
+        "export const {}_SOURCE = {{ family: {:?}, rustCrate: {:?}, sourceKind: {:?}, sourceArtifact: {:?}, descriptorSha256: {:?}, sourceContentSha256: {:?}, sourceModelSha256: {:?}, handshakeRoute: {:?}, handshakeVersion: {:?}, handshakeDescriptorDigest: {:?}, modeledOperations: {}, httpProjection: {} }} as const;\n\n",
         service.family.to_ascii_uppercase(), service.family, service.rust_crate,
         service.source_kind, service.source_artifact, service.descriptor_sha256,
         service.source_content_sha256, service.source_model_sha256,
+        service.handshake_route, service.handshake_version, service.handshake_descriptor_digest,
         service.modeled_operations, service.http_projection,
+    ));
+    output.push_str(&format!(
+        "export const {}_HANDSHAKE = {{ route: {:?}, version: {:?}, descriptorDigest: {:?} }} as const;\n\n",
+        service.family.to_ascii_uppercase(),
+        service.handshake_route,
+        service.handshake_version,
+        service.handshake_descriptor_digest,
     ));
     output.push_str(&format!("export const {constant} = "));
     let methods = service.methods.iter().map(|method| {
@@ -1266,14 +1293,21 @@ fn package_files(
         }
     }
     collect_package_support_files(&package_root, &mut files, family)?;
-    let source_root = package_root.join("src");
-    if !source_root.is_dir() {
+    let package_source_root = package_root.join("src");
+    if !package_source_root.is_dir() {
         return Err(Error::Missing(format!(
             "Rust-owned TypeScript package source is missing: {}",
-            source_root.display()
+            package_source_root.display()
         )));
     }
-    collect_package_files(&source_root, &source_root, &mut files, family, "src", true)?;
+    collect_package_files(
+        &package_source_root,
+        &package_source_root,
+        &mut files,
+        family,
+        "src",
+        true,
+    )?;
     let generated_root = package_root.join("generated");
     if !generated_root.is_dir() {
         return Err(Error::Missing(format!(
@@ -1289,6 +1323,23 @@ fn package_files(
         "generated",
         generated_root_override.is_none(),
     )?;
+    // The shared handshake messages are Rust-generated once at the repository
+    // boundary. Include them in every installable remote package so a facade
+    // can negotiate the authenticated endpoint without importing another SDK
+    // family or carrying a handwritten protocol copy.
+    if generated_root_override.is_none() && !generated_root.join("proto/protocol").is_dir() {
+        let shared_root = source_root.join("generated/typescript/protocol");
+        if shared_root.is_dir() {
+            collect_package_files(
+                &shared_root,
+                &shared_root,
+                &mut files,
+                family,
+                "generated/proto/protocol",
+                true,
+            )?;
+        }
+    }
     if let Some(root) = generated_root_override {
         let proto_root = root.join("generated/typescript").join(family);
         if !proto_root.is_dir() {
@@ -2032,6 +2083,23 @@ fn write_or_check_packages(
                 &content,
             )?;
             compile_package_dist(mode, source_root, output_root, &family)?;
+        }
+        if source_root == output_root && wire_root.is_none() {
+            let shared_root = source_root.join("generated/typescript/protocol");
+            if shared_root.is_dir() {
+                let mut shared_files = Vec::new();
+                collect_package_files(
+                    &shared_root,
+                    &shared_root,
+                    &mut shared_files,
+                    &family,
+                    "generated/proto/protocol",
+                    true,
+                )?;
+                for (source, relative) in shared_files {
+                    copy_or_check_package_file(mode, &source, &output_root.join(relative))?;
+                }
+            }
         }
     }
     if wire_root.is_some() {
