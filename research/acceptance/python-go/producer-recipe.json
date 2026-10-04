@@ -1,0 +1,25 @@
+{
+  "schema": "acyclic.sdk.language-producer-recipe.v1",
+  "target": "go",
+  "authority": "rust",
+  "entrypoint": "research/acceptance/python-go/produce-go.ps1",
+  "command": "pwsh -NoProfile -File {source_root}/research/acceptance/python-go/produce-go.ps1 -SourceRoot {source_root} -AuthorityManifest {authority_manifest} -OutputRoot {output_root} -TargetOutput {target_output} -Request {request}",
+  "required_bindings": [
+    "Rust source root",
+    "Rust authority manifest",
+    "generation request",
+    "staged output",
+    "Go toolchain",
+    "protoc",
+    "protoc-gen-go",
+    "protoc-gen-go-grpc"
+  ],
+  "toolchain": {
+    "go": "go1.27.1",
+    "protoc": "libprotoc 36.2",
+    "protoc_gen_go": "v1.36.10",
+    "protoc_gen_go_grpc": "1.5.1"
+  },
+  "output": "package",
+  "qualification": "Requires an installed consumer receipt bound to the generated package and the same Rust authority revision."
+}
