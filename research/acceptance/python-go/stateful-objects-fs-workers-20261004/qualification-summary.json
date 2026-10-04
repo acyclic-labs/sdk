@@ -36,5 +36,24 @@
   "gate": {
     "full106": "pending",
     "reason": "Objects.GetObject and Filesystem.Export are implemented as explicit empty streams in the pinned fixture; Workers/Objects/Filesystem handlers otherwise return default responses. This receipt records actual remote invocation and wire framing without promoting default responses to stateful semantics."
+  },
+  "go": {
+    "workers": {
+      "total": 7,
+      "remote_transport_passed": 7,
+      "semantic": "fixture-default-response-only"
+    },
+    "objects": {
+      "total": 13,
+      "remote_transport_passed": 13,
+      "semantic_stateful_roundtrip": "not_proven",
+      "empty_streams": 1
+    },
+    "filesystem": {
+      "total": 30,
+      "remote_transport_passed": 30,
+      "semantic_stateful_roundtrip": "not_proven",
+      "empty_streams": 1
+    }
   }
 }
