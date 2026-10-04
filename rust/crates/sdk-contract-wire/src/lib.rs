@@ -21,6 +21,7 @@ pub mod objects;
 pub mod protocol;
 pub mod semantic_oracle;
 pub mod stream;
+pub mod type_policy;
 pub mod transport;
 pub mod transport_control;
 pub mod wire_semantics;
@@ -55,6 +56,11 @@ pub use inference::{INFERENCE, inference_descriptor, inference_proto};
 pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
+pub use type_policy::{
+    SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES, SemanticRule, SemanticType,
+    TypePolicyLanguage, TypeProjectionProfile, WireValueKind, semantic_type,
+    type_projection_profile,
+};
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
