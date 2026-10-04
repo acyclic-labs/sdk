@@ -1,0 +1,29 @@
+[package]
+name = "acyclic-sdk-luajit-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rust-owned remote Stream C ABI for LuaJIT FFI"
+publish = false
+
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
+bytes.workspace = true
+futures.workspace = true
+tokio.workspace = true
+rcgen = "0.14.10"
+tonic.workspace = true
+tokio-stream.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = 'luajit-remote-fixture'
+path = 'src/bin/remote-fixture.rs'
+

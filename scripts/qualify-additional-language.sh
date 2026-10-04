@@ -154,6 +154,10 @@ EOF
     test -n "$(rg -i 'stream|exchange' "$project/generated/streaming_probe.lisp" | head -n 1)"
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
+  lua-remote)
+    bash "$source_root/scripts/qualify-luajit-ffi-remote.sh" "$source_root" "$output_root"
+    exit 0
+    ;;
   *)
     echo "unsupported qualification target: $language" >&2
     exit 2

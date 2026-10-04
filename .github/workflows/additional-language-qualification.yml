@@ -31,13 +31,23 @@ jobs:
         include:
           - language: elixir
             elixir_version: '1.17.3'
+            os: ubuntu-24.04
           - language: erlang
             elixir_version: ''
+            os: ubuntu-24.04
           - language: ocaml
             elixir_version: ''
+            os: ubuntu-24.04
           - language: common-lisp
             elixir_version: ''
-    runs-on: ubuntu-24.04
+            os: ubuntu-24.04
+          - language: lua-remote
+            elixir_version: ''
+            os: ubuntu-24.04
+          - language: lua-remote
+            elixir_version: ''
+            os: macos-14
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 35
     steps:
       - name: Check out exact Rust source
@@ -48,6 +58,7 @@ jobs:
           persist-credentials: false
 
       - name: Install protobuf compiler and common build tools
+        if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
           sudo apt-get install --yes protobuf-compiler build-essential pkg-config libssl-dev git
@@ -82,6 +93,16 @@ jobs:
           sudo apt-get install --yes sbcl ocicl
           ocicl setup
 
+      - name: Install LuaJIT
+        if: matrix.language == 'lua-remote'
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install --yes luajit
+          else
+            brew install luajit
+          fi
+
       - name: Generate Rust-owned products
         run: |
           cargo run --locked --bin sdk-contract-wire -- generate-products \
@@ -90,11 +111,11 @@ jobs:
       - name: Build and consume generated package
         run: |
           bash scripts/qualify-additional-language.sh \
-            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}"
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}"
 
       - name: Upload qualification receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: additional-language-${{ matrix.language }}
-          path: ${{ runner.temp }}/${{ matrix.language }}
+          name: additional-language-${{ matrix.language }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/${{ matrix.language }}-${{ matrix.os }}
