@@ -8,7 +8,7 @@ publish = false
 description = "Rust-owned wire contract metadata prototype for the Acyclic SDK"
 
 [dependencies]
-acyclic-sdk-contract-options = { path = "../sdk-contract-options" }
+acyclic-sdk-contract-options = { version = "=0.1.0", path = "../sdk-contract-options" }
 prost = "0.14.4"
 prost-build = "0.14.4"
 prost-types = "0.14.4"

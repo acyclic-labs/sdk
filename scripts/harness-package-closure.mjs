@@ -18,14 +18,21 @@ export function harnessPackageClosure() {
   const include = name => {
     if (closure.has(name)) return;
     const item = packages.get(name);
-    if (!item || !publicCrates.has(name)) throw new Error(`missing public Harness dependency: ${name}`);
-    closure.add(name);
+    if (!item) throw new Error(`missing Harness dependency: ${name}`);
     for (const dependency of item.dependencies) {
-      if (dependency.kind !== "dev" && publicCrates.has(dependency.name)) include(dependency.name);
+      // Include private build dependencies as well as public crates. Harness
+      // and Filesystem generate bindings through the private Rust contract
+      // crates, which are not available from crates.io.
+      if (dependency.kind !== "dev" && dependency.path) include(dependency.name);
     }
+    closure.add(name);
   };
   include("acyclic-harness");
-  return order.filter(name => closure.has(name)).map(name => ({ name, version: packages.get(name).version }));
+  const privateCrates = [...closure].filter(name => !publicCrates.has(name)).sort();
+  return [
+    ...order.filter(name => closure.has(name)),
+    ...privateCrates,
+  ].map(name => ({ name, version: packages.get(name).version }));
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
