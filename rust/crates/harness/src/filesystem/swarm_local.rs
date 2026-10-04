@@ -657,7 +657,13 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                             }
                             match capture {
                                 Capture::Captured(resource) => {
-                                    match &resource.source {
+                                    // The child's direct-parent workspace is the captured
+                                    // project revision, while `source` names the ancestor
+                                    // volume from which that revision was allocated. Reuse
+                                    // the immutable child revision and generation; resolving
+                                    // a mutable head would let a later publication leak into
+                                    // this fork boundary.
+                                    match &resource.revision {
                                         ResourceRevision::Project { volume, generation } => {
                                             Some((volume.clone(), generation.clone()))
                                         }
