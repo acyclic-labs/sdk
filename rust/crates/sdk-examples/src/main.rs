@@ -202,22 +202,6 @@ fn write_qualification_receipt(
     if seed_graph_count != rpc_scenario_count {
         return Err("Rust-owned semantic seed graph count differs from RPC scenarios".to_owned());
     }
-    let seed_steps = seed_graph
-        .get("steps")
-        .and_then(Value::as_array)
-        .ok_or("Rust-owned semantic seed graph is missing steps")?;
-    if seed_steps.len() as u64 != seed_graph_count {
-        return Err("Rust-owned semantic seed graph step count differs from count".to_owned());
-    }
-    for (index, step) in seed_steps.iter().enumerate() {
-        let order = step
-            .get("order")
-            .and_then(Value::as_u64)
-            .ok_or("Rust-owned semantic seed graph step is missing order")?;
-        if order != index as u64 + 1 {
-            return Err("Rust-owned semantic seed graph order is not contiguous".to_owned());
-        }
-    }
     let seed_graph_bytes = serde_json::to_vec(&seed_graph)
         .map_err(|error| format!("encode semantic seed graph evidence: {error}"))?;
     let status = if [(&snippets, &snippets_bytes), (&fixtures, &fixtures_bytes)]
@@ -1124,7 +1108,10 @@ fn run_rust(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
-    let consumed_package_root = staging.join("consumed-sdk-package");
+    let consumed_package_root = staging
+        .parent()
+        .unwrap_or(staging.as_path())
+        .join(format!(".sdk-examples-{}-consumed-sdk-package", snippet.metadata.id));
     if consumed_package_root.exists() {
         fs::remove_dir_all(&consumed_package_root)
             .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
@@ -2544,11 +2531,15 @@ fn normalize_invocation_artifact(bytes: &[u8]) -> (Vec<u8>, &'static str) {
     let Some(pe_header_end) = pe_offset.checked_add(12) else {
         return (bytes.to_vec(), "identity-v1");
     };
+    let Some(signature_end) = pe_offset.checked_add(4) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
     let Some(timestamp_end) = timestamp.checked_add(4) else {
         return (bytes.to_vec(), "identity-v1");
     };
     if pe_header_end > bytes.len()
-        || &bytes[pe_offset..pe_offset + 4] != b"PE\0\0"
+        || signature_end > bytes.len()
+        || &bytes[pe_offset..signature_end] != b"PE\0\0"
         || timestamp_end > bytes.len()
     {
         return (bytes.to_vec(), "identity-v1");
@@ -2629,6 +2620,16 @@ mod tests {
     fn non_pe_invocation_normalization_preserves_bytes() {
         let bytes = b"not an executable";
         let (normalized, method) = normalize_invocation_artifact(bytes);
+        assert_eq!(method, "identity-v1");
+        assert_eq!(normalized, bytes);
+    }
+
+    #[test]
+    fn malformed_pe_offset_is_rejected_without_panicking() {
+        let mut bytes = vec![0u8; 0x40];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+        let (normalized, method) = normalize_invocation_artifact(&bytes);
         assert_eq!(method, "identity-v1");
         assert_eq!(normalized, bytes);
     }

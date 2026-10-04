@@ -568,7 +568,7 @@ fn render_rust_stream(spec: ScenarioSpec) -> String {
         unreachable!("typed renderer dispatches only Stream scenarios")
     };
     format!(
-        "// capability: supported\nuse acyclic_stream::{{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider}};\nuse bytes::Bytes;\nuse futures::StreamExt;\n\nlet provider = MemoryStream::default();\nlet path = StreamPath::new({path:?})?;\nlet receipt = provider.append(AppendRequest {{ path: path.clone(), records: vec![Bytes::from_static(b\"hello\"), Bytes::from_static(b\"world\")], if_tail: {if_tail:?}, idempotency_key: Some(IdempotencyKey::new({idempotency_key:?})?) }}).await?;\nlet mut records = provider.read(ReadRequest {{ path, from: {from}, limit: {limit} }}).await?;\nwhile let Some(record) = records.next().await {{ println!(\"{{:?}}\", record?); }}\nlet _ = receipt;",
+        "// capability: supported\nuse acyclic_stream::{{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider}};\nuse bytes::Bytes;\nuse futures::StreamExt;\n\nlet provider = MemoryStream::default();\nlet path = StreamPath::new({path:?})?;\nlet receipt = provider.append(AppendRequest {{ path: path.clone(), records: vec![Bytes::from_static(b\"hello\"), Bytes::from_static(b\"world\")], if_tail: {if_tail:?}, idempotency_key: Some(IdempotencyKey::new({idempotency_key:?})?) }}).await?;\nlet mut records = provider.read(ReadRequest {{ path, from: {from}, limit: {limit} }}).await?;\nwhile let Some(record) = records.next().await {{ let record = record?; println!(\"{{}} {{:?}}\", record.sequence, record.value); }}\nlet _ = receipt;",
     )
 }
 
