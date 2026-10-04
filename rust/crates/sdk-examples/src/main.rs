@@ -1553,10 +1553,10 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 fn validation_staging(root: &Path, language: &str, scenario: &str) -> PathBuf {
-    root.join(format!(
-        ".sdk-examples-{language}-{}-{scenario}",
-        std::process::id()
-    ))
+    let stage_root = env::var_os("SDK_EXAMPLES_STAGING_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.to_owned());
+    stage_root.join(format!(".sdk-examples-{language}-{scenario}"))
 }
 
 fn receipt(result: Result<&'static str, Box<dyn std::error::Error>>, source_sha256: &str) -> Value {
