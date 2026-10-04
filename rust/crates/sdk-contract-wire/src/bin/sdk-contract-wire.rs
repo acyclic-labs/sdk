@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::fs;
@@ -20,8 +20,10 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
 };
+use base64::Engine;
 use prost::Message;
 use prost_types::FileDescriptorSet;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const PROTO_PATH: &str = "actors/v1/actors.proto";
@@ -177,6 +179,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let command = args.next().ok_or("expected generate or check")?;
     let mut out = None;
     let mut root = None;
+    let mut evidence = None;
     while let Some(argument) = args.next() {
         if argument == "--out" {
             out = Some(PathBuf::from(
@@ -187,6 +190,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 args.next()
                     .ok_or("--root requires a repository directory")?,
             ));
+        } else if argument == "--evidence" {
+            evidence = Some(PathBuf::from(
+                args.next().ok_or("--evidence requires a JSON file")?,
+            ));
         } else {
             return Err(format!("unknown argument: {argument}").into());
         }
@@ -196,8 +203,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         "generate" => generate(
             &out.ok_or("generate requires --out")?,
             root.as_deref(),
+            evidence.as_deref(),
         ),
-        "check" => check(&out.ok_or("check requires --out")?, root.as_deref()),
+        "check" => check(
+            &out.ok_or("check requires --out")?,
+            root.as_deref(),
+            evidence.as_deref(),
+        ),
         "generate-products" => {
             let root = root.ok_or("generate-products requires --root")?;
             let destination = out.as_deref().unwrap_or(root.as_path());
@@ -346,7 +358,11 @@ fn check_products(root: &Path, destination: &Path) -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-fn generate(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn generate(
+    out: &Path,
+    source_root: Option<&Path>,
+    evidence_path: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     generate_source(out, VALIDATION_OPTIONS_PROTO_PATH, options_proto())?;
     generate_contract(
         out,
@@ -411,7 +427,7 @@ fn generate(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>
         machines_proto(),
         machines_descriptor(),
     )?;
-    let manifest = authority_manifest(out, source_root)?;
+    let manifest = authority_manifest(out, source_root, evidence_path)?;
     fs::write(out.join(AUTHORITY_MANIFEST), &manifest)?;
     let manifest_hash = sha256_hex(manifest.as_bytes());
     fs::write(
@@ -423,7 +439,11 @@ fn generate(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-fn check(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
+fn check(
+    out: &Path,
+    source_root: Option<&Path>,
+    evidence_path: Option<&Path>,
+) -> Result<(), Box<dyn Error>> {
     check_source(out, VALIDATION_OPTIONS_PROTO_PATH, options_proto())?;
     check_contract(
         out,
@@ -495,7 +515,7 @@ fn check(out: &Path, source_root: Option<&Path>) -> Result<(), Box<dyn Error>> {
             out.join(AUTHORITY_MANIFEST).display()
         )
     })?;
-    let expected = authority_manifest(out, source_root)?;
+    let expected = authority_manifest(out, source_root, evidence_path)?;
     if manifest != expected {
         return Err(format!(
             "authority manifest is stale or does not bind Rust artifacts: {}",
@@ -585,7 +605,11 @@ fn reject_extra_artifacts(out: &Path) -> Result<(), Box<dyn Error>> {
 /// normalized source-of-truth descriptor role; runtime handshake descriptors
 /// remain external compatibility fixtures until a protocol transition adopts
 /// the new bytes explicitly.
-fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, Box<dyn Error>> {
+fn authority_manifest(
+    out: &Path,
+    source_root: Option<&Path>,
+    evidence_path: Option<&Path>,
+) -> Result<String, Box<dyn Error>> {
     let families = [
         (
             PROTO_PATH,
@@ -644,6 +668,7 @@ fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, 
     ];
     let source_revision = model_source_revision();
     let source_git_sha = source_git_sha(source_root)?;
+    let evidence = load_typed_wire_evidence(evidence_path, &source_git_sha)?;
     let mut entries = String::new();
     for (index, (source, descriptor, handshake_descriptor, handshake_bytes)) in
         families.iter().enumerate()
@@ -653,7 +678,7 @@ fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, 
         if index != 0 {
             entries.push_str(",\n");
         }
-        let (rpc_shapes, rpc_methods) = rpc_shapes_json(&descriptor_bytes)?;
+        let (rpc_shapes, rpc_methods) = rpc_shapes_json(&descriptor_bytes, &evidence.entries)?;
         entries.push_str(&format!(
             "    {{\n      \"source\": \"{source}\",\n      \"source_sha256\": \"{}\",\n      \"descriptor\": \"{descriptor}\",\n      \"descriptor_sha256\": \"{}\",\n      \"schema_descriptor\": \"{descriptor}\",\n      \"schema_descriptor_sha256\": \"{}\",\n      \"descriptor_role\": \"canonical_schema\",\n      \"handshake_descriptor\": \"{handshake_descriptor}\",\n      \"handshake_descriptor_sha256\": \"{}\",\n      \"handshake_descriptor_role\": \"preserved_runtime_fixture\",\n      \"rpc_shapes\": {},\n      \"rpc_methods\": {}\n    }}",
             sha256_hex(&source_bytes),
@@ -665,12 +690,127 @@ fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, 
         ));
     }
     Ok(format!(
-        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"families\": [\n{entries}\n  ]\n}}\n",
+        "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"typed_wire_evidence\": {typed_wire_evidence},\n  \"families\": [\n{entries}\n  ]\n}}\n",
         source_files = model_source_files_json(),
         source_file_hashes = model_source_hashes_json(),
         source_git_sha = source_git_sha,
-        version = env!("CARGO_PKG_VERSION")
+        version = env!("CARGO_PKG_VERSION"),
+        typed_wire_evidence = evidence.manifest_json
     ))
+}
+
+#[derive(Debug)]
+struct TypedWireEvidence {
+    entries: BTreeMap<String, Value>,
+    manifest_json: String,
+}
+
+fn load_typed_wire_evidence(
+    path: Option<&Path>,
+    expected_source_revision: &str,
+) -> Result<TypedWireEvidence, Box<dyn Error>> {
+    let Some(path) = path else {
+        return Ok(TypedWireEvidence {
+            entries: BTreeMap::new(),
+            manifest_json: "null".to_owned(),
+        });
+    };
+    let bytes = fs::read(path)?;
+    let document: Value = serde_json::from_slice(&bytes)?;
+    let evidence = document
+        .pointer("/qualification/typed_wire_evidence")
+        .or_else(|| document.pointer("/typed_wire_evidence"))
+        .and_then(Value::as_array)
+        .ok_or("evidence must contain qualification.typed_wire_evidence")?;
+    let source_revision = document
+        .pointer("/source/revision")
+        .and_then(Value::as_str)
+        .ok_or("evidence must contain source.revision")?;
+    if source_revision.len() != 40 || !source_revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err("evidence source.revision must be a 40-character Git OID".into());
+    }
+    if source_revision != expected_source_revision {
+        return Err(format!(
+            "evidence source.revision {source_revision} does not match Rust source {expected_source_revision}"
+        )
+        .into());
+    }
+    let mut entries = BTreeMap::new();
+    for item in evidence {
+        let object = item
+            .as_object()
+            .ok_or("typed wire evidence entry must be an object")?;
+        let rpc = object
+            .get("rpc")
+            .and_then(Value::as_str)
+            .ok_or("typed wire evidence entry is missing rpc")?;
+        if object
+            .get("source")
+            .and_then(Value::as_str)
+            .is_none_or(|source| !source.starts_with("rust/crates/sdk-examples/"))
+        {
+            return Err(format!("typed wire evidence {rpc} is not Rust-source-bound").into());
+        }
+        let request = object
+            .get("request")
+            .ok_or(format!("typed wire evidence {rpc} is missing request"))?;
+        let response = object
+            .get("response")
+            .ok_or(format!("typed wire evidence {rpc} is missing response"))?;
+        validate_wire_bytes(request, &format!("{rpc} request"))?;
+        if response.get("status").and_then(Value::as_str).is_none()
+            && (response
+                .get("bytes_base64")
+                .and_then(Value::as_str)
+                .is_none()
+                || response.get("sha256").and_then(Value::as_str).is_none())
+        {
+            return Err(format!(
+                "typed wire evidence {rpc} response is neither status- nor byte-bound"
+            )
+            .into());
+        }
+        if response.get("status").and_then(Value::as_str).is_none() {
+            validate_wire_bytes(response, &format!("{rpc} response"))?;
+        }
+        if entries.insert(rpc.to_owned(), item.clone()).is_some() {
+            return Err(format!("duplicate typed wire evidence for {rpc}").into());
+        }
+    }
+    let manifest = serde_json::json!({
+        "schema": "acyclic.sdk.rust-typed-wire-evidence.v1",
+        "path": path.to_string_lossy(),
+        "sha256": sha256_hex(&bytes),
+        "source_revision": source_revision,
+        "count": entries.len(),
+        "entries": entries.values().collect::<Vec<_>>(),
+    });
+    Ok(TypedWireEvidence {
+        entries,
+        manifest_json: serde_json::to_string(&manifest)?,
+    })
+}
+
+fn validate_wire_bytes(value: &Value, label: &str) -> Result<(), Box<dyn Error>> {
+    let encoded = value
+        .get("bytes_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} is missing bytes_base64"))?;
+    let expected = value
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{label} is missing sha256"))?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("{label} has invalid base64: {error}"))?;
+    let observed = format!("sha256:{}", sha256_hex(&bytes));
+    if expected != observed {
+        return Err(
+            format!("{label} sha256 {expected} does not match decoded bytes {observed}").into(),
+        );
+    }
+    Ok(())
 }
 
 fn source_git_sha(source_root: Option<&Path>) -> Result<String, Box<dyn Error>> {
@@ -699,7 +839,10 @@ fn source_git_sha(source_root: Option<&Path>) -> Result<String, Box<dyn Error>> 
     Ok(revision.to_lowercase())
 }
 
-fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn Error>> {
+fn rpc_shapes_json(
+    descriptor_bytes: &[u8],
+    typed_wire_evidence: &BTreeMap<String, Value>,
+) -> Result<(String, String), Box<dyn Error>> {
     let descriptor = FileDescriptorSet::decode(descriptor_bytes)?;
     let mut shapes = BTreeSet::new();
     let mut methods = Vec::new();
@@ -772,8 +915,17 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
                 let semantic_expectations_field = semantic_expectations
                     .map(|value| format!(",\"semantic_expectations\":{value}"))
                     .unwrap_or_default();
+                let typed_wire_evidence_field = typed_wire_evidence
+                    .get(&rpc)
+                    .map(|value| {
+                        format!(
+                            ",\"typed_wire_evidence\":{}",
+                            serde_json::to_string(value).expect("evidence is JSON")
+                        )
+                    })
+                    .unwrap_or_default();
                 methods.push(format!(
-                    "{{\"rpc\":\"{rpc}\",\"shape\":\"{shape}\",\"request\":\"{request}\",\"response\":\"{response}\",\"response_fields\":[{fields}],\"allow_empty_response\":{},\"validations\":[{all_validations}],\"response_rules\":[{response_rules}]{semantic_expectations_field}}}",
+                    "{{\"rpc\":\"{rpc}\",\"shape\":\"{shape}\",\"request\":\"{request}\",\"response\":\"{response}\",\"response_fields\":[{fields}],\"allow_empty_response\":{},\"validations\":[{all_validations}],\"response_rules\":[{response_rules}]{semantic_expectations_field}{typed_wire_evidence_field}}}",
                     response_fields.is_empty()
                 ));
             }
@@ -968,4 +1120,76 @@ fn check_contract(
         descriptor_path.display()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn evidence_item() -> Value {
+        serde_json::json!({
+            "family": "actors",
+            "operation": "CreateActor",
+            "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+            "source": "rust/crates/sdk-examples/src/fixtures/actors_workers.rs",
+            "request": {
+                "type": "request",
+                "bytes_base64": "Cg==",
+                "sha256": "sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "response": {
+                "type": "response",
+                "bytes_base64": "Cg==",
+                "sha256": "sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+            },
+            "state": { "actor_id": "fixture-actor", "revision": "1" }
+        })
+    }
+
+    fn write_evidence(name: &str, entries: Vec<Value>) -> PathBuf {
+        let path = env::temp_dir().join(format!(
+            "sdk-contract-wire-{name}-{}.json",
+            std::process::id()
+        ));
+        let document = serde_json::json!({
+            "source": { "revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+            "qualification": { "typed_wire_evidence": entries }
+        });
+        fs::write(&path, serde_json::to_vec(&document).expect("test JSON"))
+            .expect("write test evidence");
+        path
+    }
+
+    #[test]
+    fn evidence_loader_accepts_byte_bound_fixture_output() {
+        let path = write_evidence("valid", vec![evidence_item()]);
+        let loaded =
+            load_typed_wire_evidence(Some(&path), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect("valid evidence");
+        assert_eq!(loaded.entries.len(), 1);
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn evidence_loader_rejects_tampered_bytes_hash() {
+        let mut item = evidence_item();
+        item["request"]["sha256"] = Value::String("sha256:forged".to_owned());
+        let path = write_evidence("tampered", vec![item]);
+        let error =
+            load_typed_wire_evidence(Some(&path), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect_err("tampered evidence must fail");
+        assert!(error.to_string().contains("sha256"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn evidence_loader_rejects_duplicate_rpc_records() {
+        let item = evidence_item();
+        let path = write_evidence("duplicate", vec![item.clone(), item]);
+        let error =
+            load_typed_wire_evidence(Some(&path), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                .expect_err("duplicate RPC evidence must fail");
+        assert!(error.to_string().contains("duplicate"));
+        let _ = fs::remove_file(path);
+    }
 }
