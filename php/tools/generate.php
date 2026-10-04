@@ -150,6 +150,10 @@ $preserved = [
     'acyclic/runtime/generatedremotepolicy.php',
     'acyclic/runtime/remotepolicy.php',
     'acyclic/runtime/remoteclient.php',
+    // The options descriptor is imported by generated files but is not
+    // emitted by protoc for every target invocation. Preserve the Rust-owned
+    // metadata class so clean package regeneration remains loadable.
+    'gpbmetadata/validation/v1/options.php',
 ];
 if (is_dir($output)) {
     $iterator = new RecursiveIteratorIterator(
