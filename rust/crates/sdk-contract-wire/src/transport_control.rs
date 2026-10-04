@@ -41,6 +41,21 @@ pub fn handshake_http_route(family: &str) -> Option<String> {
     crate::family_view(family).map(|view| format!("/v1/sdk/{}/handshake", view.name))
 }
 
+/// Version identity of the independent control plane for a selected family.
+/// Existing application-specific handshake versions remain unchanged.
+pub const fn control_protocol_version(family: crate::BindingFamily) -> &'static str {
+    family.package()
+}
+
+/// Exact SHA256 identity of the selected immutable runtime descriptor.
+pub fn archived_descriptor_digest(family: crate::BindingFamily) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(family.archived_runtime_descriptor()))
+}
+
+/// Bound applied before decoding a control handshake on any transport.
+pub const MAXIMUM_HANDSHAKE_RESPONSE_BYTES: usize = 64 * 1024;
+
 /// Build the descriptor directly from the Rust control-plane model.
 pub fn control_file_descriptor() -> FileDescriptorProto {
     FileDescriptorProto {

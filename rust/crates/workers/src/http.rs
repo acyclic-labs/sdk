@@ -69,7 +69,9 @@ impl Client {
         }
         let transport = Transport::builder();
         #[cfg(not(target_arch = "wasm32"))]
-        let transport = transport.redirect(reqwest::redirect::Policy::none());
+        let transport = transport
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(std::time::Duration::from_secs(30));
         Ok(Self {
             transport: transport.build()?,
             endpoint,
@@ -78,6 +80,94 @@ impl Client {
             descriptors: DescriptorPool::decode(FILE_DESCRIPTOR_SET)
                 .map_err(|_| Error::MalformedResponse)?,
         })
+    }
+
+    /// Verify the family identity using an authenticated, non-mutating GET.
+    ///
+    /// # Errors
+    /// Rejects failed authentication, malformed responses, and incompatible identities.
+    pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let family = BindingFamily::Workers;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name()).ok_or(Error::InvalidArgument)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| Error::InvalidArgument)?;
+        let response = self
+            .transport
+            .get(url.clone())
+            .timeout(std::time::Duration::from_secs(10))
+            .bearer_auth(&self.token)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+        if response.url() != &url {
+            return Err(Error::MalformedResponse);
+        }
+        let status = response.status();
+        if matches!(status.as_u16(), 404 | 405) {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            return Err(Error::Service {
+                status: status.as_u16(),
+                detail: None,
+            });
+        }
+        if !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+            })
+        {
+            return Err(Error::MalformedResponse);
+        }
+        let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+        {
+            return Err(Error::ResponseTooLarge);
+        }
+        let mut bytes = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk?;
+            if chunk.len() > maximum.saturating_sub(bytes.len()) {
+                return Err(Error::ResponseTooLarge);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let pool = DescriptorPool::decode(
+            acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
+        )
+        .map_err(|_| Error::MalformedResponse)?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or(Error::MalformedResponse)?;
+        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+        let decoded = DynamicMessage::deserialize(descriptor, &mut deserializer)
+            .map_err(|_| Error::MalformedResponse)?;
+        deserializer.end().map_err(|_| Error::MalformedResponse)?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            maximum,
+        )
+        .map_err(|_| Error::MalformedResponse)?;
+        Ok(true)
     }
 
     async fn call<I: Message, O: Message + Default>(
@@ -101,6 +191,7 @@ impl Client {
                     .join(route)
                     .map_err(|_| Error::InvalidArgument)?,
             )
+            .timeout(std::time::Duration::from_secs(30))
             .bearer_auth(&self.token)
             .header("content-type", "application/json")
             .body(body)

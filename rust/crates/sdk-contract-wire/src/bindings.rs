@@ -358,6 +358,13 @@ pub fn generate_product_bindings(
             .map_err(BindingGenerationError::Io)?;
     }
     if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+        crate::transport_control::generate_control_bindings(
+            out_dir,
+            BindingTransport::Tonic {
+                client: true,
+                server: true,
+            },
+        )?;
         fs::write(
             out_dir.join("platform-client-methods.rs"),
             platform_client_methods(&descriptors),
@@ -405,7 +412,7 @@ fn platform_client_methods(descriptors: &FileDescriptorSet) -> String {
                     .next()
                     .expect("output name");
                 source.push_str(&format!(
-                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        #[cfg(not(target_arch = \"wasm32\"))]\n        {{\n            self.inner.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc)\n        }}\n        #[cfg(target_arch = \"wasm32\")]\n        {{\n            self.inner.{rust_name}(request).await.map_err(Error::from_http)\n        }}\n    }}\n"
+                    "    /// Execute the canonical `{name}` operation using the platform default transport.\n    ///\n    /// # Errors\n    /// Returns a transport or canonical service error.\n    pub async fn {rust_name}(&self, request: &crate::wire::{input}) -> Result<crate::wire::{output}, Error> {{\n        match &self.inner {{\n            #[cfg(not(target_arch = \"wasm32\"))]\n            Backend::Grpc(client) => client.clone().{rust_name}(request.clone()).await.map(tonic::Response::into_inner).map_err(Error::from_grpc),\n            Backend::Http(client) => client.{rust_name}(request).await.map_err(Error::from_http),\n        }}\n    }}\n"
                 ));
             }
         }
