@@ -562,7 +562,8 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         .await?
                 }
             };
-            let (boundary, parent) = verified.into_parts();
+            let boundary = verified.boundary().clone();
+            let parent = verified.parent();
             let parent_revision = parent.reducer().revision();
             if parent.reducer().authority() != storage.conversation()
                 || parent_revision == 0
@@ -711,7 +712,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         "fork publication parent has no authoritative conversation".into(),
                     )
                 })?;
-            let request = ForkRequest {
+            let mut request = ForkRequest {
                 operation_id: intent.fork_operation,
                 parent: parent.reducer().authority().clone(),
                 parent_revision,
@@ -742,6 +743,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 boundary: None,
                 model_boundary: None,
             };
+            storage
+                .attach_model_fork_references(&verified, &mut request)
+                .await?;
             let parent_reader = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
                 storage.verifier(),

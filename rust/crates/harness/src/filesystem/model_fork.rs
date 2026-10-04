@@ -19,6 +19,10 @@ pub struct VerifiedModelForkBoundary<P> {
 }
 
 impl<P> VerifiedModelForkBoundary<P> {
+    pub(crate) const fn parent(&self) -> &StreamAggregate<P> {
+        &self.parent
+    }
+
     /// Immutable model input inherited by every child at this batch boundary.
     pub const fn boundary(&self) -> &CompletedModelBoundary {
         &self.boundary
