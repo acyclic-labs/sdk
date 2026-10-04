@@ -31,8 +31,9 @@ use tokio::sync::watch;
 pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
 /// Stable model-visible name for explicit task, inbox, or deadline waits.
 pub const WAIT_TOOL_NAME: &str = "swarm.wait";
-/// Revision of both model-facing communication contracts.
+/// Revision of the model-facing message contract.
 pub const TOOL_REVISION: &str = "2";
+const WAIT_TOOL_REVISION: &str = "3";
 
 /// Runtime-owned cancellation source for authenticated wait calls.
 ///
@@ -347,12 +348,12 @@ pub fn message_definition() -> ToolDefinition {
 pub fn wait_definition() -> ToolDefinition {
     ToolDefinition {
         name: WAIT_TOOL_NAME.into(),
-        revision: TOOL_REVISION.into(),
+        revision: WAIT_TOOL_REVISION.into(),
         description: "Wait for named direct children, new inbox messages, or an absolute deadline."
             .into(),
         input_schema: wait_input_schema(),
-        output_schema: wait_output_schema(),
-        model_output_schema: wait_output_schema(),
+        output_schema: wait_output_schema(false),
+        model_output_schema: wait_output_schema(true),
     }
 }
 
@@ -674,12 +675,20 @@ fn wait_input_schema() -> Value {
     ]})
 }
 
-fn wait_output_schema() -> Value {
-    json!({"oneOf":[
-        {"type":"object","additionalProperties":false,"required":["kind","outcomes"],"properties":{"kind":{"const":"tasks"},"outcomes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task_id","status"],"properties":{"task_id":{"type":"string"},"status":{"type":"string","enum":["succeeded","failed","cancelled","indeterminate"]},"value":{},"message":{"type":"string"},"operation_id":{"type":"string"}}}}}},
-        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","sender","delivered_at_epoch_ms","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"sender":{"type":"string"},"delivered_at_epoch_ms":{"type":"integer","minimum":1},"payload":file_ref_schema()}}}}},
-        {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"enum":["deadline","cancelled","timed_out"]}}}
-    ]})
+fn wait_output_schema(declare_references: bool) -> Value {
+    let mut payload = file_ref_schema();
+    if declare_references {
+        payload["x-acyclic-file-ref"] = json!(true);
+    }
+    let mut branches = vec![
+        json!({"type":"object","additionalProperties":false,"required":["kind","outcomes"],"properties":{"kind":{"const":"tasks"},"outcomes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task_id","status"],"properties":{"task_id":{"type":"string"},"status":{"type":"string","enum":["succeeded","failed","cancelled","indeterminate"]},"value":{},"message":{"type":"string"},"operation_id":{"type":"string"}}}}}}),
+        json!({"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","sender","delivered_at_epoch_ms","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"sender":{"type":"string"},"delivered_at_epoch_ms":{"type":"integer","minimum":1},"payload":payload}}}}}),
+    ];
+    for kind in ["deadline", "cancelled", "timed_out"] {
+        branches.push(json!({"type":"object","additionalProperties":false,
+            "required":["kind"], "properties":{"kind":{"const":kind}}}));
+    }
+    json!({"oneOf":branches})
 }
 
 #[cfg(test)]
@@ -708,7 +717,7 @@ mod tests {
         let message = message_definition();
         let wait = wait_definition();
         assert_eq!(message.revision, "2");
-        assert_eq!(wait.revision, "2");
+        assert_eq!(wait.revision, "3");
         message.validate()?;
         wait.validate()?;
         assert_eq!(message.digest()?, message_definition().digest()?);
@@ -724,6 +733,32 @@ mod tests {
                 .validate(&json!({"kind":"messages","after":0,"limit":1,"extra":true}))
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn wait_message_results_declare_only_explicit_immutable_payloads() -> Result<()> {
+        let payload = FileRef::new(
+            VolumeRef::new(ProviderRef::new("test", "filesystem", "2")?,
+                "inbox", VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])))?,
+            "message.txt", "generation-1",
+            FileDescriptor::from_bytes("message λ🦀".as_bytes(), "text/plain")?,
+            "message.txt",
+        )?;
+        let definition = wait_definition();
+        let mut output = json!({"kind":"messages", "items":[{
+            "sequence":1, "message_id":"message-1", "sender":task(2).to_string(),
+            "delivered_at_epoch_ms":1, "payload":payload
+        }]});
+        assert_eq!(definition.model_output_file_refs(&output)?, vec![payload]);
+        for kind in ["deadline", "cancelled", "timed_out"] {
+            assert!(definition.model_output_file_refs(&json!({"kind":kind}))?.is_empty());
+        }
+        assert!(definition.model_output_file_refs(&json!({"kind":"tasks", "outcomes":[]}))?.is_empty());
+        output["items"][0].as_object_mut().expect("message fixture").remove("payload");
+        assert!(matches!(definition.model_output_file_refs(&output), Err(Error::Invalid(_))));
+        assert!(matches!(definition.model_output_file_refs(&json!({"kind":"messages"})), Err(Error::Invalid(_))));
         Ok(())
     }
 
