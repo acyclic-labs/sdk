@@ -100,11 +100,70 @@ pub fn control_proto() -> String {
     source
 }
 
+/// Generate maintained prost/tonic bindings directly from the control model.
+/// No separately authored Protobuf or generated application contract is input.
+///
+/// # Errors
+/// Returns an error when the output cannot be written or the model is rejected.
+pub fn generate_control_bindings(
+    output: impl AsRef<std::path::Path>,
+    transport: crate::BindingTransport,
+) -> Result<(), crate::BindingGenerationError> {
+    let output = output.as_ref();
+    std::fs::create_dir_all(output)?;
+    let descriptor = FileDescriptorSet::decode(control_descriptor().as_slice())?;
+    let mut config = prost_build::Config::new();
+    config.out_dir(output);
+    match transport {
+        crate::BindingTransport::Prost => config.compile_fds(descriptor)?,
+        crate::BindingTransport::Tonic { client, server } => {
+            tonic_prost_build::configure()
+                .out_dir(output)
+                .build_client(client)
+                .build_server(server)
+                .compile_fds_with_config(descriptor, config)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
 
+    #[test]
+    fn maintained_generators_emit_control_clients_without_application_protos() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "acyclic-control-bindings-{}-{nonce}",
+            std::process::id()
+        ));
+        let native = root.join("native");
+        generate_control_bindings(
+            &native,
+            crate::BindingTransport::Tonic {
+                client: true,
+                server: true,
+            },
+        )
+        .unwrap();
+        let control = std::fs::read_to_string(native.join("acyclic.transport.v1.rs")).unwrap();
+        assert!(control.contains("pub struct ProtocolServiceClient"));
+        assert!(control.contains("pub struct ProtocolServiceServer"));
+        assert!(control.contains(HANDSHAKE_RPC_PATH));
+        let protocol = std::fs::read_to_string(native.join("acyclic.protocol.v1.rs")).unwrap();
+        assert!(protocol.contains("pub struct HandshakeRequest"));
+        assert!(protocol.contains("pub struct HandshakeResponse"));
+        let portable = root.join("portable");
+        generate_control_bindings(&portable, crate::BindingTransport::Prost).unwrap();
+        let portable_protocol =
+            std::fs::read_to_string(portable.join("acyclic.protocol.v1.rs")).unwrap();
+        assert_eq!(portable_protocol, protocol);
+    }
     #[test]
     fn control_plane_preserves_shared_protocol_identity() {
         assert_eq!(
