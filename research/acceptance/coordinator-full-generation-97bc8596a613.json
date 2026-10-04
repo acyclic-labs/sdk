@@ -1,0 +1,333 @@
+{
+  "schema": "acyclic.sdk.coordinator-run.v1",
+  "recorded_at": "2026-10-04T07:44:48.6448183Z",
+  "goal_status": "active",
+  "source_revision": "97bc8596a613475001dc2627f7eb1fec33e3787a",
+  "source_root": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\work\\rust-generation-checkout-97bc8596a613",
+  "output": "C:\\Users\\varun\\.codex\\worktrees\\rust-sdk-docs-source\\sdk\\work\\rust-generation-full-output-97bc8596a613",
+  "run_status": "failed",
+  "exit_code": 1,
+  "terminal_report_origin": "generation_resume session 75895",
+  "source_changes": [
+    " M dart/lib/src/generated_remote_policy.dart",
+    " M dotnet/GeneratedRemotePolicy.cs",
+    " M jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+    " M php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+    " M ruby/lib/acyclic_sdk/generated_remote_policy.rb"
+  ],
+  "product_command": "sdk-contract-wire generate-products --root SOURCE --out OUTPUT",
+  "product_failure": "Command receives explicit output but generated paths are under source; five portable policies mutate frozen source",
+  "observed_failures": [
+    {
+      "reason": "standalone Cargo.lock needs update with --locked",
+      "owner": "examples_resume",
+      "stage": "sdk-examples"
+    },
+    {
+      "reason": "host-default LNK1104 under deeply nested rustdoc cache",
+      "owner": "docs_resume",
+      "stage": "sdk-docs-rustdoc"
+    },
+    {
+      "reason": "Get-FileHash command unavailable in producer shell",
+      "owner": "receipts_resume",
+      "stage": "sdk-language-producer-java"
+    },
+    {
+      "reason": "source-authority.json missing at expected output root",
+      "owner": "generation_resume",
+      "stage": "sdk-language-producer-julia"
+    },
+    {
+      "reason": "wire/rust-family-goldens.json missing",
+      "owner": "generation_resume",
+      "stage": "sdk-language-producer-ruby"
+    },
+    {
+      "reason": "sha256 undefined",
+      "owner": "ruby_php_dart_resume",
+      "stage": "sdk-language-producer-dart"
+    },
+    {
+      "reason": "dotnet host cannot resolve SDK",
+      "owner": "generation_resume",
+      "stage": "sdk-language-producer-csharp"
+    },
+    {
+      "reason": "cpp/Generate.ps1 absent in frozen source",
+      "owner": "swift_cpp_resume",
+      "stage": "sdk-language-producer-cpp"
+    },
+    {
+      "reason": "pinned Swift gRPC generator unavailable",
+      "owner": "swift_cpp_resume",
+      "stage": "sdk-language-producer-swift"
+    },
+    {
+      "reason": "hardcoded ignored OpenAPI Generator JAR absent in clean source",
+      "owner": "openapi_resume",
+      "stage": "OpenAPI-derived producers"
+    }
+  ],
+  "log_artifacts": [
+    {
+      "file": "logs/sdk-contract-validation.stderr",
+      "bytes": 5804,
+      "sha256": "bbc083a531a67d07b45dbbdbe6bdc880e260c1aa27ec6e224f263e03dbfe9cab"
+    },
+    {
+      "file": "logs/sdk-contract-validation.stdout",
+      "bytes": 2490,
+      "sha256": "d594a7788e56ff4128b75221ad7da1f1989e9a3de040f8943d7251049fc389e0"
+    },
+    {
+      "file": "logs/sdk-contract-wire.stderr",
+      "bytes": 344,
+      "sha256": "a8a04a8358d44c6fabf104b8fcfe76126ac9d7812611121f0896e6e7a71e0cc9"
+    },
+    {
+      "file": "logs/sdk-contract-wire.stdout",
+      "bytes": 2896,
+      "sha256": "5d4ed1063188a73bc2640bb2796bdef3080d2e97f80ca83f374e173b93c7b0a0"
+    },
+    {
+      "file": "logs/sdk-docs-rustdoc.stderr",
+      "bytes": 6325,
+      "sha256": "610482c75eb19dd12012195112eef8ba645ade8be6acdced05042d595842ac51"
+    },
+    {
+      "file": "logs/sdk-docs-rustdoc.stdout",
+      "bytes": 15,
+      "sha256": "dd9afd30f407ae1633d120437ea44d98553a51d0d99721082ab3cb8090532dff"
+    },
+    {
+      "file": "logs/sdk-examples.stderr",
+      "bytes": 330,
+      "sha256": "6743bd1575c87a7fa25fda6e4acf19a8710467c60e0ad9c38f8a43e9e0e9eedd"
+    },
+    {
+      "file": "logs/sdk-examples.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-ada.stderr",
+      "bytes": 566,
+      "sha256": "a472af1a21456795a828b9b3588fbe585756a451b8fe809e3c1b606277ed557a"
+    },
+    {
+      "file": "logs/sdk-language-producer-ada.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-bash.stderr",
+      "bytes": 566,
+      "sha256": "50c5168a469d8c2cd3e6bad37a359b820b7dbe7c887b933737112779daf42623"
+    },
+    {
+      "file": "logs/sdk-language-producer-bash.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-cpp.stderr",
+      "bytes": 350,
+      "sha256": "bd344de7ab7057a9562add9c45644bf3d99e1b7d4fc75f657b8de44414d3a4af"
+    },
+    {
+      "file": "logs/sdk-language-producer-cpp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-crystal.stderr",
+      "bytes": 566,
+      "sha256": "a472af1a21456795a828b9b3588fbe585756a451b8fe809e3c1b606277ed557a"
+    },
+    {
+      "file": "logs/sdk-language-producer-crystal.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-csharp.stderr",
+      "bytes": 910,
+      "sha256": "6e6b08429ec1080cd06b2cf04b6bb10bf153bfb39fc0938d07f89949fd357efa"
+    },
+    {
+      "file": "logs/sdk-language-producer-csharp.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-dart.stderr",
+      "bytes": 1704,
+      "sha256": "d3cf2ad93052683beae285f208c2c10bc7d77a9b7595d5c49b1018791b4333bd"
+    },
+    {
+      "file": "logs/sdk-language-producer-dart.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-java.stderr",
+      "bytes": 557,
+      "sha256": "2d7e1c5ffcb4ee0955137f6c65d86bc4a4dbe6fd25f8876adbb56181a35ab72a"
+    },
+    {
+      "file": "logs/sdk-language-producer-java.stdout",
+      "bytes": 9172,
+      "sha256": "b90d64c9e38c376f68824aa9a809a812eef68397c4389e0ebf5d6dd5d5af6989"
+    },
+    {
+      "file": "logs/sdk-language-producer-julia.stderr",
+      "bytes": 533,
+      "sha256": "9c2c38d2966e2decbf0435f0ef6deff6b3dfaccbd6c180d252ccf846ae262028"
+    },
+    {
+      "file": "logs/sdk-language-producer-julia.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-nim.stderr",
+      "bytes": 566,
+      "sha256": "8babf23093bf7858f59019bb0822afe7aff96d83ecd206ee54e65435c76b8e01"
+    },
+    {
+      "file": "logs/sdk-language-producer-nim.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-perl.stderr",
+      "bytes": 566,
+      "sha256": "50c5168a469d8c2cd3e6bad37a359b820b7dbe7c887b933737112779daf42623"
+    },
+    {
+      "file": "logs/sdk-language-producer-perl.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-php.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-php.stdout",
+      "bytes": 175,
+      "sha256": "4dd9ea6ee0e8e083f83605897fb8afd3e001df254e1aa25165d05de5bf700dc5"
+    },
+    {
+      "file": "logs/sdk-language-producer-powershell.stderr",
+      "bytes": 566,
+      "sha256": "50c5168a469d8c2cd3e6bad37a359b820b7dbe7c887b933737112779daf42623"
+    },
+    {
+      "file": "logs/sdk-language-producer-powershell.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-r.stderr",
+      "bytes": 566,
+      "sha256": "8babf23093bf7858f59019bb0822afe7aff96d83ecd206ee54e65435c76b8e01"
+    },
+    {
+      "file": "logs/sdk-language-producer-r.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producer-ruby.stderr",
+      "bytes": 534,
+      "sha256": "5b9fc29d28ab6864de1713b86837fcc4a107f4ddddae32b418e5a097d9a89bce"
+    },
+    {
+      "file": "logs/sdk-language-producer-ruby.stdout",
+      "bytes": 721,
+      "sha256": "82a6869bf174dc4077816ff7fccfed05e9d367e1d2e24b4d90300cedf50995ed"
+    },
+    {
+      "file": "logs/sdk-language-producer-swift.stderr",
+      "bytes": 499,
+      "sha256": "06a1e69ef9ad826ded0d7dfd1700d2c9f77e3f5b23502dfe19e6f57d0276b32c"
+    },
+    {
+      "file": "logs/sdk-language-producer-swift.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producers.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-language-producers.stdout",
+      "bytes": 125,
+      "sha256": "0c3137cc2f3f324474305e437bcd1029c06a00ad7adcf3f09c11d13d25b65cca"
+    },
+    {
+      "file": "logs/sdk-openapi-prototype.stderr",
+      "bytes": 2784,
+      "sha256": "043778372b9eb5a9785ffb6f383b2813d147d07843f761a12cccab500176c054"
+    },
+    {
+      "file": "logs/sdk-openapi-prototype.stdout",
+      "bytes": 1061,
+      "sha256": "e300e05dcb3f705c2f4f84c7758f72aa92ef00653b019682a4990855e7333b76"
+    },
+    {
+      "file": "logs/sdk-product-artifacts.stderr",
+      "bytes": 1702,
+      "sha256": "3d2f02e58aff0c6270b2152554cbeffbab2110f0dbf81e51a7f2dd0219fcb909"
+    },
+    {
+      "file": "logs/sdk-product-artifacts.stdout",
+      "bytes": 9349,
+      "sha256": "ad645eba7e8d70c947bf96b096b4a968d95b880febe16ea8d1e702866006def8"
+    },
+    {
+      "file": "logs/sdk-python.stderr",
+      "bytes": 849,
+      "sha256": "dbaf7b98c78d5c76e5028c08cda92752bf6cad1e8dcfd1e4dca7090ecd106aa6"
+    },
+    {
+      "file": "logs/sdk-python.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "logs/sdk-typescript-rpc-contracts.stderr",
+      "bytes": 642,
+      "sha256": "a9bf3c28a65cd011bd263bb3a06b283d9d194f9cd2950420d4f8ba8337b2fb61"
+    },
+    {
+      "file": "logs/sdk-typescript-rpc-contracts.stdout",
+      "bytes": 161,
+      "sha256": "c6cb28c23c2107cf704869fefa5ea9d31a5d31aafdb26b3d8d4b5654f290f879"
+    },
+    {
+      "file": "logs/sdk-typescript.stderr",
+      "bytes": 6959,
+      "sha256": "44ec71541ebb70b3aeb35cf5aa7008121d2771c4e1e32efb8c31887cce3400ed"
+    },
+    {
+      "file": "logs/sdk-typescript.stdout",
+      "bytes": 141,
+      "sha256": "162c134b9cd23f8304a552a64bd69a680d4576102bd2bec8eb2d9a8144637551"
+    }
+  ],
+  "user_direction": [
+    "No generated documentation redirects",
+    "Beeline full end-state",
+    "Fast ordinary CI; downstream verification release/manual",
+    "No consumer platform flags or transport selection"
+  ],
+  "merged_main": false,
+  "published": false,
+  "deployed_production": false
+}
