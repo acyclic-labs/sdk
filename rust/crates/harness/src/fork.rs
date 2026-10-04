@@ -1242,6 +1242,9 @@ impl CapturedResource {
 pub struct ForkReport {
     /// The original immutable request.
     pub request: ForkRequest,
+    /// Digest of the exact request before a durable publication rebind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_request_digest: Option<[u8; 32]>,
     /// One result per selection in the same order.
     pub captures: Vec<Capture>,
     /// Newly created empty child-owned private volume.
@@ -1286,7 +1289,9 @@ impl ForkRebindProof {
 
     pub(crate) fn verify_report(&self, report: &ForkReport) -> Result<()> {
         if report.request.operation_id != self.operation_id
-            || report.original_request_digest != Some(self.original_request_digest)
+            || report
+                .original_request_digest
+                .is_some_and(|digest| digest != self.original_request_digest)
         {
             return Err(Error::Conflict("fork rebound proof does not match the prepared report".into()));
         }
@@ -1358,6 +1363,7 @@ impl ForkReport {
     }
 
     pub(crate) fn captured_history_revision(&self) -> Result<u64> {
+        let parent_key = self.request.parent.stream_path()?.into_bytes();
         let mut captured = None;
         for capture in &self.captures {
             let Capture::Captured(resource) = capture else {
@@ -1374,12 +1380,22 @@ impl ForkReport {
                         "fork history capture source and child revision differ".into(),
                     ));
                 }
+                if reference.as_resource().key() != parent_key.as_slice() {
+                    return Err(Error::Invalid(
+                        "fork history capture belongs to a different parent".into(),
+                    ));
+                }
                 let version = reference
                     .as_resource()
                     .version()
                     .and_then(|version| version.parse::<u64>().ok())
                     .filter(|version| *version > 0)
                     .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
+                if version > self.request.parent_revision {
+                    return Err(Error::Invalid(
+                        "fork history capture is newer than its publication boundary".into(),
+                    ));
+                }
                 if captured.replace(version).is_some() {
                     return Err(Error::Invalid("fork history capture appears twice".into()));
                 }
@@ -2642,6 +2658,7 @@ mod tests {
                 boundary: None,
                 model_boundary: None,
             },
+            original_request_digest: None,
             captures: seed
                 .resources
                 .iter()
