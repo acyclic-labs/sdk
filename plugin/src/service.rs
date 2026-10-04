@@ -1679,10 +1679,17 @@ pub(crate) async fn dispatch_plane_request(
                     .pending_conflict_for_parent(control.context_for_agent(&caller)?)
                     .await?
                     .is_some();
-                return if route.is_some() || agent_conflict {
+                return if agent_conflict {
                     control.agent_merge_transition(&caller, abort).await
                 } else {
-                    control.root_git_tool(root_id, request.argv).await
+                    match route {
+                        Some(route) => {
+                            control
+                                .git_tool(&route.agent_id, &route, root_id, request.argv)
+                                .await
+                        }
+                        None => control.root_git_tool(root_id, request.argv).await,
+                    }
                 };
             }
             if request.argv.first().is_some_and(|command| command == "add")

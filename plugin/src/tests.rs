@@ -2767,6 +2767,12 @@ fn root_git_uses_the_same_repository_and_materializer() {
         .expect("plugin root Git thread");
 }
 
+#[test]
+#[ignore = "requires live native mounts"]
+fn child_local_git_merge_control_stays_on_git_facade() {
+    run_large_stack("child-local-git-routing", child_local_git_merge_control_case);
+}
+
 /// Writes `name` into `directory` under `root` from a separate process, as an
 /// agent's tool does. `ProjFS` reports only other processes' I/O to its
 /// provider, which runs in this test's process.
@@ -3229,6 +3235,123 @@ async fn root_git_case() {
         "created by root git\n"
     );
     control.shutdown().await.expect("control shutdown");
+}
+
+async fn child_local_git_merge_control_case() {
+    async fn try_git(
+        control: &mut ControlPlane,
+        cwd: &Path,
+        argv: &[&str],
+    ) -> Result<Value, String> {
+        dispatch_session_request(
+            control,
+            ControlRequest {
+                version: 1,
+                command: ControlCommand::Git,
+                cwd: cwd.to_path_buf(),
+                argv: argv.iter().map(|argument| (*argument).to_owned()).collect(),
+                name: String::new(),
+                arguments: Value::Null,
+            },
+        )
+        .await
+    }
+
+    async fn git(control: &mut ControlPlane, cwd: &Path, argv: &[&str]) -> Value {
+        try_git(control, cwd, argv)
+            .await
+            .unwrap_or_else(|error| panic!("acyclic git {} failed: {error}", argv.join(" ")))
+    }
+
+    async fn spawn_child(control: &mut ControlPlane, root: &Path, agent: &str) {
+        control
+            .pre_tool(json!({
+                "session_id":"session",
+                "turn_id":"root-turn",
+                "tool_use_id":format!("spawn-{agent}"),
+                "tool_name":"Agent",
+                "tool_input":{}
+            }))
+            .await
+            .expect("spawn handshake");
+        control
+            .subagent_start(json!({
+                "session_id":"session",
+                "cwd":root,
+                "turn_id":format!("{agent}-turn"),
+                "agent_id":agent,
+                "agent_type":"sdk"
+            }))
+            .await
+            .expect("child start");
+    }
+
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = temporary.path().join("root");
+    fs::create_dir_all(&root).expect("root directory");
+    fs::write(root.join("README.md"), b"base\n").expect("base file");
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&root)
+            .status()
+            .expect("git init")
+            .success()
+    );
+    let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+        .await
+        .expect("control plane");
+    control
+        .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
+        .await
+        .expect("root session");
+    control
+        .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+        .expect("root turn");
+    let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
+    control
+        .root_git_tool(
+            root_id,
+            vec!["commit".to_owned(), "-m".to_owned(), "base".to_owned()],
+        )
+        .await
+        .expect("root base commit");
+
+    spawn_child(&mut control, &root, "continued").await;
+    let continued = route_path(&control.state.routes["continued"]);
+    git(&mut control, &continued, &["switch", "-c", "feature"]).await;
+    let continued = route_path(&control.state.routes["continued"]);
+    fs::write(continued.join("README.md"), b"feature\n").expect("feature edit");
+    git(&mut control, &continued, &["commit", "-m", "feature"]).await;
+    assert_eq!(
+        fs::read(continued.join("README.md")).expect("feature file"),
+        b"feature\n"
+    );
+    git(&mut control, &continued, &["switch", "main"]).await;
+    let continued = route_path(&control.state.routes["continued"]);
+    assert_eq!(
+        fs::read(continued.join("README.md")).expect("main base file"),
+        b"base\n"
+    );
+    fs::write(continued.join("README.md"), b"main\n").expect("main edit");
+    git(&mut control, &continued, &["commit", "-m", "main"]).await;
+    assert_eq!(
+        fs::read(continued.join("README.md")).expect("main file"),
+        b"main\n"
+    );
+    let continued = route_path(&control.state.routes["continued"]);
+    let merged = git(&mut control, &continued, &["merge", "feature"]).await;
+    assert!(merged.get("Committed").is_some(), "{merged}");
+    for option in ["--continue", "--abort"] {
+        let error = try_git(&mut control, &continued, &["merge", option])
+            .await
+            .expect_err("child Git facade must reject a transition with no pending merge");
+        assert!(
+            error.contains("requires a pending merge"),
+            "child-local merge control was routed to the publication coordinator: {error}"
+        );
+    }
+    control.shutdown().await.expect("shutdown");
 }
 
 #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
