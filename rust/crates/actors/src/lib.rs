@@ -3,8 +3,11 @@
 
 use std::collections::HashSet;
 
+pub mod client;
 pub mod grpc;
 pub mod http;
+
+pub use client::{Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect};
 
 /// Generated Actors v1 wire types. The documented schema is `proto/actors/v1/actors.proto`.
 pub mod wire {

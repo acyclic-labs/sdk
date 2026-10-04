@@ -3,8 +3,11 @@
 
 use sha2::{Digest, Sha256};
 
+pub mod client;
 pub mod grpc;
 pub mod http;
+
+pub use client::{Client, ConnectError, DEFAULT_HTTP_RESPONSE_BYTES, DEFAULT_TRANSPORT, connect};
 
 /// Generated Workers v1 wire types. The documented schema is `proto/workers/v1/workers.proto`.
 pub mod wire {
