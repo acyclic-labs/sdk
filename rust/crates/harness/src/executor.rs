@@ -1800,6 +1800,11 @@ impl Executor for StockExecutor {
                 .map(|context| context.rejection_evidence.clone())
                 .unwrap_or_default();
             let mut text = String::new();
+            // Text emitted alongside a tool batch is part of the authoritative
+            // conversation, but it is not the final user-visible completion.
+            // Keep it in `text` for replay and output accounting while tracking
+            // the terminal step separately for the returned result.
+            let mut visible_text = String::new();
             for step in 0..input.max_steps {
                 let step_text_start = text.len();
                 let mut calls = Vec::new();
@@ -1817,6 +1822,7 @@ impl Executor for StockExecutor {
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
+                            visible_text.push_str(&delta);
                             text.push_str(&delta);
                         }
                         ModelEvent::ToolCall {
@@ -1841,7 +1847,7 @@ impl Executor for StockExecutor {
                 };
                 if calls.is_empty() {
                     return Ok(TurnOutput {
-                        text,
+                        text: visible_text,
                         attachments: Vec::new(),
                         metadata,
                         steps: step + 1,
@@ -1889,6 +1895,7 @@ impl Executor for StockExecutor {
                     .ok_or_else(|| Error::Storage("completed batch range is invalid".into()))?;
                 self.record_completed_batch(journal, input.operation_id, step, completed)
                     .await?;
+                visible_text.clear();
             }
             Err(Error::Conflict("executor step limit reached".into()))
         })

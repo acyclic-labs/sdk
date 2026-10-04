@@ -910,8 +910,13 @@ impl LocalModelForkPlan {
                 "model fork plan publication identity is empty".into(),
             ));
         }
-        self.report.validate()?;
-        let seed = self.report.clone().into_seed()?;
+        let seed = if let Some(proof) = &self.rebind_proof {
+            self.report.validate_with_rebind_proof(proof)?;
+            self.report.clone().into_seed_with_rebind_proof(proof)?
+        } else {
+            self.report.validate()?;
+            self.report.clone().into_seed()?
+        };
         let fork_operation = self.request.fork_operation.ok_or_else(|| {
             Error::Invalid("model fork plan requires a fork operation identity".into())
         })?;
@@ -933,6 +938,9 @@ impl LocalModelForkPlan {
 pub struct LocalModelForkPlans {
     plans: Mutex<BTreeMap<(OperationId, OperationId), LocalModelForkPlan>>,
     intents: Mutex<BTreeMap<(OperationId, OperationId), LocalForkIntent>>,
+    /// Journal sequence for each selected tool call. BTreeMap ordering is a
+    /// storage detail and does not represent the model's ordered batch.
+    intent_order: Mutex<BTreeMap<(OperationId, OperationId), u64>>,
     issuer_bindings: Mutex<BTreeMap<(OperationId, OperationId), [u8; 32]>>,
     completed: Mutex<BTreeMap<OperationId, [u8; 32]>>,
     resolver: Option<Arc<dyn LocalModelForkResolver>>,
@@ -944,6 +952,7 @@ impl Default for LocalModelForkPlans {
         Self {
             plans: Mutex::new(BTreeMap::new()),
             intents: Mutex::new(BTreeMap::new()),
+            intent_order: Mutex::new(BTreeMap::new()),
             issuer_bindings: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(BTreeMap::new()),
             resolver: None,
@@ -981,7 +990,7 @@ impl LocalModelForkPlans {
         let stream = registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        for record in load_records(&stream).await? {
+        for (position, record) in load_records(&stream).await?.into_iter().enumerate() {
             match record.event {
                 StoredEvent::ForkIntent { intent } => {
                     let key = (intent.fork_operation, intent.child_operation);
@@ -994,6 +1003,11 @@ impl LocalModelForkPlans {
                         ));
                     }
                     intents.insert(key, intent);
+                    self.intent_order
+                        .lock()
+                        .await
+                        .entry(key)
+                        .or_insert(position as u64);
                 }
                 StoredEvent::ForkIntentSelected {
                     intent,
@@ -1009,6 +1023,11 @@ impl LocalModelForkPlans {
                         ));
                     }
                     intents.insert(key, intent);
+                    self.intent_order
+                        .lock()
+                        .await
+                        .entry(key)
+                        .or_insert(position as u64);
                     if let Some(issuer_digest) = issuer_digest {
                         let mut bindings = self.issuer_bindings.lock().await;
                         if let Some(existing) = bindings.get(&key)
@@ -1078,7 +1097,7 @@ impl LocalModelForkPlans {
         let records = load_records(&stream).await?;
         let mut intents = self.intents.lock().await;
         let mut issuer_bindings = self.issuer_bindings.lock().await;
-        for record in records {
+        for (position, record) in records.into_iter().enumerate() {
             match record.event {
                 StoredEvent::ForkIntent { intent } => {
                     let key = (intent.fork_operation, intent.child_operation);
@@ -1090,6 +1109,11 @@ impl LocalModelForkPlans {
                         ));
                     }
                     intents.insert(key, intent);
+                    self.intent_order
+                        .lock()
+                        .await
+                        .entry(key)
+                        .or_insert(position as u64);
                 }
                 StoredEvent::ForkIntentSelected {
                     intent,
@@ -1104,6 +1128,11 @@ impl LocalModelForkPlans {
                         ));
                     }
                     intents.insert(key, intent);
+                    self.intent_order
+                        .lock()
+                        .await
+                        .entry(key)
+                        .or_insert(position as u64);
                     if let Some(digest) = issuer_digest {
                         if digest == [0; 32] {
                             return Err(Error::Conflict(
@@ -1184,7 +1213,8 @@ impl LocalModelForkPlans {
             }
             return Ok(());
         }
-        if let Some(registry) = self.journal.lock().await.clone() {
+        let registry = self.journal.lock().await.clone();
+        if let Some(registry) = registry.clone() {
             let stream = registry
                 .stream(REGISTRY_STREAM)
                 .map_err(|error| Error::Storage(error.to_string()))?;
@@ -1204,11 +1234,36 @@ impl LocalModelForkPlans {
                 .await
                 .insert(key, digest);
         }
+        drop(intents);
+        if let Some(registry) = registry {
+            let stream = registry
+                .stream(REGISTRY_STREAM)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let records = load_records(&stream).await?;
+            let position = records.into_iter().enumerate().find_map(|(position, record)| {
+                match record.event {
+                    StoredEvent::ForkIntent { intent }
+                    | StoredEvent::ForkIntentSelected { intent, .. }
+                        if (intent.fork_operation, intent.child_operation) == key =>
+                    {
+                        Some(position as u64)
+                    }
+                    _ => None,
+                }
+            });
+            if let Some(position) = position {
+                self.intent_order
+                    .lock()
+                    .await
+                    .entry(key)
+                    .or_insert(position);
+            }
+        }
         Ok(())
     }
 
     async fn resolve_intents(&self, publication: ModelBatchPublication) -> Result<Vec<LocalModelForkPlan>> {
-        let intents = self
+        let mut intents = self
             .intents
             .lock()
             .await
@@ -1216,6 +1271,15 @@ impl LocalModelForkPlans {
             .filter(|intent| intent.publication_operation == Some(publication.operation_id))
             .cloned()
             .collect::<Vec<_>>();
+        let intent_order = self.intent_order.lock().await.clone();
+        intents.sort_by_key(|intent| {
+            let key = (intent.fork_operation, intent.child_operation);
+            (
+                intent_order.get(&key).copied().unwrap_or(u64::MAX),
+                intent.call_id.clone().unwrap_or_default(),
+                key,
+            )
+        });
         if intents.is_empty() {
             let prepared = self.get_for_publication(publication.operation_id).await;
             if !prepared.is_empty() {
