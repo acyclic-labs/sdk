@@ -123,7 +123,13 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken>;
 }
 
-export interface StreamEnvironment { readonly endpoint: string; readonly token: string }
+export type StreamTransport = "grpc" | "http";
+export interface StreamEnvironment {
+  readonly endpoint: string;
+  readonly token: string;
+  readonly caCertificate?: string;
+  readonly transport?: StreamTransport;
+}
 export class StreamError extends Error {
   constructor(readonly code: string, message: string, readonly status?: number) { super(message); }
 }
