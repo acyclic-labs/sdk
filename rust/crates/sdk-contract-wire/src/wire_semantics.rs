@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, MapKey, MessageDescriptor, ReflectMessage, Value};
+use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, MapKey, MessageDescriptor, MethodDescriptor, ReflectMessage, Value};
 
 use crate::family_registry::family_view;
 
@@ -43,6 +43,19 @@ pub struct CompareOptions {
 /// Selects the Rust-owned protobuf type bound to one RPC direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RpcDirection { Request, Response }
+
+/// Streaming shape declared by the Rust-owned RPC descriptor.
+///
+/// Receipt validators use this metadata to distinguish frame cardinality from
+/// payload semantics. A unary success requires one response frame, a unary
+/// error may have zero response frames, a server stream may have zero or more
+/// response frames, and a client stream must carry an explicitly ordered,
+/// non-empty request sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RpcStreaming {
+    pub client_streaming: bool,
+    pub server_streaming: bool,
+}
 
 /// Failure resolving or comparing a Rust-owned RPC message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,6 +97,27 @@ pub fn compare_rpc_message(
     compare_rpc_message_with_options(pool, full_rpc, direction, expected, observed, CompareOptions::default())
 }
 
+/// Resolve the Rust-owned streaming shape for one fully qualified RPC.
+pub fn rpc_streaming(
+    pool: &DescriptorPool,
+    full_rpc: &str,
+) -> Result<RpcStreaming, RpcSemanticError> {
+    let method = resolve_method(pool, full_rpc)?;
+    Ok(RpcStreaming {
+        client_streaming: method.is_client_streaming(),
+        server_streaming: method.is_server_streaming(),
+    })
+}
+
+/// Resolve the Rust-owned streaming shape through a registered contract family.
+pub fn family_rpc_streaming(
+    family: &str,
+    full_rpc: &str,
+) -> Result<RpcStreaming, RpcSemanticError> {
+    let pool = family_descriptor_pool(family)?;
+    rpc_streaming(&pool, full_rpc)
+}
+
 /// Compare one receipt frame through the Rust-owned family registry.
 ///
 /// The family registry supplies the descriptor, so receipt consumers cannot
@@ -96,6 +130,11 @@ pub fn compare_family_rpc_message(
     expected: &[u8],
     observed: &[u8],
 ) -> Result<(), RpcSemanticError> {
+    let pool = family_descriptor_pool(family)?;
+    compare_rpc_message(&pool, full_rpc, direction, expected, observed)
+}
+
+fn family_descriptor_pool(family: &str) -> Result<DescriptorPool, RpcSemanticError> {
     let view = family_view(family)
         .ok_or_else(|| RpcSemanticError::UnknownFamily(family.to_owned()))?;
     // Inference's public model descriptor is intentionally a compact target
@@ -131,9 +170,8 @@ pub fn compare_family_rpc_message(
         ));
     }
     let descriptor_bytes = descriptor_set.encode_to_vec();
-    let pool = DescriptorPool::decode(descriptor_bytes.as_slice())
-        .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))?;
-    compare_rpc_message(&pool, full_rpc, direction, expected, observed)
+    DescriptorPool::decode(descriptor_bytes.as_slice())
+        .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))
 }
 
 fn timestamp_descriptor() -> prost_types::FileDescriptorProto {
@@ -173,12 +211,23 @@ pub fn compare_rpc_message_with_options(
     observed: &[u8],
     options: CompareOptions,
 ) -> Result<(), RpcSemanticError> {
-    let identity = full_rpc.trim_start_matches('/');
-    let (service_name, method_name) = identity.split_once('/').ok_or_else(|| RpcSemanticError::InvalidIdentity(full_rpc.to_owned()))?;
-    let service = pool.get_service_by_name(service_name).ok_or_else(|| RpcSemanticError::UnknownService(service_name.to_owned()))?;
-    let method = service.methods().find(|candidate| candidate.name() == method_name).ok_or_else(|| RpcSemanticError::UnknownMethod(format!("{service_name}/{method_name}")))?;
+    let method = resolve_method(pool, full_rpc)?;
     let descriptor = match direction { RpcDirection::Request => method.input(), RpcDirection::Response => method.output() };
     compare_message_with_options(descriptor, expected, observed, options).map_err(Into::into)
+}
+
+fn resolve_method(pool: &DescriptorPool, full_rpc: &str) -> Result<MethodDescriptor, RpcSemanticError> {
+    let identity = full_rpc.trim_start_matches('/');
+    let (service_name, method_name) = identity
+        .split_once('/')
+        .ok_or_else(|| RpcSemanticError::InvalidIdentity(full_rpc.to_owned()))?;
+    let service = pool
+        .get_service_by_name(service_name)
+        .ok_or_else(|| RpcSemanticError::UnknownService(service_name.to_owned()))?;
+    service
+        .methods()
+        .find(|candidate| candidate.name() == method_name)
+        .ok_or_else(|| RpcSemanticError::UnknownMethod(format!("{service_name}/{method_name}")))
 }
 
 /// A semantic difference between two protobuf messages.
@@ -560,6 +609,23 @@ mod tests {
         )
         .expect_err("receipt cannot select a separately authored family");
         assert!(matches!(unknown, RpcSemanticError::UnknownFamily(_)));
+    }
+
+    #[test]
+    fn descriptor_streaming_shape_is_rust_owned() {
+        let read = family_rpc_streaming("stream", "acyclic.stream.v2.StreamService/Read")
+            .expect("Stream Read is registered");
+        assert!(!read.client_streaming);
+        assert!(read.server_streaming);
+
+        let put = family_rpc_streaming("objects", "acyclic.objects.v2.ObjectsService/PutObject")
+            .expect("Objects PutObject is registered");
+        assert!(put.client_streaming);
+        assert!(!put.server_streaming);
+
+        let unknown = family_rpc_streaming("stream", "acyclic.stream.v2.StreamService/Missing")
+            .expect_err("unknown RPC shape must fail closed");
+        assert!(matches!(unknown, RpcSemanticError::UnknownMethod(_)));
     }
 
     #[test]

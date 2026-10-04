@@ -60,9 +60,10 @@ pub use transport::{
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
 };
 pub use wire_semantics::{
-    compare_family_rpc_message, compare_message, compare_message_with_options,
+    compare_family_rpc_message, compare_message, compare_message_with_options, family_rpc_streaming,
     compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
-    RpcDirection, RpcSemanticError, SemanticMismatch, UnknownFieldPolicy,
+    rpc_streaming, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
+    UnknownFieldPolicy,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 
