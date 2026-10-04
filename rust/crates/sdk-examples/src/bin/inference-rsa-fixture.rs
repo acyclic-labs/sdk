@@ -1,8 +1,8 @@
-//! Bounded RSA/mTLS Machines fixture for installed language consumers.
+//! Bounded RSA/mTLS Inference Runs fixture for installed language consumers.
 
 use acyclic_sdk_examples::tls_fixture::{
-    MACHINES_RPC_METHODS, RsaTlsMaterial, new_method_transcript_log,
-    serve_machines_rsa_with_transcript,
+    INFERENCE_RUNS_RPC_METHODS, RsaTlsMaterial, new_method_transcript_log,
+    serve_inference_runs_rsa_with_transcript,
 };
 use serde_json::json;
 use std::{collections::BTreeSet, env, fs, path::PathBuf};
@@ -25,20 +25,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let server_material = material.clone();
     let server_transcript = transcript.clone();
     let server = tokio::spawn(async move {
-        serve_machines_rsa_with_transcript(listener, &server_material, receiver, server_transcript)
-            .await
+        serve_inference_runs_rsa_with_transcript(
+            listener,
+            &server_material,
+            receiver,
+            server_transcript,
+        )
+        .await
     });
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schema": "acyclic.sdk.machines-rsa-fixture.v1",
+            "schema": "acyclic.sdk.inference-runs-rsa-fixture.v1",
             "endpoint": endpoint,
             "caCertificate": material.ca_certificate,
             "certificate": material.client_certificate,
             "privateKey": material.client_private_key,
-            "machineId": hex::encode(acyclic_sdk_examples::tls_fixture::FIXTURE_MACHINE),
-            "operationId": hex::encode(acyclic_sdk_examples::tls_fixture::FIXTURE_OPERATION),
-            "expectedRpcs": MACHINES_RPC_METHODS,
+            "runId": hex::encode([2u8; 16]),
+            "expectedRpcs": INFERENCE_RUNS_RPC_METHODS,
             "sourceSha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
             "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
             "seconds": seconds,
@@ -53,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(path) = transcript_file {
         let mut entries = transcript
             .lock()
-            .expect("Machines fixture transcript mutex poisoned")
+            .expect("Inference fixture transcript mutex poisoned")
             .clone();
         entries.sort_by_key(|entry| entry.rpc);
         let methods = entries
@@ -72,22 +76,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .iter()
             .filter_map(|entry| entry.get("rpc").and_then(|rpc| rpc.as_str()))
             .collect::<BTreeSet<_>>();
-        let expected_rpcs = MACHINES_RPC_METHODS
+        let expected_rpcs = INFERENCE_RUNS_RPC_METHODS
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
         let artifact = json!({
-            "schema": "acyclic.sdk.machines-rsa-fixture-transcript.v1",
+            "schema": "acyclic.sdk.inference-runs-rsa-fixture-transcript.v1",
             "source": {
                 "path": "rust/crates/sdk-examples",
                 "sha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
                 "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
             },
-            "expectedRpcs": MACHINES_RPC_METHODS,
+            "expectedRpcs": INFERENCE_RUNS_RPC_METHODS,
             "observedRpcs": observed_rpcs,
-            "expectedMethodCount": MACHINES_RPC_METHODS.len(),
+            "expectedMethodCount": INFERENCE_RUNS_RPC_METHODS.len(),
             "observedMethodCount": methods.len(),
-            "complete": observed_rpcs == expected_rpcs && methods.len() == MACHINES_RPC_METHODS.len(),
+            "complete": observed_rpcs == expected_rpcs
+                && methods.len() == INFERENCE_RUNS_RPC_METHODS.len(),
             "methods": methods,
         });
         fs::write(path, serde_json::to_vec_pretty(&artifact)?)?;

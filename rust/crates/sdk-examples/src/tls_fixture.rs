@@ -113,6 +113,14 @@ pub const MACHINES_RPC_METHODS: &[&str] = &[
     "acyclic.machines.v1.MachinesService/WatchOperation",
 ];
 
+/// Every modeled Inference Runs RPC that the bounded fixture implements.
+pub const INFERENCE_RUNS_RPC_METHODS: &[&str] = &[
+    "inference.customer.v1.RunsService/Generate",
+    "inference.customer.v1.RunsService/Inspect",
+    "inference.customer.v1.RunsService/Watch",
+    "inference.customer.v1.RunsService/Cancel",
+];
+
 /// One deterministic request/response observation from an installed client.
 ///
 /// The hashes let the fixture prove that a concrete protobuf request reached a
@@ -144,7 +152,7 @@ fn digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
 
-fn record_transcript(
+pub(crate) fn record_transcript(
     log: &MethodTranscriptLog,
     rpc: &'static str,
     request_bytes: Vec<u8>,
@@ -161,7 +169,7 @@ fn record_transcript(
         });
 }
 
-fn traced_response<Req, Resp>(
+pub(crate) fn traced_response<Req, Resp>(
     log: &MethodTranscriptLog,
     rpc: &'static str,
     request: &Req,
@@ -668,6 +676,155 @@ pub async fn serve_machines_rsa_with_transcript(
         .add_service(wire::machines_service_server::MachinesServiceServer::new(
             AllRoutesMachinesFixture::with_transcript(transcript),
         ))
+        .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+            let _ = shutdown.await;
+        })
+        .await
+}
+
+/// A bounded Rust-owned Inference Runs service for installed SDK consumers.
+///
+/// The service deliberately exposes the complete Runs RPC surface and keeps
+/// the event sequence deterministic. It is intended for local mTLS
+/// qualification; it does not model hosted model availability.
+#[derive(Clone)]
+pub struct InferenceRunsFixture {
+    transcript: MethodTranscriptLog,
+}
+
+impl InferenceRunsFixture {
+    /// Builds the fixture with a caller-owned transcript sink.
+    pub fn with_transcript(transcript: MethodTranscriptLog) -> Self {
+        Self { transcript }
+    }
+}
+
+fn inference_run_view(run_id: Vec<u8>, cancelled: bool) -> acyclic_inference::wire::RunView {
+    acyclic_inference::wire::RunView {
+        run_id,
+        input: vec![3; 32],
+        model: "model.example.v1".to_owned(),
+        last_sequence: u64::from(cancelled),
+        cancellation_requested: cancelled,
+        result: cancelled.then(|| acyclic_inference::wire::RunResult {
+            output: Vec::new(),
+            context: None,
+            terminal: acyclic_inference::wire::RunTerminal::Cancelled as i32,
+            receipt: None,
+        }),
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::runs_service_server::RunsService for InferenceRunsFixture {
+    async fn generate(
+        &self,
+        request: Request<acyclic_inference::wire::GenerateRunRequest>,
+    ) -> Result<Response<acyclic_inference::wire::GenerateRunResponse>, Status> {
+        let request = request.into_inner();
+        let response = acyclic_inference::wire::GenerateRunResponse {
+            run: Some(inference_run_view(vec![2; 16], false)),
+        };
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.RunsService/Generate",
+            &request,
+            response,
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectRunRequest>,
+    ) -> Result<Response<acyclic_inference::wire::RunView>, Status> {
+        let request = request.into_inner();
+        let response = inference_run_view(request.run_id.clone(), false);
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.RunsService/Inspect",
+            &request,
+            response,
+        ))
+    }
+
+    type WatchStream = Pin<
+        Box<dyn Stream<Item = Result<acyclic_inference::wire::RunEvent, Status>> + Send + 'static>,
+    >;
+
+    async fn watch(
+        &self,
+        request: Request<acyclic_inference::wire::WatchRunRequest>,
+    ) -> Result<Response<Self::WatchStream>, Status> {
+        let request = request.into_inner();
+        let events = vec![
+            acyclic_inference::wire::RunEvent {
+                sequence: 0,
+                event: Some(acyclic_inference::wire::run_event::Event::Progress(
+                    acyclic_inference::wire::RunProgress {
+                        kind: "queued".to_owned(),
+                    },
+                )),
+            },
+            acyclic_inference::wire::RunEvent {
+                sequence: 1,
+                event: Some(acyclic_inference::wire::run_event::Event::Terminal(
+                    acyclic_inference::wire::RunTerminal::Completed as i32,
+                )),
+            },
+        ];
+        let mut response_bytes = Vec::new();
+        for event in &events {
+            event
+                .encode(&mut response_bytes)
+                .expect("encode Inference watch event");
+        }
+        record_transcript(
+            &self.transcript,
+            "inference.customer.v1.RunsService/Watch",
+            request.encode_to_vec(),
+            response_bytes,
+        );
+        Ok(Response::new(Box::pin(stream::iter(
+            events.into_iter().map(Ok),
+        ))))
+    }
+
+    async fn cancel(
+        &self,
+        request: Request<acyclic_inference::wire::InspectRunRequest>,
+    ) -> Result<Response<acyclic_inference::wire::RunView>, Status> {
+        let request = request.into_inner();
+        let response = inference_run_view(request.run_id.clone(), true);
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.RunsService/Cancel",
+            &request,
+            response,
+        ))
+    }
+}
+
+/// Starts a TLS-enabled bounded Inference Runs server on a loopback listener.
+pub async fn serve_inference_runs_rsa_with_transcript(
+    listener: TcpListener,
+    material: &RsaTlsMaterial,
+    shutdown: oneshot::Receiver<()>,
+    transcript: MethodTranscriptLog,
+) -> Result<(), tonic::transport::Error> {
+    Server::builder()
+        .tls_config(
+            ServerTlsConfig::new()
+                .identity(Identity::from_pem(
+                    &material.server_certificate,
+                    &material.server_private_key,
+                ))
+                .client_ca_root(Certificate::from_pem(&material.ca_certificate)),
+        )?
+        .add_service(
+            acyclic_inference::wire::runs_service_server::RunsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript),
+            ),
+        )
         .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
             let _ = shutdown.await;
         })
