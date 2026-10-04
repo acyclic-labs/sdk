@@ -321,3 +321,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 
 - [Generated WASM projection repair](checkpoint-generated-wasm-projection-repair-2026-10-04.json): recovered-space audit at5894dee4b fails E0063 missing rejection-evidence initializer; c08a37726 repairs constructor, fresh audit pending. Public WASM validates shape, not durable rejection provenance.
+
+- [Full native regression and WASM drift](checkpoint-native-regression-and-wasm-drift-2026-10-04.json): archived6ebee native suite340/344 exposes four generic receipt identity regressions;441d repair pendingfullrun. c08 WASM compilation proceeds, generated Harness JavaScript drift remains failed.
