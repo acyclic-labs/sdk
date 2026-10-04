@@ -4,7 +4,7 @@
 //! caller's refreshed registry snapshot. They retain no state and never open a
 //! model worker or mutate a journal.
 
-use super::{LocalSwarmApproval, LocalSwarmSession};
+use super::LocalSwarmSession;
 use crate::{Error, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
