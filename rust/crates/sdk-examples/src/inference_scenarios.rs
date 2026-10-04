@@ -5,7 +5,7 @@
 //! wire validation only; it does not connect to a model or claim a hosted
 //! endpoint.
 
-use acyclic_inference::{WatchRunState, validate_customer_wire, watch_run_start_state_wire, wire};
+use acyclic_inference::{validate_customer_wire, watch_run_start_state_wire, wire};
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
