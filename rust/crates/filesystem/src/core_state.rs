@@ -1437,6 +1437,22 @@ fn crash_point(label: &str, flushed: u64) {
         if let Some(report) = std::env::var_os("ACYCLIC_CORE_STATE_CRASH_REPORT") {
             let _ = std::fs::write(report, format!("{label}\n{flushed}"));
         }
+        #[cfg(windows)]
+        {
+            use windows::Win32::System::Threading::{GetCurrentProcess, TerminateProcess};
+
+            // `abort` can launch Windows Error Reporting and leave the parent
+            // waiting in `Child::status`. Terminate the intentional crash child
+            // directly, without running Rust or CRT destructors.
+            let terminated = unsafe { TerminateProcess(GetCurrentProcess(), 86) }.is_ok();
+            if !terminated {
+                std::process::abort();
+            }
+            loop {
+                std::hint::spin_loop();
+            }
+        }
+        #[cfg(not(windows))]
         std::process::abort();
     }
 }
@@ -3631,6 +3647,13 @@ mod tests {
                 .stderr(std::process::Stdio::null());
             if owned {
                 child.env("ACYCLIC_CORE_STATE_CRASH_OWNED", "1");
+            }
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                child.creation_flags(CREATE_NO_WINDOW);
             }
             let status = child.status().expect("crash child");
             if status.success() {
