@@ -27,12 +27,13 @@ export function createRustSourceSnapshot({ sourceRoot, destination, revision }) 
   const sourceRevision = git(sourceRoot, ["rev-parse", "--verify", "--end-of-options", `${revision}^{commit}`]);
   if (existsSync(destination) || existsSync(`${destination}.receipt.json`)) throw new Error("Snapshot destination already exists; it will not be overwritten");
   mkdirSync(dirname(destination), { recursive: true });
-  git(sourceRoot, ["clone", "--local", "--no-hardlinks", "--no-checkout", "--", sourceRoot, destination]);
+  git(sourceRoot, ["init", "--", destination]);
+  git(destination, ["fetch", "--no-tags", "--depth=1", "--", sourceRoot, sourceRevision]);
   git(destination, ["checkout", "--detach", sourceRevision]);
   if (canonical(git(destination, ["rev-parse", "--show-toplevel"])) !== canonical(destination)) throw new Error("Snapshot is not an independent Git checkout");
   if (git(destination, ["rev-parse", "HEAD"]) !== sourceRevision) throw new Error("Snapshot revision mismatch");
   if (git(destination, ["status", "--porcelain=v1", "--untracked-files=all"]) !== "") throw new Error("Snapshot checkout is dirty");
-  const receipt = { schema: "acyclic.sdk.source-snapshot.v1", source_root: sourceRoot, snapshot_root: destination, source_revision: sourceRevision, clean: true, capture: "local independent detached Git clone", qualification: false };
+  const receipt = { schema: "acyclic.sdk.source-snapshot.v1", source_root: sourceRoot, snapshot_root: destination, source_revision: sourceRevision, clean: true, capture: "independent detached depth-one Git fetch", qualification: false };
   writeFileSync(`${destination}.receipt.json`, `${JSON.stringify(receipt, null, 2)}\n`);
   return receipt;
 }

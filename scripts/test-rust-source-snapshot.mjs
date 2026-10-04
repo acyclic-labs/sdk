@@ -86,3 +86,18 @@ test("inherited Git repository settings cannot redirect snapshot checkout", () =
     }
   }
 });
+
+test("snapshot fetches only the selected revision without unrelated history", () => {
+  const f = fixture();
+  const git = args => spawnSync("git", ["-C", f.sourceRoot, ...args], { encoding: "utf8" });
+  writeFileSync(join(f.sourceRoot, "source.rs"), "pub const VERSION: u32 = 3;\n");
+  assert.equal(git(["add", "source.rs"]).status, 0);
+  assert.equal(git(["-c", "user.name=Snapshot Test", "-c", "user.email=snapshot@example.invalid", "commit", "-m", "selected"]).status, 0);
+  const selected = git(["rev-parse", "HEAD"]).stdout.trim();
+  const destination = join(f.scope, "shallow");
+  createRustSourceSnapshot({ ...f, destination, revision: selected });
+  const count = spawnSync("git", ["-C", destination, "rev-list", "--count", "HEAD"], { encoding: "utf8" });
+  assert.equal(count.status, 0, count.stderr);
+  assert.equal(count.stdout.trim(), "1");
+  assert.equal(spawnSync("git", ["-C", destination, "cat-file", "-e", f.revision], { encoding: "utf8" }).status, 1);
+});
