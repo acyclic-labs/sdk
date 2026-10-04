@@ -1785,6 +1785,15 @@ pub enum SwarmBudgetEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root_dispatch_id: Option<IdempotencyKey>,
     },
+    /// Binds the authenticated host measurement source before root work is
+    /// admitted. A reopened session cannot select a different source before
+    /// its first durable usage receipt.
+    RootProviderBound {
+        /// Owner fence that authenticated the binding.
+        owner: SwarmOwnerFence,
+        /// Stable host/provider capability identity.
+        provider: String,
+    },
     /// Persists an admission before a fork is dispatched.
     ChildReserved {
         /// Exact child reservation.
@@ -2160,6 +2169,36 @@ impl SwarmBudget {
     /// Returns the canonical provider lease bound to root usage receipts.
     pub fn root_dispatch_id(&self) -> Result<Option<IdempotencyKey>> {
         Ok(self.lock()?.root_dispatch_id.clone())
+    }
+
+    /// Binds the root usage source before the first provider dispatch or
+    /// receipt. The binding is immutable for the lifetime of the session.
+    pub fn bind_root_provider_identity(
+        &self,
+        owner: &SwarmOwnerFence,
+        provider: impl Into<String>,
+    ) -> Result<()> {
+        owner.validate()?;
+        let provider = provider.into();
+        if provider.is_empty() || provider.len() > 255 || provider.chars().any(char::is_control) {
+            return Err(Error::Invalid(
+                "swarm root provider identity is invalid".into(),
+            ));
+        }
+        let mut state = self.lock()?;
+        if state.owner != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
+        if let Some(existing) = &state.root_provider_identity {
+            if existing != &provider {
+                return Err(Error::Conflict(
+                    "swarm root provider identity changed across recovery".into(),
+                ));
+            }
+            return Ok(());
+        }
+        state.root_provider_identity = Some(provider);
+        Ok(())
     }
 
     /// Returns the durable provider receipt cursor for root usage.
@@ -2866,6 +2905,9 @@ impl SwarmBudget {
         match event {
             SwarmBudgetEvent::Started { .. } => {
                 Err(Error::Conflict("swarm session already exists".into()))
+            }
+            SwarmBudgetEvent::RootProviderBound { owner, provider } => {
+                self.bind_root_provider_identity(&owner, provider)
             }
             SwarmBudgetEvent::ChildReserved { reservation } => {
                 let request = request_from_reservation(&reservation)?;

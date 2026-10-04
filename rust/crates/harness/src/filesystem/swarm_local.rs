@@ -49,6 +49,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
 };
@@ -78,14 +80,131 @@ const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
 /// stream and this source exposes those cumulative counters to the durable
 /// receipt issuer. A host with a stronger provider accounting API can replace
 /// it through [`LocalSwarmBindings::with_swarm_budget`].
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct LocalSwarmUsageSource {
     usage: Arc<StdMutex<BTreeMap<(OperationId, String), SwarmUsage>>>,
+    durable_root: Option<PathBuf>,
+    provider: String,
+}
+
+impl Default for LocalSwarmUsageSource {
+    fn default() -> Self {
+        Self {
+            usage: Arc::new(StdMutex::new(BTreeMap::new())),
+            durable_root: None,
+            provider: "local.runtime.meter".into(),
+        }
+    }
 }
 
 impl LocalSwarmUsageSource {
+    #[cfg(feature = "filesystem-local")]
+    pub fn durable(root: impl AsRef<Path>) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(&root)
+            .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
+        let source = Self {
+            usage: Arc::new(StdMutex::new(BTreeMap::new())),
+            durable_root: Some(root),
+            provider: "local.runtime.meter".into(),
+        };
+        source.ensure_durable_identity()?;
+        Ok(source)
+    }
+
     fn key(operation_id: OperationId, dispatch_id: &IdempotencyKey) -> (OperationId, String) {
         (operation_id, dispatch_id.0.clone())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn with_durable_lock<T>(
+        &self,
+        exclusive: bool,
+        operation: impl FnOnce(&Path) -> Result<T>,
+    ) -> Result<T> {
+        use fs2::FileExt;
+        let Some(root) = self.durable_root.as_deref() else {
+            return operation(Path::new(""));
+        };
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(root.join("usage.lock"))
+            .map_err(|error| Error::Storage(format!("local usage journal lock failed: {error}")))?;
+        if exclusive {
+            lock.lock_exclusive().map_err(|error| {
+                Error::Storage(format!("local usage journal exclusive lock failed: {error}"))
+            })?;
+        } else {
+            lock.lock_shared().map_err(|error| {
+                Error::Storage(format!("local usage journal shared lock failed: {error}"))
+            })?;
+        }
+        let result = operation(self.durable_root.as_deref().unwrap_or_else(|| Path::new("")));
+        let _ = lock.unlock();
+        result
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn read_durable_locked(
+        &self,
+        root: &Path,
+    ) -> Result<BTreeMap<(OperationId, String), SwarmUsage>> {
+        let file = match File::open(root.join("usage.jsonl")) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(BTreeMap::new());
+            }
+            Err(error) => {
+                return Err(Error::Storage(format!("local usage journal read failed: {error}")));
+            }
+        };
+        let mut records: BTreeMap<(OperationId, String), SwarmUsage> = BTreeMap::new();
+        for line in BufReader::new(file).lines() {
+            let line = line.map_err(|error| {
+                Error::Storage(format!("local usage journal line failed: {error}"))
+            })?;
+            let record: LocalUsageRecord = serde_json::from_str(&line).map_err(|error| {
+                Error::Storage(format!("local usage journal is corrupt: {error}"))
+            })?;
+            if record.provider != self.provider {
+                return Err(Error::Conflict("local usage provider identity changed".into()));
+            }
+            let operation_id: OperationId = serde_json::from_str(&format!(
+                "\"{}\"",
+                record.operation_id
+            ))
+            .map_err(|_| {
+                Error::Storage("local usage journal operation identity is invalid".into())
+            })?;
+            let entry = records
+                .entry((operation_id, record.dispatch_id))
+                .or_default();
+            *entry = SwarmUsage {
+                model_steps: entry.model_steps.max(record.usage.model_steps),
+                output_bytes: entry.output_bytes.max(record.usage.output_bytes),
+                execution_time_ms: entry.execution_time_ms.max(record.usage.execution_time_ms),
+            };
+        }
+        Ok(records)
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn ensure_durable_identity(&self) -> Result<()> {
+        self.with_durable_lock(true, |root| {
+            let path = root.join("usage.jsonl");
+            if path.exists() {
+                let _ = self.read_durable_locked(root)?;
+            } else {
+                File::create(path)
+                    .and_then(|file| file.sync_all())
+                    .map_err(|error| {
+                        Error::Storage(format!("local usage journal initialize failed: {error}"))
+                    })?;
+            }
+            Ok(())
+        })
     }
 
     fn merge_usage(
@@ -104,13 +223,57 @@ impl LocalSwarmUsageSource {
             output_bytes: entry.output_bytes.max(usage.output_bytes),
             execution_time_ms: entry.execution_time_ms.max(usage.execution_time_ms),
         };
+        let next = *entry;
+        drop(counters);
+        #[cfg(feature = "filesystem-local")]
+        if self.durable_root.is_some() {
+            return self.with_durable_lock(true, |root| {
+                let mut records = self.read_durable_locked(root)?;
+                let key = Self::key(operation_id, dispatch_id);
+                let durable = records.entry(key).or_default();
+                let merged = SwarmUsage {
+                    model_steps: durable.model_steps.max(next.model_steps),
+                    output_bytes: durable.output_bytes.max(next.output_bytes),
+                    execution_time_ms: durable.execution_time_ms.max(next.execution_time_ms),
+                };
+                if merged != *durable {
+                    *durable = merged;
+                    let record = LocalUsageRecord {
+                        provider: self.provider.clone(),
+                        operation_id: operation_id.to_string(),
+                        dispatch_id: dispatch_id.0.clone(),
+                        usage: merged,
+                    };
+                    let mut file = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(root.join("usage.jsonl"))
+                        .map_err(|error| Error::Storage(format!("local usage journal append failed: {error}")))?;
+                    serde_json::to_writer(&mut file, &record)
+                        .map_err(|error| Error::Storage(format!("local usage journal encode failed: {error}")))?;
+                    file.write_all(b"\n")
+                        .and_then(|_| file.sync_all())
+                        .map_err(|error| Error::Storage(format!("local usage journal sync failed: {error}")))?;
+                }
+                Ok(())
+            });
+        }
         Ok(())
     }
 }
 
+#[cfg(feature = "filesystem-local")]
+#[derive(Serialize, Deserialize)]
+struct LocalUsageRecord {
+    provider: String,
+    operation_id: String,
+    dispatch_id: String,
+    usage: SwarmUsage,
+}
+
 impl SwarmUsageSource for LocalSwarmUsageSource {
     fn provider_identity(&self) -> &str {
-        "local.runtime.meter"
+        &self.provider
     }
 
     fn cumulative_usage(
@@ -118,6 +281,16 @@ impl SwarmUsageSource for LocalSwarmUsageSource {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> Result<SwarmUsage> {
+        #[cfg(feature = "filesystem-local")]
+        if self.durable_root.is_some() {
+            return self.with_durable_lock(false, |root| {
+                Ok(self
+                    .read_durable_locked(root)?
+                    .get(&Self::key(operation_id, dispatch_id))
+                    .copied()
+                    .unwrap_or_default())
+            });
+        }
         self.usage
             .lock()
             .map_err(|_| Error::Storage("local swarm usage source lock is poisoned".into()))
@@ -2205,11 +2378,16 @@ impl PersistentLocalSwarm {
         crate::model::validate_model_options(&config.model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
         if bindings.swarm_usage_source.is_none() {
-            // Runtime counters belong to this opened provider context. The
-            // durable budget journal is the cross-handle authority; sharing a
-            // process cache here would merge independent dispatches by
-            // observation order and could hide a restart gap.
-            bindings.swarm_usage_source = Some(Arc::new(LocalSwarmUsageSource::default()));
+            #[cfg(feature = "filesystem-local")]
+            {
+                bindings.swarm_usage_source = Some(Arc::new(
+                    LocalSwarmUsageSource::durable(root.join("budget-usage"))?,
+                ));
+            }
+            #[cfg(not(feature = "filesystem-local"))]
+            {
+                bindings.swarm_usage_source = Some(Arc::new(LocalSwarmUsageSource::default()));
+            }
         }
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
@@ -2380,6 +2558,10 @@ impl PersistentLocalSwarm {
                         dispatch_id.clone(),
                     )
                     .await?;
+                    let mut journal = journal;
+                    journal
+                        .bind_root_provider_identity(&owner, source.provider_identity())
+                        .await?;
                     let (_, owner, _) = journal.descriptor()?;
                     let journal = Arc::new(Mutex::new(journal));
                     let refresh_journal = journal.clone();
@@ -5522,6 +5704,31 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_reopens_cumulative_runtime_usage() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let operation = OperationId::new();
+        let dispatch = IdempotencyKey::new("cold-reopen")?;
+        let usage = SwarmUsage {
+            model_steps: 2,
+            output_bytes: 17,
+            execution_time_ms: 41,
+        };
+        {
+            let source = LocalSwarmUsageSource::durable(root.path())?;
+            source.record_runtime_usage(operation, &dispatch, usage)?;
+            assert_eq!(source.cumulative_usage(operation, &dispatch)?, usage);
+        }
+        let reopened = LocalSwarmUsageSource::durable(root.path())?;
+        assert_eq!(
+            reopened.cumulative_usage(operation, &dispatch)?,
+            usage,
+            "durable local composition must retain usage across a cold reopen"
+        );
+        Ok(())
+    }
 
     struct MockModel {
         calls: AtomicUsize,

@@ -260,6 +260,29 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         self.budget.root_usage_cursor()
     }
 
+    /// Durably binds the host usage source before any root provider work is
+    /// admitted.  Replaying the same binding is idempotent; a different
+    /// source identity is rejected by the projected budget.
+    pub async fn bind_root_provider_identity(
+        &mut self,
+        owner: &SwarmOwnerFence,
+        provider: impl Into<String>,
+    ) -> Result<()> {
+        self.refresh().await?;
+        let provider = provider.into();
+        let projected = SwarmBudget::replay(self.events.clone())?;
+        projected.bind_root_provider_identity(owner, provider.clone())?;
+        self.commit(
+            SwarmBudgetEvent::RootProviderBound {
+                owner: owner.clone(),
+                provider,
+            },
+            self.session_id,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Returns the root's current cumulative ceiling after descendant
     /// reservations and measured descendant consumption are accounted for.
     pub fn root_resource_limits(&self) -> Result<SwarmResourceRequest> {
