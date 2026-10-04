@@ -1577,13 +1577,7 @@ impl ControlPlane {
             .get(&root_key(root_id))
             .ok_or_else(|| "selected route root is missing".to_owned())?;
         let route_path = route.mount_path.join(route_root.mount_name());
-        self.mounts
-            .get(agent_id)
-            .ok_or_else(|| "subagent mount is unavailable".to_owned())?
-            .sync()
-            .await
-            .map_err(display)?;
-        let lazy_workspace = self.lazy_workspace_root(route, root_id).await?;
+        let mut lazy_workspace = self.lazy_workspace_root(route, root_id).await?;
         let workspace = lazy_workspace.workspace().clone();
         self.sync_agent(&route.parent_agent_id)
             .await
@@ -1636,6 +1630,16 @@ impl ControlPlane {
             .await
             .map_err(display)?;
         let preparation: Result<_, String> = async {
+            self.mounts
+                .get(agent_id)
+                .ok_or_else(|| "subagent mount is unavailable".to_owned())?
+                .sync_route_with_permit(
+                    route_name(root_id).as_bytes(),
+                    lease.publication_permit(),
+                )
+                .await
+                .map_err(display)?;
+            lazy_workspace = self.lazy_workspace_root(route, root_id).await?;
             let apply_patch = git_apply_patch(&lazy_workspace, &route_path, &argv).await?;
             let (ignore, merge_drivers) = git_policy(&lazy_workspace).await?;
             let head_tree =
