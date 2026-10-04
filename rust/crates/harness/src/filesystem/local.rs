@@ -1414,6 +1414,33 @@ mod tests {
             Box::pin(async { Ok(None) })
         }
     }
+
+    #[tokio::test]
+    async fn rejects_unregistered_options_before_descriptor_persist() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(Mock(AtomicUsize::new(0)));
+        let model = Model::new(
+            "mock",
+            "unregistered-options",
+            "1",
+            serde_json::json!({"credential": "host-only"}),
+        )?;
+        let result = PersistentLocalHarness::open(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(Error::Invalid(message))
+                if message.contains("explicitly registered provider policy")
+        ));
+        assert!(!root.path().join("history").exists());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn authoritative_history_overflow_refuses_dispatch_after_restart() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
