@@ -142,7 +142,7 @@ jobs:
             --env BUILD_DIRECTORY=/tmp/embedded-abi \
             "$ALPINE_IMAGE" sh -euxc '
               apk add --no-cache bash binutils build-base ca-certificates cmake git ninja python3
-              channel="$(grep -m1 ^channel rust-toolchain.toml | tr -cd A-Za-z0-9.)"
+              channel="$(grep -m1 ^channel rust-toolchain.toml | cut -d= -f2 | tr -cd A-Za-z0-9.)"
               test -n "$channel"
               rustc -Vv | grep -F "release: $channel"
               rustc -Vv | grep -F "host: $RUST_TARGET"
