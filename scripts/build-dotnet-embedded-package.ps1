@@ -9,18 +9,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$sourceRevision = (& git -C $root rev-parse HEAD).Trim()
+. (Join-Path $PSScriptRoot "verify-dotnet-embedded-native-manifest.ps1")
+$sourceClosure = Get-EmbeddedRustSourceClosure -Repository $root
+$sourceRevision = $sourceClosure.Revision
 if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw "The embedded package requires an exact Git source revision" }
-$sourceInputs = @(
-  'rust/crates/sdk-embedded-prototype/Cargo.toml',
-  'rust/crates/sdk-embedded-prototype/Cargo.lock',
-  'rust/crates/sdk-embedded-prototype/build.rs',
-  'rust/crates/sdk-embedded-prototype/src/lib.rs',
-  'rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs'
-)
-foreach ($sourceInput in $sourceInputs) {
-  if (-not (Test-Path -LiteralPath (Join-Path $root $sourceInput) -PathType Leaf)) { throw "Embedded source input is missing: $sourceInput" }
-}
+$sourceInputs = @($sourceClosure.Paths)
+$sourceInputsSha256 = $sourceClosure.Digest
 $lockfilePath = Join-Path $root 'rust/crates/sdk-embedded-prototype/Cargo.lock'
 $lockfileSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $lockfilePath).Hash.ToLowerInvariant()
 $cargoCommand = 'cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
@@ -61,6 +55,31 @@ if ($PackageOnly) {
 }
 if ($targets.Count -eq 0) { throw "No Rust target was selected" }
 
+# Matrix jobs may stage one RID at a time. Reuse only a partial manifest tied
+# to this exact Rust closure; final package validation still requires all RIDs.
+$existingManifest = $null
+if (-not $PackageOnly -and -not $All) {
+  $existingManifestPath = Join-Path $nativeRoot 'native-manifest.json'
+  if (Test-Path -LiteralPath $existingManifestPath -PathType Leaf) {
+    $existingManifest = Get-VerifiedEmbeddedNativeManifest -Repository $root -NativeRoot $nativeRoot -ManifestPath $existingManifestPath -AllowPartial
+  }
+}
+
+# A release workflow may stage one RID per matrix job into a shared native root.
+# Reuse only a provenance manifest that is already tied to this exact Rust
+# closure; the final package path still requires all eight records.
+$existingManifest = $null
+if (-not $PackageOnly -and -not $All) {
+  $existingManifestPath = Join-Path $nativeRoot 'native-manifest.json'
+  if (Test-Path -LiteralPath $existingManifestPath -PathType Leaf) {
+    $existingManifest = Get-VerifiedEmbeddedNativeManifest `
+      -Repository $root `
+      -NativeRoot $nativeRoot `
+      -ManifestPath $existingManifestPath `
+      -AllowPartial
+  }
+}
+
 if ($PackageOnly) {
   $providedManifestPath = Join-Path $nativeRoot 'native-manifest.json'
   if (-not (Test-Path -LiteralPath $providedManifestPath -PathType Leaf)) {
@@ -71,6 +90,7 @@ if ($PackageOnly) {
       $providedManifest.source_revision -ne $sourceRevision -or
       $providedManifest.cargo_lock_sha256 -ne $lockfileSha256 -or
       $providedManifest.cargo_command -ne $cargoCommand -or
+      $providedManifest.source_inputs_sha256 -ne $sourceInputsSha256 -or
       (@($providedManifest.source_inputs) -join '|') -ne (@($sourceInputs) -join '|')) {
     throw 'PackageOnly native provenance does not match the checked-out Rust source closure.'
   }
@@ -172,6 +192,30 @@ foreach ($targetName in $targets) {
   }
 }
 
+if ($existingManifest) {
+  $merged = @($existingManifest.Manifest.assets) + @($records)
+  $records = @(
+    foreach ($targetName in $targetMap.Keys) {
+      $matches = @($merged | Where-Object { $_.rust_target -eq $targetName })
+      if ($matches.Count -gt 1) { $matches[-1] }
+      elseif ($matches.Count -eq 1) { $matches[0] }
+    }
+  )
+}
+
+if ($existingManifest) {
+  $merged = @($existingManifest.Manifest.assets) + @($records)
+  $records = @(
+    foreach ($targetName in $targetMap.Keys) {
+      $matches = @($merged | Where-Object { $_.rust_target -eq $targetName })
+      if ($matches.Count -gt 1) { $matches[-1] }
+      elseif ($matches.Count -eq 1) { $matches[0] }
+    }
+  )
+}
+
+Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
+
 $nativeManifest = [ordered]@{
   schema = "acyclic.sdk.dotnet.embedded.native-manifest.v1"
   source_revision = $sourceRevision
@@ -180,6 +224,7 @@ $nativeManifest = [ordered]@{
   cargo_manifest = "rust/crates/sdk-embedded-prototype/Cargo.toml"
   cargo_lock = "rust/crates/sdk-embedded-prototype/Cargo.lock"
   cargo_lock_sha256 = $lockfileSha256
+  source_inputs_sha256 = $sourceInputsSha256
   cargo_command = $cargoCommand
   assets = @($records)
 }
@@ -187,6 +232,7 @@ $nativeManifestPath = Join-Path $nativeRoot "native-manifest.json"
 $nativeManifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $nativeManifestPath -Encoding utf8NoBOM
 $nativeManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $nativeManifestPath).Hash.ToLowerInvariant()
 if ($NativeOnly) {
+  Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
   Write-Output "staged native embedded assets under $nativeRoot"
   exit 0
 }
@@ -200,6 +246,7 @@ if (-not (Test-Path -LiteralPath $authorityManifestPath -PathType Leaf)) {
   throw "Rust contract authority export did not produce $authorityManifestPath"
 }
 $authorityManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $authorityManifestPath).Hash.ToLowerInvariant()
+Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
 
 $dotnetVersion = '8.0.425'
 $dotnetCandidates = @()
@@ -237,6 +284,7 @@ $project = Join-Path $root "dotnet/Acyclic.Sdk.Embedded.csproj"
   '-p:Deterministic=true' \`
   '-p:DeterministicSourcePaths=true'
 if ($LASTEXITCODE -ne 0) { throw "Embedded .NET package failed with exit code $LASTEXITCODE" }
+Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
 
 $package = Join-Path $packageOutput "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg"
 if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "Embedded package was not produced: $package" }
@@ -249,6 +297,7 @@ $manifestOutput = [ordered]@{
   cargo_manifest = "rust/crates/sdk-embedded-prototype/Cargo.toml"
   cargo_lock = "rust/crates/sdk-embedded-prototype/Cargo.lock"
   cargo_lock_sha256 = $lockfileSha256
+  source_inputs_sha256 = $sourceInputsSha256
   cargo_command = $cargoCommand
   package = "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg"
   package_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()

@@ -13,6 +13,20 @@ $repo = if ([string]::IsNullOrWhiteSpace($Root)) {
 } else {
   [System.IO.Path]::GetFullPath((Join-Path (Join-Path $PSScriptRoot "..") $Root))
 }
+. (Join-Path $PSScriptRoot "verify-dotnet-embedded-native-manifest.ps1")
+$nativeRoot = if ([System.IO.Path]::IsPathRooted($NativeRoot)) {
+  [System.IO.Path]::GetFullPath($NativeRoot)
+} else {
+  [System.IO.Path]::GetFullPath((Join-Path $repo $NativeRoot))
+}
+if (-not (Test-Path -LiteralPath $nativeRoot -PathType Container)) {
+  throw "Rust native asset root is missing: $nativeRoot"
+}
+$verifiedNative = Get-VerifiedEmbeddedNativeManifest `
+  -Repository $repo `
+  -NativeRoot $nativeRoot `
+  -ManifestPath (Join-Path $nativeRoot "native-manifest.json")
+$sourceSnapshot = $verifiedNative.SourceSnapshot
 $authorityExporter = Join-Path $PSScriptRoot "export-rust-contract-authority.ps1"
 if (-not (Test-Path -LiteralPath $authorityExporter -PathType Leaf)) {
   throw "Rust authority exporter is missing: $authorityExporter"
@@ -24,15 +38,8 @@ $authorityManifest = Join-Path $authority "rust-authority.json"
 if (-not (Test-Path -LiteralPath $authorityManifest -PathType Leaf)) {
   throw "Rust contract authority export did not produce $authorityManifest"
 }
+Assert-EmbeddedRustSourceSnapshot -Repository $repo -Snapshot $sourceSnapshot
 
-$nativeRoot = if ([System.IO.Path]::IsPathRooted($NativeRoot)) {
-  [System.IO.Path]::GetFullPath($NativeRoot)
-} else {
-  [System.IO.Path]::GetFullPath((Join-Path $repo $NativeRoot))
-}
-if (-not (Test-Path -LiteralPath $nativeRoot -PathType Container)) {
-  throw "Rust native asset root is missing: $nativeRoot"
-}
 $nativeResources = Join-Path (Split-Path $authority -Parent) "jvm-native-resources-$PID"
 New-Item -ItemType Directory -Force -Path $nativeResources | Out-Null
 $runRoot = Join-Path (Split-Path $authority -Parent) ("jvm-maven-run-" + [guid]::NewGuid().ToString('N'))
@@ -55,21 +62,35 @@ $nativeMap = [ordered]@{
   "osx-arm64" = "osx-aarch64"
 }
 $nativeManifestSource = Join-Path $nativeRoot "native-manifest.json"
-if (Test-Path -LiteralPath $nativeManifestSource -PathType Leaf) {
-  Copy-Item -LiteralPath $nativeManifestSource -Destination (Join-Path $nativeResources "native-manifest.json") -Force
-}
+Copy-Item -LiteralPath $nativeManifestSource -Destination (Join-Path $nativeResources "native-manifest.json") -Force
 $nativeRecords = @()
 foreach ($entry in $nativeMap.GetEnumerator()) {
   $rid = $entry.Key
   $javaRid = $entry.Value
-  $file = if ($rid.StartsWith("win-")) { "acyclic_sdk_embedded_prototype.dll" } elseif ($rid.StartsWith("osx-")) { "libacyclic_sdk_embedded_prototype.dylib" } else { "libacyclic_sdk_embedded_prototype.so" }
-  $source = Join-Path (Join-Path $nativeRoot $rid) $file
-  if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Rust native asset is missing: $source" }
+  $record = @($verifiedNative.Assets | Where-Object { $_.Rid -eq $rid })
+  if ($record.Count -ne 1) { throw "Verified native provenance is missing $rid" }
+  $file = $record[0].File
+  $source = $record[0].Path
+  Assert-EmbeddedNoReparsePath -Path $source
+  $sourceInfo = Get-Item -LiteralPath $source -Force
+  $sourceHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+  if ($sourceHashBefore -ne $record[0].Sha256 -or [int64]$sourceInfo.Length -ne [int64]$record[0].Bytes) {
+    throw "Verified native asset changed before JVM staging: $source"
+  }
   $destination = Join-Path (Join-Path $nativeResources $javaRid) $file
   New-Item -ItemType Directory -Force -Path (Split-Path $destination -Parent) | Out-Null
   Copy-Item -LiteralPath $source -Destination $destination -Force
-  $nativeRecords += [ordered]@{ rid = $javaRid; source_rid = $rid; file = $file; sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $destination).Hash.ToLowerInvariant() }
+  Assert-EmbeddedNoReparsePath -Path $destination
+  $destinationInfo = Get-Item -LiteralPath $destination -Force
+  $destinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $destination).Hash.ToLowerInvariant()
+  if ($destinationHash -ne $record[0].Sha256 -or [int64]$destinationInfo.Length -ne [int64]$record[0].Bytes) {
+    throw "Staged JVM native asset does not match verified provenance: $destination"
+  }
+  $sourceHashAfter = (Get-FileHash -Algorithm SHA256 -LiteralPath $source).Hash.ToLowerInvariant()
+  if ($sourceHashAfter -ne $sourceHashBefore) { throw "Verified native asset changed during JVM staging: $source" }
+  $nativeRecords += [ordered]@{ rid = $javaRid; source_rid = $rid; file = $file; sha256 = $record[0].Sha256; bytes = $record[0].Bytes }
 }
+Assert-EmbeddedRustSourceSnapshot -Repository $repo -Snapshot $sourceSnapshot
 $maven = Get-Command mvn -ErrorAction SilentlyContinue
 if (-not $maven) { throw "Maven is required to package the embedded JVM SDK" }
 $pom = Join-Path $repo "jvm/embedded/pom.xml"
@@ -85,8 +106,10 @@ $args = @(
 )
 if ($SkipTests) { $args += "-DskipTests" }
 $args += "package"
+Assert-EmbeddedRustSourceSnapshot -Repository $repo -Snapshot $sourceSnapshot
 & $maven.Source @args
 if ($LASTEXITCODE -ne 0) { throw "Embedded JVM package failed with exit code $LASTEXITCODE" }
+Assert-EmbeddedRustSourceSnapshot -Repository $repo -Snapshot $sourceSnapshot
 
 $sourceRevision = (& git -C $repo rev-parse HEAD).Trim()
 $package = Join-Path $mavenTarget "acyclic-embedded-jna-0.1.0.jar"
@@ -94,6 +117,7 @@ if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "Maven did no
 $record = [ordered]@{
   schema = "acyclic.sdk.jvm.embedded.producer-output.v1"
   source_revision = $sourceRevision
+  source_inputs_sha256 = $sourceSnapshot.Digest
   authority = "rust"
   authority_root = $authority
   authority_manifest_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $authorityManifest).Hash.ToLowerInvariant()
