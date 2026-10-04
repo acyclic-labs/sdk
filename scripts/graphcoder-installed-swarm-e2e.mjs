@@ -7,7 +7,7 @@
 
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -56,7 +56,9 @@ function checkoutDigest(checkoutRoot, path, label) {
   if (relative(checkoutRoot, absolutePath).startsWith("..")) fail(`${label} escapes the explicit checkout root`);
   const metadata = lstatSync(absolutePath, { throwIfNoEntry: false });
   if (!metadata?.isFile() || metadata.isSymbolicLink()) fail(`${label} is not a regular file: ${relativePath}`);
-  return createHash("sha256").update(readFileSync(absolutePath)).digest("hex");
+  const canonical = realpathSync(absolutePath);
+  if (relative(checkoutRoot, canonical).startsWith("..")) fail(`${label} escapes the canonical checkout root`);
+  return createHash("sha256").update(readFileSync(canonical)).digest("hex");
 }
 
 const packageRoot = resolve(required("GRAPHCODER_PACKAGE_ROOT"));
@@ -64,11 +66,12 @@ const bridgeExecutable = required("GRAPHCODER_BRIDGE_EXECUTABLE");
 const bridgeArgs = parseJsonEnvironment("GRAPHCODER_BRIDGE_ARGS_JSON", "[]");
 const bridgeEnvironment = parseJsonEnvironment("GRAPHCODER_BRIDGE_ENV_JSON", "{}");
 const bridgeCwd = resolve(required("GRAPHCODER_BRIDGE_CWD"));
-const checkoutRoot = resolve(required("GRAPHCODER_SWARM_CHECKOUT_ROOT"));
+const checkoutRootInput = resolve(required("GRAPHCODER_SWARM_CHECKOUT_ROOT"));
 const evidencePath = resolve(process.env.GRAPHCODER_SWARM_EVIDENCE_PATH ?? resolve("target/graphcoder-installed-swarm-evidence.json"));
 const expectedFiles = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_FILES_JSON");
 const expectedApproval = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON");
 const expectedCommand = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_COMMAND_JSON");
+const concurrentEdit = requiredJsonObject("GRAPHCODER_SWARM_CONCURRENT_EDIT_JSON");
 if (Object.keys(expectedFiles).length === 0) fail("GRAPHCODER_SWARM_EXPECTED_FILES_JSON must contain at least one checkout file");
 const commandApproval = requiredJsonObjectValue(expectedApproval, "command", "GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON.command");
 const writebackApproval = requiredJsonObjectValue(expectedApproval, "writeback", "GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON.writeback");
@@ -78,7 +81,9 @@ if (!bridgeEnvironment || typeof bridgeEnvironment !== "object" || Array.isArray
 if (Object.keys(bridgeEnvironment).some(key => !allowedBridgeEnvironment.has(key))) fail("bridge environment contains an undeclared key");
 if (typeof bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN !== "string" || bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN.trim() === "") fail("bridge environment must contain the explicit operator approval token");
 if (!lstatSync(packageRoot, { throwIfNoEntry: false })?.isDirectory()) fail("GRAPHCODER_PACKAGE_ROOT must be a directory");
-if (!lstatSync(checkoutRoot, { throwIfNoEntry: false })?.isDirectory()) fail("GRAPHCODER_SWARM_CHECKOUT_ROOT must be a directory");
+if (!lstatSync(checkoutRootInput, { throwIfNoEntry: false })?.isDirectory() || lstatSync(checkoutRootInput).isSymbolicLink()) fail("GRAPHCODER_SWARM_CHECKOUT_ROOT must be a real directory");
+const checkoutRoot = realpathSync(checkoutRootInput);
+if (relative(checkoutRootInput, checkoutRoot).startsWith("..")) fail("GRAPHCODER_SWARM_CHECKOUT_ROOT canonical path is invalid");
 const packageArtifact = required("GRAPHCODER_PACKAGE_ARTIFACT");
 if (!lstatSync(packageArtifact, { throwIfNoEntry: false })?.isFile()) fail("GRAPHCODER_PACKAGE_ARTIFACT must be a regular file");
 
@@ -126,7 +131,7 @@ try {
   responseValue(messages.response, messages.requestId, "read_messages");
   const beforeFiles = {};
   for (const [path, expectation] of Object.entries(expectedFiles)) {
-    if (!expectation || typeof expectation.before_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.before_sha256) || typeof expectation.after_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.after_sha256)) fail(`expected checkout file ${path} lacks valid before/after SHA-256 digests`);
+    if (!expectation || typeof expectation.before_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.before_sha256) || typeof expectation.workspace_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.workspace_sha256) || typeof expectation.after_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.after_sha256)) fail(`expected checkout file ${path} lacks valid physical/workspace SHA-256 digests`);
     beforeFiles[path] = checkoutDigest(checkoutRoot, path, "pre-approval checkout file");
     if (beforeFiles[path] !== expectation.before_sha256) fail(`checkout file ${path} changed before approval`);
   }
@@ -155,8 +160,15 @@ try {
     const file = await request("read_file", { session_id: rootId, path, generation });
     const body = responseValue(file.response, file.requestId, `read_file ${path}`);
     beforeFiles[path] = bytesDigest(body.bytes, `read_file ${path}`);
-    if (beforeFiles[path] !== expectation.before_sha256) fail(`file ${path} changed before approval`);
+    if (beforeFiles[path] !== expectation.workspace_sha256) fail(`private workspace file ${path} does not match its expected agent-edited bytes`);
   }
+  const concurrentPath = relativeCheckoutPath(concurrentEdit.path);
+  if (Object.prototype.hasOwnProperty.call(expectedFiles, concurrentPath)) fail("concurrent edit path must be separate from agent-published files");
+  if (typeof concurrentEdit.before_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(concurrentEdit.before_sha256) || !Array.isArray(concurrentEdit.bytes) || typeof concurrentEdit.after_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(concurrentEdit.after_sha256)) fail("concurrent edit must declare path, before/after SHA-256 digests, and bytes");
+  if (checkoutDigest(checkoutRoot, concurrentPath, "concurrent-edit checkout file") !== concurrentEdit.before_sha256) fail("concurrent-edit file changed before the declared user edit");
+  if (bytesDigest(concurrentEdit.bytes, "concurrent edit") !== concurrentEdit.after_sha256) fail("concurrent edit bytes do not match their declared digest");
+  writeFileSync(resolve(checkoutRoot, concurrentPath), Buffer.from(concurrentEdit.bytes));
+  if (checkoutDigest(checkoutRoot, concurrentPath, "declared user edit") !== concurrentEdit.after_sha256) fail("declared concurrent user edit was not observed on disk");
   for (const [path, expectation] of Object.entries(expectedFiles)) if (checkoutDigest(checkoutRoot, path, "pre-writeback checkout file") !== expectation.before_sha256) fail(`checkout file ${path} changed before writeback approval`);
   const writeback = await pendingApproval(writebackApproval, "writeback");
   const writebackOperator = await request("operator_approve", { session_id: rootId, approval_id: writeback.id, approved: true, operator_token: bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN });
@@ -180,10 +192,10 @@ try {
   for (const [path, expectation] of Object.entries(expectedFiles)) {
     const file = await request("read_file", { session_id: rootId, path, generation: afterPage.generation });
     const body = responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
-    const digest = bytesDigest(body.bytes, `read_file after writeback ${path}`);
-    if (digest !== expectation.after_sha256) fail(`file ${path} does not match exact post-writeback bytes`);
+    responseValue(file.response, file.requestId, `read_file after writeback ${path}`);
     if (checkoutDigest(checkoutRoot, path, "post-writeback checkout file") !== expectation.after_sha256) fail(`checkout file ${path} does not match exact post-writeback bytes`);
   }
+  if (checkoutDigest(checkoutRoot, concurrentPath, "post-writeback concurrent-edit file") !== concurrentEdit.after_sha256) fail("concurrent user edit was not preserved on disk");
 
   evidence = { protocol: "acyclic.graphcoder.installed-swarm-evidence.v1", root_id: rootId, agents, observations, recursive: true, native_approval: true, writeback: true };
 } finally {
