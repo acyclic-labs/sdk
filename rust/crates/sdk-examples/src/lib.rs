@@ -24,6 +24,7 @@ pub mod harness_scenarios;
 pub mod inference_scenarios;
 pub mod machines_scenarios;
 pub mod objects_scenarios;
+pub mod tls_fixture;
 pub mod workers_scenarios;
 
 /// Source identity for guide families whose executable scenarios live in a
