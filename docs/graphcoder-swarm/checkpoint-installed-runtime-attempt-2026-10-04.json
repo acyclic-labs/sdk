@@ -73,6 +73,22 @@
     "path": "target/qualification-installed-20261004/pty-package-identity.json",
     "sha256": "1aeb82d31821c1c963a1bfec447e1f4fcf046f165438ba4f468074db2a301096"
   },
+  "installed_public_interaction": {
+    "status": "partial_failed",
+    "command": "target/qualification-installed-20261004/installed-consumer-public.mjs",
+    "transcript_path": "target/qualification-installed-20261004/installed-public-2.log",
+    "transcript_sha256": "f165a898b71e1e207f0812d5be584169728b87943f12ed093ad722c25faac511",
+    "observed": [
+      "installed package dist/node.js and dist/terminal.js imported directly from the extracted consumer",
+      "public list command returned status 0",
+      "public start_session completed with the stage fixture and real filesystem exchange",
+      "public open, activity, messages, and resume commands returned typed projections",
+      "file command correctly rejected because the generic UI requires changes to be loaded first"
+    ],
+    "terminal_status": 1,
+    "bridge_exit": { "kind": "closed", "code": null, "signal": "SIGTERM" },
+    "qualification": "supporting installed-package evidence only; the locked native stage remains failed"
+  },
   "required_gaps": [
     "runtime must emit the required real-host lazy observation receipt",
     "native cancellation fixture remains unavailable",
