@@ -9,7 +9,8 @@
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
     InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
-    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
+    FilesystemGitFacade, LocalHarnessTools, PersistentLocalHarness, ProjectMergeRecovery,
+    ProjectMergeRecoveryEntry, RootWritebackApproval, RootWritebackRequest, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
@@ -17,9 +18,10 @@ use crate::{
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{
-        AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee,
+        AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee, Reducer,
         SchemaRegistry, Scope,
     },
+    effects::{EffectDispatch, EffectObservation, EffectProvider},
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -37,7 +39,10 @@ use crate::{
         ToolRegistry, ToolResult,
     },
 };
-use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
+use acyclic_fs::{
+    LocalAuthorityBackend, LocalCoreStateStore, LocalFs, LocalObjectBackend, LocalOptions,
+    WorkspaceId,
+};
 use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
@@ -2064,6 +2069,8 @@ pub struct PersistentLocalSwarm {
     /// Shared provider bindings used by the root and lazily reopened task
     /// harnesses. The resolver must observe the same host and stream domain.
     filesystem_host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    /// Durable compatibility state shared by every reopened local handle.
+    git_store: LocalCoreStateStore,
     conversation_stream: StreamClient<LocalStream>,
     stream_provider: ProviderRef,
     records: Mutex<BTreeMap<TaskId, LocalSwarmSession>>,
@@ -2083,6 +2090,113 @@ pub struct PersistentLocalSwarm {
     /// with the exact ticket binding so a public resolve request cannot swap
     /// an operation or action digest between the private decision and commit.
     operator_choices: Mutex<BTreeMap<String, LocalOperatorChoice>>,
+}
+
+/// Harness-owned local root publication context.
+///
+/// This is the single SDK composition object for an inspect → approve →
+/// apply flow. It retains authenticated provider handles and the durable Git
+/// compatibility journal without exposing signing material to applications.
+pub struct LocalRootWritebackContext {
+    host: Arc<LocalFilesystemHost>,
+    facade: FilesystemGitFacade<LocalCoreStateStore>,
+    parent: Reducer,
+    root_project: VolumeRef,
+    scope: Scope,
+    verifier: crate::core::AuthorityVerifier,
+    journal: Arc<dyn crate::executor::ExecutionJournal>,
+}
+
+impl LocalRootWritebackContext {
+    /// Returns the retained local Filesystem provider.
+    #[must_use]
+    pub fn host(&self) -> &LocalFilesystemHost { &self.host }
+
+    /// Returns the root project bound to this context.
+    #[must_use]
+    pub const fn root_project(&self) -> &VolumeRef { &self.root_project }
+
+    /// Returns the signed scope used for this exact publication.
+    #[must_use]
+    pub const fn scope(&self) -> &Scope { &self.scope }
+
+    /// Issues the typed approval identity; callers must still supply a
+    /// matching durable operator ticket through the swarm method below.
+    pub fn issue_approval(
+        &self,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+    ) -> Result<RootWritebackApproval> {
+        RootWritebackApproval::issue(
+            &self.verifier,
+            &self.scope,
+            self.root_project.clone(),
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )
+    }
+
+    /// Inspects one direct child's immutable project generations.
+    pub async fn prepare_project_merge_for_child(
+        &self,
+        child: &Authority,
+        child_project: &VolumeRef,
+    ) -> Result<super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        self.facade
+            .prepare_project_merge_for_child(
+                self.host.as_ref(), &self.parent, child, child_project,
+            )
+            .await
+    }
+
+    /// Applies one inspected plan and returns its authenticated receipt.
+    pub async fn apply_with_receipt(
+        &self,
+        request: &RootWritebackRequest,
+        child: Authority,
+        child_project: &VolumeRef,
+        plan: &super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage,
+    ) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.facade
+            .apply_root_writeback_plan_for_child_with_receipt(
+                request, self.host.as_ref(), &self.parent, child, child_project, plan,
+                BTreeMap::new(), notice,
+            )
+            .await
+    }
+
+    /// Applies or recovers one plan through the durable recovery journal.
+    pub async fn apply_with_recovery(
+        &self,
+        request: &RootWritebackRequest,
+        child: Authority,
+        child_project: &VolumeRef,
+        plan: &super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage,
+    ) -> Result<crate::merge::ProjectJoinOutcome> {
+        let recovery = ProjectMergeRecovery::new(
+            self.journal.as_ref(), request.approval.operation_id(),
+        );
+        self.facade
+            .apply_root_writeback_plan_for_child_with_recovery_outcome(
+                request, self.host.as_ref(), &self.parent, child, child_project, plan,
+                BTreeMap::new(), notice, &recovery,
+            )
+            .await
+    }
+
+    /// Reconstructs a receipt after a provider effect and process restart.
+    pub async fn recover_receipt(
+        &self,
+        entry: &ProjectMergeRecoveryEntry,
+    ) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.facade
+            .recover_root_writeback_receipt(self.host.as_ref(), &self.parent, entry)
+            .await
+    }
 }
 
 impl PersistentLocalSwarm {
@@ -2183,6 +2297,7 @@ impl PersistentLocalSwarm {
                 let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
             };
+        let git_store = LocalCoreStateStore::new(root.join("git-compat"));
         let model_fork_publisher = if let Some(plans) = bindings.model_fork_plans.clone() {
             if bindings.model_batch_publisher.is_none() {
                 let publisher = Arc::new(LocalModelForkPublisher::new(plans));
@@ -2309,6 +2424,7 @@ impl PersistentLocalSwarm {
             model_fork_publisher,
             registry,
             filesystem_host,
+            git_store,
             conversation_stream,
             stream_provider,
             records: Mutex::new(sessions),
@@ -2470,6 +2586,108 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm root session is missing".into()))
+    }
+
+    /// Opens the Harness-owned root writeback composition for one child
+    /// project. The compatibility journal and provider handles are shared
+    /// with reopened swarm sessions.
+    pub async fn root_writeback_context(
+        &self,
+        child_project: &VolumeRef,
+    ) -> Result<LocalRootWritebackContext> {
+        let root_project = self.config.project.clone().ok_or_else(|| {
+            Error::Unsupported("local swarm has no root project".into())
+        })?;
+        if root_project.class() != VolumeClass::Project
+            || child_project.class() != VolumeClass::Project
+            || root_project.provider() != child_project.provider()
+            || root_project.provider() != &self.filesystem_host.provider
+        {
+            return Err(Error::Invalid(
+                "root writeback projects must share the local Filesystem provider".into(),
+            ));
+        }
+        let root_task = self.root_task().await?;
+        let root_harness = self.open_session(root_task).await?;
+        let issuer = AuthorityIssuer::new(
+            "local-swarm-root-writeback",
+            root_harness.signing_key(),
+            root_harness.storage().conversation().clone(),
+        );
+        let capabilities = Capabilities::new([
+            "conversation:bind".to_owned(),
+            "project:merge".to_owned(),
+            super::ROOT_WRITEBACK_CAPABILITY.to_owned(),
+            root_project.capability(crate::conversation::VolumeOperation::Read)?,
+            root_project.capability(crate::conversation::VolumeOperation::Write)?,
+            child_project.capability(crate::conversation::VolumeOperation::Read)?,
+        ]);
+        let scope = match root_harness.storage().owner_scope().agent() {
+            Some(agent) => issuer.root_for_agent(
+                agent, "local-swarm-root-writeback-scope", capabilities,
+            ),
+            None => issuer.root("local-swarm-root-writeback-scope", capabilities),
+        };
+        let digest = blake3::hash(
+            format!("local-root-writeback:{}", root_project.storage_name()?).as_bytes(),
+        );
+        let mut workspace_bytes = [0_u8; 16];
+        workspace_bytes.copy_from_slice(&digest.as_bytes()[..16]);
+        let verifier = issuer.verifier();
+        let facade = FilesystemGitFacade::new(
+            WorkspaceId::from_bytes(workspace_bytes), self.git_store.clone(),
+            root_project.clone(), verifier.clone(), scope.clone(),
+        )?;
+        let aggregate = root_harness
+            .conversation_aggregate(self.config.limits)
+            .await?;
+        Ok(LocalRootWritebackContext {
+            host: Arc::clone(&self.filesystem_host),
+            facade,
+            parent: aggregate.reducer().clone(),
+            root_project,
+            scope,
+            verifier,
+            journal: root_harness.storage().journal(),
+        })
+    }
+
+    /// Converts one durably approved interaction into an exact typed root
+    /// writeback request. Every project and generation field is checked
+    /// against the ticket's operation and action digest.
+    pub async fn issue_approved_root_writeback(
+        &self,
+        task: TaskId,
+        interaction: InteractionId,
+        target_project: &VolumeRef,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+    ) -> Result<(LocalRootWritebackContext, RootWritebackRequest)> {
+        let approval = self.list_approvals(task).await?.into_iter().find(|approval| {
+            approval.ticket.id.as_bytes() == &interaction.into_bytes()
+        }).ok_or_else(|| Error::NotFound(format!("local swarm approval {interaction}")))?;
+        let binding = approval.ticket.approval.ok_or_else(|| {
+            Error::Invalid("root writeback interaction has no exact approval binding".into())
+        })?;
+        if !matches!(
+            approval.resolution.as_ref().map(|resolution| &resolution.outcome),
+            Some(crate::interaction::InteractionOutcome::Approved)
+        ) {
+            return Err(Error::Unauthorized(
+                "root writeback requires a durably approved interaction".into(),
+            ));
+        }
+        let context = self.root_writeback_context(target_project).await?;
+        let typed = context.issue_approval(
+            binding.operation_id, source_generation, expected_target_generation,
+        )?;
+        if typed.action_digest() != &binding.action_digest {
+            return Err(Error::Conflict(
+                "operator approval does not match the exact root writeback request".into(),
+            ));
+        }
+        let request = RootWritebackRequest::new(typed, context.scope.clone());
+        Ok((context, request))
     }
 
     /// Returns the host-only signer bound to one task's durable interaction

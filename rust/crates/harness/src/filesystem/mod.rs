@@ -53,6 +53,7 @@ pub use execution_journal::FilesystemExecutionJournal;
 mod git_facade;
 pub use git_facade::{
     FilesystemGitFacade, ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
+    root_writeback_action_digest,
 };
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
@@ -85,7 +86,8 @@ pub use swarm_local::{
     LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
     LocalModelForkResolver,
     LocalSessionPhase, LocalSwarmAgent, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
-    LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalRootWritebackContext, LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession,
+    LocalSwarmSnapshot, PersistentLocalSwarm,
 };
 
 mod memory;

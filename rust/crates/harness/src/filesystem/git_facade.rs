@@ -16,6 +16,7 @@ use super::{
 };
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
+    contract::canonical_json_digest,
     conversation::{
         Attachment, ContentGrant, ConversationMessage, ReferencedAttachments, VolumeClass,
         VolumeOperation, VolumeRef, decode_attachment_manifest,
@@ -47,6 +48,23 @@ pub struct RootWritebackApproval {
     source_generation: GenerationRef,
     expected_target_generation: GenerationRef,
     scope_id: String,
+    action_digest: [u8; 32],
+}
+
+/// Computes the stable action identity for one exact inspected root writeback.
+pub fn root_writeback_action_digest(
+    target_project: &VolumeRef,
+    operation_id: OperationId,
+    source_generation: &GenerationRef,
+    expected_target_generation: &GenerationRef,
+) -> Result<[u8; 32]> {
+    canonical_json_digest(&(
+        "acyclic.root-writeback.v1",
+        target_project,
+        operation_id,
+        source_generation,
+        expected_target_generation,
+    ))
 }
 
 impl RootWritebackApproval {
@@ -77,12 +95,19 @@ impl RootWritebackApproval {
         }
         source_generation.validate()?;
         expected_target_generation.validate()?;
+        let action_digest = root_writeback_action_digest(
+            &target_project,
+            operation_id,
+            &source_generation,
+            &expected_target_generation,
+        )?;
         Ok(Self {
             operation_id,
             target_project,
             source_generation,
             expected_target_generation,
             scope_id: scope.id().to_owned(),
+            action_digest,
         })
     }
 
@@ -102,6 +127,12 @@ impl RootWritebackApproval {
     #[must_use]
     pub const fn target_project(&self) -> &VolumeRef {
         &self.target_project
+    }
+
+    /// Digest that must appear in the durable operator approval ticket.
+    #[must_use]
+    pub const fn action_digest(&self) -> &[u8; 32] {
+        &self.action_digest
     }
 }
 
@@ -965,6 +996,12 @@ impl<S> FilesystemGitFacade<S> {
             source_generation: entry.intent.source_generation.clone(),
             expected_target_generation: entry.intent.expected_target_generation.clone(),
             scope_id: entry.intent.approval_scope_id.clone(),
+            action_digest: root_writeback_action_digest(
+                &entry.intent.target_project,
+                entry.intent.operation_id,
+                &entry.intent.source_generation,
+                &entry.intent.expected_target_generation,
+            )?,
         };
         self.verify_root_writeback(
             &RootWritebackRequest::new(approval, self.scope.clone()),
@@ -1058,6 +1095,17 @@ impl<S> FilesystemGitFacade<S> {
         {
             return Err(Error::Conflict(
                 "root writeback approval does not match inspected plan".into(),
+            ));
+        }
+        if root_writeback_action_digest(
+            &request.approval.target_project,
+            request.approval.operation_id,
+            &request.approval.source_generation,
+            &request.approval.expected_target_generation,
+        )? != request.approval.action_digest
+        {
+            return Err(Error::Conflict(
+                "root writeback approval action identity changed".into(),
             ));
         }
         Ok(())
