@@ -136,3 +136,32 @@ browser package receipt is recorded in
 `docs/research/objects-browser-http-qualification.md`; it independently
 passed the Rust fixture upload/download, authentication, idempotency conflict,
 and caller cancellation checks.
+
+## Installed package qualification and source receipt
+
+On 2026-10-04, a fresh `wasm-release` build was generated with
+`node scripts/build-objects-wasm.mjs`, followed by `npm pack --ignore-scripts
+--json` for `@acyclic-labs/objects@0.2.0`. The archive was installed into a
+disposable consumer and exercised through the public `@acyclic-labs/objects/http`
+and `@acyclic-labs/objects/proto` entrypoints. The consumer uploaded and
+downloaded a 135,000-byte value, observed five upload records, and verified
+the reconstructed bytes and Rust-owned frame boundaries with `bun smoke.mjs`.
+
+The reproducibility receipt is:
+
+| Item | SHA-256 / revision |
+| --- | --- |
+| Rust SDK worktree revision observed at build | `47646eb57b45436109d86728c489a3b6d08a8f53` |
+| `acyclic-labs-objects-0.2.0.tgz` | `913129b534c92695addde4ad6a66e7e58d3da546fbaa7f306761e47da71af285` |
+| `rust/crates/objects/src/v2/mod.rs` | `d4f953c58807d7da3edca7f8597a8b662bd4e454cba174fb5130d890be009a7d` |
+| `rust/crates/objects/src/v2/http.rs` | `9af62917ed403d265c5d4b0bb80ab5e2eab454401ee38a2d1ad7ca4102651393` |
+| `rust/crates/objects/src/v2/response.rs` | `c6912f504c4846755ea86d9e95b7067c1430d5f966a829d6c79160c31a5949ba` |
+| `rust/crates/objects/src/generated/acyclic-objects-v2.bin` | `601b092b87d702b9aad1c0fa1615af623f19c59067ea9c52e2cb61db34994b1b` |
+| `rust/crates/objects-wasm/src/v2.rs` | `693f9d80f06698b23a3d0081ff589b49714e713c591527ad4b7b4c5c029af8fb` |
+| `typescript/packages/objects/src/v2-http.ts` | `8c3f23747ef1ff12b58ce6b672bab9536c64e06f1c1ce6803926074493403388` |
+
+The archive SHA-512 is
+`36908f3eb71977c2f3a845ee9ced47dbcd71505e76e3cdefa6c8a6adeb3bd94d834e3af075742c4e674467410fff6e2969f8484a81f13d7eba96b7392dda489c`.
+The generated WASM bindings expose both frame-limit accessors in the archive;
+the TypeScript adapter consumes those accessors and generated operation
+streaming metadata rather than maintaining a second route or limit policy.
