@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+trap 'status=$?; printf "native toolchain provisioning failed at line %s: %s (status %s)\n" "$LINENO" "$BASH_COMMAND" "$status" >&2; exit "$status"' ERR
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <cpp|swift>" >&2
+  exit 2
+fi
+
 language=$1
 root="${RUNNER_TEMP:?}/acyclic-native-toolchains"
 mkdir -p "$root/src" "$root/bin"
