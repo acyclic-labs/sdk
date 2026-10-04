@@ -44,9 +44,12 @@ function Run-Checked([string] $Program, [string[]] $Arguments, [string] $Working
     }
 }
 
-function Copy-Package([string] $Source, [string] $Destination) {
+function Copy-Package([string] $Source, [string] $Destination, [bool] $StripTooling = $true) {
     New-Item -ItemType Directory -Path $Destination -Force | Out-Null
     Copy-Item -Path (Join-Path $Source '*') -Destination $Destination -Recurse -Force
+    if (-not $StripTooling) {
+        return
+    }
     foreach ($ignored in @('.dart_tool', '.pub-cache', '.bundle', 'vendor/bundle', 'tmp', 'log')) {
         $path = Join-Path $Destination $ignored
         if (Test-Path -LiteralPath $path) {
@@ -130,7 +133,7 @@ try {
     }
     if ($languages -contains 'dart') {
         $package = Join-Path $stage 'dart'
-        Copy-Package (Join-Path $repoRoot 'dart') $package
+        Copy-Package (Join-Path $repoRoot 'dart') $package $false
         $dart = if ($env:DART) { $env:DART } else { 'dart' }
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
