@@ -2448,11 +2448,14 @@ fn deterministic_rustflags() -> String {
     let existing = env::var("RUSTFLAGS").unwrap_or_default();
     if cfg!(windows) {
         if existing.trim().is_empty() {
-            "/Brepro".to_owned()
-        } else if existing.split_whitespace().any(|flag| flag == "/Brepro") {
+            "-C link-arg=/Brepro".to_owned()
+        } else if existing
+            .split_whitespace()
+            .any(|flag| flag == "link-arg=/Brepro")
+        {
             existing
         } else {
-            format!("{existing} /Brepro")
+            format!("{existing} -C link-arg=/Brepro")
         }
     } else {
         existing
