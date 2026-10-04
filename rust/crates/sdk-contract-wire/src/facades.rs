@@ -12,6 +12,9 @@ use crate::{
     transport::{ClientRuntime, TransportKind, TransportOption},
 };
 
+#[path = "facades_python_go.rs"]
+mod python_go;
+
 /// Cancellation semantics that a generated facade must preserve per RPC.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CancellationKind {
@@ -75,6 +78,10 @@ pub const FACADE_SELECTION_POLICY: FacadeSelectionPolicy = FacadeSelectionPolicy
 /// Target language for a generated policy facade.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FacadeLanguage {
+    /// Python source consumed by the pip package.
+    Python,
+    /// Go source consumed by the Go module.
+    Go,
     /// Ruby source consumed by the gem adapter.
     Ruby,
     /// PHP source consumed by the Composer adapter.
@@ -91,6 +98,8 @@ impl FacadeLanguage {
     /// Stable target name used in generated paths and provenance.
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Python => "python",
+            Self::Go => "go",
             Self::Ruby => "ruby",
             Self::Php => "php",
             Self::Dart => "dart",
@@ -102,6 +111,8 @@ impl FacadeLanguage {
     /// Generated source path relative to the Rust exporter root.
     pub const fn output_path(self) -> &'static str {
         match self {
+            Self::Python => "python/src/acyclic_sdk/remote.py",
+            Self::Go => "go/client.go",
             Self::Ruby => "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
             Self::Php => "php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
             Self::Dart => "dart/lib/src/generated_remote_policy.dart",
@@ -127,6 +138,8 @@ pub struct FacadeOutput {
 /// Generate all portable policy facade outputs from the Rust family registry.
 pub fn generate_remote_facades() -> Vec<FacadeOutput> {
     [
+        FacadeLanguage::Python,
+        FacadeLanguage::Go,
         FacadeLanguage::Ruby,
         FacadeLanguage::Php,
         FacadeLanguage::Dart,
@@ -142,6 +155,8 @@ pub fn generate_remote_facades() -> Vec<FacadeOutput> {
 pub fn generate_remote_facade(language: FacadeLanguage) -> FacadeOutput {
     let source_binding = rust_policy_source_binding();
     let source = match language {
+        FacadeLanguage::Python => python_go::render_python(&source_binding),
+        FacadeLanguage::Go => python_go::render_go(&source_binding),
         FacadeLanguage::Ruby => render_ruby(&source_binding),
         FacadeLanguage::Php => render_php(&source_binding),
         FacadeLanguage::Dart => render_dart(&source_binding),
@@ -908,7 +923,7 @@ mod tests {
     #[test]
     fn every_target_is_emitted_from_the_registry() {
         let outputs = generate_remote_facades();
-        assert_eq!(outputs.len(), 5);
+        assert_eq!(outputs.len(), 7);
         for output in outputs {
             assert!(
                 output
@@ -942,6 +957,8 @@ mod tests {
     #[test]
     fn generated_policy_has_the_rust_transport_kinds() {
         for language in [
+            FacadeLanguage::Python,
+            FacadeLanguage::Go,
             FacadeLanguage::Ruby,
             FacadeLanguage::Php,
             FacadeLanguage::Dart,
@@ -950,6 +967,7 @@ mod tests {
         ] {
             let output = generate_remote_facade(language);
             let expected = match language {
+                FacadeLanguage::Python | FacadeLanguage::Go => ["grpc", "grpc_web", "http_json"],
                 FacadeLanguage::Dart => ["grpc", "httpJson", "grpcWeb"],
                 FacadeLanguage::Ruby | FacadeLanguage::Php => ["grpc", "http_json", "grpc_web"],
                 FacadeLanguage::Java => ["GRPC", "HTTP_JSON", "GRPC_WEB"],
@@ -968,6 +986,8 @@ mod tests {
     #[test]
     fn generated_transport_snapshots_match_every_rust_option() {
         for language in [
+            FacadeLanguage::Python,
+            FacadeLanguage::Go,
             FacadeLanguage::Ruby,
             FacadeLanguage::Php,
             FacadeLanguage::Dart,
@@ -981,6 +1001,9 @@ mod tests {
                         (FacadeLanguage::Dart, crate::TransportKind::Grpc) => "grpc",
                         (FacadeLanguage::Dart, crate::TransportKind::GrpcWeb) => "grpcWeb",
                         (FacadeLanguage::Dart, crate::TransportKind::HttpJson) => "httpJson",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::Grpc) => "grpc",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::GrpcWeb) => "grpc_web",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::HttpJson) => "http_json",
                         (FacadeLanguage::Java, crate::TransportKind::Grpc) => "GRPC",
                         (FacadeLanguage::Java, crate::TransportKind::GrpcWeb) => "GRPC_WEB",
                         (FacadeLanguage::Java, crate::TransportKind::HttpJson) => "HTTP_JSON",
@@ -1004,6 +1027,9 @@ mod tests {
                         (FacadeLanguage::Dart, crate::TransportKind::Grpc) => "grpc",
                         (FacadeLanguage::Dart, crate::TransportKind::GrpcWeb) => "grpcWeb",
                         (FacadeLanguage::Dart, crate::TransportKind::HttpJson) => "httpJson",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::Grpc) => "grpc",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::GrpcWeb) => "grpc_web",
+                        (FacadeLanguage::Python | FacadeLanguage::Go, crate::TransportKind::HttpJson) => "http_json",
                         (FacadeLanguage::Java, crate::TransportKind::Grpc) => "GRPC",
                         (FacadeLanguage::Java, crate::TransportKind::GrpcWeb) => "GRPC_WEB",
                         (FacadeLanguage::Java, crate::TransportKind::HttpJson) => "HTTP_JSON",
@@ -1040,7 +1066,10 @@ mod tests {
             for operation in operations {
                 count += 1;
                 if family.name == "machines" {
-                    assert!(!operation.bearer_auth, "Machines must use native mTLS metadata");
+                    assert!(
+                        !operation.bearer_auth,
+                        "Machines must use native mTLS metadata"
+                    );
                 } else {
                     assert!(
                         operation.bearer_auth,
@@ -1071,6 +1100,8 @@ mod tests {
     #[test]
     fn generated_sources_bind_streaming_cancel_and_fallback_policy() {
         for language in [
+            FacadeLanguage::Python,
+            FacadeLanguage::Go,
             FacadeLanguage::Ruby,
             FacadeLanguage::Php,
             FacadeLanguage::Dart,
@@ -1084,8 +1115,7 @@ mod tests {
                     || output.source.contains("ServerStreaming")
             );
             assert!(
-                output.source.contains("cancellation")
-                    || output.source.contains("Cancellation")
+                output.source.contains("cancellation") || output.source.contains("Cancellation")
             );
             assert!(
                 output.source.contains("post_failure_fallback")
