@@ -8,12 +8,6 @@ export interface TerminalIO {
   readonly output?: NodeJS.WritableStream;
 }
 
-export interface TerminalOptions {
-  readonly fixture?: MockFixture;
-  readonly mode?: "interactive" | "headless";
-  readonly io?: TerminalIO;
-}
-
 function writeLine(io: TerminalIO, value: unknown): void {
   const output = io.output ?? stdout;
   output.write(`${JSON.stringify(value, (_key, item) => {
