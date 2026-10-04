@@ -136,30 +136,6 @@ mod platform {
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         command.process_group(0);
-        #[cfg(target_os = "linux")]
-        {
-            // Keep descendants tied to the launcher identity even when the
-            // root deliberately creates a new session or exits first. The
-            // parent-death fence is inherited across fork/exec and prevents
-            // a later numeric process-group reuse from becoming cleanup
-            // authority for an unrelated process.
-            let launcher_pid = unsafe { libc::getpid() };
-            unsafe {
-                command.pre_exec(move || {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0) != 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if libc::getppid() != launcher_pid {
-                        libc::kill(libc::getpid(), libc::SIGKILL);
-                        return Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "process launcher exited before ownership handoff",
-                        ));
-                    }
-                    Ok(())
-                });
-            }
-        }
         let child = command.spawn()?;
         let process_group = libc::pid_t::try_from(child.id())
             .map_err(|_| io::Error::other("child process id does not fit pid_t"))?;
