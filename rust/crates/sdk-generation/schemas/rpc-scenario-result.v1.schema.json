@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.acyclic.dev/schemas/rpc-scenario-result.v1.json",
+  "title": "Acyclic SDK Rust-bound RPC scenario result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "source_revision", "status", "invoked", "exit_code",
+    "family", "rpc", "shape", "transport", "checks"
+  ],
+  "properties": {
+    "schema": { "const": "acyclic.sdk.rpc-scenario-result.v1" },
+    "source_revision": { "$ref": "#/$defs/gitOid" },
+    "status": { "const": "passed" },
+    "invoked": { "const": true },
+    "exit_code": { "const": 0 },
+    "family": { "type": "string", "minLength": 1 },
+    "rpc": { "type": "string", "minLength": 1 },
+    "shape": { "enum": ["unary", "client", "server", "bidi"] },
+    "transport": { "enum": ["grpc", "http", "http-json", "grpc-web"] },
+    "checks": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "contains": { "const": "invocation" },
+      "allOf": [
+        { "contains": { "const": "transport" } },
+        { "contains": { "const": "serialization" } }
+      ],
+      "items": {
+        "enum": ["invocation", "transport", "serialization", "cancellation", "recovery"]
+      }
+    }
+  },
+  "$defs": {
+    "gitOid": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" }
+  }
+}
