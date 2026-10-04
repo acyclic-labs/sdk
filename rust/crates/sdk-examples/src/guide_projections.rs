@@ -328,6 +328,7 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let package = package_spec(family, language)?;
     let method_camel = lower_camel(method);
     let method_snake = snake_case(method);
+    let ts_package = if family == "filesystem" { "fs" } else { module };
     let ts_call = if family == "objects" {
         "const response = await client.putObject((async function* () { yield { body: new TextEncoder().encode(\"hello\") }; })());"
     } else {
@@ -352,7 +353,7 @@ print(response)"#,
             r#"// Rust scenario: {scenario_id}
 import {{ createClient }} from "@connectrpc/connect";
 import {{ createGrpcTransport }} from "@connectrpc/connect-node";
-import {{ {service} }} from "@acyclic-labs/{module}/proto";
+import {{ {service} }} from "@acyclic-labs/{ts_package}/proto";
 
 const transport = createGrpcTransport({{ baseUrl: process.env.FIXTURE_GRPC_ADDRESS! }});
 const client = createClient({service}, transport);
