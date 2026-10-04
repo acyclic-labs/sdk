@@ -41,12 +41,14 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
             shell: bash
             rust_target: x86_64-unknown-linux-musl
-            kind: unix
+            kind: musl-container
+            musl_image: alpine:3.22.6@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764
           - platform: linux-arm64-musl
             runner: blacksmith-4vcpu-ubuntu-2404-arm
             shell: bash
             rust_target: aarch64-unknown-linux-musl
-            kind: unix
+            kind: musl-container
+            musl_image: alpine:3.22.6@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f
           - platform: macos-x64
             runner: blacksmith-6vcpu-macos-15
             shell: bash
@@ -70,6 +72,7 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned Rust toolchain
+        if: matrix.kind != 'musl-container'
         uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.rust_target }}
@@ -97,6 +100,7 @@ jobs:
         run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
 
       - name: Fetch locked embedded dependencies
+        if: matrix.kind != 'musl-container'
         shell: bash
         run: |
           set -euo pipefail
@@ -127,6 +131,35 @@ jobs:
           BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi
           CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_arch || '' }}
         run: bash cpp/embedded-consumer/portable-package-test.sh
+
+      - name: Run native Alpine musl installed-package consumers
+        if: matrix.kind == 'musl-container'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          ALPINE_IMAGE: ${{ matrix.musl_image }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/embedded-abi"
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$RUNNER_TEMP/embedded-abi:/tmp/embedded-abi" \
+            --workdir /src \
+            --env RUST_TARGET="$RUST_TARGET" \
+            --env BUILD_DIRECTORY=/tmp/embedded-abi \
+            "$ALPINE_IMAGE" sh -euxc '
+              apk add --no-cache bash binutils build-base ca-certificates cmake curl git ninja python3
+              channel="$(awk -F '"' '/^channel = / { print $2; exit }' rust-toolchain.toml)"
+              test -n "$channel"
+              export RUSTUP_HOME=/usr/local/rustup
+              export CARGO_HOME=/usr/local/cargo
+              curl --fail --silent --show-error --location https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+              export PATH="$CARGO_HOME/bin:$PATH"
+              rustup toolchain install "$channel" --profile minimal --target "$RUST_TARGET"
+              rustup default "$channel"
+              cargo fetch --locked --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml
+              bash cpp/embedded-consumer/portable-package-test.sh
+            '
 
       - name: Upload package, receipts, and consumer evidence
         if: always()
