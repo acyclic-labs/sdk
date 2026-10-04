@@ -12,9 +12,9 @@ use crate::{
     },
     core::{Authority, AuthorityVerifier, Reducer, Scope},
     fork::{
-        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkReport, ForkRequest,
-        ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant, ResourceRevision,
-        SharedGrant,
+        Capture, CapturedResource, ForkCaptureProvider, ForkPreparer, ForkRebindProof,
+        ForkReport, ForkRequest, ForkSeed, ForkSelection, InheritedConversationPrefix,
+        ReferenceGrant, ResourceRevision, SharedGrant,
     },
     resources::{ProviderRef, WorkspaceRef},
 };
@@ -254,6 +254,62 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             }
         }
         Ok(report)
+    }
+
+    /// Authenticates durable preparation records before allowing a later
+    /// publication to rebind its parent history revision.
+    pub(crate) async fn authenticate_rebind(
+        &self,
+        request: &ForkRequest,
+    ) -> Result<ForkRebindProof> {
+        self.authorize_request(request)?;
+        let journal = self.journal_ref(request)?;
+        let stored_request = read_record::<A, O, ForkRequest>(
+            &self.host,
+            &journal,
+            "/request.json",
+            MAX_REQUEST_BYTES,
+        )
+        .await?
+        .ok_or_else(|| Error::Conflict("fork preparation request is missing".into()))?;
+        if stored_request != *request {
+            return Err(Error::Conflict("fork preparation request changed before rebind".into()));
+        }
+        let report = self
+            .read_report(&journal, request)
+            .await?
+            .ok_or_else(|| Error::Conflict("fork preparation report is missing".into()))?;
+        report.validate()?;
+        let preparation_digest = *blake3::hash(&encode_record(request, MAX_REQUEST_BYTES)?).as_bytes();
+        let original_request_digest = crate::contract::canonical_json_digest(request)?;
+        let report_digest = crate::contract::canonical_json_digest(&report)?;
+        let allocation = allocation_ref(
+            self.host.provider.clone(),
+            &request.preparation.child_private_volume,
+        )?;
+        let claim = read_record::<A, O, AllocationClaim>(
+            &self.host,
+            &allocation,
+            "/claim.json",
+            4_096,
+        )
+        .await?
+        .ok_or_else(|| Error::Conflict("fork allocation claim is missing".into()))?;
+        if claim.operation_id != request.operation_id
+            || claim.parent != request.parent
+            || claim.child != request.child
+            || claim.preparation_digest != preparation_digest
+        {
+            return Err(Error::Conflict(
+                "fork allocation claim is not bound to the preparation request".into(),
+            ));
+        }
+        Ok(ForkRebindProof::from_preparation(
+            request.operation_id,
+            original_request_digest,
+            claim.preparation_digest,
+            report_digest,
+        ))
     }
 
     async fn commit_report(

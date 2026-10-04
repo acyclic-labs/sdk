@@ -11,7 +11,9 @@ use crate::{
         EventReference, ExtensionDependency, Reducer, SchemaRegistry, Scope, Snapshot,
     },
     effects::{validate_result_bytes, validate_schema_bytes},
-    fork::{CompositeForkVerifier, ForkPreparer, ForkReport, ForkRequest, ForkSeed},
+    fork::{
+        CompositeForkVerifier, ForkPreparer, ForkRebindProof, ForkReport, ForkRequest, ForkSeed,
+    },
     interaction::InteractionOutcome,
     merge::ProjectMergeVerifier,
     wire_codec::{decode_event, encode_event},
@@ -409,6 +411,35 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
+    /// Publishes a rebound report only with an opaque capability minted by
+    /// the provider's durable preparation journal.
+    pub(crate) async fn publish_fork_report_with_rebind(
+        &mut self,
+        report: ForkReport,
+        scope: Scope,
+        proof: &ForkRebindProof,
+    ) -> Result<ApplyResult> {
+        report.validate_with_rebind_proof(proof)?;
+        if report.request.parent != *self.reducer.authority() {
+            return Err(Error::Unauthorized(
+                "fork report belongs to another parent".into(),
+            ));
+        }
+        let seed = report.clone().into_seed_with_rebind_proof(proof)?;
+        self.execute(Command {
+            operation_id: seed.operation_id,
+            idempotency_key: IdempotencyKey::new(format!(
+                "fork-publication:{}",
+                seed.operation_id
+            ))?,
+            expected_revision: seed.parent_revision,
+            scope,
+            causal_parent: None,
+            action: Action::PublishFork { seed: Box::new(seed) },
+        })
+        .await
+    }
+
     /// Admits a prepared child through the parent, then binds its fresh
     /// conversation to the published seed. A failed child bind does not undo
     /// parent publication: retry this exact report and scopes to reconcile it.
@@ -439,6 +470,39 @@ impl<P: StreamProvider> StreamAggregate<P> {
         parent.publish_fork_report(report, parent_scope).await?;
         self.bind_published_child(parent, &seed, child_scope)
             .await?;
+        Ok(seed)
+    }
+
+    /// Rebound counterpart of `spawn_from_report`; ordinary callers must use
+    /// the strict API above and cannot self-authorize an older capture.
+    pub(crate) async fn spawn_from_report_with_rebind(
+        &mut self,
+        parent: &mut Self,
+        report: ForkReport,
+        parent_scope: Scope,
+        child_scope: Scope,
+        proof: &ForkRebindProof,
+    ) -> Result<ForkSeed> {
+        report.validate_with_rebind_proof(proof)?;
+        if report.request.child != *self.reducer.authority()
+            || report.request.parent != *parent.reducer.authority()
+        {
+            return Err(Error::Unauthorized(
+                "fork report does not match parent and child aggregates".into(),
+            ));
+        }
+        let seed = report.clone().into_seed_with_rebind_proof(proof)?;
+        if child_scope.agent() != Some(seed.child_agent)
+            || (self.reducer.revision() != 0 && parent.reducer.fork(&seed.child) != Some(&seed))
+        {
+            return Err(Error::Conflict(
+                "child binding is not fresh or previously published by this parent".into(),
+            ));
+        }
+        parent
+            .publish_fork_report_with_rebind(report, parent_scope, proof)
+            .await?;
+        self.bind_published_child(parent, &seed, child_scope).await?;
         Ok(seed)
     }
 
