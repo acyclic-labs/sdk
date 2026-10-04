@@ -87,6 +87,7 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
     }
     let artifacts = artifact_index(&generation)?;
     let authority = authority_inventory(&output.join("wire/rust-authority.json"))?;
+    let rust_scenarios = rust_scenario_inventory(&output.join("sdk-transport-fixtures-manifest.json"))?;
 
     let log = read_json(&options.scenario_log)?;
     if log.get("schema").and_then(Value::as_str) != Some(SCENARIO_LOG_SCHEMA) {
@@ -185,6 +186,20 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .get("semantic_evidence")
             .and_then(Value::as_object)
             .ok_or_else(|| format!("scenario {family}/{rpc} has no semantic evidence"))?;
+        if matches!(family.as_str(), "filesystem" | "harness") {
+            let operation = rpc_operation_name(&rpc);
+            let expected = rust_scenarios
+                .get(&(family.clone(), operation.clone()))
+                .ok_or_else(|| format!("scenario {family}/{rpc} has no Rust-owned semantic seed"))?;
+            let actual = semantic
+                .get("rust_scenario")
+                .ok_or_else(|| format!("scenario {family}/{rpc} has no Rust-owned scenario evidence"))?;
+            if actual != expected {
+                return Err(format!(
+                    "scenario {family}/{rpc} differs from the Rust-owned semantic seed"
+                ));
+            }
+        }
         let response_type = nonempty_string(semantic, "response_type")?;
         if response_type != authority_shape.response {
             return Err(format!(
@@ -558,6 +573,40 @@ fn read_output_file(output: &Path, relative: &str, label: &str) -> Result<Vec<u8
         return Err(format!("{label} {} escapes the output tree", path.display()));
     }
     fs::read(&path).map_err(|error| format!("{label} {}: {error}", path.display()))
+}
+
+fn rust_scenario_inventory(path: &Path) -> Result<BTreeMap<(String, String), Value>, String> {
+    if !path.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let value = read_json(path)?;
+    let scenarios = value
+        .get("qualification")
+        .and_then(|qualification| qualification.get("rpc_scenarios"))
+        .and_then(|scenarios| scenarios.get("scenarios"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Rust fixture manifest has no RPC scenarios".to_owned())?;
+    let mut inventory = BTreeMap::new();
+    for scenario in scenarios {
+        let family = string_field(scenario, "family")?;
+        let operation = string_field(scenario, "operation")?;
+        if inventory.insert((family, operation), scenario.clone()).is_some() {
+            return Err("Rust fixture manifest contains duplicate semantic scenarios".into());
+        }
+    }
+    Ok(inventory)
+}
+
+fn rpc_operation_name(rpc: &str) -> String {
+    let method = rpc.rsplit('/').next().unwrap_or(rpc);
+    let mut operation = String::new();
+    for (index, character) in method.chars().enumerate() {
+        if character.is_ascii_uppercase() && index > 0 {
+            operation.push('_');
+        }
+        operation.push(character.to_ascii_lowercase());
+    }
+    operation
 }
 
 fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, AuthorityMethod>>, String> {

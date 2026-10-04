@@ -39,6 +39,22 @@
         "checked_rules": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "rule_results": { "type": "object", "additionalProperties": { "type": "boolean" } },
         "identity_matches": { "type": "boolean" },
+        "rust_scenario": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["family", "operation", "input", "expected", "source", "order", "seed", "depends_on", "known_output"],
+          "properties": {
+            "family": { "enum": ["filesystem", "harness"] },
+            "operation": { "type": "string", "minLength": 1 },
+            "input": { "type": "string", "minLength": 1 },
+            "expected": { "type": "string", "minLength": 1 },
+            "source": { "const": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs" },
+            "order": { "type": "integer", "minimum": 1 },
+            "seed": { "type": "string", "minLength": 1 },
+            "depends_on": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "known_output": { "type": "string", "minLength": 1 }
+          }
+        },
         "observations": {
           "type": "object",
           "additionalProperties": false,
