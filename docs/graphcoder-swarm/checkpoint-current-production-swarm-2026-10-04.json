@@ -1,0 +1,55 @@
+{
+  "status": "failed",
+  "platform": "Windows native execution",
+  "suites": [
+    {
+      "failure": "inherited conversation differs from authoritative parent history",
+      "exit_code": 101,
+      "name": "local_model_swarm",
+      "source_blob": "e32c6c648b472eaab009212644ae2b64adf4972a",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "exit_code": 101,
+      "name": "local_swarm_faults",
+      "source_blob": "feedd5de2641bf38b5ed37f6c78dcf10fa51b839",
+      "failures": [
+        "inherited conversation differs from authoritative parent history",
+        "cancelled child provider dispatch timeout",
+        "precompletion child dispatch count 1 expected 2",
+        "prepared batch child dispatch count 1 expected 2"
+      ],
+      "passed": 1,
+      "failed": 4,
+      "ignored": 0
+    }
+  ],
+  "schema": "graphcoder.qualification.checkpoint.v1",
+  "boundaries": [
+    "Deterministic mocked models; real LocalFs and LocalStream",
+    "No full swarm or fault qualification claimed",
+    "Separate exclusive root target; both process handles terminal"
+  ],
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\ee7cb5f40\\ee7cb5f40-production-faults.txt",
+      "sha256": "a1784647967f239c4048fc94a65eee001986d35377dec99d4a54fceb9d31b680"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\ee7cb5f40\\ee7cb5f40-production-swarm.txt",
+      "sha256": "99a665c04a90688e7fe7db31f08323aebde896feafbceef0458c8d0e7ac16c89"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\ee7cb5f40\\local_model_swarm-e3964aef85d90691.exe",
+      "sha256": "8016dc96e49a624ccd7f20a925752491a9ae0c6ba09bd75a0be6b2ca4c7834ea"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\ee7cb5f40\\local_swarm_faults-0c53f70a94dbc6e9.exe",
+      "sha256": "87af2e935ca857816e6d7fb66f5c02269083b0f43770aa66f70a9aae76164ebe"
+    }
+  ],
+  "source_commit": "ee7cb5f40954f4ed07bb913f76946b4e29491626",
+  "rust_tree": "ddebe2e0d137b10fcb5d9178508f4eb3f0d0346c"
+}
