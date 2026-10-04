@@ -274,14 +274,14 @@ $obj = Join-Path $out "obj"
 $build = Join-Path $out "build"
 New-Item -ItemType Directory -Force -Path $packageOutput, $obj, $build | Out-Null
 $project = Join-Path $root "dotnet/Acyclic.Sdk.Embedded.csproj"
-& $dotnetPath pack $project --configuration Release --nologo \`
-  "-p:EmbeddedNativeRoot=$nativeRoot" \`
-  "-p:SchemaRoot=$authorityRoot" \`
-  "-p:BaseOutputPath=$build\" \`
-  "-p:BaseIntermediateOutputPath=$obj\" \`
-  "-p:PackageOutputPath=$packageOutput\" \`
-  '-p:ContinuousIntegrationBuild=true' \`
-  '-p:Deterministic=true' \`
+& $dotnetPath pack $project --configuration Release --nologo `
+  "-p:EmbeddedNativeRoot=$nativeRoot" `
+  "-p:SchemaRoot=$authorityRoot" `
+  "-p:BaseOutputPath=$build\" `
+  "-p:BaseIntermediateOutputPath=$obj\" `
+  "-p:PackageOutputPath=$packageOutput\" `
+  '-p:ContinuousIntegrationBuild=true' `
+  '-p:Deterministic=true' `
   '-p:DeterministicSourcePaths=true'
 if ($LASTEXITCODE -ne 0) { throw "Embedded .NET package failed with exit code $LASTEXITCODE" }
 Assert-EmbeddedRustSourceSnapshot -Repository $root -Snapshot $sourceClosure
