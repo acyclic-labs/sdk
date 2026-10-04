@@ -456,3 +456,70 @@ async fn concurrent_user_edit_returns_conflict_without_overwriting_the_root() ->
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn child_binding_changes_action_identity_even_with_same_generations() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let plan = fixture
+        .facade
+        .prepare_project_merge_for_child(
+            fixture.host.as_ref(),
+            &fixture.reducer,
+            &fixture.child_authority,
+            &fixture.child_project,
+        )
+        .await?;
+    let source = fixture.host.generation_ref_id(plan.source_head())?;
+    let target = fixture.host.generation_ref_id(plan.target_head())?;
+    let issuer = AuthorityIssuer::new(
+        "writeback-acceptance",
+        [7; 32],
+        fixture.root_authority.clone(),
+    );
+    let changed_child = Authority {
+        kind: AggregateKind::Conversation,
+        id: "another-direct-child".into(),
+    };
+    let original = RootWritebackApproval::issue_for_child(
+        &issuer.verifier(),
+        &fixture.root_scope,
+        fixture.root_project.clone(),
+        fixture.child_project.clone(),
+        fixture.child_authority.clone(),
+        OperationId::from_bytes([31; 16]),
+        source.clone(),
+        target.clone(),
+    )?;
+    let changed = RootWritebackApproval::issue_for_child(
+        &issuer.verifier(),
+        &fixture.root_scope,
+        fixture.root_project.clone(),
+        fixture.child_project.clone(),
+        changed_child.clone(),
+        OperationId::from_bytes([31; 16]),
+        source,
+        target,
+    )?;
+    assert_ne!(original.action_digest(), changed.action_digest());
+
+    let notice = fixture
+        .child_change("child-binding.txt", b"child", "child-binding")
+        .await?;
+    let error = fixture
+        .facade
+        .apply_root_writeback_plan_for_child_with_notice(
+            &RootWritebackRequest::new(original, fixture.root_scope.clone()),
+            fixture.host.as_ref(),
+            &fixture.reducer,
+            &changed_child,
+            &fixture.child_project,
+            &plan,
+            BTreeMap::new(),
+            &notice,
+        )
+        .await
+        .expect_err("a child-bound approval must reject a different child");
+    assert!(matches!(error, Error::Conflict(_) | Error::Unauthorized(_)));
+    assert_eq!(fixture.read_root("/child-binding.txt").await, None);
+    Ok(())
+}

@@ -45,6 +45,8 @@ pub const ROOT_WRITEBACK_CAPABILITY: &str = "project:writeback";
 pub struct RootWritebackApproval {
     operation_id: OperationId,
     target_project: VolumeRef,
+    child_project: Option<VolumeRef>,
+    child_authority: Option<Authority>,
     source_generation: GenerationRef,
     expected_target_generation: GenerationRef,
     scope_id: String,
@@ -61,6 +63,26 @@ pub fn root_writeback_action_digest(
     canonical_json_digest(&(
         "acyclic.root-writeback.v1",
         target_project,
+        operation_id,
+        source_generation,
+        expected_target_generation,
+    ))
+}
+
+/// Computes the action identity for a direct-child root publication.
+pub fn root_writeback_child_action_digest(
+    target_project: &VolumeRef,
+    child_project: &VolumeRef,
+    child_authority: &Authority,
+    operation_id: OperationId,
+    source_generation: &GenerationRef,
+    expected_target_generation: &GenerationRef,
+) -> Result<[u8; 32]> {
+    canonical_json_digest(&(
+        "acyclic.root-writeback-child.v1",
+        target_project,
+        child_project,
+        child_authority,
         operation_id,
         source_generation,
         expected_target_generation,
@@ -104,11 +126,52 @@ impl RootWritebackApproval {
         Ok(Self {
             operation_id,
             target_project,
+            child_project: None,
+            child_authority: None,
             source_generation,
             expected_target_generation,
             scope_id: scope.id().to_owned(),
             action_digest,
         })
+    }
+
+    /// Issues an approval bound to one exact direct child.
+    pub fn issue_for_child(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        target_project: VolumeRef,
+        child_project: VolumeRef,
+        child_authority: Authority,
+        operation_id: OperationId,
+        source_generation: GenerationRef,
+        expected_target_generation: GenerationRef,
+    ) -> Result<Self> {
+        let mut approval = Self::issue(
+            verifier,
+            scope,
+            target_project,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )?;
+        child_project.validate()?;
+        child_authority.stream_path()?;
+        if child_project.class() != VolumeClass::Project
+            || child_project.provider() != approval.target_project.provider()
+        {
+            return Err(Error::Invalid("root writeback child is inconsistent".into()));
+        }
+        approval.child_project = Some(child_project);
+        approval.child_authority = Some(child_authority);
+        approval.action_digest = root_writeback_child_action_digest(
+            approval.target_project(),
+            approval.child_project.as_ref().expect("child set above"),
+            approval.child_authority.as_ref().expect("authority set above"),
+            approval.operation_id,
+            &approval.source_generation,
+            &approval.expected_target_generation,
+        )?;
+        Ok(approval)
     }
 
     /// Stable operation identity bound by the approval.
@@ -127,6 +190,18 @@ impl RootWritebackApproval {
     #[must_use]
     pub const fn target_project(&self) -> &VolumeRef {
         &self.target_project
+    }
+
+    /// Direct child project bound by this approval, when child binding is used.
+    #[must_use]
+    pub const fn child_project(&self) -> Option<&VolumeRef> {
+        self.child_project.as_ref()
+    }
+
+    /// Direct child authority bound by this approval, when child binding is used.
+    #[must_use]
+    pub const fn child_authority(&self) -> Option<&Authority> {
+        self.child_authority.as_ref()
     }
 
     /// Digest that must appear in the durable operator approval ticket.
@@ -777,6 +852,7 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore,
     {
         self.authorize_direct_child_plan(parent, child, child_project, plan)?;
+        Self::verify_root_writeback_child(request, child, child_project)?;
         validate_merge_receipt_inputs(child, notice)?;
         self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, notice).await?;
@@ -808,6 +884,7 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore,
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
+        Self::verify_root_writeback_child(request, &child, child_project)?;
         validate_merge_receipt_inputs(&child, &notice)?;
         self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
@@ -901,6 +978,7 @@ impl<S> FilesystemGitFacade<S> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         self.authorize_direct_child_plan(parent, &child, child_project, plan)?;
+        Self::verify_root_writeback_child(request, &child, child_project)?;
         validate_merge_receipt_inputs(&child, &notice)?;
         self.verify_root_writeback_plan(request, host, plan)?;
         validate_merge_notice_content(host, &self.verifier, &self.scope, &notice).await?;
@@ -993,11 +1071,15 @@ impl<S> FilesystemGitFacade<S> {
         let approval = RootWritebackApproval {
             operation_id: entry.intent.operation_id,
             target_project: entry.intent.target_project.clone(),
+            child_project: Some(entry.intent.source_project.clone()),
+            child_authority: Some(entry.intent.child.clone()),
             source_generation: entry.intent.source_generation.clone(),
             expected_target_generation: entry.intent.expected_target_generation.clone(),
             scope_id: entry.intent.approval_scope_id.clone(),
-            action_digest: root_writeback_action_digest(
+            action_digest: root_writeback_child_action_digest(
                 &entry.intent.target_project,
+                &entry.intent.source_project,
+                &entry.intent.child,
                 entry.intent.operation_id,
                 &entry.intent.source_generation,
                 &entry.intent.expected_target_generation,
@@ -1097,15 +1179,48 @@ impl<S> FilesystemGitFacade<S> {
                 "root writeback approval does not match inspected plan".into(),
             ));
         }
-        if root_writeback_action_digest(
-            &request.approval.target_project,
-            request.approval.operation_id,
-            &request.approval.source_generation,
-            &request.approval.expected_target_generation,
-        )? != request.approval.action_digest
-        {
+        let expected_digest = match (
+            request.approval.child_project.as_ref(),
+            request.approval.child_authority.as_ref(),
+        ) {
+            (Some(child_project), Some(child_authority)) => root_writeback_child_action_digest(
+                &request.approval.target_project,
+                child_project,
+                child_authority,
+                request.approval.operation_id,
+                &request.approval.source_generation,
+                &request.approval.expected_target_generation,
+            )?,
+            (None, None) => root_writeback_action_digest(
+                &request.approval.target_project,
+                request.approval.operation_id,
+                &request.approval.source_generation,
+                &request.approval.expected_target_generation,
+            )?,
+            _ => {
+                return Err(Error::Invalid(
+                    "root writeback child binding is incomplete".into(),
+                ));
+            }
+        };
+        if expected_digest != request.approval.action_digest {
             return Err(Error::Conflict(
                 "root writeback approval action identity changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_root_writeback_child(
+        request: &RootWritebackRequest,
+        child: &Authority,
+        child_project: &VolumeRef,
+    ) -> Result<()> {
+        if request.approval.child_project() != Some(child_project)
+            || request.approval.child_authority() != Some(child)
+        {
+            return Err(Error::Unauthorized(
+                "root writeback approval belongs to another child".into(),
             ));
         }
         Ok(())

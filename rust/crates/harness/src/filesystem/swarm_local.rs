@@ -2108,30 +2108,25 @@ pub struct LocalRootWritebackContext {
 }
 
 impl LocalRootWritebackContext {
-    /// Returns the retained local Filesystem provider.
-    #[must_use]
-    pub fn host(&self) -> &LocalFilesystemHost { &self.host }
-
     /// Returns the root project bound to this context.
     #[must_use]
     pub const fn root_project(&self) -> &VolumeRef { &self.root_project }
 
-    /// Returns the signed scope used for this exact publication.
-    #[must_use]
-    pub const fn scope(&self) -> &Scope { &self.scope }
-
-    /// Issues the typed approval identity; callers must still supply a
-    /// matching durable operator ticket through the swarm method below.
-    pub fn issue_approval(
+    /// Issues an approval bound to the exact direct child used by the plan.
+    fn issue_approval_for_child(
         &self,
+        child: Authority,
+        child_project: VolumeRef,
         operation_id: OperationId,
         source_generation: GenerationRef,
         expected_target_generation: GenerationRef,
     ) -> Result<RootWritebackApproval> {
-        RootWritebackApproval::issue(
+        RootWritebackApproval::issue_for_child(
             &self.verifier,
             &self.scope,
             self.root_project.clone(),
+            child_project,
+            child,
             operation_id,
             source_generation,
             expected_target_generation,
@@ -2152,7 +2147,7 @@ impl LocalRootWritebackContext {
     }
 
     /// Applies one inspected plan and returns its authenticated receipt.
-    pub async fn apply_with_receipt(
+    async fn apply_with_receipt(
         &self,
         request: &RootWritebackRequest,
         child: Authority,
@@ -2169,7 +2164,7 @@ impl LocalRootWritebackContext {
     }
 
     /// Applies or recovers one plan through the durable recovery journal.
-    pub async fn apply_with_recovery(
+    async fn apply_with_recovery(
         &self,
         request: &RootWritebackRequest,
         child: Authority,
@@ -2196,6 +2191,79 @@ impl LocalRootWritebackContext {
         self.facade
             .recover_root_writeback_receipt(self.host.as_ref(), &self.parent, entry)
             .await
+    }
+}
+
+/// Opaque authority for one exact root writeback publication.
+///
+/// This value is only constructed after the root session has found a durable
+/// operator approval and the ticket's operation and child binding match the
+/// requested publication. Callers can inspect and apply through this handle,
+/// but cannot manufacture an approval, alter its scope, or substitute a
+/// different child/request at the effect boundary.
+pub struct LocalApprovedRootWriteback {
+    context: LocalRootWritebackContext,
+    request: RootWritebackRequest,
+    child: Authority,
+    child_project: VolumeRef,
+}
+
+impl LocalApprovedRootWriteback {
+    /// Returns the project that will receive the approved publication.
+    #[must_use]
+    pub const fn root_project(&self) -> &VolumeRef {
+        self.context.root_project()
+    }
+
+    /// Inspects the exact direct-child merge bound by this approval.
+    pub async fn prepare_merge_plan(
+        &self,
+    ) -> Result<super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>> {
+        self.context
+            .prepare_project_merge_for_child(&self.child, &self.child_project)
+            .await
+    }
+
+    /// Applies the approved plan and returns its durable receipt.
+    pub async fn apply_with_receipt(
+        &self,
+        plan: &super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage,
+    ) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.context
+            .apply_with_receipt(
+                &self.request,
+                self.child.clone(),
+                &self.child_project,
+                plan,
+                notice,
+            )
+            .await
+    }
+
+    /// Applies or resumes the approved plan through durable recovery.
+    pub async fn apply_with_recovery(
+        &self,
+        plan: &super::ParentMergePlan<LocalAuthorityBackend, LocalObjectBackend>,
+        notice: ConversationMessage,
+    ) -> Result<crate::merge::ProjectJoinOutcome> {
+        self.context
+            .apply_with_recovery(
+                &self.request,
+                self.child.clone(),
+                &self.child_project,
+                plan,
+                notice,
+            )
+            .await
+    }
+
+    /// Reconstructs a receipt after a provider effect and process restart.
+    pub async fn recover_receipt(
+        &self,
+        entry: &ProjectMergeRecoveryEntry,
+    ) -> Result<crate::merge::ProjectMergeReceipt> {
+        self.context.recover_receipt(entry).await
     }
 }
 
@@ -2660,9 +2728,17 @@ impl PersistentLocalSwarm {
         task: TaskId,
         interaction: InteractionId,
         target_project: &VolumeRef,
+        child: Authority,
+        child_project: &VolumeRef,
         source_generation: GenerationRef,
         expected_target_generation: GenerationRef,
-    ) -> Result<(LocalRootWritebackContext, RootWritebackRequest)> {
+    ) -> Result<LocalApprovedRootWriteback> {
+        let root_task = self.root_task().await?;
+        if task != root_task {
+            return Err(Error::Unauthorized(
+                "root writeback approval must be issued by the root session".into(),
+            ));
+        }
         let approval = self.list_approvals(task).await?.into_iter().find(|approval| {
             approval.ticket.id.as_bytes() == &interaction.into_bytes()
         }).ok_or_else(|| Error::NotFound(format!("local swarm approval {interaction}")))?;
@@ -2678,8 +2754,12 @@ impl PersistentLocalSwarm {
             ));
         }
         let context = self.root_writeback_context(target_project).await?;
-        let typed = context.issue_approval(
-            binding.operation_id, source_generation, expected_target_generation,
+        let typed = context.issue_approval_for_child(
+            child.clone(),
+            child_project.clone(),
+            binding.operation_id,
+            source_generation,
+            expected_target_generation,
         )?;
         if typed.action_digest() != &binding.action_digest {
             return Err(Error::Conflict(
@@ -2687,7 +2767,12 @@ impl PersistentLocalSwarm {
             ));
         }
         let request = RootWritebackRequest::new(typed, context.scope.clone());
-        Ok((context, request))
+        Ok(LocalApprovedRootWriteback {
+            context,
+            request,
+            child,
+            child_project: child_project.clone(),
+        })
     }
 
     /// Returns the host-only signer bound to one task's durable interaction
@@ -5520,6 +5605,49 @@ mod tests {
         )
         .await?;
         assert_eq!(reopened.root_task().await?, task);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn root_writeback_requires_durable_ticket_before_publication_handle() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let provider = ProviderRef::new("test", "filesystem", "2")?;
+        let project = VolumeRef::new(
+            provider.clone(),
+            "root-writeback-no-ticket",
+            VolumeClass::Project,
+            VolumeOwner::Project("test".into()),
+        )?;
+        let source = GenerationRef::new(provider.clone(), [3; 32], None)?;
+        let target = GenerationRef::new(provider, [4; 32], None)?;
+        let error = swarm
+            .issue_approved_root_writeback(
+                task,
+                InteractionId::new(),
+                &project,
+                Authority {
+                    kind: AggregateKind::Conversation,
+                    id: "child-without-ticket".into(),
+                },
+                &project,
+                source,
+                target,
+            )
+            .await
+            .expect_err("a public publication handle requires a durable ticket");
+        assert!(matches!(error, Error::NotFound(_)));
         Ok(())
     }
 }
