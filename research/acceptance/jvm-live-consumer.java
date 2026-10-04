@@ -79,6 +79,11 @@ final class JvmLiveConsumer {
     List<String> responseFramesBase64 = List.of();
   }
 
+  private static long streamTimeoutMillis() {
+    try { return Long.parseLong(System.getenv().getOrDefault("ACYCLIC_LIVE_STREAM_TIMEOUT_MS", "30000")); }
+    catch (NumberFormatException ignored) { return 30000L; }
+  }
+
   public static void main(String[] args) throws Exception {
     String endpoint = value(args, 0, "ACYCLIC_FIXTURE_ENDPOINT", null);
     String authorityRootText = value(args, 1, "ACYCLIC_AUTHORITY_ROOT", null);
@@ -278,7 +283,7 @@ final class JvmLiveConsumer {
         channel.newCall(method, CallOptions.DEFAULT), observer);
     requests.onNext(request);
     requests.onCompleted();
-    done.await(30, TimeUnit.SECONDS);
+    done.await(streamTimeoutMillis(), TimeUnit.MILLISECONDS);
     return response.isEmpty() ? DynamicMessage.getDefaultInstance(outputType) : response.get(0);
   }
 
@@ -297,7 +302,7 @@ final class JvmLiveConsumer {
         channel.newCall(method, CallOptions.DEFAULT), observer);
     requests.onNext(request);
     requests.onCompleted();
-    done.await(30, TimeUnit.SECONDS);
+    done.await(streamTimeoutMillis(), TimeUnit.MILLISECONDS);
     return response.isEmpty() ? DynamicMessage.getDefaultInstance(outputType) : response.get(0);
   }
 
