@@ -900,6 +900,113 @@ mod tests {
     }
 
     #[test]
+    fn registered_nonempty_options_survive_recursive_fork_restore() -> Result<()> {
+        let limits = Limits::default();
+        let policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "test.recursive-options".into(),
+                version: "1".into(),
+                digest: [17; 32],
+            },
+            json!({
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"},
+                    "max_tokens": {"type": "integer", "minimum": 1},
+                    "tokenizer": {"type": "string"}
+                },
+                "required": ["mode", "max_tokens", "tokenizer"],
+                "additionalProperties": false
+            }),
+        )?;
+        let mut request = request()?;
+        request.model.options = json!({
+            "mode": "strict",
+            "max_tokens": 256,
+            "tokenizer": "mock-v1"
+        });
+        let prepared =
+            PreparedModelInput::prepare_with_policy(request.clone(), limits, Some(&policy))?;
+        let boundary =
+            CompletedModelBoundary::capture_with_policy(request, limits, Some(&policy), &[])?;
+        assert_eq!(boundary.option_policy, Some(policy.clone()));
+        assert_eq!(
+            prepared.manifest().model_option_policy,
+            Some(policy.identity.clone())
+        );
+        assert_eq!(
+            prepared.manifest().model_option_schema_digest,
+            Some(policy.schema_digest()?)
+        );
+
+        let child_suffix = vec![text("child task; fresh private scratch")];
+        let declaration =
+            InheritedModelContext::new(boundary.clone(), child_suffix.clone(), limits)?;
+        let mut child_request = boundary.request.clone();
+        child_request.messages.extend(child_suffix);
+        let child_prepared =
+            PreparedModelInput::prepare_with_policy(child_request.clone(), limits, Some(&policy))?;
+        declaration.verify_composition(&child_request, &[], limits)?;
+        boundary.prefix.verify(&child_prepared)?;
+
+        let persisted =
+            serde_json::to_vec(&boundary).map_err(|error| Error::Invalid(error.to_string()))?;
+        let restored: CompletedModelBoundary = serde_json::from_slice(&persisted)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        restored.verify(limits)?;
+        assert_eq!(restored.option_policy, Some(policy));
+        Ok(())
+    }
+
+    #[test]
+    fn fork_manifest_rejects_registered_policy_substitution() -> Result<()> {
+        let limits = Limits::default();
+        let identity = ComponentIdentity {
+            name: "test.policy-substitution".into(),
+            version: "1".into(),
+            digest: [18; 32],
+        };
+        let policy = ModelOptionPolicy::new(
+            identity.clone(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"}
+                },
+                "required": ["mode"],
+                "additionalProperties": false
+            }),
+        )?;
+        let substituted = ModelOptionPolicy::new(
+            identity,
+            json!({
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string"},
+                    "temperature": {"type": "number"}
+                },
+                "required": ["mode"],
+                "additionalProperties": false
+            }),
+        )?;
+        let mut request = request()?;
+        request.model.options = json!({"mode": "strict"});
+        let prepared =
+            PreparedModelInput::prepare_with_policy(request.clone(), limits, Some(&policy))?;
+        let manifest = prepared.manifest().clone();
+        assert!(
+            PreparedModelInput::restore(request.clone(), limits, Some(&substituted), manifest,)
+                .is_err()
+        );
+
+        let mut boundary =
+            CompletedModelBoundary::capture_with_policy(request, limits, Some(&policy), &[])?;
+        boundary.option_policy = Some(substituted);
+        assert!(matches!(boundary.verify(limits), Err(Error::Conflict(_))));
+        Ok(())
+    }
+
+    #[test]
     fn recursive_prefix_survives_persistence_with_suffix_only_context() -> Result<()> {
         let parent = PreparedModelInput::prepare(request()?, Limits::default())?;
         let frozen = FrozenModelPrefix::capture(&parent, 4)?;
