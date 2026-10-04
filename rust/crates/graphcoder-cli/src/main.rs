@@ -34,7 +34,7 @@ use std::{
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{watch, Mutex, Notify, Semaphore};
 
 #[cfg(test)]
 use tokio::io::AsyncReadExt;
@@ -73,10 +73,17 @@ struct Args {
 }
 
 #[derive(Clone)]
+struct BlockingFixture {
+    started: Arc<Notify>,
+    cancelled: watch::Sender<bool>,
+}
+
+#[derive(Clone)]
 struct EchoModel {
     fixture: String,
     calls: Arc<AtomicUsize>,
     option_policy: ModelOptionPolicy,
+    blocking: Option<BlockingFixture>,
 }
 
 impl ModelProvider for EchoModel {
@@ -86,6 +93,18 @@ impl ModelProvider for EchoModel {
     ) -> BoxStream<'a, acyclic_harness::Result<ModelEvent>> {
         let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
+        if let Some(blocking) = self.blocking.clone() {
+            let mut cancelled = blocking.cancelled.subscribe();
+            blocking.started.notify_waiters();
+            return Box::pin(futures::stream::once(async move {
+                if !*cancelled.borrow() {
+                    let _ = cancelled.changed().await;
+                }
+                Err(HarnessError::Conflict(
+                    "blocking fixture model turn cancelled".into(),
+                ))
+            }));
+        }
         if self.fixture == "stage" && call > 0 {
             let result = request.messages.iter().rev().find_map(|message| match &message.content {
                 acyclic_harness::model::ModelContent::Part(
@@ -389,12 +408,13 @@ struct Runtime {
     model_fixture: String,
     operator_token: Option<String>,
     lazy_observation: LazyObservation,
+    blocking: Option<BlockingFixture>,
 }
 
 impl Runtime {
     async fn open(args: &Args) -> Result<Self, HarnessError> {
         let fixture = match args.model_fixture.as_str() {
-            "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
+            "echo" | "complete" | "stage" | "recursive" | "blocking" => args.model_fixture.clone(),
             value => {
                 return Err(HarnessError::Invalid(format!(
                     "unknown model fixture {value}"
@@ -417,15 +437,23 @@ impl Runtime {
                 "type": "object",
                 "required": ["fixture"],
                 "properties": {
-                    "fixture": {"enum": ["echo", "complete", "stage", "recursive"]}
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive", "blocking"]}
                 },
                 "additionalProperties": false,
             }),
         )?;
+        let blocking = (fixture == "blocking").then(|| {
+            let (cancelled, _) = watch::channel(false);
+            BlockingFixture {
+                started: Arc::new(Notify::new()),
+                cancelled,
+            }
+        });
         let provider = Arc::new(EchoModel {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
             option_policy,
+            blocking: blocking.clone(),
         });
         let swarm = match (&args.checkout, &args.project_id) {
             (Some(checkout), Some(project_id)) => {
@@ -461,12 +489,26 @@ impl Runtime {
                 .await?
             }
         };
+        if blocking.is_some() {
+            let task = swarm.root_task().await?;
+            if swarm.list_approvals(task).await?.is_empty() {
+                swarm
+                    .open_approval(
+                        task,
+                        OperationId::from_bytes([0xd1; 16]),
+                        "Approve the blocking fixture operation",
+                        [0x71; 32],
+                    )
+                    .await?;
+            }
+        }
         let lazy_observation = LazyObservation::from_environment()?;
         Ok(Self {
             swarm,
             model_fixture: fixture,
             operator_token: args.operator_token.clone(),
             lazy_observation,
+            blocking,
         })
     }
 
@@ -797,6 +839,9 @@ impl Runtime {
     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
+        if let Some(blocking) = &self.blocking {
+            let _ = blocking.cancelled.send(true);
+        }
         let session = self
             .swarm
             .cancel(task)
@@ -1718,6 +1763,151 @@ mod tests {
         assert!(activity["result"]["items"]
             .as_array()
             .is_some_and(|items| !items.is_empty()));
+    }
+
+    #[tokio::test]
+    async fn blocking_fixture_exposes_pending_approval_and_cancels_running_turn() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let mut args = runtime_args(root.path().to_owned(), "blocking");
+        args.operator_token = Some("operator-secret".to_owned());
+        let runtime = Arc::new(Runtime::open(&args).await.expect("runtime opens"));
+
+        let listed = exchange(
+            runtime.clone(),
+            json!({"request_id":"blocking-list","method":"list_sessions","params":{}}),
+        )
+        .await;
+        let session_id = listed["result"]["items"][0]["id"]
+            .as_str()
+            .expect("root session id")
+            .to_owned();
+
+        let approvals = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-approvals",
+                "method":"list_approvals",
+                "params":{"session_id":session_id.clone()}
+            }),
+        )
+        .await;
+        assert_eq!(approvals["ok"], true);
+        let approval = &approvals["result"]["items"][0];
+        assert_eq!(approval["state"], "pending");
+        let approval_id = approval["id"].as_str().expect("approval id").to_owned();
+
+        let denied = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-denied",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"wrong",
+                    "session_id":session_id.clone(),
+                    "approval_id":approval_id.clone(),
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(denied["ok"], false);
+        assert_eq!(denied["error"]["code"], "denied");
+
+        let approved = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"blocking-approved",
+                "method":"operator_approve",
+                "params":{
+                    "operator_token":"operator-secret",
+                    "session_id":session_id.clone(),
+                    "approval_id":approval_id.clone(),
+                    "approved":true
+                }
+            }),
+        )
+        .await;
+        assert_eq!(approved["ok"], true);
+        assert_eq!(approved["result"]["approved"], true);
+
+        let (mut request_writer, request_reader) = tokio::io::duplex(64 * 1024);
+        let (response_writer, response_reader) = tokio::io::duplex(64 * 1024);
+        let server = tokio::spawn(serve(runtime.clone(), request_reader, response_writer));
+        let blocking = runtime.blocking.as_ref().expect("blocking fixture").clone();
+        let started = blocking.started.notified();
+        request_writer
+            .write_all(
+                serde_json::to_string(&json!({
+                    "request_id":"blocking-start",
+                    "method":"start_session",
+                    "params":{
+                        "prompt":"wait for cancellation",
+                        "operation_id":"blocking-operation",
+                        "model_fixture":"blocking"
+                    }
+                }))
+                .expect("start request serializes")
+                .as_bytes(),
+            )
+            .await
+            .expect("start request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("start request newline writes");
+        tokio::time::timeout(std::time::Duration::from_secs(2), started)
+            .await
+            .expect("blocking fixture starts");
+
+        request_writer
+            .write_all(
+                serde_json::to_string(&json!({
+                    "request_id":"blocking-cancel",
+                    "method":"cancel_session",
+                    "params":{"session_id":session_id.clone()}
+                }))
+                .expect("cancel request serializes")
+                .as_bytes(),
+            )
+            .await
+            .expect("cancel request writes");
+        request_writer
+            .write_all(b"\n")
+            .await
+            .expect("cancel request newline writes");
+
+        let mut response_reader = BufReader::new(response_reader);
+        let mut responses = Vec::new();
+        while responses.len() < 2 {
+            let mut line = String::new();
+            let read = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                response_reader.read_line(&mut line),
+            )
+            .await
+            .expect("blocking responses arrive")
+            .expect("blocking response reads");
+            assert!(read > 0, "server closed before both responses: {responses:?}");
+            responses.push(serde_json::from_str::<Value>(&line).expect("blocking response JSON"));
+        }
+        let cancel = responses
+            .iter()
+            .find(|response| response["request_id"] == "blocking-cancel")
+            .expect("cancel response");
+        assert_eq!(cancel["ok"], true);
+        assert_eq!(cancel["result"]["summary"]["state"], "cancelled");
+        let start = responses
+            .iter()
+            .find(|response| response["request_id"] == "blocking-start")
+            .expect("start response");
+        assert_eq!(start["ok"], false);
+        assert_eq!(start["error"]["code"], "stale");
+
+        request_writer.shutdown().await.expect("request closes");
+        server
+            .await
+            .expect("server joins")
+            .expect("server succeeds");
     }
 
     #[tokio::test]

@@ -22,7 +22,7 @@ use crate::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
-    interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
+    interaction::{Interaction, InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -2465,6 +2465,29 @@ impl PersistentLocalSwarm {
     {
         let harness = self.open_session(task).await?;
         harness.storage().interaction_operator_authorizer()
+    }
+
+    /// Opens one durable approval ticket for an owner supplied fixture or
+    /// host integration. The ticket is stored in the task journal; callers
+    /// still have to use the authenticated operator resolution path before it
+    /// can authorize anything.
+    pub async fn open_approval(
+        &self,
+        task: TaskId,
+        operation_id: OperationId,
+        prompt: impl Into<String>,
+        action_digest: [u8; 32],
+    ) -> Result<InteractionId> {
+        let harness = self.open_session(task).await?;
+        let id = InteractionId::new();
+        harness
+            .storage()
+            .open_interaction(
+                id,
+                Interaction::approval(prompt, operation_id, action_digest)?,
+            )
+            .await?;
+        Ok(id)
     }
 
     /// Records one authenticated operator decision against the current ticket.
