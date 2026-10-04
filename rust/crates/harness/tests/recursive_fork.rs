@@ -922,6 +922,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 boundary: seed.boundary.clone(),
                 model_boundary: seed.model_boundary.clone(),
             },
+            original_request_digest: None,
             captures: seed
                 .resources
                 .iter()

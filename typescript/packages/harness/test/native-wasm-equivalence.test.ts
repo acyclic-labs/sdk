@@ -2,14 +2,12 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import {
   DEFAULT_LIMITS, Harness, NativeContracts, descriptorFor,
-  type AgentId, type FileRef, type ForkRequest, type NativeLimitsWire,
+  type AgentId, type FileRef, type ForkReport, type ForkRequest, type ModelBoundaryReferences, type NativeLimitsWire,
 } from "../src/index.js";
 import {
   digestCanonicalJson, encodeCanonicalJson, prepareModelRequest, validateContract,
 } from "../generated/wasm/acyclic_harness_wasm.js";
-import type {
-  WasmFileRefWire, WasmModelLimitsInput, WasmModelMessageWire, WasmModelRequestWire,
-} from "../generated/wasm/acyclic_harness_wasm.js";
+import type { WasmFileRefWire, WasmModelLimitsInput, WasmModelMessageWire, WasmModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 
 const fixture = JSON.parse(readFileSync(new URL("../../../../conformance/vectors/harness/native-wasm-event-v2.json", import.meta.url), "utf8")) as {
   event_wire_hex: string;
@@ -212,17 +210,7 @@ test("recursive model requests retain exact parent prefixes through raw WASM and
   expect(siblingRaw.request_json).not.toBe(evidence[1]!.requestJson);
 });
 
-interface ModelBoundaryWire {
-  readonly publication: string;
-  readonly publication_digest: readonly number[];
-  readonly boundary_digest: readonly number[];
-  readonly attestation: readonly number[];
-  readonly files: readonly WasmFileRefWire[];
-}
-
-type ForkRequestWithModelBoundary = ForkRequest & { readonly model_boundary: ModelBoundaryWire };
-
-function modelBoundaryRequest(files: readonly FileRef[]): ForkRequestWithModelBoundary {
+function modelBoundaryRequest(files: readonly FileRef[]): ForkRequest {
   const childAgent = "22222222-2222-2222-2222-222222222222" as AgentId;
   const parent = { kind: "conversation", id: "parent" } as const;
   const child = { kind: "conversation", id: "child" } as const;
@@ -232,7 +220,7 @@ function modelBoundaryRequest(files: readonly FileRef[]): ForkRequestWithModelBo
     preparation: {
       child_project_volume: { provider: filesystem, id: "child-project", class: "project", owner: { kind: "project", id: "project" } },
       child_private_volume: { provider: filesystem, id: "child-private", class: "agent_private", owner: { kind: "agent", id: childAgent } },
-      inherited_through_sequence: 4n, maximum_inherited_messages: 16n,
+      inherited_through_sequence: 0n, maximum_inherited_messages: 16n,
       maximum_inherited_bytes: 65_536n, maximum_inherited_references: 32,
     },
     selections: [
@@ -245,8 +233,7 @@ function modelBoundaryRequest(files: readonly FileRef[]): ForkRequestWithModelBo
     boundary: null,
     model_boundary: {
       publication: "33333333-3333-4333-8333-333333333333",
-      publication_digest: Array(32).fill(1), boundary_digest: Array(32).fill(2), attestation: Array(32).fill(3),
-      files: files.map(wireFile),
+      publication_digest: Array(32).fill(1), boundary_digest: Array(32).fill(2), attestation: Array(32).fill(3), files,
     },
   };
 }
@@ -258,23 +245,54 @@ test("nonnull model-boundary envelopes survive raw WASM and typed contract admis
     await modelFile(contracts, "boundary-child", "boundary child\r\n🦀"),
   ];
   const request = modelBoundaryRequest(files);
-  const raw = validateContract("fork_request", request, null) as ForkRequestWithModelBoundary;
-  const facade = contracts.validate("fork_request", request as unknown as ForkRequest) as unknown as ForkRequestWithModelBoundary;
+  const boundary = request.model_boundary;
+  if (boundary === undefined) throw new Error("fixture omitted model boundary");
+  const raw = validateContract("fork_request", request, null) as ForkRequest;
+  const facade = contracts.validate("fork_request", request);
   expect(raw.model_boundary).toEqual(request.model_boundary);
   expect(facade.model_boundary).toEqual(request.model_boundary);
   expect(equalBytes(bytes(raw), bytes(facade))).toBe(true);
 
-  const mutations: readonly [string, (boundary: ModelBoundaryWire) => ModelBoundaryWire][] = [
+  const mutations: readonly [string, (boundary: ModelBoundaryReferences) => ModelBoundaryReferences][] = [
     ["publication digest", boundary => ({ ...boundary, publication_digest: Array(32).fill(0) })],
     ["boundary digest", boundary => ({ ...boundary, boundary_digest: Array(32).fill(0) })],
     ["attestation", boundary => ({ ...boundary, attestation: Array(32).fill(0) })],
     ["duplicate exact file", boundary => ({ ...boundary, files: [...boundary.files, boundary.files[0]!] })],
-    ["invalid publication", boundary => ({ ...boundary, publication: "not-an-operation" })],
+    ["invalid publication", boundary => ({ ...boundary, publication: "not-an-operation" as ForkRequest["operation_id"] })],
     ["path escape", boundary => ({ ...boundary, files: [{ ...boundary.files[0]!, path: "../escape" }, boundary.files[1]!] })],
   ];
   for (const [name, mutate] of mutations) {
-    const mutated = { ...request, model_boundary: mutate(structuredClone(request.model_boundary)) };
+    const mutated = { ...request, model_boundary: mutate(structuredClone(boundary)) };
     expect(() => validateContract("fork_request", mutated, null)).toThrow();
-    expect(() => contracts.validate("fork_request", mutated as unknown as ForkRequest)).toThrow();
+    expect(() => contracts.validate("fork_request", mutated)).toThrow();
   }
+});
+
+test("original fork request digests retain the same native and WASM report shape", async () => {
+  const contracts = await NativeContracts.create();
+  const request = modelBoundaryRequest([]);
+  const report: ForkReport = {
+    request,
+    original_request_digest: Array(32).fill(9),
+    captures: [
+      { kind: "captured", value: { source: request.selections[0]!.revision, revision: request.selections[0]!.revision } },
+      { kind: "captured", value: { source: request.selections[1]!.revision, revision: {
+        kind: "project", reference: {
+          volume: { provider: filesystem, id: "child-project", class: "project", owner: { kind: "project", id: "project" } },
+          generation: { kind: "generation", provider: filesystem, key: [2], version: null },
+        },
+      } } },
+    ],
+    child_private_volume: request.preparation.child_private_volume,
+    child_private_generation: { kind: "generation", provider: filesystem, key: [3], version: null },
+    inherited_context: [], inherited_through_sequence: 0n, shared_grants: [], reference_grants: [], attachment_manifests: [],
+  };
+  const raw = validateContract("fork_report", report, null) as ForkReport;
+  const facade = contracts.validate("fork_report", report);
+  expect(raw.original_request_digest).toEqual(report.original_request_digest);
+  expect(facade.original_request_digest).toEqual(report.original_request_digest);
+  expect(bytes(raw)).toEqual(bytes(facade));
+  const malformed = { ...report, original_request_digest: Array(31).fill(9) };
+  expect(() => validateContract("fork_report", malformed, null)).toThrow();
+  expect(() => contracts.validate("fork_report", malformed)).toThrow();
 });
