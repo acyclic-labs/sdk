@@ -343,6 +343,20 @@ fn rebind_report_history(
     report.validate_with_rebind_proof(proof)
 }
 
+fn source_project_for_parent(
+    parent_project: Option<VolumeRef>,
+    parent_is_root: bool,
+    root_project: &VolumeRef,
+) -> Result<VolumeRef> {
+    match parent_project {
+        Some(project) => Ok(project),
+        None if parent_is_root => Ok(root_project.clone()),
+        None => Err(Error::Conflict(
+            "local fork resolver is missing the direct parent project binding".into(),
+        )),
+    }
+}
+
 /// Owner allocator invoked only after the parent completed batch is
 /// published. Implementations allocate child authorities/resources and return
 /// the existing typed report/declaration plan used by activation.
@@ -694,24 +708,17 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                             }
                         })
                 });
-            let (source_project, source_generation) = match parent_project {
-                Some(source_project) => {
-                    let project_ref = workspace_ref(
-                        source_project.provider().clone(),
-                        &source_project.storage_name()?,
-                    )?;
-                    let project_head = self.host.resolve(&project_ref).await?;
-                    (source_project, project_head.generation)
-                }
-                None => {
-                    let project_ref = workspace_ref(
-                        self.project.provider().clone(),
-                        &self.project.storage_name()?,
-                    )?;
-                    let project_head = self.host.resolve(&project_ref).await?;
-                    (self.project.clone(), project_head.generation)
-                }
-            };
+            let source_project = source_project_for_parent(
+                parent_project,
+                parent_session.parent.is_none(),
+                &self.project,
+            )?;
+            let project_ref = workspace_ref(
+                source_project.provider().clone(),
+                &source_project.storage_name()?,
+            )?;
+            let project_head = self.host.resolve(&project_ref).await?;
+            let source_generation = project_head.generation;
             let project_owner = match source_project.owner() {
                 VolumeOwner::Project(owner) => VolumeOwner::Project(owner.clone()),
                 _ => {
@@ -4724,6 +4731,33 @@ mod tests {
         Mutex,
         atomic::{AtomicUsize, Ordering},
     };
+
+    #[test]
+    fn source_project_selection_only_falls_back_for_root() -> Result<()> {
+        let provider = ProviderRef::new("local", "filesystem", "2")?;
+        let root = VolumeRef::new(
+            provider.clone(),
+            "root-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("root".into()),
+        )?;
+        let direct_parent = VolumeRef::new(
+            provider,
+            "parent-project",
+            VolumeClass::Project,
+            VolumeOwner::Project("root".into()),
+        )?;
+        assert_eq!(source_project_for_parent(None, true, &root)?, root);
+        assert_eq!(
+            source_project_for_parent(Some(direct_parent.clone()), false, &root)?,
+            direct_parent
+        );
+        assert!(matches!(
+            source_project_for_parent(None, false, &root),
+            Err(Error::Conflict(message)) if message.contains("direct parent project binding")
+        ));
+        Ok(())
+    }
 
     struct MockModel {
         calls: AtomicUsize,

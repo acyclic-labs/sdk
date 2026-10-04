@@ -55,7 +55,7 @@ if (identityPath !== undefined && identityPath.trim() !== "") {
 const bridgeExecutable = requiredEnvironment("GRAPHCODER_BRIDGE_EXECUTABLE");
 const bridgeArgs = jsonArray("GRAPHCODER_BRIDGE_ARGS_JSON");
 const bridgeEnvironment = jsonObject("GRAPHCODER_BRIDGE_ENV_JSON");
-const bridgeCwd = resolve(process.env.GRAPHCODER_BRIDGE_CWD ?? process.cwd());
+const bridgeCwd = resolve(requiredEnvironment("GRAPHCODER_BRIDGE_CWD"));
 const lazyObservationPath = process.env.GRAPHCODER_LAZY_OBSERVATION_PATH;
 if (lazyObservationPath !== undefined && lazyObservationPath.trim() !== "") {
   mkdirSync(dirname(resolve(lazyObservationPath)), { recursive: true });
