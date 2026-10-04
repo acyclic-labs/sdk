@@ -1997,6 +1997,9 @@ pub struct PersistentLocalSwarm {
     /// projection. This is a disposable cursor; the registry remains the
     /// authority and refreshes read only an unseen suffix.
     registry_tail: Mutex<u64>,
+    /// Serializes suffix replay and its projection publication within one
+    /// swarm handle. The durable stream CAS remains the cross-handle fence.
+    registry_refresh: Mutex<()>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
     /// Per-task live terminal fences. The registry remains the cross-process
     /// authority; these narrow gates prevent duplicate retries without
@@ -2174,6 +2177,7 @@ impl PersistentLocalSwarm {
             outcomes: Mutex::new(outcomes),
             completion_refs: Mutex::new(completion_refs),
             registry_tail: Mutex::new(registry_tail),
+            registry_refresh: Mutex::new(()),
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
@@ -4093,6 +4097,7 @@ impl PersistentLocalSwarm {
     }
 
     async fn refresh_registry_state_with_tail(&self) -> Result<u64> {
+        let _refresh = self.registry_refresh.lock().await;
         let stream = self
             .registry
             .stream(REGISTRY_STREAM)
@@ -4133,6 +4138,9 @@ impl PersistentLocalSwarm {
                 record,
             )?;
         }
+        // The refresh fence stays held until every derived map has been
+        // replaced, so concurrent refreshers cannot replay the same suffix or
+        // publish competing intermediate projections.
         *self.records.lock().await = sessions;
         *self.requests.lock().await = requests;
         *self.seeds.lock().await = seeds;
@@ -4755,6 +4763,28 @@ mod tests {
             waits.completed.lock().expect("wait store lock").as_slice(),
             &[crate::communication::WaitCompletion::Deadline]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn concurrent_registry_reads_share_one_serialized_projection_refresh() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let (left, right) = tokio::join!(swarm.sessions(), swarm.sessions());
+        let left = left?;
+        let right = right?;
+        assert_eq!(left, right);
+        assert_eq!(left.len(), 1);
         Ok(())
     }
 
