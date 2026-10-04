@@ -881,6 +881,14 @@ export declare class NativeProcessOwner {
   spawn(executable: string, args: Array<string>, cwd: string | undefined | null, environment: Array<string>): NativeProcessSpawn
   /** Terminates the owned process tree and retires its token on proof. */
   terminate(token: string): NativeProcessTermination
+  /** Writes bytes to the native process stdin owned by `token`. */
+  writeStdin(token: string, bytes: Buffer): void
+  /** Closes the native process stdin owned by `token`. */
+  closeStdin(token: string): void
+  /** Polls one bounded output chunk without blocking the JavaScript thread. */
+  pollOutput(token: string, stream: string): NativeProcessOutput
+  /** Observes the direct root without changing native ownership. */
+  pollExit(token: string): NativeProcessExit
 }
 
 /** One immutable file resolved against a pinned checkout generation. */
@@ -1984,6 +1992,24 @@ export interface NativePathComponent {
   encoding: string
   /** Exact component bytes in the declared representation. */
   bytes: Buffer
+}
+
+/** One direct-root exit observation. */
+export interface NativeProcessExit {
+  /** `running` or `exited`. */
+  kind: string
+  /** Exit code when the root exited normally. */
+  code?: number
+}
+
+/** One bounded nonblocking output observation. */
+export interface NativeProcessOutput {
+  /** `idle`, `data`, `eof`, or `error`. */
+  kind: string
+  /** Bytes when `kind` is `data`. */
+  bytes?: Buffer
+  /** Error text when `kind` is `error`. */
+  reason?: string
 }
 
 /** Native process identity returned after atomic platform ownership. */

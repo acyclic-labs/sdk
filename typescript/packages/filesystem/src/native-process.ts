@@ -16,6 +16,20 @@ export interface NativeProcessLaunch {
   readonly pid: number;
 }
 
+/** Native token-scoped stdio operations for a suspended native launch. */
+export interface NativeProcessIo {
+  readonly launch: (executable: string, args: readonly string[], options: SpawnOptions) => NativeProcessLaunch;
+  readonly write: (token: string, bytes: Uint8Array) => void;
+  readonly closeStdin: (token: string) => void;
+  readonly pollOutput: (token: string, stream: "stdout" | "stderr") => {
+    readonly kind: "idle" | "data" | "eof" | "error";
+    readonly bytes?: Uint8Array;
+    readonly reason?: string;
+  };
+  readonly pollExit: (token: string) => { readonly kind: "running" | "exited"; readonly code?: number | null };
+  readonly terminate: (token: string) => NativeProcessTermination;
+}
+
 /**
  * Node-facing owner supplied by the native companion.
  *
@@ -35,6 +49,7 @@ export interface NativeProcessOwnerBinding {
     args: readonly string[],
     options: SpawnOptions,
   ) => NativeProcessLaunch;
+  readonly io?: NativeProcessIo;
 }
 
 /** Structural owner contract accepted by GraphCoder's process bridge. */
@@ -42,6 +57,7 @@ export interface NativeProcessOwner {
   readonly spawn: NativeProcessOwnerBinding["spawn"];
   readonly terminate: NativeProcessOwnerBinding["terminate"];
   readonly launch?: NativeProcessOwnerBinding["launch"];
+  readonly io?: NativeProcessIo;
 }
 
 /**
@@ -67,5 +83,6 @@ export function createNativeProcessOwner(binding: unknown): NativeProcessOwner {
     spawn: candidate.spawn,
     terminate: candidate.terminate,
     ...(typeof candidate.launch === "function" ? { launch: candidate.launch } : {}),
+    ...(candidate.io !== undefined ? { io: candidate.io } : {}),
   });
 }

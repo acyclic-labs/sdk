@@ -1,7 +1,7 @@
 #![allow(unsafe_code)]
 
 use std::io;
-use std::process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Output};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
 
 /// One child and descendants that remain in its operating-system containment.
 ///
@@ -81,6 +81,11 @@ impl ProcessTree {
     /// ownership for later termination.
     pub fn take_stderr(&mut self) -> Option<ChildStderr> {
         self.child.as_mut().and_then(|child| child.stderr.take())
+    }
+
+    /// Takes the direct child's stdin while retaining native tree ownership.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.child.as_mut().and_then(|child| child.stdin.take())
     }
 
     /// Terminates every process in the tree and reaps the direct child.

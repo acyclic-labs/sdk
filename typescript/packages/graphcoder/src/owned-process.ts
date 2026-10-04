@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
+import { PassThrough, Writable } from "node:stream";
 
 export type OwnedProcessTermination =
   | { readonly kind: "terminated"; readonly pid: number }
@@ -11,6 +13,132 @@ export type OwnedProcessTermination =
 export interface OwnedProcessOwner {
   readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<OwnedProcessTermination>;
+}
+
+/** Token-scoped native process transport supplied by a host adapter. */
+export interface NativeOwnedProcessIo {
+  readonly launch: (executable: string, args: readonly string[], options: SpawnOptions) => {
+    readonly token: string;
+    readonly pid: number;
+  };
+  readonly write: (token: string, bytes: Uint8Array) => void;
+  readonly closeStdin: (token: string) => void;
+  readonly pollOutput: (token: string, stream: "stdout" | "stderr") => {
+    readonly kind: "idle" | "data" | "eof" | "error";
+    readonly bytes?: Uint8Array;
+    readonly reason?: string;
+  };
+  readonly pollExit: (token: string) => { readonly kind: "running" | "exited"; readonly code?: number | null };
+  readonly terminate: (token: string) => { readonly kind: "terminated" | "timeout" | "unknown"; readonly reason?: string };
+}
+
+type NativeOwnedChild = ChildProcess & {
+  readonly __nativeOwnerToken: string;
+};
+
+/**
+ * Adapts the native token protocol to the bridge's ChildProcess-shaped
+ * lifecycle. The native owner remains the only authority for process effects;
+ * this adapter only moves bounded bytes between queues and streams.
+ */
+export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedProcessOwner {
+  const tokens = new WeakMap<ChildProcess, string>();
+  const states = new WeakMap<ChildProcess, { timer: ReturnType<typeof setInterval>; closed: boolean }>();
+  const owner = {
+    spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
+      const launch = io.launch(executable, args, options);
+      const child = new EventEmitter() as NativeOwnedChild;
+      Object.defineProperties(child, {
+        pid: { value: launch.pid, enumerable: true },
+        exitCode: { writable: true, value: null, enumerable: true },
+        signalCode: { writable: true, value: null, enumerable: true },
+        __nativeOwnerToken: { value: launch.token },
+      });
+      const stdin = new Writable({
+        write(chunk, _encoding, callback) {
+          try {
+            io.write(launch.token, new Uint8Array(chunk));
+            callback();
+          } catch (error) {
+            callback(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+        final(callback) {
+          try { io.closeStdin(launch.token); callback(); }
+          catch (error) { callback(error instanceof Error ? error : new Error(String(error))); }
+        },
+      });
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      Object.defineProperties(child, {
+        stdin: { value: stdin },
+        stdout: { value: stdout },
+        stderr: { value: stderr },
+      });
+      const state = { timer: undefined as unknown as ReturnType<typeof setInterval>, closed: false };
+      let stdoutDone = false;
+      let stderrDone = false;
+      state.timer = setInterval(() => {
+        if (state.closed) return;
+        for (const stream of ["stdout", "stderr"] as const) {
+          const target = stream === "stdout" ? stdout : stderr;
+          const value = io.pollOutput(launch.token, stream);
+          if (value.kind === "data" && value.bytes !== undefined) target.write(Buffer.from(value.bytes));
+          if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+          if (value.kind === "eof") {
+            target.end();
+            if (stream === "stdout") stdoutDone = true;
+            else stderrDone = true;
+          }
+        }
+        const exit = io.pollExit(launch.token);
+        if (exit.kind === "exited") {
+          (child as ChildProcess & { exitCode: number | null }).exitCode = exit.code ?? null;
+          if (stdoutDone && stderrDone) finish();
+        }
+      }, 10);
+      const finish = (): void => {
+        if (state.closed) return;
+        state.closed = true;
+        clearInterval(state.timer);
+        child.emit("exit", child.exitCode, child.signalCode);
+        child.emit("close", child.exitCode, child.signalCode);
+      };
+      tokens.set(child, launch.token);
+      states.set(child, state);
+      return child;
+    },
+    async terminate(child: ChildProcess, graceMs = 250): Promise<OwnedProcessTermination> {
+      const token = tokens.get(child);
+      if (token === undefined) return { kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" };
+      const deadline = Date.now() + Math.max(0, graceMs);
+      let result = io.terminate(token);
+      while (result.kind !== "terminated" && Date.now() < deadline) {
+        await new Promise<void>(resolve => setTimeout(resolve, 10));
+        result = io.terminate(token);
+      }
+      if (result.kind !== "terminated") {
+        if (result.kind === "timeout") {
+          return { kind: "timeout", pid: child.pid ?? -1, phase: "command" };
+        }
+        return { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
+      }
+      const state = states.get(child);
+      if (state !== undefined && !state.closed) {
+        await new Promise<void>(resolve => {
+          const onClose = (): void => { child.removeListener("close", onClose); resolve(); };
+          child.once("close", onClose);
+          setTimeout(() => { child.removeListener("close", onClose); resolve(); }, Math.max(0, graceMs));
+        });
+        if (!state.closed) {
+          return { kind: "timeout", pid: child.pid ?? -1, phase: "pipes" };
+        }
+      }
+      tokens.delete(child);
+      return { kind: "terminated", pid: child.pid ?? -1 };
+    },
+  } satisfies OwnedProcessOwner;
+  return owner;
 }
 
 type OwnedProcessState = { closed: boolean; errored: boolean };

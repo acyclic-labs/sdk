@@ -114,6 +114,7 @@ async function qualifyProcessOwner(binding) {
     throw new Error("N-API companion did not export NativeProcessOwner");
   }
   const owner = new binding.NativeProcessOwner();
+  const executable = process.platform === "win32" ? "node" : process.execPath;
   const directory = await mkdtemp(join(tmpdir(), "acyclic-native-owner-"));
   const pidFile = join(directory, "grandchild.pid");
   const rootExitFile = join(directory, "root-exit");
@@ -124,7 +125,8 @@ async function qualifyProcessOwner(binding) {
       `PATH=${process.env.PATH ?? ""}`,
       ...(process.platform === "win32" ? [`SystemRoot=${process.env.SystemRoot ?? ""}`] : []),
     ];
-    const spawned = owner.spawn(process.execPath, ["-e", root, pidFile, rootExitFile], null, environment);
+    await qualifyProcessIo(owner, executable, environment);
+    const spawned = owner.spawn(executable, ["-e", root, pidFile, rootExitFile], null, environment);
     const deadline = Date.now() + 5_000;
     while (!exists(pidFile) && Date.now() < deadline) await delay(20);
     if (!exists(pidFile)) throw new Error("native process owner fixture did not start its descendant");
@@ -143,6 +145,35 @@ async function qualifyProcessOwner(binding) {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+async function qualifyProcessIo(owner, executable, environment) {
+  const echo = "process.stdin.once('data', c => { process.stdout.write(c); process.stderr.write('diagnostic'); process.exit(0); });";
+  const spawned = owner.spawn(executable, ["-e", echo], null, environment);
+  owner.writeStdin(spawned.token, Buffer.from("native-io\\n"));
+  owner.closeStdin(spawned.token);
+  const deadline = Date.now() + 5_000;
+  let stdout = "";
+  let stderr = "";
+  while (Date.now() < deadline) {
+    for (const stream of ["stdout", "stderr"]) {
+      const value = owner.pollOutput(spawned.token, stream);
+      if (value.kind === "error") throw new Error(`native process ${stream} read failed: ${value.reason}`);
+      if (value.kind === "data") {
+        const text = Buffer.from(value.bytes).toString("utf8");
+        if (stream === "stdout") stdout += text;
+        else stderr += text;
+      }
+    }
+    if (owner.pollExit(spawned.token).kind === "exited") break;
+    await delay(20);
+  }
+  if (stdout !== "native-io\\n" || stderr !== "diagnostic") {
+    throw new Error(`native process stdio mismatch: stdout=${JSON.stringify(stdout)} stderr=${JSON.stringify(stderr)}`);
+  }
+  if (owner.pollExit(spawned.token).kind !== "exited") throw new Error("native process did not report root exit");
+  const result = owner.terminate(spawned.token);
+  if (result.kind !== "terminated") throw new Error(`native process stdio cleanup was uncertain: ${JSON.stringify(result)}`);
 }
 
 function exists(path) {

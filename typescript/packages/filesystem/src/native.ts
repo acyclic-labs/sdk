@@ -88,7 +88,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
-import { createNativeProcessOwner, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
+import { createNativeProcessOwner, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
@@ -219,6 +219,10 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
     readonly NativeProcessOwner?: new () => {
       adopt(pid: number): string;
       spawn(executable: string, args: readonly string[], cwd: string | null, environment: readonly string[]): NativeProcessLaunch;
+      writeStdin(token: string, bytes: Uint8Array): void;
+      closeStdin(token: string): void;
+      pollOutput(token: string, stream: "stdout" | "stderr"): { kind: "idle" | "data" | "eof" | "error"; bytes?: Uint8Array; reason?: string };
+      pollExit(token: string): { kind: "running" | "exited"; code?: number | null };
       terminate(token: string): { kind: string; reason?: string };
     };
   };
@@ -227,20 +231,44 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
   }
   const nativeOwner = new candidate.NativeProcessOwner();
   const tokens = new WeakMap<ChildProcess, string>();
+  const launch = (executable: string, args: readonly string[], options: SpawnOptions): NativeProcessLaunch => {
+    const environment = Object.entries(options.env ?? {}).flatMap(([key, value]) =>
+      value === undefined ? [] : [`${key}=${String(value)}`],
+    );
+    const cwd = options.cwd === undefined
+      ? null
+      : typeof options.cwd === "string"
+        ? options.cwd
+        : fileURLToPath(options.cwd);
+    return nativeOwner.spawn(executable, [...args], cwd, environment);
+  };
+  const io: NativeProcessIo = {
+    launch,
+    write: (token, bytes) => nativeOwner.writeStdin(token, Buffer.from(bytes)),
+    closeStdin: token => nativeOwner.closeStdin(token),
+    pollOutput: (token, stream) => {
+      const value = nativeOwner.pollOutput(token, stream);
+      const normalized: {
+        kind: "idle" | "data" | "eof" | "error";
+        bytes?: Uint8Array;
+        reason?: string;
+      } = { kind: value.kind };
+      if (value.bytes !== undefined) normalized.bytes = new Uint8Array(value.bytes);
+      if (value.reason !== undefined) normalized.reason = value.reason;
+      return normalized;
+    },
+    pollExit: token => nativeOwner.pollExit(token),
+    terminate: token => {
+      const result = nativeOwner.terminate(token);
+      if (result.kind === "terminated") return { kind: "terminated", pid: -1 };
+      return { kind: "unknown", pid: -1, reason: result.reason ?? "native termination is uncertain" };
+    },
+  };
   return createNativeProcessOwner({
     capability: "acyclic.native-process-owner.v1",
     version: "0.2.0",
-    launch(executable: string, args: readonly string[], options: SpawnOptions): NativeProcessLaunch {
-      const environment = Object.entries(options.env ?? {}).flatMap(([key, value]) =>
-        value === undefined ? [] : [`${key}=${String(value)}`],
-      );
-      const cwd = options.cwd === undefined
-        ? null
-        : typeof options.cwd === "string"
-          ? options.cwd
-          : fileURLToPath(options.cwd);
-      return nativeOwner.spawn(executable, [...args], cwd, environment);
-    },
+    launch,
+    io,
     spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
       // Detached roots have a stable Unix process group for the native
       // hand-off. Windows uses the same hand-off to assign the root to a Job.
