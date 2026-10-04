@@ -450,10 +450,8 @@ pub struct ExecutionReceiptKey {
 impl ExecutionReceiptKey {
     /// Validates the canonical identity and provider tuple of one receipt slot.
     ///
-    /// The operation/effect relationship is checked when the key is matched
-    /// to a dispatch.  Keeping this check local to the key also lets durable
-    /// stores reject malformed journal records before exposing them to a
-    /// provider restart path.
+    /// The operation/effect relationship is part of this provider's fence,
+    /// including when a receipt is reconciled without its original dispatch.
     pub fn validate(&self) -> Result<()> {
         if self.operation_id.into_bytes() == [0; 16]
             || self.effect_id.into_bytes() == [0; 16]
@@ -462,6 +460,11 @@ impl ExecutionReceiptKey {
         {
             return Err(Error::Invalid(
                 "execution receipt key contains an empty identity or request digest".into(),
+            ));
+        }
+        if self.effect_id.into_bytes() != self.operation_id.into_bytes() {
+            return Err(Error::Conflict(
+                "execution receipt effect identity does not match its operation".into(),
             ));
         }
         if self.provider != "harness.native-execution.v1"
@@ -979,12 +982,31 @@ pub enum RunnerOutcome {
 #[derive(Clone, Debug, Default)]
 pub struct ExecutionCancellation {
     cancelled: Arc<AtomicBool>,
+    durable: Arc<AtomicBool>,
+    requires_durable_fence: bool,
 }
 
 impl ExecutionCancellation {
     /// Creates a fresh signal in the not-cancelled state.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    fn for_admitted_execution(requires_durable_fence: bool) -> Self {
+        Self {
+            requires_durable_fence,
+            ..Self::default()
+        }
+    }
+
+    fn mark_durable(&self) {
+        self.durable.store(true, Ordering::Release);
+    }
+
+    fn cancellation_fence_is_unknown(&self) -> bool {
+        self.requires_durable_fence
+            && self.is_cancelled()
+            && !self.durable.load(Ordering::Acquire)
     }
 
     /// Requests cancellation of the running operation.
@@ -1427,7 +1449,9 @@ impl NativeExecutionProvider {
                 else {
                     return;
                 };
-                let _ = runtime.block_on(store.request_cancel(&key));
+                if runtime.block_on(store.request_cancel(&key)).is_ok() {
+                    cancellation.mark_durable();
+                }
             });
         }
         true
@@ -1450,6 +1474,7 @@ impl NativeExecutionProvider {
         cancellation.cancel();
         if let Some(store) = &self.receipt_store {
             store.request_cancel(&key).await?;
+            cancellation.mark_durable();
         }
         Ok(true)
     }
@@ -1466,7 +1491,8 @@ impl NativeExecutionProvider {
                 "execution operation already has an active attempt".into(),
             ));
         }
-        let cancellation = ExecutionCancellation::new();
+        let cancellation =
+            ExecutionCancellation::for_admitted_execution(self.receipt_store.is_some());
         active.insert(operation_id, (key, attempt_id, cancellation.clone()));
         Ok(cancellation)
     }
@@ -1761,6 +1787,11 @@ impl NativeExecutionProvider {
                 Ok(Err(error)) => Self::bounded_unknown(format!(
                     "approved process runner failed before its outcome was durable: {error}"
                 )),
+                Ok(Ok(_)) if cancellation.cancellation_fence_is_unknown() => {
+                    Self::bounded_unknown(
+                        "cancellation was signalled without a persisted durable fence",
+                    )
+                }
                 Ok(Ok(outcome)) => match Self::enforce_output_limit(&approval.request, outcome) {
                     RunnerOutcome::Exited { stdout, stderr, .. } if cancellation.is_cancelled() => {
                         ExecutionReceipt::Cancelled { stdout, stderr }
@@ -3609,6 +3640,38 @@ mod local_provider_tests {
         }
     }
 
+    struct FailRequestCancelStore {
+        inner: Arc<dyn ExecutionReceiptStore>,
+    }
+
+    impl ExecutionReceiptStore for FailRequestCancelStore {
+        fn claim<'a>(&'a self, key: &'a ExecutionReceiptKey)
+            -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
+            self.inner.claim(key)
+        }
+
+        fn load<'a>(&'a self, key: &'a ExecutionReceiptKey)
+            -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            self.inner.load(key)
+        }
+
+        fn load_attempt<'a>(&'a self, attempt_id: EffectAttemptId)
+            -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            self.inner.load_attempt(attempt_id)
+        }
+
+        fn publish<'a>(&'a self, key: &'a ExecutionReceiptKey,
+            handle: &'a ExecutionClaimHandle, receipt: &'a ExecutionReceipt)
+            -> futures::future::BoxFuture<'a, Result<FileRef>> {
+            self.inner.publish(key, handle, receipt)
+        }
+
+        fn request_cancel<'a>(&'a self, _key: &'a ExecutionReceiptKey)
+            -> futures::future::BoxFuture<'a, Result<()>> {
+            async { Err(Error::Storage("fault injected while persisting cancellation".into())) }.boxed()
+        }
+    }
+
     struct FailAfterReceiptPublish {
         inner: Arc<dyn ExecutionReceiptStore>,
         fail_after_publish: Arc<AtomicBool>,
@@ -4178,6 +4241,102 @@ mod local_provider_tests {
             assert_eq!(fresh.status, EffectStatus::Indeterminate);
             assert_eq!(fresh_calls.load(Ordering::SeqCst), 0);
         }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn production_cancel_persistence_failure_keeps_late_success_unknown_and_fenced()
+    -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-cancel-persistence-failure-{}",
+            OperationId::new()
+        ));
+        let model = Model::new(
+            "mock",
+            "execution-cancel-persistence-failure",
+            "1",
+            serde_json::Value::Null,
+        )?;
+        let operation = OperationId::from_bytes([130; 16]);
+        let interaction_id = InteractionId::from_bytes([131; 16]);
+        let session = PersistentLocalHarness::open(
+            &root,
+            model.clone(),
+            Arc::new(NoopModel),
+            Limits::default(),
+        )
+        .await?;
+        let dispatch = approved_dispatch(
+            &session,
+            operation,
+            interaction_id,
+            local_spec(),
+            "requests/cancel-persistence-failure.json",
+            EffectAttemptId::from_bytes([132; 16]),
+        )
+        .await?;
+        let started = Arc::new(AtomicBool::new(false));
+        let release = Arc::new(AtomicBool::new(false));
+        let raw_store = session.execution_receipt_store()?;
+        let failing_store: Arc<dyn ExecutionReceiptStore> =
+            Arc::new(FailRequestCancelStore { inner: raw_store });
+        let provider = Arc::new(NativeExecutionProvider::new_with_receipt_store(
+            session.storage().content_verifier(),
+            failing_store,
+            Arc::new(BlockingSuccessRunner {
+                calls: Arc::new(AtomicUsize::new(1)),
+                started: Arc::clone(&started),
+                release: Arc::clone(&release),
+            }),
+            session.storage().execution_approval_verifier(),
+        )?);
+        let running = {
+            let provider = Arc::clone(&provider);
+            let dispatch = dispatch.clone();
+            tokio::spawn(async move { provider.dispatch(dispatch).await })
+        };
+        if let Err(error) = wait_for_flag(&started, "cancel persistence failure runner").await {
+            release.store(true, Ordering::Release);
+            let _ = running.await;
+            return Err(error);
+        }
+        assert!(matches!(
+            provider.cancel_and_persist(operation).await,
+            Err(Error::Storage(message)) if message.contains("persisting cancellation")
+        ));
+        release.store(true, Ordering::Release);
+        let observation = running
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))??;
+        assert_eq!(observation.status, EffectStatus::Indeterminate);
+        drop(provider);
+        drop(session);
+
+        let replay_calls = Arc::new(AtomicUsize::new(0));
+        let reopened =
+            PersistentLocalHarness::open(&root, model, Arc::new(NoopModel), Limits::default())
+                .await?;
+        let replay = NativeExecutionProvider::new_with_receipt_store(
+            reopened.storage().content_verifier(),
+            reopened.execution_receipt_store()?,
+            Arc::new(CountingRunner {
+                calls: Arc::clone(&replay_calls),
+                outcome: RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: b"must not redispatch after cancel persistence failure".to_vec(),
+                    stderr: Vec::new(),
+                },
+            }),
+            reopened.storage().execution_approval_verifier(),
+        )?;
+        match replay.dispatch(dispatch).await {
+            Ok(observation) => assert_eq!(observation.status, EffectStatus::Indeterminate),
+            Err(Error::Indeterminate(candidate)) => assert_eq!(candidate, operation),
+            Err(error) => return Err(error),
+        }
+        assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+        drop(reopened);
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
