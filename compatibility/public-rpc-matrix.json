@@ -1,50 +1,34 @@
 [
   {
-    "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
-    "kind": "unary",
-    "request": "acyclic.actors.v1.CreateActorRequest",
-    "response": "acyclic.actors.v1.CreateActorResponse",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v1/actors/create",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
-    "kind": "unary",
-    "request": "acyclic.actors.v1.UpdateActorRequest",
-    "response": "acyclic.actors.v1.UpdateActorResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/update",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
-    "kind": "unary",
-    "request": "acyclic.actors.v1.InspectActorRequest",
-    "response": "acyclic.actors.v1.InspectActorResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/inspect",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/subscriptions/add",
     "kind": "unary",
     "request": "acyclic.actors.v1.AddSubscriptionRequest",
     "response": "acyclic.actors.v1.AddSubscriptionResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/subscriptions/add",
+    "rpc": "acyclic.actors.v1.ActorsService/AddSubscription",
+    "validations": [
+      "idempotency_key.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -52,38 +36,35 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
-    "kind": "unary",
-    "request": "acyclic.actors.v1.RemoveSubscriptionRequest",
-    "response": "acyclic.actors.v1.RemoveSubscriptionResponse",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v1/actors/subscriptions/remove",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
-    "kind": "unary",
-    "request": "acyclic.actors.v1.ResumeSubscriptionRequest",
-    "response": "acyclic.actors.v1.ResumeSubscriptionResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/subscriptions/resume",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/checkpoint",
     "kind": "unary",
     "request": "acyclic.actors.v1.CheckpointActorRequest",
     "response": "acyclic.actors.v1.CheckpointActorResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/checkpoint",
+    "rpc": "acyclic.actors.v1.ActorsService/CheckpointActor",
+    "validations": [
+      "actor_id.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -91,12 +72,106 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/create",
+    "kind": "unary",
+    "request": "acyclic.actors.v1.CreateActorRequest",
+    "response": "acyclic.actors.v1.CreateActorResponse",
+    "rpc": "acyclic.actors.v1.ActorsService/CreateActor",
+    "validations": [
+      "idempotency_key.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "actors.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/inspect",
+    "kind": "unary",
+    "request": "acyclic.actors.v1.InspectActorRequest",
+    "response": "acyclic.actors.v1.InspectActorResponse",
+    "rpc": "acyclic.actors.v1.ActorsService/InspectActor",
+    "validations": [
+      "actor_id.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "actors.invoke"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/invoke",
     "kind": "unary",
     "request": "acyclic.actors.v1.InvokeActorRequest",
     "response": "acyclic.actors.v1.InvokeActorResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/actors/invoke",
+    "rpc": "acyclic.actors.v1.ActorsService/InvokeActor",
+    "validations": [
+      "actor_id.non_empty_utf8",
+      "method.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -104,12 +179,35 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/subscriptions/remove",
     "kind": "unary",
-    "request": "acyclic.workers.v1.PublishVersionRequest",
-    "response": "acyclic.workers.v1.PublishVersionResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/versions/publish",
+    "request": "acyclic.actors.v1.RemoveSubscriptionRequest",
+    "response": "acyclic.actors.v1.RemoveSubscriptionResponse",
+    "rpc": "acyclic.actors.v1.ActorsService/RemoveSubscription",
+    "validations": [
+      "idempotency_key.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -117,12 +215,35 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/subscriptions/resume",
     "kind": "unary",
-    "request": "acyclic.workers.v1.SelectDeploymentRequest",
-    "response": "acyclic.workers.v1.SelectDeploymentResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/deployments/select",
+    "request": "acyclic.actors.v1.ResumeSubscriptionRequest",
+    "response": "acyclic.actors.v1.ResumeSubscriptionResponse",
+    "rpc": "acyclic.actors.v1.ActorsService/ResumeSubscription",
+    "validations": [
+      "idempotency_key.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -130,12 +251,36 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+    "capabilities": [
+      "actors.write",
+      "actors.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_CAPABILITY_DENIED",
+      "ERROR_CODE_CAPABILITY_EXPIRED",
+      "ERROR_CODE_ACTOR_NOT_FOUND",
+      "ERROR_CODE_SUBSCRIPTION_NOT_FOUND",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_ADMISSION_DENIED",
+      "ERROR_CODE_CHECKPOINT_FAILED",
+      "ERROR_CODE_DEPENDENCY_UNAVAILABLE"
+    ],
+    "family": "actors",
+    "httpMethod": "POST",
+    "httpOperation": "v1/actors/update",
     "kind": "unary",
-    "request": "acyclic.workers.v1.SubmitJobRequest",
-    "response": "acyclic.workers.v1.SubmitJobResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/jobs/submit",
+    "request": "acyclic.actors.v1.UpdateActorRequest",
+    "response": "acyclic.actors.v1.UpdateActorResponse",
+    "rpc": "acyclic.actors.v1.ActorsService/UpdateActor",
+    "validations": [
+      "actor_id.non_empty_utf8",
+      "expected_configuration_revision.non_negative"
+    ],
+    "exposureScope": "source-inspected",
     "rustGrpc": true,
     "rustHttp": true,
     "typescriptGrpcNodeBun": true,
@@ -143,575 +288,3614 @@
     "typescriptPackageExported": true
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.workers.v1.InspectJobRequest",
-    "response": "acyclic.workers.v1.InspectJobResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/jobs/inspect",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.ApplyJoinRequest",
+    "response": "acyclic.filesystem.v2.JoinResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+    "validations": [
+      "join.plan_identity.matches",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.workers.v1.CancelJobRequest",
-    "response": "acyclic.workers.v1.CancelJobResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/jobs/cancel",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.ApplyTransactionRequest",
+    "response": "acyclic.filesystem.v2.MutationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+    "validations": [
+      "generation.reference.required",
+      "operation.idempotency_key.16_bytes",
+      "mutation.oneof",
+      "transaction.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+    "capabilities": [
+      "filesystem.operation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.workers.v1.InvokeVersionRequest",
-    "response": "acyclic.workers.v1.InvokeResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/versions/{sha256hex}/invoke",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.CancelRequest",
+    "response": "acyclic.filesystem.v2.CancelResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Cancel",
+    "validations": [
+      "operation_id.16_bytes",
+      "operation.idempotency_key.16_bytes",
+      "response.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.workers.v1.InvokeDeploymentRequest",
-    "response": "acyclic.workers.v1.InvokeResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/workers/deployments/{alias}/invoke",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.RetainGenerationRequest",
+    "response": "acyclic.filesystem.v2.RetainGenerationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+    "validations": [
+      "generation.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.InspectIdempotencyRequest",
-    "response": "acyclic.stream.v2.InspectIdempotencyResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/idempotency/inspect",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.CreateWorkspaceRequest",
+    "response": "acyclic.filesystem.v2.WorkspaceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+    "validations": [
+      "operation.idempotency_key.16_bytes",
+      "workspace_name.valid",
+      "profile.supported"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/Append",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.AppendRequest",
-    "response": "acyclic.stream.v2.AppendResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/append",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.DeleteWorkspaceRequest",
+    "response": "acyclic.filesystem.v2.MutationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+    "validations": [
+      "workspace.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/Tail",
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.TailRequest",
-    "response": "acyclic.stream.v2.TailResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/tail",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.DiffRequest",
+    "response": "acyclic.filesystem.v2.DiffResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Diff",
+    "validations": [
+      "generation.references.required",
+      "diff.bounds.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/Fork",
-    "kind": "unary",
-    "request": "acyclic.stream.v2.ForkRequest",
-    "response": "acyclic.stream.v2.ForkReceipt",
+    "capabilities": [
+      "filesystem.read"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v1/stream/fork",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.stream.v2.StreamService/Read",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "server_streaming",
-    "request": "acyclic.stream.v2.ReadRequest",
-    "response": "acyclic.stream.v2.ReadResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/read",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.ExportRequest",
+    "response": "acyclic.filesystem.v2.ExportChunk",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+    "validations": [
+      "generation.reference.required",
+      "export.bounds.bounded",
+      "cursor.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/Follow",
-    "kind": "server_streaming",
-    "request": "acyclic.stream.v2.FollowRequest",
-    "response": "acyclic.stream.v2.ReadResponse",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v1/stream/tail + read (polling)",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.stream.v2.StreamService/Children",
-    "kind": "server_streaming",
-    "request": "acyclic.stream.v2.ChildrenRequest",
-    "response": "acyclic.stream.v2.ChildrenResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/children",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.ChildrenPageRequest",
-    "response": "acyclic.stream.v2.ChildrenPageResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/children/page",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.ForkWorkspaceRequest",
+    "response": "acyclic.filesystem.v2.WorkspaceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+    "validations": [
+      "workspace.reference.required",
+      "generation.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/Commit",
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.CommitRequest",
-    "response": "acyclic.stream.v2.CommitResponse",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/commit",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.GetGenerationRequest",
+    "response": "acyclic.filesystem.v2.GenerationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+    "validations": [
+      "generation.reference.required",
+      "generation_id.32_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.stream.v2.ReadCommitRequest",
-    "response": "acyclic.stream.v2.CommittedEnvelope",
-    "contractStatus": "target",
-    "httpOperation": "v1/stream/commits/read",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.GetHeadRequest",
+    "response": "acyclic.filesystem.v2.GenerationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/GetHead",
+    "validations": [
+      "workspace.reference.required",
+      "workspace.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+    "capabilities": [
+      "filesystem.source"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.CreateBucketRequest",
-    "response": "acyclic.objects.v2.Bucket",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/buckets/create",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.SourceStateRequest",
+    "response": "acyclic.filesystem.v2.SourceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+    "validations": [
+      "workspace.reference.required"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+    "capabilities": [
+      "filesystem"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.HeadBucketRequest",
-    "response": "acyclic.objects.v2.Bucket",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/buckets/head",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.HandshakeRequest",
+    "response": "acyclic.filesystem.v2.HandshakeResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Handshake",
+    "validations": [
+      "protocol.version.exact",
+      "descriptor_digest.matches",
+      "request.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
-    "kind": "unary",
-    "request": "acyclic.objects.v2.DeleteBucketRequest",
-    "response": "acyclic.objects.v2.DeleteBucketResponse",
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v2/objects/buckets/delete",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "client_streaming",
-    "request": "acyclic.objects.v2.PutObjectRequest",
-    "response": "acyclic.objects.v2.ObjectInfo",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/objects/put",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.filesystem.v2.ImportChunk",
+    "response": "acyclic.filesystem.v2.ImportResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+    "validations": [
+      "import.stream.nonempty",
+      "object.order.exact",
+      "cursor.valid",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+    "capabilities": [
+      "filesystem.credentials.mount"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.CredentialRequest",
+    "response": "acyclic.filesystem.v2.CredentialResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+    "validations": [
+      "workspace.reference.required",
+      "generation.reference.required",
+      "credential.expiry.bounded",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.credentials.s3"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.CredentialRequest",
+    "response": "acyclic.filesystem.v2.CredentialResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+    "validations": [
+      "workspace.reference.required",
+      "generation.reference.required",
+      "credential.expiry.bounded",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.ListDirectoryRequest",
+    "response": "acyclic.filesystem.v2.ListDirectoryResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+    "validations": [
+      "generation.reference.required",
+      "page.maximum_items.bounded",
+      "cursor.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.operation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.ObserveRequest",
+    "response": "acyclic.filesystem.v2.ObserveResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Observe",
+    "validations": [
+      "operation_id.16_bytes",
+      "response.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.OpenWorkspaceRequest",
+    "response": "acyclic.filesystem.v2.WorkspaceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+    "validations": [
+      "workspace.selector.required",
+      "workspace.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.RetainGenerationRequest",
+    "response": "acyclic.filesystem.v2.RetainGenerationResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Pin",
+    "validations": [
+      "generation.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.PlanExtentsRequest",
+    "response": "acyclic.filesystem.v2.PlanExtentsResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+    "validations": [
+      "generation.reference.required",
+      "path.valid",
+      "range.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.PlanJoinRequest",
+    "response": "acyclic.filesystem.v2.JoinPlan",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+    "validations": [
+      "generation.references.required",
+      "join.history.valid",
+      "join.bounds.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.ReadRequest",
+    "response": "acyclic.filesystem.v2.ReadResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Read",
+    "validations": [
+      "generation.reference.required",
+      "path.valid",
+      "maximum_bytes.bounded",
+      "range.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.ReadLinkRequest",
+    "response": "acyclic.filesystem.v2.ReadResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+    "validations": [
+      "generation.reference.required",
+      "path.valid",
+      "maximum_bytes.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.RebaseRequest",
+    "response": "acyclic.filesystem.v2.RebaseResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Rebase",
+    "validations": [
+      "workspace.reference.required",
+      "generation.reference.required",
+      "rebase.bounds.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.write",
+      "filesystem.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.RebaseTransactionRequest",
+    "response": "acyclic.filesystem.v2.RebaseTransactionResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+    "validations": [
+      "generation.reference.required",
+      "operation.idempotency_key.16_bytes",
+      "transaction.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.source"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.SourceOperationRequest",
+    "response": "acyclic.filesystem.v2.SourceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+    "validations": [
+      "workspace.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.source"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.SourceOperationRequest",
+    "response": "acyclic.filesystem.v2.SourceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+    "validations": [
+      "workspace.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.source"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.SourceOperationRequest",
+    "response": "acyclic.filesystem.v2.SourceResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/SealSource",
+    "validations": [
+      "workspace.reference.required",
+      "operation.idempotency_key.16_bytes"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "filesystem.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "NOT_FOUND",
+      "FAILED_PRECONDITION",
+      "CANCELLED",
+      "RESOURCE_EXHAUSTED",
+      "UNAVAILABLE",
+      "UNIMPLEMENTED",
+      "DATA_LOSS"
+    ],
+    "family": "filesystem",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.filesystem.v2.StatRequest",
+    "response": "acyclic.filesystem.v2.StatResponse",
+    "rpc": "acyclic.filesystem.v2.FilesystemService/Stat",
+    "validations": [
+      "generation.reference.required",
+      "path.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "operation:cancel"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_INVALID",
+      "ERROR_CODE_UNAUTHORIZED",
+      "ERROR_CODE_STORAGE",
+      "ERROR_CODE_INDETERMINATE",
+      "ERROR_CODE_INTERACTION_DECLINED",
+      "ERROR_CODE_INTERACTION_CANCELLED",
+      "ERROR_CODE_INTERACTION_EXPIRED",
+      "ERROR_CODE_INTERACTION_DENIED"
+    ],
+    "family": "harness",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.harness.v2.CancelRequest",
+    "response": "acyclic.harness.v2.CancelResponse",
+    "rpc": "acyclic.harness.v2.HarnessService/Cancel",
+    "validations": [
+      "protocol.identity.exact",
+      "owner.required",
+      "operation_id.nonempty",
+      "idempotency_key.nonempty",
+      "scope.required",
+      "scope.capability.operation_cancel",
+      "status.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "harness"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_INVALID",
+      "ERROR_CODE_UNAUTHORIZED",
+      "ERROR_CODE_STORAGE",
+      "ERROR_CODE_INDETERMINATE",
+      "ERROR_CODE_INTERACTION_DECLINED",
+      "ERROR_CODE_INTERACTION_CANCELLED",
+      "ERROR_CODE_INTERACTION_EXPIRED",
+      "ERROR_CODE_INTERACTION_DENIED"
+    ],
+    "family": "harness",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.protocol.v1.HandshakeRequest",
+    "response": "acyclic.protocol.v1.HandshakeResponse",
+    "rpc": "acyclic.harness.v2.HarnessService/Handshake",
+    "validations": [
+      "protocol.identity.exact",
+      "required_capability.nonempty",
+      "required_capability.supported"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "operation:observe"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_INVALID",
+      "ERROR_CODE_UNAUTHORIZED",
+      "ERROR_CODE_STORAGE",
+      "ERROR_CODE_INDETERMINATE",
+      "ERROR_CODE_INTERACTION_DECLINED",
+      "ERROR_CODE_INTERACTION_CANCELLED",
+      "ERROR_CODE_INTERACTION_EXPIRED",
+      "ERROR_CODE_INTERACTION_DENIED"
+    ],
+    "family": "harness",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.harness.v2.ObserveRequest",
+    "response": "acyclic.harness.v2.OperationStatus",
+    "rpc": "acyclic.harness.v2.HarnessService/Observe",
+    "validations": [
+      "protocol.identity.exact",
+      "owner.required",
+      "operation_id.nonempty",
+      "scope.required",
+      "scope.capability.operation_observe",
+      "status.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "harness.replay"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_INVALID",
+      "ERROR_CODE_UNAUTHORIZED",
+      "ERROR_CODE_STORAGE",
+      "ERROR_CODE_INDETERMINATE",
+      "ERROR_CODE_INTERACTION_DECLINED",
+      "ERROR_CODE_INTERACTION_CANCELLED",
+      "ERROR_CODE_INTERACTION_EXPIRED",
+      "ERROR_CODE_INTERACTION_DENIED"
+    ],
+    "family": "harness",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "server_streaming",
-    "request": "acyclic.objects.v2.GetObjectRequest",
-    "response": "acyclic.objects.v2.GetObjectResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/objects/get",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.harness.v2.ResumeRequest",
+    "response": "acyclic.harness.v2.Delivery",
+    "rpc": "acyclic.harness.v2.HarnessService/Replay",
+    "validations": [
+      "protocol.identity.exact",
+      "resume_cursor.contiguous",
+      "delivery.identity.preserving"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+    "capabilities": [
+      "operation:declare"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_UNSPECIFIED",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_CONFLICT",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_INVALID",
+      "ERROR_CODE_UNAUTHORIZED",
+      "ERROR_CODE_STORAGE",
+      "ERROR_CODE_INDETERMINATE",
+      "ERROR_CODE_INTERACTION_DECLINED",
+      "ERROR_CODE_INTERACTION_CANCELLED",
+      "ERROR_CODE_INTERACTION_EXPIRED",
+      "ERROR_CODE_INTERACTION_DENIED"
+    ],
+    "family": "harness",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.HeadObjectRequest",
-    "response": "acyclic.objects.v2.HeadObjectResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/objects/head",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.harness.v2.CommandEnvelope",
+    "response": "acyclic.harness.v2.Admission",
+    "rpc": "acyclic.harness.v2.HarnessService/Submit",
+    "validations": [
+      "protocol.identity.exact",
+      "operation_id.nonempty",
+      "idempotency_key.nonempty",
+      "admission.identity.matches"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+    "capabilities": [
+      "machines.operations"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.DeleteObjectRequest",
-    "response": "acyclic.objects.v2.DeleteObjectResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/objects/delete",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.OperationRequest",
+    "response": "acyclic.machines.v1.OperationState",
+    "rpc": "acyclic.machines.v1.MachinesService/Cancel",
+    "validations": [
+      "operation_id.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.ListObjectsRequest",
-    "response": "acyclic.objects.v2.ListObjectsResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/objects/list",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.CheckpointMachineRequest",
+    "response": "acyclic.machines.v1.CheckpointAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Checkpoint",
+    "validations": [
+      "machine_id.nonzero",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.CreateMultipartRequest",
-    "response": "acyclic.objects.v2.MultipartUpload",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/multipart/create",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.CreateMachineRequest",
+    "response": "acyclic.machines.v1.MachineAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Create",
+    "validations": [
+      "idempotency_key.nonzero",
+      "contract.valid",
+      "limits.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
-    "kind": "client_streaming",
-    "request": "acyclic.objects.v2.UploadPartRequest",
-    "response": "acyclic.objects.v2.UploadedPart",
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
     "contractStatus": "target",
-    "httpOperation": "v2/objects/multipart/upload-part",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
-  },
-  {
-    "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.ListPartsRequest",
-    "response": "acyclic.objects.v2.ListPartsResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/multipart/list-parts",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.CheckpointMutationRequest",
+    "response": "acyclic.machines.v1.MutationAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+    "validations": [
+      "checkpoint_id.nonzero",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.CompleteMultipartRequest",
-    "response": "acyclic.objects.v2.ObjectInfo",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/multipart/complete",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.MachineMutationRequest",
+    "response": "acyclic.machines.v1.MutationAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/DestroyMachine",
+    "validations": [
+      "machine_id.nonzero",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+    "capabilities": [
+      "machines.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v2.AbortMultipartRequest",
-    "response": "acyclic.objects.v2.AbortMultipartResponse",
-    "contractStatus": "target",
-    "httpOperation": "v2/objects/multipart/abort",
-    "rustGrpc": true,
-    "rustHttp": true,
-    "typescriptGrpcNodeBun": true,
-    "typescriptHttp": true,
-    "typescriptPackageExported": true
+    "request": "acyclic.machines.v1.EventsRequest",
+    "response": "acyclic.machines.v1.EventPage",
+    "rpc": "acyclic.machines.v1.MachinesService/Events",
+    "validations": [
+      "machine_id.nonzero",
+      "page_limit.bounded",
+      "cursor.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.BucketsService/CreateBucket",
+    "capabilities": [
+      "machines.fork",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.ForkCheckpointRequest",
+    "response": "acyclic.machines.v1.ForkAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Fork",
+    "validations": [
+      "checkpoint_id.nonzero",
+      "count.bounded",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.fork",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.ForkMachineRequest",
+    "response": "acyclic.machines.v1.ForkMachineAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/ForkMachine",
+    "validations": [
+      "machine_id.nonzero",
+      "fidelity.declared",
+      "count.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.InspectCheckpointRequest",
+    "response": "acyclic.machines.v1.CheckpointState",
+    "rpc": "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+    "validations": [
+      "checkpoint_id.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.InspectMachineRequest",
+    "response": "acyclic.machines.v1.MachineState",
+    "rpc": "acyclic.machines.v1.MachinesService/InspectMachine",
+    "validations": [
+      "machine_id.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.operations"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.OperationRequest",
+    "response": "acyclic.machines.v1.OperationState",
+    "rpc": "acyclic.machines.v1.MachinesService/InspectOperation",
+    "validations": [
+      "operation_id.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.ListMachinesRequest",
+    "response": "acyclic.machines.v1.MachinePage",
+    "rpc": "acyclic.machines.v1.MachinesService/ListMachines",
+    "validations": [
+      "page_limit.bounded",
+      "cursor.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.qualify"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.QualifyImageRequest",
+    "response": "acyclic.machines.v1.ImageQualification",
+    "rpc": "acyclic.machines.v1.MachinesService/QualifyImage",
+    "validations": [
+      "image.immutable_digest",
+      "capabilities.proven"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.operations"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.RecoverRequest",
+    "response": "acyclic.machines.v1.RecoveredAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Recover",
+    "validations": [
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.SetSuspensionPolicyRequest",
+    "response": "acyclic.machines.v1.PolicyAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+    "validations": [
+      "machine_id.nonzero",
+      "policy.valid",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.MachineMutationRequest",
+    "response": "acyclic.machines.v1.MutationAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Suspend",
+    "validations": [
+      "machine_id.nonzero",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.UsageRequest",
+    "response": "acyclic.machines.v1.UsageReceipt",
+    "rpc": "acyclic.machines.v1.MachinesService/Usage",
+    "validations": [
+      "machine_id.nonzero",
+      "time_range.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.write",
+      "machines.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.machines.v1.MachineMutationRequest",
+    "response": "acyclic.machines.v1.MutationAdmission",
+    "rpc": "acyclic.machines.v1.MachinesService/Wake",
+    "validations": [
+      "machine_id.nonzero",
+      "idempotency_key.nonzero"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "machines.operations"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "invalid",
+      "not_found",
+      "conflict",
+      "unsupported",
+      "rejected",
+      "unavailable",
+      "operation_indeterminate",
+      "operation_observation_indeterminate",
+      "operation_failed",
+      "operation_cancelled"
+    ],
+    "family": "machines",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "server_streaming",
+    "request": "acyclic.machines.v1.OperationRequest",
+    "response": "acyclic.machines.v1.OperationState",
+    "rpc": "acyclic.machines.v1.MachinesService/WatchOperation",
+    "validations": [
+      "operation_id.nonzero",
+      "cursor.monotonic",
+      "terminal.required"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.CreateBucketRequest",
     "response": "acyclic.objects.v1.Bucket",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/buckets/create",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "rpc": "acyclic.objects.v1.BucketsService/CreateBucket",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.BucketsService/HeadBucket",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.HeadBucketRequest",
-    "response": "acyclic.objects.v1.Bucket",
+    "capabilities": null,
     "contractStatus": "retired",
-    "httpOperation": "v1/objects/buckets/head",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.BucketsService/DeleteBucket",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.DeleteBucketRequest",
     "response": "acyclic.objects.v1.DeleteBucketResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/buckets/delete",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "rpc": "acyclic.objects.v1.BucketsService/DeleteBucket",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.ObjectsService/PutObject",
-    "kind": "client_streaming",
-    "request": "acyclic.objects.v1.PutObjectRequest",
-    "response": "acyclic.objects.v1.ObjectVersion",
+    "capabilities": null,
     "contractStatus": "retired",
-    "httpOperation": "v1/objects/objects/put",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.ObjectsService/GetObject",
-    "kind": "server_streaming",
-    "request": "acyclic.objects.v1.GetObjectRequest",
-    "response": "acyclic.objects.v1.GetObjectResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/objects/get",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.ObjectsService/HeadObject",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
-    "request": "acyclic.objects.v1.HeadObjectRequest",
-    "response": "acyclic.objects.v1.HeadObjectResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/objects/head",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "request": "acyclic.objects.v1.HeadBucketRequest",
+    "response": "acyclic.objects.v1.Bucket",
+    "rpc": "acyclic.objects.v1.BucketsService/HeadBucket",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.ObjectsService/DeleteObject",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.DeleteObjectRequest",
-    "response": "acyclic.objects.v1.DeleteObjectResponse",
+    "capabilities": null,
     "contractStatus": "retired",
-    "httpOperation": "v1/objects/objects/delete",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.ObjectsService/ListObjects",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.ListObjectsRequest",
-    "response": "acyclic.objects.v1.ListObjectsResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/objects/list",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.MultipartService/CreateMultipart",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.CreateMultipartRequest",
-    "response": "acyclic.objects.v1.MultipartUpload",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/multipart/create",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.MultipartService/UploadPart",
-    "kind": "client_streaming",
-    "request": "acyclic.objects.v1.UploadPartRequest",
-    "response": "acyclic.objects.v1.UploadedPart",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/multipart/upload-part",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.MultipartService/ListParts",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.ListPartsRequest",
-    "response": "acyclic.objects.v1.ListPartsResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/multipart/list-parts",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.MultipartService/CompleteMultipart",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.CompleteMultipartRequest",
-    "response": "acyclic.objects.v1.ObjectVersion",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/multipart/complete",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.MultipartService/AbortMultipart",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.AbortMultipartRequest",
     "response": "acyclic.objects.v1.AbortMultipartResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/multipart/abort",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "rpc": "acyclic.objects.v1.MultipartService/AbortMultipart",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.SnapshotsService/CreateSnapshot",
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.CompleteMultipartRequest",
+    "response": "acyclic.objects.v1.ObjectVersion",
+    "rpc": "acyclic.objects.v1.MultipartService/CompleteMultipart",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.CreateMultipartRequest",
+    "response": "acyclic.objects.v1.MultipartUpload",
+    "rpc": "acyclic.objects.v1.MultipartService/CreateMultipart",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.ListPartsRequest",
+    "response": "acyclic.objects.v1.ListPartsResponse",
+    "rpc": "acyclic.objects.v1.MultipartService/ListParts",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v1.UploadPartRequest",
+    "response": "acyclic.objects.v1.UploadedPart",
+    "rpc": "acyclic.objects.v1.MultipartService/UploadPart",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.DeleteObjectRequest",
+    "response": "acyclic.objects.v1.DeleteObjectResponse",
+    "rpc": "acyclic.objects.v1.ObjectsService/DeleteObject",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "server_streaming",
+    "request": "acyclic.objects.v1.GetObjectRequest",
+    "response": "acyclic.objects.v1.GetObjectResponse",
+    "rpc": "acyclic.objects.v1.ObjectsService/GetObject",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.HeadObjectRequest",
+    "response": "acyclic.objects.v1.HeadObjectResponse",
+    "rpc": "acyclic.objects.v1.ObjectsService/HeadObject",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.ListObjectsRequest",
+    "response": "acyclic.objects.v1.ListObjectsResponse",
+    "rpc": "acyclic.objects.v1.ObjectsService/ListObjects",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v1.PutObjectRequest",
+    "response": "acyclic.objects.v1.ObjectVersion",
+    "rpc": "acyclic.objects.v1.ObjectsService/PutObject",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.CreateSnapshotRequest",
     "response": "acyclic.objects.v1.Snapshot",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/snapshots/create",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "rpc": "acyclic.objects.v1.SnapshotsService/CreateSnapshot",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.SnapshotsService/DestroySnapshot",
+    "capabilities": null,
+    "contractStatus": "retired",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.DestroySnapshotRequest",
     "response": "acyclic.objects.v1.DestroySnapshotResponse",
-    "contractStatus": "retired",
-    "httpOperation": "v1/objects/snapshots/destroy",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
+    "rpc": "acyclic.objects.v1.SnapshotsService/DestroySnapshot",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   },
   {
-    "rpc": "acyclic.objects.v1.SnapshotsService/ForkSnapshot",
-    "kind": "unary",
-    "request": "acyclic.objects.v1.ForkSnapshotRequest",
-    "response": "acyclic.objects.v1.Bucket",
+    "capabilities": null,
     "contractStatus": "retired",
-    "httpOperation": "v1/objects/snapshots/fork",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
-    "typescriptPackageExported": false
-  },
-  {
-    "rpc": "acyclic.objects.v1.SnapshotsService/ForkBucket",
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
     "kind": "unary",
     "request": "acyclic.objects.v1.ForkBucketRequest",
     "response": "acyclic.objects.v1.Bucket",
+    "rpc": "acyclic.objects.v1.SnapshotsService/ForkBucket",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": null,
     "contractStatus": "retired",
-    "httpOperation": "v1/objects/snapshots/fork",
-    "rustGrpc": false,
-    "rustHttp": false,
-    "typescriptGrpcNodeBun": false,
-    "typescriptHttp": false,
+    "errors": null,
+    "family": "objects",
+    "httpMethod": null,
+    "httpOperation": null,
+    "kind": "unary",
+    "request": "acyclic.objects.v1.ForkSnapshotRequest",
+    "response": "acyclic.objects.v1.Bucket",
+    "rpc": "acyclic.objects.v1.SnapshotsService/ForkSnapshot",
+    "validations": null,
+    "exposureScope": "retired",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "objects.bucket.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/buckets/create",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CreateBucketRequest",
+    "response": "acyclic.objects.v2.Bucket",
+    "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+    "validations": [
+      "bucket.name.non_empty",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.bucket.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/buckets/delete",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.DeleteBucketRequest",
+    "response": "acyclic.objects.v2.DeleteBucketResponse",
+    "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+    "validations": [
+      "bucket.name.non_empty",
+      "bucket.empty",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.bucket.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/buckets/head",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.HeadBucketRequest",
+    "response": "acyclic.objects.v2.Bucket",
+    "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+    "validations": [
+      "bucket.name.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.multipart.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/multipart/abort",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.AbortMultipartRequest",
+    "response": "acyclic.objects.v2.AbortMultipartResponse",
+    "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+    "validations": [
+      "upload_id.non_empty",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.multipart.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/multipart/complete",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CompleteMultipartRequest",
+    "response": "acyclic.objects.v2.ObjectInfo",
+    "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+    "validations": [
+      "upload_id.non_empty",
+      "parts.ordered_exact",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.multipart.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/multipart/create",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.CreateMultipartRequest",
+    "response": "acyclic.objects.v2.MultipartUpload",
+    "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+    "validations": [
+      "bucket.name.non_empty",
+      "object.key.non_empty",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.multipart.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/multipart/list-parts",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.ListPartsRequest",
+    "response": "acyclic.objects.v2.ListPartsResponse",
+    "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+    "validations": [
+      "upload_id.non_empty",
+      "pagination.bounded"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.multipart.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/multipart/upload-part",
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v2.UploadPartRequest",
+    "response": "acyclic.objects.v2.UploadedPart",
+    "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+    "validations": [
+      "upload_id.non_empty",
+      "part_number.positive",
+      "upload.completion_frame"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.object.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/objects/delete",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.DeleteObjectRequest",
+    "response": "acyclic.objects.v2.DeleteObjectResponse",
+    "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+    "validations": [
+      "bucket.name.non_empty",
+      "object.key.non_empty",
+      "preconditions.atomic",
+      "idempotency_key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.object.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/objects/get",
+    "kind": "server_streaming",
+    "request": "acyclic.objects.v2.GetObjectRequest",
+    "response": "acyclic.objects.v2.GetObjectResponse",
+    "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+    "validations": [
+      "bucket.name.non_empty",
+      "object.key.non_empty",
+      "range.valid",
+      "response.bounded"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.object.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/objects/head",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.HeadObjectRequest",
+    "response": "acyclic.objects.v2.HeadObjectResponse",
+    "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+    "validations": [
+      "bucket.name.non_empty",
+      "object.key.non_empty"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.object.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/objects/list",
+    "kind": "unary",
+    "request": "acyclic.objects.v2.ListObjectsRequest",
+    "response": "acyclic.objects.v2.ListObjectsResponse",
+    "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+    "validations": [
+      "bucket.name.non_empty",
+      "pagination.bounded"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "objects.object.write",
+      "objects.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "ERROR_CODE_INVALID_ARGUMENT",
+      "ERROR_CODE_NOT_FOUND",
+      "ERROR_CODE_ALREADY_EXISTS",
+      "ERROR_CODE_PRECONDITION_FAILED",
+      "ERROR_CODE_IDEMPOTENCY_MISMATCH",
+      "ERROR_CODE_QUOTA_EXCEEDED",
+      "ERROR_CODE_UNSUPPORTED",
+      "ERROR_CODE_UNAVAILABLE",
+      "ERROR_CODE_ACCESS_DENIED",
+      "ERROR_CODE_RANGE_NOT_SATISFIABLE",
+      "ERROR_CODE_NOT_MODIFIED"
+    ],
+    "family": "objects",
+    "httpMethod": "POST",
+    "httpOperation": "v2/objects/objects/put",
+    "kind": "client_streaming",
+    "request": "acyclic.objects.v2.PutObjectRequest",
+    "response": "acyclic.objects.v2.ObjectInfo",
+    "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+    "validations": [
+      "bucket.name.non_empty",
+      "object.key.non_empty",
+      "preconditions.atomic",
+      "idempotency_key.non_empty",
+      "upload.completion_frame"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "stream.write"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/append",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.AppendRequest",
+    "response": "acyclic.stream.v2.AppendResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Append",
+    "validations": [
+      "path.non_empty_utf8",
+      "records.max_bytes"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
     "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/children",
+    "kind": "server_streaming",
+    "request": "acyclic.stream.v2.ChildrenRequest",
+    "response": "acyclic.stream.v2.ChildrenResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Children",
+    "validations": [
+      "limit.max_stream_items"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/children/page",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.ChildrenPageRequest",
+    "response": "acyclic.stream.v2.ChildrenPageResponse",
+    "rpc": "acyclic.stream.v2.StreamService/ChildrenPage",
+    "validations": [
+      "limit.max_stream_items"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.write"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/commit",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.CommitRequest",
+    "response": "acyclic.stream.v2.CommitResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Commit",
+    "validations": [
+      "mutations.max_command_bytes"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/follow",
+    "kind": "server_streaming",
+    "request": "acyclic.stream.v2.FollowRequest",
+    "response": "acyclic.stream.v2.ReadResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Follow",
+    "validations": [
+      "path.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.write"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/fork",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.ForkRequest",
+    "response": "acyclic.stream.v2.ForkReceipt",
+    "rpc": "acyclic.stream.v2.StreamService/Fork",
+    "validations": [
+      "source.non_empty_utf8",
+      "destination.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/idempotency/inspect",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.InspectIdempotencyRequest",
+    "response": "acyclic.stream.v2.InspectIdempotencyResponse",
+    "rpc": "acyclic.stream.v2.StreamService/InspectIdempotency",
+    "validations": [
+      "idempotency_key.non_empty_bytes"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/read",
+    "kind": "server_streaming",
+    "request": "acyclic.stream.v2.ReadRequest",
+    "response": "acyclic.stream.v2.ReadResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Read",
+    "validations": [
+      "path.non_empty_utf8",
+      "limit.max_stream_items"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/commits/read",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.ReadCommitRequest",
+    "response": "acyclic.stream.v2.CommittedEnvelope",
+    "rpc": "acyclic.stream.v2.StreamService/ReadCommit",
+    "validations": [
+      "commit_id.non_empty_bytes"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "stream.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "TAIL_CONFLICT",
+      "COMMIT_CONFLICT",
+      "IDEMPOTENCY_MISMATCH"
+    ],
+    "family": "stream",
+    "httpMethod": "POST",
+    "httpOperation": "v1/stream/tail",
+    "kind": "unary",
+    "request": "acyclic.stream.v2.TailRequest",
+    "response": "acyclic.stream.v2.TailResponse",
+    "rpc": "acyclic.stream.v2.StreamService/Tail",
+    "validations": [
+      "path.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": false
+  },
+  {
+    "capabilities": [
+      "workers.write",
+      "workers.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/jobs/cancel",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.CancelJobRequest",
+    "response": "acyclic.workers.v1.CancelJobResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+    "validations": [
+      "job_id.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/jobs/inspect",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.InspectJobRequest",
+    "response": "acyclic.workers.v1.InspectJobResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+    "validations": [
+      "job_id.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.invoke"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/deployments/{alias}/invoke",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.InvokeDeploymentRequest",
+    "response": "acyclic.workers.v1.InvokeResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+    "validations": [
+      "alias.non_empty_utf8",
+      "method.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.invoke"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/versions/{sha256hex}/invoke",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.InvokeVersionRequest",
+    "response": "acyclic.workers.v1.InvokeResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+    "validations": [
+      "version_sha256.length_32",
+      "method.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.write",
+      "workers.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/versions/publish",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.PublishVersionRequest",
+    "response": "acyclic.workers.v1.PublishVersionResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+    "validations": [
+      "javascript_module.non_empty_bytes",
+      "expected_sha256.length_32"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.write",
+      "workers.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/deployments/select",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.SelectDeploymentRequest",
+    "response": "acyclic.workers.v1.SelectDeploymentResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+    "validations": [
+      "alias.non_empty_utf8",
+      "version_sha256.length_32"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "workers.write",
+      "workers.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "INVALID_ARGUMENT",
+      "VERSION_NOT_FOUND",
+      "DEPLOYMENT_NOT_FOUND",
+      "JOB_NOT_FOUND",
+      "REVISION_CONFLICT",
+      "TERMINAL_JOB_FAILURE"
+    ],
+    "family": "workers",
+    "httpMethod": "POST",
+    "httpOperation": "v1/workers/jobs/submit",
+    "kind": "unary",
+    "request": "acyclic.workers.v1.SubmitJobRequest",
+    "response": "acyclic.workers.v1.SubmitJobResponse",
+    "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+    "validations": [
+      "idempotency_key.non_empty_utf8"
+    ],
+    "exposureScope": "source-inspected",
+    "rustGrpc": true,
+    "rustHttp": true,
+    "typescriptGrpcNodeBun": true,
+    "typescriptHttp": true,
+    "typescriptPackageExported": true
+  },
+  {
+    "capabilities": [
+      "inference.context.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/contexts/create",
+    "kind": "unary",
+    "request": "inference.customer.v1.CreateContextRequest",
+    "response": "inference.customer.v1.MutationReceipt",
+    "rpc": "inference.customer.v1.ContextsService/Create",
+    "validations": [
+      "request_identity.nonzero",
+      "model.non_empty",
+      "items.bounded",
+      "message.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.context.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/contexts/inspect",
+    "kind": "unary",
+    "request": "inference.customer.v1.InspectContextRequest",
+    "response": "inference.customer.v1.ContextView",
+    "rpc": "inference.customer.v1.ContextsService/Inspect",
+    "validations": [
+      "revision.length_32"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.context.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/contexts/mutate",
+    "kind": "unary",
+    "request": "inference.customer.v1.MutateContextRequest",
+    "response": "inference.customer.v1.MutationReceipt",
+    "rpc": "inference.customer.v1.ContextsService/Mutate",
+    "validations": [
+      "request_identity.nonzero",
+      "source.present",
+      "action.present",
+      "message.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.evaluations.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/evaluations/create",
+    "kind": "unary",
+    "request": "inference.customer.v1.CreateEvaluationRequest",
+    "response": "inference.customer.v1.EvaluationView",
+    "rpc": "inference.customer.v1.EvaluationsService/Create",
+    "validations": [
+      "request_identity.nonzero",
+      "candidates.bounded",
+      "cases.bounded",
+      "metrics.bounded",
+      "spec_digest.length_32",
+      "message.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.evaluations.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/evaluations/inspect",
+    "kind": "unary",
+    "request": "inference.customer.v1.InspectEvaluationRequest",
+    "response": "inference.customer.v1.EvaluationView",
+    "rpc": "inference.customer.v1.EvaluationsService/Inspect",
+    "validations": [
+      "evaluation_id.length_16"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.models.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/models/list",
+    "kind": "unary",
+    "request": "inference.customer.v1.ListModelsRequest",
+    "response": "inference.customer.v1.ListModelsResponse",
+    "rpc": "inference.customer.v1.ModelsService/List",
+    "validations": [
+      "model_capabilities.bounded",
+      "retention_profiles.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.runs.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/runs/cancel",
+    "kind": "unary",
+    "request": "inference.customer.v1.InspectRunRequest",
+    "response": "inference.customer.v1.RunView",
+    "rpc": "inference.customer.v1.RunsService/Cancel",
+    "validations": [
+      "run_id.length_16"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.runs.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/runs/generate",
+    "kind": "unary",
+    "request": "inference.customer.v1.GenerateRunRequest",
+    "response": "inference.customer.v1.GenerateRunResponse",
+    "rpc": "inference.customer.v1.RunsService/Generate",
+    "validations": [
+      "request_identity.nonzero",
+      "context.length_32",
+      "maximum_output.positive",
+      "message.bounded"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.runs.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/runs/inspect",
+    "kind": "unary",
+    "request": "inference.customer.v1.InspectRunRequest",
+    "response": "inference.customer.v1.RunView",
+    "rpc": "inference.customer.v1.RunsService/Inspect",
+    "validations": [
+      "run_id.length_16"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.runs.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/runs/watch",
+    "kind": "server_streaming",
+    "request": "inference.customer.v1.WatchRunRequest",
+    "response": "inference.customer.v1.RunEvent",
+    "rpc": "inference.customer.v1.RunsService/Watch",
+    "validations": [
+      "run_id.length_16",
+      "cursor.monotonic",
+      "terminal.required"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.warm.read"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/warm/inspect",
+    "kind": "unary",
+    "request": "inference.customer.v1.InspectWarmRequest",
+    "response": "inference.customer.v1.WarmView",
+    "rpc": "inference.customer.v1.WarmContextsService/Inspect",
+    "validations": [
+      "commitment.length_32"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.warm.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/warm/release",
+    "kind": "unary",
+    "request": "inference.customer.v1.ReleaseWarmRequest",
+    "response": "inference.customer.v1.WarmView",
+    "rpc": "inference.customer.v1.WarmContextsService/Release",
+    "validations": [
+      "request_identity.nonzero",
+      "commitment.length_32"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.warm.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/warm/renew",
+    "kind": "unary",
+    "request": "inference.customer.v1.RenewWarmRequest",
+    "response": "inference.customer.v1.WarmView",
+    "rpc": "inference.customer.v1.WarmContextsService/Renew",
+    "validations": [
+      "request_identity.nonzero",
+      "commitment.length_32",
+      "policy.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
+  },
+  {
+    "capabilities": [
+      "inference.warm.write",
+      "inference.idempotent_mutation"
+    ],
+    "contractStatus": "target",
+    "errors": [
+      "inference.invalid",
+      "inference.transport",
+      "inference.observation"
+    ],
+    "family": "inference",
+    "httpMethod": "POST",
+    "httpOperation": "v1/inference/warm/retain",
+    "kind": "unary",
+    "request": "inference.customer.v1.RetainWarmRequest",
+    "response": "inference.customer.v1.WarmView",
+    "rpc": "inference.customer.v1.WarmContextsService/Retain",
+    "validations": [
+      "request_identity.nonzero",
+      "context.length_32",
+      "policy.valid"
+    ],
+    "exposureScope": "runtime-qualification",
+    "rustGrpc": null,
+    "rustHttp": null,
+    "typescriptGrpcNodeBun": null,
+    "typescriptHttp": null,
+    "typescriptPackageExported": null
   }
 ]
