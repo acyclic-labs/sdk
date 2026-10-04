@@ -46,7 +46,6 @@ jobs:
       matrix: ${{ steps.select.outputs.matrix }}
       reused: ${{ steps.select.outputs.reused }}
       trusted: ${{ steps.select.outputs.trusted }}
-      windows: ${{ steps.select.outputs.windows }}
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -378,7 +377,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification, windows, rust_source, rust_embedded, rust_stream_native, additional_languages, dotnet_native, dotnet_embedded]
+    needs: [plan, qualification, windows]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -388,13 +387,6 @@ jobs:
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
-          RUST_SOURCE_RESULT: ${{ needs.rust_source.result }}
-          RUST_EMBEDDED_RESULT: ${{ needs.rust_embedded.result }}
-          RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
-          ADDITIONAL_LANGUAGES_RESULT: ${{ needs.additional_languages.result }}
-          DOTNET_NATIVE_RESULT: ${{ needs.dotnet_native.result }}
-          DOTNET_EMBEDDED_RESULT: ${{ needs.dotnet_embedded.result }}
-          REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           test "$PLAN_RESULT" = success
           test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
@@ -403,53 +395,3 @@ jobs:
           else
             test "$RESULT" = success
           fi
-          if test "$REQUIRE_RUST_RESULTS" = true; then
-            test "$RUST_SOURCE_RESULT" = success
-            test "$RUST_EMBEDDED_RESULT" = success
-            test "$RUST_STREAM_RESULT" = success
-            test "$ADDITIONAL_LANGUAGES_RESULT" = success
-            test "$DOTNET_NATIVE_RESULT" = success
-            test "$DOTNET_EMBEDDED_RESULT" = success
-          fi
-
-  rust_source:
-    name: Rust source generation and documentation
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/rust-source-qualification.yml
-    with:
-      ref: ${{ github.sha }}
-
-  rust_embedded:
-    name: Installed Rust embedded packages
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/embedded-abi-release.yml
-
-  rust_stream_native:
-    name: Installed native Stream packages
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/stream-native-packages.yml
-    with:
-      source_revision: ${{ github.sha }}
-
-  additional_languages:
-    name: Additional language package qualification
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/additional-language-qualification.yml
-    with:
-      ref: ${{ github.sha }}
-
-  dotnet_native:
-    name: .NET native transport RID qualification
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/dotnet-native-rid-manual.yml
-    with:
-      ref: ${{ github.sha }}
-      target: all
-      publish_artifact: true
-
-  dotnet_embedded:
-    name: Installed embedded .NET packages on every platform
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/dotnet-embedded-rid-manual.yml
-    with:
-      target: all

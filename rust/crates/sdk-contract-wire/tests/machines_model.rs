@@ -1,7 +1,6 @@
 use acyclic_sdk_contract_wire::machines::{MACHINES, machines_descriptor};
 use prost::Message;
 use prost_types::FileDescriptorSet;
-use sha2::{Digest, Sha256};
 
 const MACHINES_GOLDEN_DESCRIPTOR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -10,14 +9,6 @@ const MACHINES_GOLDEN_DESCRIPTOR: &[u8] = include_bytes!(concat!(
 const MACHINES_DOC_DESCRIPTOR: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../machines/src/generated/acyclic-machines-v1.model.docs.bin"
-));
-const MACHINES_ARCHIVED_DESCRIPTOR: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../machines/src/generated/acyclic-machines-v1.bin"
-));
-const COMPATIBILITY_MANIFEST: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../compatibility/manifest.json"
 ));
 
 #[test]
@@ -115,30 +106,6 @@ fn machines_product_descriptor_overlay_is_source_info_only() {
     assert_eq!(canonical_file.name, overlaid_file.name);
     assert_eq!(canonical_file.message_type, overlaid_file.message_type);
     assert_eq!(canonical_file.service, overlaid_file.service);
-}
-
-#[test]
-fn machines_generation_and_compatibility_digests_keep_distinct_roles() {
-    let canonical_digest = format!("sha256:{:x}", Sha256::digest(machines_descriptor()));
-    let archived_digest = format!("sha256:{:x}", Sha256::digest(MACHINES_ARCHIVED_DESCRIPTOR));
-
-    assert_eq!(
-        MACHINES_ARCHIVED_DESCRIPTOR,
-        MACHINES_GOLDEN_DESCRIPTOR,
-        "the archived Machines handshake bytes must remain immutable"
-    );
-    assert_ne!(
-        canonical_digest, archived_digest,
-        "canonical generation and archived handshake digests must not be conflated"
-    );
-    assert!(
-        COMPATIBILITY_MANIFEST.contains(&format!("\"descriptorDigest\": \"{archived_digest}\"")),
-        "compatibility manifest must identify the archived handshake descriptor"
-    );
-    assert!(
-        !COMPATIBILITY_MANIFEST.contains(&format!("\"descriptorDigest\": \"{canonical_digest}\"")),
-        "compatibility manifest must not relabel the canonical generation descriptor"
-    );
 }
 
 #[test]

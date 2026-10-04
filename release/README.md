@@ -37,20 +37,6 @@ build-provenance and SBOM attestations for every subject in that manifest. A
 consumer can verify downloaded files with `sha256sum --check SHA256SUMS` and
 GitHub provenance with `gh attestation verify <file> --repo acyclic-labs/sdk`.
 
-## Rust-owned registry metadata
-
-`cargo-registry-metadata.json` is the Rust generation input for package install
-instructions in SDK and website bundles. It records every configured Cargo
-package and release version with its crates.io status. Published entries carry
-the SHA-256 returned for the exact registry archive; unavailable and yanked
-entries carry no archive digest. Generation reads this file with
-`--registry-manifest`, emits a registry version-pinned command only for a
-published entry, and retains the Git source command for the other statuses.
-
-The repository release catalog and this registry manifest are separate inputs:
-each Git tagged release can have an immutable documentation archive even when a
-particular package/version is not present in crates.io.
-
 ## npm trusted-publisher bootstrap
 
 Configure every package in `npm-packages.json` with one GitHub Actions trusted

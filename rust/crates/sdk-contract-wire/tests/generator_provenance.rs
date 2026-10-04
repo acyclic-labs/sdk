@@ -10,7 +10,6 @@ use acyclic_sdk_contract_wire::{
     stream::{stream_descriptor, stream_proto},
     workers::{workers_descriptor, workers_proto},
 };
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -81,7 +80,6 @@ fn expected_artifacts() -> Vec<(&'static str, Vec<u8>)> {
         ("machines/v1/machines.proto", machines_proto().into_bytes()),
         ("machines/v1/machines.fds.bin", machines_descriptor()),
         ("rust-authority.json", Vec::new()),
-        ("rust-family-goldens.json", Vec::new()),
     ]
 }
 
@@ -100,30 +98,7 @@ fn assert_clean_output(root: &Path) {
         if relative == "rust-authority.json" {
             let manifest = fs::read_to_string(root.join(relative)).expect("authority manifest");
             assert!(manifest.contains("\"authority\": \"rust\""));
-            assert!(manifest.contains("\"source_git_sha\": \""));
             assert!(manifest.contains("\"source_revision\""));
-        } else if relative == "rust-family-goldens.json" {
-            let manifest = fs::read_to_string(root.join("rust-authority.json"))
-                .expect("authority manifest for family goldens");
-            let manifest_hash = format!("{:x}", Sha256::digest(manifest.as_bytes()));
-            let goldens = fs::read_to_string(root.join(relative)).expect("family goldens");
-            assert!(goldens.starts_with("[\n") && goldens.ends_with("]\n"));
-            assert!(goldens.contains(&format!(
-                "\"authority_manifest_sha256\":\"{manifest_hash}\""
-            )));
-            for family in [
-                "actors",
-                "stream",
-                "objects",
-                "workers",
-                "filesystem",
-                "harness",
-                "inference",
-                "machines",
-                "protocol",
-            ] {
-                assert!(goldens.contains(&format!("\"family\":\"{family}\"")));
-            }
         } else {
             assert_eq!(
                 fs::read(root.join(relative)).expect("generated artifact"),
@@ -230,58 +205,6 @@ fn authority_manifest_binds_rust_models_without_authored_proto_inputs() {
         );
     }
     assert!(manifest.contains("\"descriptor_role\": \"canonical_schema\""));
-    assert!(
-        !manifest.contains("\"handshake_descriptor\": null"),
-        "every family must bind an explicit immutable handshake descriptor"
-    );
-    for (path, bytes) in [
-        (
-            "rust/crates/actors/src/generated/acyclic-actors-v1.bin",
-            include_bytes!("../../actors/src/generated/acyclic-actors-v1.bin").as_slice(),
-        ),
-        (
-            "rust/crates/stream/proto/stream/v2/stream_descriptor.bin",
-            include_bytes!("../../stream/proto/stream/v2/stream_descriptor.bin").as_slice(),
-        ),
-        (
-            "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
-            include_bytes!("../../objects/src/generated/acyclic-objects-v2.bin").as_slice(),
-        ),
-        (
-            "rust/crates/workers/src/generated/acyclic-workers-v1.bin",
-            include_bytes!("../../workers/src/generated/acyclic-workers-v1.bin").as_slice(),
-        ),
-        (
-            "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
-            include_bytes!("../../filesystem/src/generated/acyclic-filesystem-v2.bin").as_slice(),
-        ),
-        (
-            "rust/crates/harness/src/generated/harness-archived-v2.bin",
-            include_bytes!("../../harness/src/generated/harness-archived-v2.bin").as_slice(),
-        ),
-        (
-            "rust/crates/sdk-contract-wire/tests/fixtures/protocol-v1.descriptor.bin",
-            include_bytes!("fixtures/protocol-v1.descriptor.bin").as_slice(),
-        ),
-        (
-            "rust/crates/inference/inference_descriptor.bin",
-            include_bytes!("../../inference/inference_descriptor.bin").as_slice(),
-        ),
-        (
-            "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
-            include_bytes!("../../machines/src/generated/acyclic-machines-v1.bin").as_slice(),
-        ),
-    ] {
-        let digest = format!("{:x}", Sha256::digest(bytes));
-        assert!(
-            manifest.contains(&format!("\"handshake_descriptor\": \"{path}\"")),
-            "missing handshake descriptor identity: {path}"
-        );
-        assert!(
-            manifest.contains(&format!("\"handshake_descriptor_sha256\": \"{digest}\"")),
-            "missing handshake descriptor digest: {path}"
-        );
-    }
     assert!(
         !manifest.contains("proto/inference") && !manifest.contains("proto/machines"),
         "generation authority must not consult authored proto paths"

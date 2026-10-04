@@ -57,11 +57,7 @@ dependency_names = schema_roots.flat_map do |candidate|
     path.delete_prefix("#{candidate}#{File::SEPARATOR}").tr("\\", "/")
   end
 end
-schema_names = if manifest_path
-  (schema_names + ["validation/v1/options.proto"]).uniq
-else
-  (schema_names + dependency_names).uniq
-end
+schema_names = (schema_names + dependency_names).uniq
 expected_schema_hashes = families.each_with_object({}) do |family, hashes|
   hashes[family["source"]] = family["source_sha256"] if family.is_a?(Hash) && family["source"] && family["source_sha256"]
 end
@@ -95,36 +91,11 @@ run!([
   *schema_names
 ])
 
-rust_family_goldens = nil
-if manifest_path
-  fixture_source = File.join(schema_roots.fetch(0), "rust-family-goldens.json")
-  abort "Rust-owned fixture missing: #{fixture_source}" unless File.file?(fixture_source)
-
-  fixture_bytes = File.binread(fixture_source)
-  fixture = JSON.parse(fixture_bytes)
-  abort "Rust-owned fixture must contain nine family goldens" unless fixture.is_a?(Array) && fixture.length == 9
-
-  manifest_sha256 = Digest::SHA256.file(manifest_path).hexdigest
-  unless fixture.all? { |entry| entry.is_a?(Hash) && entry["authority_manifest_sha256"] == manifest_sha256 }
-    abort "Rust-owned fixture is bound to a different authority manifest"
-  end
-
-  fixture_destination = File.join(__dir__, "test", "fixtures", "rust-family-goldens.json")
-  FileUtils.mkdir_p(File.dirname(fixture_destination))
-  File.binwrite(fixture_destination, fixture_bytes)
-  rust_family_goldens = {
-    "path" => "test/fixtures/rust-family-goldens.json",
-    "sha256" => Digest::SHA256.hexdigest(fixture_bytes)
-  }
-end
-
 root_prefix = "#{ROOT.tr('\\', '/')}/"
 lock_path = File.join(__dir__, "generator.lock.json")
 provenance = {
   "generator" => lock,
   "source_revision" => ENV.fetch("GIT_COMMIT", "unknown"),
-  "source_git_sha" => ENV.fetch("GIT_COMMIT", "unknown"),
-  "rust_model_digest" => ENV.fetch("ACYCLIC_RUST_MODEL_DIGEST", "unknown"),
   "generator_lock_sha256" => Digest::SHA256.file(lock_path).hexdigest,
   "schema_inputs_sha256" => schema_files.transform_values { |path| Digest::SHA256.file(path).hexdigest },
   "schema_root" => schema_root ? File.expand_path(schema_root).tr('\\', '/') : "diagnostic repository proto roots",
@@ -133,16 +104,6 @@ provenance = {
   "authority_manifest_schema" => authority && authority["schema"],
   "authority_source_revision" => authority && authority["source_revision"],
   "authority_exporter" => authority && authority["exporter"],
-  "rust_family_goldens" => rust_family_goldens,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }
 }
-unless provenance["source_git_sha"].match?(/\A[0-9a-f]{40}\z/i)
-  abort "Ruby provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)"
-end
-unless provenance["rust_model_digest"].match?(/\A[0-9a-f]{64}\z/i)
-  abort "Ruby provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)"
-end
-if authority && authority["source_revision"] && authority["source_revision"] != provenance["rust_model_digest"]
-  abort "Ruby provenance model digest does not match the Rust authority manifest"
-end
 File.write(File.join(OUT, "provenance.json"), JSON.pretty_generate(provenance) + "\n")

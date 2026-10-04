@@ -71,9 +71,8 @@ impl CodexProcess {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
-        #[cfg(unix)]
-        command.process_group(0);
         for name in INHERITED {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
@@ -148,20 +147,12 @@ impl CodexProcess {
 
     /// SIGTERM to the whole process group, then SIGKILL after [`GRACE`].
     pub(crate) async fn terminate(&mut self) {
-        #[cfg(unix)]
+        signal_group(&self.child, rustix::process::Signal::TERM);
+        if tokio::time::timeout(GRACE, self.child.wait())
+            .await
+            .is_err()
         {
-            signal_group(&self.child, rustix::process::Signal::TERM);
-            if tokio::time::timeout(GRACE, self.child.wait())
-                .await
-                .is_err()
-            {
-                signal_group(&self.child, rustix::process::Signal::KILL);
-                let _ = self.child.wait().await;
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            let _ = self.child.kill().await;
+            signal_group(&self.child, rustix::process::Signal::KILL);
             let _ = self.child.wait().await;
         }
     }
@@ -185,7 +176,6 @@ impl CodexProcess {
     }
 }
 
-#[cfg(unix)]
 fn signal_group(child: &Child, signal: rustix::process::Signal) {
     let pid = child
         .id()

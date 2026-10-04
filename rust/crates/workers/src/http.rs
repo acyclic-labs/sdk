@@ -1,7 +1,6 @@
 //! Authenticated HTTP client using the canonical descriptor's Protobuf JSON mapping.
 use crate::{FILE_DESCRIPTOR_SET, HTTP_ROUTES, wire};
 use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, credential};
-use futures::StreamExt;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
@@ -67,11 +66,10 @@ impl Client {
         if !endpoint.path().ends_with('/') {
             endpoint.set_path(&format!("{}/", endpoint.path()));
         }
-        let transport = Transport::builder();
-        #[cfg(not(target_arch = "wasm32"))]
-        let transport = transport.redirect(reqwest::redirect::Policy::none());
         Ok(Self {
-            transport: transport.build()?,
+            transport: Transport::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
             endpoint,
             token: token.to_owned(),
             maximum: maximum_response_bytes,
@@ -94,7 +92,7 @@ impl Client {
         let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
             .map_err(|_| Error::InvalidArgument)?;
         let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
-        let response = self
+        let mut response = self
             .transport
             .post(
                 self.endpoint
@@ -114,9 +112,7 @@ impl Client {
             return Err(Error::ResponseTooLarge);
         }
         let mut bytes = Vec::new();
-        let mut chunks = response.bytes_stream();
-        while let Some(chunk) = chunks.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = response.chunk().await? {
             if chunk.len() > self.maximum.saturating_sub(bytes.len()) {
                 return Err(Error::ResponseTooLarge);
             }

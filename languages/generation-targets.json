@@ -131,7 +131,7 @@
           "bidi"
         ],
         "wire": "protobuf-grpc",
-        "notes": "Python remote clients are generated from the Rust-owned protobuf contract; embedded behavior remains behind the Rust FFI/WASM boundary."
+        "notes": "Generated SwiftPM package is portable across Swift hosts for GRPCCore/GRPCProtobuf; network transport must select NIO on Windows and Linux."
       },
       "embedded": {
         "level": "ffi-or-wasm",
@@ -177,7 +177,7 @@
           "bidi"
         ],
         "wire": "protobuf-grpc",
-        "notes": "Rust-authority-bound Go producer emits an installable module for all nine families plus validation options; transport qualification remains separately evidenced."
+        "notes": "Generated SwiftPM package is portable across Swift hosts for GRPCCore/GRPCProtobuf; network transport must select NIO on Windows and Linux."
       },
       "embedded": {
         "level": "ffi-or-wasm",
@@ -187,42 +187,10 @@
       "maturity": "unknown",
       "generator": {
         "name": "protoc-gen-go + protoc-gen-go-grpc",
-        "version": "Go 1.27.1; protoc 36.2; protoc-gen-go v1.36.10; protoc-gen-go-grpc 1.5.1",
+        "version": "pending qualification",
         "source": "https://grpc.io/docs/languages/go/",
         "license": "Apache-2.0",
-        "pin": "Pin Go 1.27.1, protoc 36.2, plugin versions and SHA-256s, the Rust authority manifest, and every source/descriptor digest."
-      },
-      "producer": {
-        "program": "go",
-        "args": [
-          "-C",
-          "{source_root}/go",
-          "run",
-          "./cmd/sdk-go-producer",
-          "--source-root",
-          "{source_root}",
-          "--authority",
-          "{wire_root}",
-          "--request",
-          "{request}",
-          "--output",
-          "{target_output}",
-          "--protoc",
-          "protoc",
-          "--protoc-gen-go",
-          "protoc-gen-go",
-          "--protoc-gen-go-grpc",
-          "protoc-gen-go-grpc",
-          "--go-version",
-          "go1.27.1",
-          "--protoc-version",
-          "libprotoc 36.2",
-          "--protoc-gen-go-version",
-          "v1.36.10",
-          "--protoc-gen-go-grpc-version",
-          "1.5.1"
-        ],
-        "output": "package"
+        "pin": "Pin protoc plugins, Go module and descriptor inputs together."
       },
       "package": {
         "ecosystem": "Go modules",
@@ -237,12 +205,11 @@
         }
       ],
       "outstanding": [
-        "Keep the producer PATH bound to the pinned Go/protoc/plugin toolchain in CI, then retain the installed transport, TLS, cancellation and recovery receipts alongside each generated package."
+        "Host currently lacks Go toolchain; qualify unary/stream/cancellation and recovery."
       ]
     },
     {
       "id": "java",
-      "aliases": ["jvm"],
       "kind": "language",
       "language_family": "JVM",
       "status": "candidate",
@@ -309,7 +276,6 @@
     },
     {
       "id": "csharp",
-      "aliases": ["dotnet"],
       "kind": "language",
       "language_family": "C#/.NET",
       "status": "candidate",
@@ -376,29 +342,6 @@
     },
     {
       "id": "swift",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "swift",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Swift",
       "status": "candidate",
@@ -449,29 +392,6 @@
     },
     {
       "id": "cpp",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "cpp",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "C++",
       "status": "candidate",
@@ -522,29 +442,6 @@
     },
     {
       "id": "ruby",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "ruby",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Ruby",
       "status": "candidate",
@@ -591,29 +488,6 @@
     },
     {
       "id": "php",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "php",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "PHP",
       "status": "candidate",
@@ -660,29 +534,6 @@
     },
     {
       "id": "dart",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "dart",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Dart",
       "status": "candidate",
@@ -1140,29 +991,6 @@
     },
     {
       "id": "ada",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "ada",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Ada",
       "status": "http-only",
@@ -1286,29 +1114,6 @@
     },
     {
       "id": "crystal",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "crystal",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Crystal",
       "status": "http-only",
@@ -1492,29 +1297,6 @@
     },
     {
       "id": "nim",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "nim",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "language_family": "Nim",
       "status": "http-only",
@@ -1556,29 +1338,6 @@
     },
     {
       "id": "perl",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "perl",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "status": "http-only",
       "language_family": "Perl",
@@ -1626,29 +1385,6 @@
     },
     {
       "id": "powershell",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "powershell",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "status": "http-only",
       "language_family": "PowerShell",
@@ -1696,29 +1432,6 @@
     },
     {
       "id": "r",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "r",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "language",
       "status": "http-only",
       "language_family": "R",
@@ -1760,29 +1473,6 @@
     },
     {
       "id": "bash",
-      "producer": {
-        "program": "pwsh",
-        "args": [
-          "-NoProfile",
-          "-File",
-          "{source_root}/scripts/run-language-producer.ps1",
-          "-TargetId",
-          "bash",
-          "-SourceRoot",
-          "{source_root}",
-          "-WireRoot",
-          "{wire_root}",
-          "-AuthorityManifest",
-          "{authority_manifest}",
-          "-OutputRoot",
-          "{output_root}",
-          "-TargetOutput",
-          "{target_output}",
-          "-Request",
-          "{request}"
-        ],
-        "output": "package"
-      },
       "kind": "tooling",
       "language_family": "POSIX shell",
       "status": "http-only",
@@ -1953,5 +1643,3 @@
   ],
   "catalogued_at": "2026-10-03"
 }
-
-

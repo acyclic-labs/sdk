@@ -10,7 +10,6 @@ use prost::Message;
 
 pub mod bindings;
 pub mod credential;
-pub mod embedded_facades;
 pub mod facades;
 pub mod family_registry;
 pub mod filesystem;
@@ -19,10 +18,8 @@ pub mod inference;
 pub mod machines;
 pub mod objects;
 pub mod protocol;
-pub mod semantic_oracle;
 pub mod stream;
 pub mod transport;
-pub mod wire_semantics;
 pub mod workers;
 
 pub use bindings::{
@@ -31,7 +28,6 @@ pub use bindings::{
     generate_rust_bindings, native_binding_boundary,
 };
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
-pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
@@ -58,12 +54,6 @@ pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
-};
-pub use wire_semantics::{
-    compare_family_rpc_message, compare_message, compare_message_with_options, family_rpc_streaming,
-    compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
-    rpc_streaming, RpcDirection, RpcSemanticError, RpcStreaming, SemanticMismatch,
-    UnknownFieldPolicy,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 

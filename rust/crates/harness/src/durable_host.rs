@@ -1,6 +1,5 @@
 //! Owner-bound Stream coordinator adapter for typed durable task admission.
 
-use crate::BoxFuture;
 use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
@@ -31,6 +30,7 @@ use acyclic_stream::{
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{

@@ -111,21 +111,6 @@ pub fn validate_objects_v2_http_endpoint(endpoint: &str) -> Result<(), JsValue> 
     acyclic_objects::v2::response::validate_http_endpoint(endpoint).map_err(error)
 }
 
-/// Validates the bearer credential shared by the native and browser Objects
-/// clients. The empty string means success; failures use the same stable
-/// invalid-argument boundary as the request validators.
-#[wasm_bindgen]
-pub fn validate_objects_v2_bearer_token(token: &str) -> String {
-    if token.trim().is_empty()
-        || token.len() > 8192
-        || token.contains(['\r', '\n', '\0'])
-    {
-        "invalid_argument".to_owned()
-    } else {
-        String::new()
-    }
-}
-
 #[wasm_bindgen]
 pub struct ObjectsV2Memory {
     inner: MemoryObjects,

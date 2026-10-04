@@ -10,12 +10,13 @@ if ([string]::IsNullOrWhiteSpace($Root)) {
     $Root = (Resolve-Path (Join-Path (Join-Path $scriptDir '..') '..')).Path
 }
 $version = '7.25.0'
+$jarSha256 = '41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE'
 $families = @('actors', 'workers', 'stream', 'objects', 'inference')
 $target = Join-Path $Root 'research/additional-languages/target/powershell'
 $packages = Join-Path $target 'packages'
 $installed = Join-Path $target 'installed'
 $artifacts = Join-Path $target 'artifacts'
-$jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $scriptDir 'ensure-openapi-generator.ps1') '-SourceRoot' $Root)
+$jar = Join-Path $Root "research/additional-languages/target/bash/openapi-generator-cli-$version.jar"
 $fixture = Join-Path $scriptDir 'powershell-fixture.py'
 $consumer = Join-Path $scriptDir 'powershell-consumer-five.ps1'
 $adapt = Join-Path $scriptDir 'apply-powershell-byte-adaptation.ps1'
@@ -23,7 +24,8 @@ $zipWriter = Join-Path $scriptDir 'write-deterministic-zip.ps1'
 $port = 18767
 
 New-Item -ItemType Directory -Force -Path $target, $packages, $installed, $artifacts | Out-Null
-$jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
+if (-not (Test-Path -LiteralPath $jar)) { throw "Missing pinned OAG jar: $jar" }
+if ((Get-FileHash $jar -Algorithm SHA256).Hash -ne $jarSha256) { throw 'OAG jar checksum mismatch' }
 
 if (-not $SkipGeneration) {
     foreach ($family in $families) {

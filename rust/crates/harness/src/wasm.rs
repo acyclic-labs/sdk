@@ -779,14 +779,17 @@ impl AttachmentListResolver for WasmProjectionResolver {
         &'a self,
         manifest: &'a FileRef,
         item_count: u32,
-    ) -> crate::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<Attachment>>> {
         Box::pin(async move {
             let bytes = self.bytes(manifest)?;
             decode_attachment_manifest(manifest, &bytes, item_count)
         })
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef) -> crate::BoxFuture<'a, crate::Result<Vec<u8>>> {
+    fn read<'a>(
+        &'a self,
+        file: &'a FileRef,
+    ) -> futures::future::BoxFuture<'a, crate::Result<Vec<u8>>> {
         Box::pin(async move { self.bytes(file) })
     }
 }

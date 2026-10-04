@@ -1,6 +1,5 @@
 //! Customer-hostable Stream-backed coordinator and pull-worker admission.
 
-use crate::BoxFuture;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
     conversation::{ContentResidencyVerifier, FileRef},
@@ -18,7 +17,7 @@ use acyclic_stream::{
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::TryStreamExt as _;
+use futures::{TryStreamExt as _, future::BoxFuture};
 use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{

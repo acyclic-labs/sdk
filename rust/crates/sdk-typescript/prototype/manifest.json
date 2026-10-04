@@ -2514,8 +2514,8 @@
       "package": "acyclic.objects.v2",
       "service": "BucketsService",
       "descriptor_sha256": "1968e12e89d38f7076b9aee559c815748858c156401a56ba53e615def49fe86f",
-      "source_content_sha256": "b34a2fbaa325a10f9baa58037bdc4d9e229679bdefd090d2415e1eeda3c9d594",
-      "source_model_sha256": "b34a2fbaa325a10f9baa58037bdc4d9e229679bdefd090d2415e1eeda3c9d594",
+      "source_content_sha256": "215dda3c35d5811a13fd69a2b071f52c7db643aa597921ee76522daa5842cce3",
+      "source_model_sha256": "215dda3c35d5811a13fd69a2b071f52c7db643aa597921ee76522daa5842cce3",
       "modeled_operations": 13,
       "http_projection": true,
       "remote_policy": {

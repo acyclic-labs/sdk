@@ -12,23 +12,17 @@ readme = "README.md"
 [dependencies]
 acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 prost.workspace = true
-futures.workspace = true
 prost-reflect = { workspace = true, features = ["serde"] }
+reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-acyclic-workers = { path = "../workers" }
-tokio.workspace = true
-rcgen = "0.14.10"
-
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-reqwest.workspace = true
 tonic.workspace = true
 tonic-prost.workspace = true
 
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
+[dev-dependencies]
+acyclic-workers = { path = "../workers" }
+tokio.workspace = true
+rcgen = "0.14.10"
 
 [lints]
 workspace = true

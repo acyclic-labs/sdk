@@ -176,16 +176,14 @@ async function createStreamClientFromEnv(environment?: Partial<StreamEnvironment
       const nativeModule = "./native.js";
       const { NativeStreamProvider } = await import(nativeModule);
       try {
-        const caCertificate = environment?.caCertificate ?? environmentValueOptional("ACYCLIC_STREAM_CA_CERTIFICATE");
-        return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token, ...(caCertificate === undefined ? {} : { caCertificate }) }));
+        return new StreamClient(await NativeStreamProvider.connect({ endpoints: [endpoint], token }));
       } catch (error) {
         // Source checkouts may omit the optional platform companion. The
         // generated Node gRPC adapter is the same full transport contract and
         // remains the best available native implementation in that case.
         if (!isMissingNativeCompanion(error)) throw error;
         const { GrpcStreamProvider } = await import("./grpc.js");
-        const caCertificate = environment?.caCertificate ?? environmentValueOptional("ACYCLIC_STREAM_CA_CERTIFICATE");
-        return new StreamClient(new GrpcStreamProvider({ endpoint, token, ...(caCertificate === undefined ? {} : { caCertificate }) }));
+        return new StreamClient(new GrpcStreamProvider({ endpoint, token }));
       }
     } catch (error) {
       const reason = error instanceof Error ? `: ${error.message}` : "";
@@ -232,11 +230,6 @@ function environmentValue(name: string): string {
   const value = runtime.process?.env?.[name];
   if (!value?.trim()) throw new StreamError("configuration", `${name} is required`);
   return value;
-}
-function environmentValueOptional(name: string): string | undefined {
-  const runtime = globalThis as typeof globalThis & { process?: { env?: Readonly<{ [key: string]: string | undefined }> } };
-  const value = runtime.process?.env?.[name];
-  return value?.trim() === "" ? undefined : value;
 }
 function assertJson(value: unknown, seen = new Set<object>()): asserts value is JsonValue {
   if (value === null || typeof value === "string" || typeof value === "boolean") return;

@@ -1,6 +1,9 @@
-"""Acyclic's Rust-generated Python SDK."""
+"""Acyclic's generated transport-only Python package.
+
+The generated modules mirror the Rust-owned Protobuf contracts. They do not
+add retries, policy, or semantic interpretation.
+"""
 
 from . import generated
-from .remote import BEST_TRANSPORT, Client, Credentials
 
-__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "generated"]
+__all__ = ["generated"]

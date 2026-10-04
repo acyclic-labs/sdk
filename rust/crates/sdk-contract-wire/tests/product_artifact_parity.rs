@@ -101,52 +101,6 @@ fn generated_product_artifacts_are_exact_and_drift_is_rejected() {
 }
 
 #[test]
-fn product_check_reports_all_drifted_artifacts_in_one_run() {
-    let root = temporary_root();
-    let generated = run_product_command("generate-products", &root);
-    assert!(
-        generated.status.success(),
-        "generator failed: {}",
-        String::from_utf8_lossy(&generated.stderr)
-    );
-
-    let drifted_paths = [
-        "ruby/lib/acyclic_sdk/generated_remote_policy.rb",
-        "jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
-        "dotnet/GeneratedRemotePolicy.cs",
-    ];
-    for relative in drifted_paths {
-        let path = root.join(relative);
-        let mut bytes = fs::read(&path).expect("generated product fixture");
-        bytes.push(0);
-        fs::write(path, bytes).expect("mutate product fixture");
-    }
-
-    let checked = run_product_command("check-products", &root);
-    assert!(
-        !checked.status.success(),
-        "drifted products unexpectedly passed"
-    );
-    let output = format!(
-        "{}{}",
-        String::from_utf8_lossy(&checked.stdout),
-        String::from_utf8_lossy(&checked.stderr)
-    );
-    for relative in drifted_paths {
-        assert!(
-            output.contains(relative),
-            "aggregate drift diagnostic omitted {relative}: {output}"
-        );
-    }
-    assert!(
-        output.contains("3 product artifacts drifted"),
-        "aggregate drift count missing: {output}"
-    );
-
-    let _ = fs::remove_dir_all(root);
-}
-
-#[test]
 fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
     let root = temporary_root();
     let generated = run_product_command("generate-products", &root);
@@ -183,19 +137,15 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             "Machines operation collection missing from {relative}"
         );
         assert!(
-            (source.contains("cancellation") || source.contains("Cancellation"))
-                && source.contains("operation"),
+            source.contains("cancellation") && source.contains("operation"),
             "Machines cancellation metadata missing from {relative}"
         );
         assert!(
-            source.contains("post_failure_fallback")
-                || source.contains("postFailureFallback")
-                || source.contains("POST_FAILURE_FALLBACK")
-                || source.contains("PostFailureFallback"),
+            source.contains("post_failure_fallback") || source.contains("postFailureFallback"),
             "post-failure fallback policy missing from {relative}"
         );
         assert!(
-            source.contains("replay") || source.contains("REPLAY") || source.contains("Replay"),
+            source.contains("replay"),
             "replay policy missing from {relative}"
         );
         assert!(

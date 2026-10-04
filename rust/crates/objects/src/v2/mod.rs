@@ -56,7 +56,7 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
         "AbortMultipartResponse",
     ),
 ];
-pub use memory::{MemoryObjects, MemoryOptions};
+pub use memory::{Clock, FixedClock, MemoryObjects, MemoryOptions, SystemClock};
 
 /// Native composition capability for filesystem storage over logical Objects.
 ///

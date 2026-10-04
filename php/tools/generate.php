@@ -61,9 +61,7 @@ foreach ($schemaRoots as $candidate) {
         }
     }
 }
-$schemaNames = $manifestPath === null
-    ? array_values(array_unique([...$schemaNames, ...$dependencyNames]))
-    : array_values(array_unique($schemaNames));
+$schemaNames = array_values(array_unique([...$schemaNames, ...$dependencyNames]));
 $expectedSchemaHashes = [];
 $expectedDescriptorHashes = [];
 foreach ($families as $family) {
@@ -150,10 +148,6 @@ $preserved = [
     'acyclic/runtime/generatedremotepolicy.php',
     'acyclic/runtime/remotepolicy.php',
     'acyclic/runtime/remoteclient.php',
-    // The options descriptor is imported by generated files but is not
-    // emitted by protoc for every target invocation. Preserve the Rust-owned
-    // metadata class so clean package regeneration remains loadable.
-    'gpbmetadata/validation/v1/options.php',
 ];
 if (is_dir($output)) {
     $iterator = new RecursiveIteratorIterator(
@@ -180,39 +174,6 @@ $arguments = [
 chdir($root);
 runCommand($arguments);
 
-$rustFamilyGoldens = null;
-if ($manifestPath !== null) {
-    $fixtureSource = $schemaRoots[0] . DIRECTORY_SEPARATOR . 'rust-family-goldens.json';
-    if (!is_file($fixtureSource)) {
-        throw new RuntimeException('Rust-owned fixture missing: ' . $fixtureSource);
-    }
-    $fixtureBytes = file_get_contents($fixtureSource);
-    if ($fixtureBytes === false) {
-        throw new RuntimeException('unable to read Rust-owned fixture: ' . $fixtureSource);
-    }
-    $fixture = json_decode($fixtureBytes, true, 512, JSON_THROW_ON_ERROR);
-    if (!is_array($fixture) || count($fixture) !== 9) {
-        throw new RuntimeException('Rust-owned fixture must contain nine family goldens');
-    }
-    $manifestHash = sha256File($manifestPath);
-    foreach ($fixture as $entry) {
-        if (!is_array($entry) || ($entry['authority_manifest_sha256'] ?? null) !== $manifestHash) {
-            throw new RuntimeException('Rust-owned fixture is bound to a different authority manifest');
-        }
-    }
-    $fixtureDestination = $root . '/tests/fixtures/rust-family-goldens.json';
-    if (!is_dir(dirname($fixtureDestination)) && !mkdir(dirname($fixtureDestination), 0777, true) && !is_dir(dirname($fixtureDestination))) {
-        throw new RuntimeException('unable to create fixture directory');
-    }
-    if (file_put_contents($fixtureDestination, $fixtureBytes) === false) {
-        throw new RuntimeException('unable to write generated Rust-owned fixture');
-    }
-    $rustFamilyGoldens = [
-        'path' => 'tests/fixtures/rust-family-goldens.json',
-        'sha256' => hash('sha256', $fixtureBytes),
-    ];
-}
-
 $generated = [];
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS));
 foreach ($iterator as $path) {
@@ -233,8 +194,6 @@ sort($generated);
 $provenance = [
     'generator' => $lock,
     'source_revision' => getenv('GIT_COMMIT') ?: 'unknown',
-    'source_git_sha' => getenv('GIT_COMMIT') ?: 'unknown',
-    'rust_model_digest' => getenv('ACYCLIC_RUST_MODEL_DIGEST') ?: 'unknown',
     'generator_lock_sha256' => sha256File($root . '/generator.lock.json'),
     'schema_inputs_sha256' => array_map('sha256File', $schemaFiles),
     'schema_root' => $schemaRootOption === null ? 'diagnostic repository proto roots' : str_replace('\\', '/', $schemaRoots[0]),
@@ -243,16 +202,6 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
-    'rust_family_goldens' => $rustFamilyGoldens,
     'generated_files' => $generated,
 ];
-if (!preg_match('/^[0-9a-f]{40}$/i', $provenance['source_git_sha'])) {
-    throw new RuntimeException('PHP provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)');
-}
-if (!preg_match('/^[0-9a-f]{64}$/i', $provenance['rust_model_digest'])) {
-    throw new RuntimeException('PHP provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)');
-}
-if (($authority['source_revision'] ?? null) !== null && $authority['source_revision'] !== $provenance['rust_model_digest']) {
-    throw new RuntimeException('PHP provenance model digest does not match the Rust authority manifest');
-}
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);

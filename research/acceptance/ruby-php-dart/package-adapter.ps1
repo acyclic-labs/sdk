@@ -80,16 +80,6 @@ $authorityDocument = Get-Content -LiteralPath $authority -Raw | ConvertFrom-Json
 if ($null -eq $authorityDocument.families -or @($authorityDocument.families).Count -eq 0) {
     throw 'Authority must contain at least one Rust-owned family'
 }
-$sourceGitSha = [string]$authorityDocument.source_git_sha
-$modelDigest = [string]$authorityDocument.source_revision
-if ($sourceGitSha -notmatch '^[0-9a-fA-F]{40}$') {
-    throw 'Authority must bind the frozen Rust source with a 40-character source_git_sha'
-}
-if ($modelDigest -notmatch '^[0-9a-fA-F]{64}$') {
-    throw 'Authority source_revision must be the 64-character Rust model digest'
-}
-$env:GIT_COMMIT = $sourceGitSha.ToLowerInvariant()
-$env:ACYCLIC_RUST_MODEL_DIGEST = $modelDigest.ToLowerInvariant()
 foreach ($family in @($authorityDocument.families)) {
     if ([string]::IsNullOrWhiteSpace([string] $family.source) -or
         [string]::IsNullOrWhiteSpace([string] $family.source_sha256)) {
@@ -161,42 +151,6 @@ try {
         # archive.
         Copy-Package (Join-Path $repoRoot 'dart') $package
         $dart = if ($env:DART) { $env:DART } else { 'dart' }
-        $dartShim = Join-Path $repoRoot 'dart/.toolchain/protoc-gen-dart-shim.exe'
-        if (-not (Test-Path -LiteralPath $dartShim -PathType Leaf)) {
-            throw "Pinned Dart protoc shim is missing: $dartShim"
-        }
-        $dartPluginEntry = Join-Path $package 'tool/protoc_plugin_entry.dart'
-        if (-not (Test-Path -LiteralPath $dartPluginEntry -PathType Leaf)) {
-            throw "Dart protoc plugin entrypoint is missing: $dartPluginEntry"
-        }
-        $env:DART_EXECUTABLE = $dart
-        $env:PROTOC_GEN_DART = $dartShim
-        $env:PROTOC_DART_SNAPSHOT = $dartPluginEntry
-        # Resolve the pinned Dart graph before invoking the plugin entrypoint.
-        Run-Checked $dart @('pub', 'get', '--offline') $package
-        $dartGenerated = Join-Path $package 'lib/src/generated'
-        New-Item -ItemType Directory -Path $dartGenerated -Force | Out-Null
-        $dartProtoArgs = @(
-            '-I', $sourceRoot
-            '--plugin=protoc-gen-dart=' + $dartShim
-            '--dart_out=grpc:' + $dartGenerated
-        )
-        $protobufCache = Join-Path ($env:PUB_CACHE ?? '') 'hosted/pub.dev'
-        if (Test-Path -LiteralPath $protobufCache) {
-            foreach ($protobufRoot in Get-ChildItem -LiteralPath $protobufCache -Directory -Filter 'protobuf-*') {
-                if (Test-Path -LiteralPath (Join-Path $protobufRoot.FullName 'google')) {
-                    $dartProtoArgs += @('-I', $protobufRoot.FullName)
-                }
-            }
-        }
-        foreach ($family in @($authorityDocument.families)) {
-            $dartProtoArgs += [string]$family.source
-        }
-        $dartProtoc = if ($env:PROTOC) { $env:PROTOC } else { 'protoc' }
-        Run-Checked $dartProtoc $dartProtoArgs $package
-        $env:PROTOC_SKIP = '1'
-        # Keep the postprocessor offline and prevent dartdev from invoking
-        # its implicit native-assets pub subprocess on restricted drives.
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
         $dartLockPath = Join-Path $package 'generator.lock.yaml'
@@ -210,9 +164,7 @@ try {
         schema = 'acyclic.ruby-php-dart.package-adapter.v1'
         authority_sha256 = Sha256 $authority
         request_sha256 = Sha256 $request
-        source_git_sha = $sourceGitSha.ToLowerInvariant()
-        rust_model_digest = $modelDigest.ToLowerInvariant()
-        authority_source_revision = $modelDigest.ToLowerInvariant()
+        authority_source_revision = $authorityDocument.source_revision
         source_root = 'caller-supplied authority input (path omitted for portability)'
         languages = $languages
         commands = $commands

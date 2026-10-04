@@ -1,12 +1,12 @@
 //! Ordered function-based context assembly.
 
-use crate::BoxFuture;
 use crate::{
     Result,
     conversation::{ContentResidencyVerifier, FileRef},
     model::{ModelContent, ModelContentPart, ModelMessage, ModelRole},
     projection::SelectedModelContext,
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -328,15 +328,7 @@ impl ContextSource for DurableContextProvider {
 }
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
-#[cfg(not(target_arch = "wasm32"))]
 pub trait ContextSource: Send + Sync {
-    /// Resolves model-visible messages for the current step.
-    fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
-}
-
-#[cfg(target_arch = "wasm32")]
-/// Replaceable browser-local memory, retrieval, or skill source.
-pub trait ContextSource {
     /// Resolves model-visible messages for the current step.
     fn load<'a>(&'a self, input: &'a ContextInput) -> BoxFuture<'a, Result<Vec<ModelMessage>>>;
 }
@@ -485,25 +477,7 @@ pub struct ContextInput {
 }
 
 /// Replaceable ordered context transformation.
-#[cfg(not(target_arch = "wasm32"))]
 pub trait ContextStage: Send + Sync {
-    /// Stable stage name used for diagnostics and composition.
-    fn name(&self) -> &str;
-
-    /// Immutable serializable identity included in durable execution binding.
-    fn contract(&self) -> Value;
-
-    /// Applies one deterministic context transformation.
-    fn apply<'a>(
-        &'a self,
-        input: &'a ContextInput,
-        context: Context,
-    ) -> BoxFuture<'a, Result<Context>>;
-}
-
-#[cfg(target_arch = "wasm32")]
-/// Browser-local ordered context transformation.
-pub trait ContextStage {
     /// Stable stage name used for diagnostics and composition.
     fn name(&self) -> &str;
 
