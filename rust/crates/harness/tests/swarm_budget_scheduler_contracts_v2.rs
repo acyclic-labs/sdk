@@ -300,11 +300,7 @@ async fn production_admission_enforces_distinct_active_and_total_limits() -> Res
         .declare(
             &session,
             None,
-            Some(SwarmResourceRequest {
-                model_steps: 1,
-                output_bytes: 1,
-                execution_time_ms: 1,
-            }),
+            None,
             "declare-session",
         )
         .await?;
@@ -375,11 +371,7 @@ async fn production_admission_rejects_descendant_over_each_ancestor_dimension() 
         .declare(
             &session,
             None,
-            Some(SwarmResourceRequest {
-                model_steps: 1,
-                output_bytes: 1,
-                execution_time_ms: 1,
-            }),
+            None,
             "declare-session",
         )
         .await?;
