@@ -1139,7 +1139,7 @@ fn run_rust(
             .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
     }
     copy_dir_recursive(&package_root, &consumed_package_root)?;
-    let consumed_package_root_string = consumed_package_root.to_string_lossy().replace('\\', "/");
+    let consumed_package_root_string = cargo_manifest_path(&consumed_package_root);
     let compile_consumer_manifest_bytes = format!(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"{consumed_package_root_string}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
@@ -1563,7 +1563,7 @@ fn run_guide_rust_consumers(
         }
         fs::create_dir_all(staging.join("src"))
             .map_err(|error| format!("create guide staging: {error}"))?;
-        let package_path_text = package_root.to_string_lossy().replace('\\', "/");
+        let package_path_text = cargo_manifest_path(&package_root);
         let manifest = format!(
             r#"[package]
 name = "guide-{scenario_id}"
@@ -1740,6 +1740,15 @@ fn add_snippet_binding(
             json!(hash(snippet.code.as_bytes())),
         );
     }
+}
+
+fn cargo_manifest_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let text = text
+        .strip_prefix("\\\\?\\")
+        .or_else(|| text.strip_prefix("//?/"))
+        .unwrap_or(&text);
+    text.replace('\\', "/")
 }
 
 fn portable_output_path(path: &Path, qualification: &Path) -> String {
