@@ -16,7 +16,7 @@
     },
     {
       "id": "wire-compatibility",
-      "evidence": "Retained receipt research/acceptance/wire-product-parity-20261004.json records product parity7/7, Inference7/7 and Objects8/8, including archived descriptor immutability and extension payload preservation. Coordinator inspected receipt and current checker commits; these scopes do not establish all language transport compatibility. Fresh integration is assigned after later changes.",
+      "evidence": "Retained receipt research/acceptance/wire-product-parity-20261004.json records product parity7/7, Inference7/7 and Objects8/8, including archived descriptor immutability and extension payload preservation. Coordinator inspected receipt and current checker commits; these scopes do not establish all language transport compatibility. Fresh integration is assigned after later changes. Coordinator current locked archive_identity suite passes3/3: exact eight archived family hashes, shared Protocol identity, and complete metadata for all106 operations across seven emitted facade languages. Independent transport control schema preserves archive bytes; six transport-control tests pass including maintained prost/tonic generation and mismatch rejection. End-to-end installed transport qualification remains outstanding.",
       "state": "partial"
     },
     {
@@ -26,7 +26,7 @@
     },
     {
       "id": "drift-detection",
-      "evidence": "Root actual CLI negatives passed 5 tests/28 assertions; retained reviewer 22875fe11 adds repeat drift and directory/file link negatives. Constructed authority-backed positive is synthetic. Real successful full generation, actual output/source tampering and clean reproducibility remain unverified.",
+      "evidence": "Root actual CLI negatives passed 5 tests/28 assertions; retained reviewer 22875fe11 adds repeat drift and directory/file link negatives. Constructed authority-backed positive is synthetic. Real successful full generation, actual output/source tampering and clean reproducibility remain unverified. Current Rust wire CLI generates and checks independent transport control source/FDS, binds hashes and Rust source in authority manifest, and rejects an actually edited control source. Full single-entrypoint repeatability remains unverified.",
       "state": "partial"
     },
     {
@@ -36,7 +36,7 @@
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs.",
+      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification.",
       "state": "partial"
     },
     {
@@ -123,5 +123,23 @@
     ],
     "merge_performed": false,
     "goal_completed": false
+  },
+  "latest_transport_control_iteration": {
+    "status": "incomplete",
+    "generation_commit": "38963ff106a9246f0de27451ad1f44373b9b9002",
+    "facade_test_commit": "0fee72009ab6f3d3d68d1d6991b181a1336be7e4",
+    "validator_commit": "0e253465339eb94fbe8d303144ca4daf27974fb0",
+    "wire_generate_and_check": "passed",
+    "edited_control_source": "rejected",
+    "archive_identity_tests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "transport_control_tests": {
+      "passed": 6,
+      "failed": 0
+    },
+    "application_rpc_count": 106,
+    "remaining": "Authenticated endpoint registration, actual facade negotiation, full clean generation and downstream qualification."
   }
 }
