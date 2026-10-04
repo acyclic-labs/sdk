@@ -125,3 +125,29 @@ fn root_branch_merge_publishes_the_source_workspace() {
         "main\n",
     );
 }
+
+#[test]
+#[ignore = "requires the packaged native plugin service"]
+fn root_branch_rebase_publishes_the_target_workspace() {
+    let session = Session::open();
+
+    session.git_ok(&["commit", "-m", "initial"]);
+    session.git_ok(&["switch", "-c", "feature"]);
+    fs::write(session.root.join("feature.txt"), "feature\n").expect("feature edit");
+    session.git_ok(&["commit", "-m", "feature"]);
+    session.git_ok(&["switch", "main"]);
+    fs::write(session.root.join("main.txt"), "main\n").expect("main edit");
+    session.git_ok(&["commit", "-m", "main"]);
+    session.git_ok(&["switch", "feature"]);
+
+    let (ok, text) = session.run(&["git", "rebase", "main"], b"");
+    assert!(ok, "branch rebase failed: {text}");
+    assert_eq!(
+        fs::read_to_string(session.root.join("feature.txt")).expect("feature file"),
+        "feature\n",
+    );
+    assert_eq!(
+        fs::read_to_string(session.root.join("main.txt")).expect("main file"),
+        "main\n",
+    );
+}
