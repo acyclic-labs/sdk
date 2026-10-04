@@ -292,15 +292,26 @@ fn generate_products(root: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn check_products(root: &Path) -> Result<(), Box<dyn Error>> {
+    let mut drifted = Vec::new();
     for (relative, expected) in product_artifacts(root)? {
         let path = root.join(relative);
-        let actual = fs::read(&path).map_err(|error| {
-            format!("cannot read product descriptor {}: {error}", path.display())
-        })?;
-        if actual != expected {
-            return Err(format!("product artifact drifted: {}", path.display()).into());
+        match fs::read(&path) {
+            Ok(actual) if actual == expected => println!("checked {}", path.display()),
+            Ok(_) => drifted.push((path, None)),
+            Err(error) => drifted.push((path, Some(error.to_string()))),
         }
-        println!("checked {}", path.display());
+    }
+    if !drifted.is_empty() {
+        for (path, error) in &drifted {
+            match error {
+                Some(error) => eprintln!(
+                    "product artifact drifted: {} (cannot read: {error})",
+                    path.display()
+                ),
+                None => eprintln!("product artifact drifted: {}", path.display()),
+            }
+        }
+        return Err(format!("{} product artifacts drifted", drifted.len()).into());
     }
     Ok(())
 }
