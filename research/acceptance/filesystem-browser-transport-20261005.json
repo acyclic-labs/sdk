@@ -1,0 +1,41 @@
+{
+  "schema": "acyclic.filesystem.browser-transport-evaluation.v1",
+  "recorded_at": "2026-10-05T00:00:00Z",
+  "status": "transport_oss_verified_browser_qualification_blocked",
+  "scope": "Rust-owned browser remote Filesystem transport and installed WASM qualification",
+  "pinned_dependency": {
+    "crate": "tonic-web-wasm-client",
+    "version": "0.9.2",
+    "tonic_compatibility": "0.14",
+    "source": "https://docs.rs/crate/tonic-web-wasm-client/0.9.2/source/Cargo.toml.orig",
+    "api": "https://docs.rs/tonic-web-wasm-client/0.9.2/tonic_web_wasm_client/",
+    "implementation": "https://docs.rs/crate/tonic-web-wasm-client/0.9.2/source/src/call.rs"
+  },
+  "verified_capabilities": [
+    "browser-only wasm32 transport",
+    "tonic generated clients with transport features disabled",
+    "grpc-web protobuf requests over browser fetch",
+    "unary and streaming response bodies",
+    "AbortController-backed cancellation",
+    "authorization and grpc-web headers"
+  ],
+  "repository_gap": {
+    "rust_policy": "rust/crates/sdk-contract-wire/src/transport.rs advertises browser grpc-web",
+    "current_rust_browser_crate": "rust/crates/sdk-remote-web validates endpoints, credentials, and response bounds but has no tonic client",
+    "current_filesystem_wasm": "rust/crates/filesystem-wasm generates wasm bindings with no remote tonic client",
+    "current_remote_filesystem": "rust/crates/filesystem/src/hosted.rs is cfg(not(target_arch = \"wasm32\")) and uses tonic transport Channel"
+  },
+  "qualification": {
+    "command": "node research/acceptance/filesystem-harness-wasm/browser-qualify.mjs",
+    "result": "blocked_before_page_execution",
+    "observed_error": "Chrome exited with 4294930433 while waiting for DevToolsActivePort",
+    "reproduction": "Chrome headless emitted crashpad access-denied and mojo platform-channel access-denied errors before exit"
+  },
+  "implementation_path": [
+    "enable generated FilesystemServiceClient for wasm32 in the filesystem build script",
+    "add tonic 0.14 with transport disabled and tonic-web-wasm-client = 0.9.2 for wasm32",
+    "construct the generated client over tonic_web_wasm_client::Client",
+    "reuse the existing hosted handshake, capability bounds, metadata, streaming, and cancellation semantics",
+    "expose the same Rust facade through filesystem-wasm so platform selection stays inside generated Rust bindings"
+  ]
+}
