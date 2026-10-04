@@ -386,11 +386,6 @@ impl CommunicationExecutor {
                 "communication invocation names another tool".into(),
             ));
         }
-        // Admission observation is the owner-authenticated boundary for the
-        // model batch path. ModelToolContext carries the task identity only
-        // when the host bound it while admitting this turn; it is never
-        // derived from the operation identity or model content.
-        self.host.observe_admission(waiter).await?;
         match self.kind {
             CommunicationToolKind::Message => {
                 let input: MessageToolInput = serde_json::from_value(invocation.arguments)
