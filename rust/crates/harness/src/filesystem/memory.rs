@@ -2554,11 +2554,11 @@ mod tests {
             "page-message",
             Action::AppendConversationMessage {
                 message: Box::new(ConversationMessage {
-                    id: MessageId::new(),
+                    id: crate::MessageId::new(),
                     sequence: 1,
                     kind: MessageKind::User,
                     content,
-                    attachments: Vec::new(),
+                    attachments: Vec::new().into(),
                     reply_to: None,
                     tool_call_id: None,
                     extensions: BTreeMap::new(),

@@ -1270,7 +1270,6 @@ mod tests {
         IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamPath,
     };
     use async_trait::async_trait;
-    use futures::StreamExt as _;
     use serde_json::json;
     use std::sync::{
         Arc, Mutex,
