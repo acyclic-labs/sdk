@@ -1,5 +1,7 @@
 //! Typed, version-pinned task admission over the live and durable primitives.
 
+use acyclic_stream::UnixMillisClock;
+
 use crate::{
     Admission, BatchId, Capabilities, EffectId, Error, GroupId, InteractionId, OperationId,
     Outcome, Result, TaskId,
@@ -18,8 +20,8 @@ use crate::{
     },
     live::{TaskGroup, TaskHandle},
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelProvider, ModelRequest,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
+        ModelRequest,
     },
     registry::{ComponentIdentity, validate_component_label},
     resources::{ArtifactRef, GenerationRef, SandboxRef},
@@ -658,6 +660,13 @@ impl TaskAdmissionRecord {
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: Send + Sync {
+    /// Returns the owner clock used for durable deadline and completion
+    /// validation. Hosts with an injected clock override this boundary;
+    /// lightweight adapters retain the system-clock default.
+    fn now_unix_millis(&self) -> u64 {
+        acyclic_stream::SystemUnixMillisClock.now_unix_millis()
+    }
+
     /// Whether admission retains prerequisites and fences dispatch until success.
     fn supports_admission_dependencies(&self) -> bool {
         false
