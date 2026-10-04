@@ -10,7 +10,6 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
 use acyclic_harness::{
-    Error as HarnessError, InteractionId, OperationId, TaskId,
     conversation::Limits,
     filesystem::{LocalSessionPhase, PersistentLocalSwarm},
     model::{
@@ -18,17 +17,19 @@ use acyclic_harness::{
         ModelProvider,
     },
     registry::ComponentIdentity,
+    scheduler::InboxItem,
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
 use futures::StreamExt;
-use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -832,6 +833,25 @@ fn messages_last_sequence(items: &[Value]) -> Option<String> {
         .and_then(|item| item.get("sequence"))
         .and_then(Value::as_str)
         .map(str::to_owned)
+}
+
+/// Projects one authenticated inbox item into the existing GraphCoder wire
+/// contract. Body hydration is deliberately supplied by Harness' retained
+/// message reader; this function does not resolve mutable workspace paths.
+fn inbox_message_value(item: &InboxItem, body: &[u8]) -> Result<Value, DispatchError> {
+    let body = String::from_utf8(body.to_vec()).map_err(|_| DispatchError {
+        code: "transport",
+        message: "inbox message content is not UTF-8".into(),
+    })?;
+    Ok(json!({
+        "id": item.message_id,
+        "sequence": item.sequence.to_string(),
+        "session_id": item.task_id.to_string(),
+        "sender_id": item.sender.to_string(),
+        "recipient_id": item.task_id.to_string(),
+        "body": body,
+        "delivered_at": item.delivered_at_epoch_ms.to_string(),
+    }))
 }
 
 fn activity_event(event: acyclic_harness::core::Event) -> Value {
