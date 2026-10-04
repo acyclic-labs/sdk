@@ -9,26 +9,26 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
-use futures::StreamExt;
 use acyclic_harness::{
-    conversation::Limits,
-    filesystem::{
-        LocalSessionPhase, PersistentLocalSwarm,
-    },
-    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
-        ModelProvider, ModelRequest},
-    registry::ComponentIdentity,
     Error as HarnessError, InteractionId, OperationId, TaskId,
+    conversation::Limits,
+    filesystem::{LocalSessionPhase, PersistentLocalSwarm},
+    model::{
+        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
+        ModelProvider,
+    },
+    registry::ComponentIdentity,
 };
 use clap::Parser;
+use futures::StreamExt;
 use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -79,15 +79,19 @@ impl ModelProvider for EchoModel {
         let request = prepared.request().clone();
         let call = self.calls.fetch_add(1, Ordering::Relaxed);
         if self.fixture == "stage" && call > 0 {
-            let result = request.messages.iter().rev().find_map(|message| match &message.content {
-                acyclic_harness::model::ModelContent::Part(
-                    acyclic_harness::model::ModelContentPart::ToolResult { value, .. }
-                ) => Some(value),
-                _ => None,
-            });
+            let result = request
+                .messages
+                .iter()
+                .rev()
+                .find_map(|message| match &message.content {
+                    acyclic_harness::model::ModelContent::Part(
+                        acyclic_harness::model::ModelContentPart::ToolResult { value, .. },
+                    ) => Some(value),
+                    _ => None,
+                });
             if !result.is_some_and(|value| value.get("file").is_some()) {
                 return Box::pin(futures::stream::iter([Err(HarnessError::Storage(
-                    format!("stage fixture lacks successful file result: {result:?}")
+                    format!("stage fixture lacks successful file result: {result:?}"),
                 ))]));
             }
         }
@@ -110,7 +114,8 @@ impl ModelProvider for EchoModel {
             let child_b = OperationId::from_bytes([0xb1; 16]).to_string();
             let grandchild = OperationId::from_bytes([0xc1; 16]).to_string();
             let has_text = |needle: &str| {
-                request.messages.iter().any(|message| match &message.content {
+                request.messages.iter().any(|message| {
+                    match &message.content {
                     ModelContent::Text(value) => value.contains(needle),
                     ModelContent::Part(ModelContentPart::Text { text }) => text.contains(needle),
                     ModelContent::Parts(parts) => parts.iter().any(|part| {
@@ -123,6 +128,7 @@ impl ModelProvider for EchoModel {
                         arguments.to_string().contains(needle)
                     }
                     ModelContent::Part(ModelContentPart::File { .. }) => false,
+                }
                 })
             };
             let has_tool_result = |name: &str| {
@@ -379,39 +385,15 @@ impl Runtime {
 
     async fn list_sessions(&self, params: &Value) -> Result<Value, DispatchError> {
         let (after, limit) = page_bounds(params)?;
-        let mut summaries = self
+        let page = self
             .swarm
-            .sessions()
+            .sessions_page(after, limit)
             .await
-            .into_iter()
-            .map(session_summary)
-            .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| {
-            left.get("id")
-                .and_then(Value::as_str)
-                .cmp(&right.get("id").and_then(Value::as_str))
+            .map_err(DispatchError::from_harness)?;
+        let mut result = json!({
+            "items": page.items.into_iter().map(session_summary).collect::<Vec<_>>(),
         });
-        let start = match after {
-            Some(cursor) => summaries
-                .iter()
-                .position(|item| item.get("id").and_then(Value::as_str) == Some(cursor))
-                .map(|index| index + 1)
-                .ok_or_else(|| DispatchError::invalid("page cursor does not identify a session"))?,
-            None => 0,
-        };
-        let end = (start + limit).min(summaries.len());
-        let items = summaries[start..end].to_vec();
-        let next = (end < summaries.len())
-            .then(|| {
-                items
-                    .last()
-                    .and_then(|item| item.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .flatten();
-        let mut result = json!({ "items": items });
-        if let Some(next) = next {
+        if let Some(next) = page.next {
             result["next"] = Value::String(next);
         }
         Ok(result)
@@ -509,11 +491,10 @@ impl Runtime {
                 .await
                 .map_err(DispatchError::from_harness)
                 .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes)
-                        .map_err(|_| DispatchError {
-                            code: "transport",
-                            message: "message content is not UTF-8".into(),
-                        })
+                    String::from_utf8(bytes).map_err(|_| DispatchError {
+                        code: "transport",
+                        message: "message content is not UTF-8".into(),
+                    })
                 })?;
             items.push(json!({
                 "id": message.id.to_string(),
@@ -567,35 +548,16 @@ impl Runtime {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
         let (after, limit) = page_bounds_object(params)?;
-        let approvals = self
+        let page = self
             .swarm
-            .list_approvals(task)
+            .approvals_page(task, after, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let start = after
-            .map(|cursor| {
-                approvals
-                    .iter()
-                    .position(|approval| approval.ticket.id.to_string() == cursor)
-                    .map(|index| index + 1)
-                    .ok_or_else(|| DispatchError::invalid("approval cursor is unknown"))
-            })
-            .transpose()?
-            .unwrap_or(0);
-        let selected = approvals
-            .into_iter()
-            .skip(start)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let next = (selected.len() == limit)
-            .then(|| {
-                selected
-                    .last()
-                    .map(|approval| approval.ticket.id.to_string())
-            })
-            .flatten();
-        let items = selected.into_iter().map(approval_value).collect::<Vec<_>>();
-        Ok(page_result(task, items, next))
+        Ok(page_result(
+            task,
+            page.items.into_iter().map(approval_value).collect(),
+            page.next,
+        ))
     }
 
     /// Records an operator-origin decision from the private control channel.
@@ -604,9 +566,10 @@ impl Runtime {
     async fn operator_approve(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let token = required_text(params, "operator_token")?;
-        let expected = self.operator_token.as_deref().ok_or_else(|| {
-            DispatchError::unsupported("operator control is not configured")
-        })?;
+        let expected = self
+            .operator_token
+            .as_deref()
+            .ok_or_else(|| DispatchError::unsupported("operator control is not configured"))?;
         if token != expected {
             return Err(DispatchError {
                 code: "denied",
@@ -712,17 +675,20 @@ impl Runtime {
         &self,
         session: acyclic_harness::filesystem::LocalSwarmSession,
     ) -> Result<Value, DispatchError> {
-        let sessions = self.swarm.sessions().await;
-        let agents = sessions
-            .iter()
+        let agents = self
+            .swarm
+            .recursive_agent_tree(session.task)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .into_iter()
             .map(|item| {
                 json!({
-                    "id": item.task.to_string(),
-                    "parent_id": item.parent.map(|id| id.to_string()),
-                    "task": item.task_description.clone(),
-                    "state": agent_state(&item.phase),
-                    "depth": item.depth,
-                    "children": sessions.iter().filter(|child| child.parent == Some(item.task)).map(|child| child.task.to_string()).collect::<Vec<_>>(),
+                    "id": item.session.task.to_string(),
+                    "parent_id": item.session.parent.map(|id| id.to_string()),
+                    "task": item.session.task_description.clone(),
+                    "state": agent_state(&item.session.phase),
+                    "depth": item.session.depth,
+                    "children": item.children.into_iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 })
             })
             .collect::<Vec<_>>();
@@ -805,7 +771,9 @@ fn page_bounds(params: &Value) -> Result<(Option<&str>, usize), DispatchError> {
     page_bounds_object(object(params)?)
 }
 
-fn page_bounds_object(object: &serde_json::Map<String, Value>) -> Result<(Option<&str>, usize), DispatchError> {
+fn page_bounds_object(
+    object: &serde_json::Map<String, Value>,
+) -> Result<(Option<&str>, usize), DispatchError> {
     let Some(query) = object.get("query") else {
         return Ok((None, 1024));
     };
@@ -981,8 +949,11 @@ where
     let input = BufReader::new(input);
     let mut frames = BoundedFrames::new(input);
     let output = Arc::new(Mutex::new(tokio::io::BufWriter::new(output)));
-    let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
-    let mut control_jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> = futures::stream::FuturesUnordered::new();
+    let mut jobs: futures::stream::FuturesUnordered<tokio::task::JoinHandle<std::io::Result<()>>> =
+        futures::stream::FuturesUnordered::new();
+    let mut control_jobs: futures::stream::FuturesUnordered<
+        tokio::task::JoinHandle<std::io::Result<()>>,
+    > = futures::stream::FuturesUnordered::new();
     loop {
         while let Some(job) = jobs.next().now_or_never().flatten() {
             job.map_err(std::io::Error::other)??;
@@ -996,13 +967,15 @@ where
         let line = match frame {
             BoundedFrame::Line(line) => line,
             BoundedFrame::TooLong => {
-                let response = WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
+                let response =
+                    WireResponse::error("", "invalid_input", "request line exceeds 16 MiB");
                 let output = output.clone();
                 write_direct_error(&output, response).await?;
                 continue;
             }
             BoundedFrame::InvalidUtf8 => {
-                let response = WireResponse::error("", "invalid_input", "request line is not valid UTF-8");
+                let response =
+                    WireResponse::error("", "invalid_input", "request line is not valid UTF-8");
                 let output = output.clone();
                 write_direct_error(&output, response).await?;
                 continue;
@@ -1012,7 +985,9 @@ where
             Ok(request) => request,
             Err(error) => {
                 let response = WireResponse::error(
-                    request_id_from_malformed_line(&line).as_deref().unwrap_or(""),
+                    request_id_from_malformed_line(&line)
+                        .as_deref()
+                        .unwrap_or(""),
                     "invalid_input",
                     format!("invalid request: {error}"),
                 );
@@ -1024,7 +999,11 @@ where
         if is_control && control_jobs.len() >= MAX_CONTROL_IN_FLIGHT {
             write_direct_error(
                 &output,
-                WireResponse::error(&request.request_id, "invalid_input", "control request limit reached"),
+                WireResponse::error(
+                    &request.request_id,
+                    "invalid_input",
+                    "control request limit reached",
+                ),
             )
             .await?;
             continue;
@@ -1032,14 +1011,22 @@ where
         if !is_control && jobs.len() >= MAX_IN_FLIGHT {
             write_direct_error(
                 &output,
-                WireResponse::error(&request.request_id, "invalid_input", "in-flight request limit reached"),
+                WireResponse::error(
+                    &request.request_id,
+                    "invalid_input",
+                    "in-flight request limit reached",
+                ),
             )
             .await?;
             continue;
         }
         let runtime = runtime.clone();
         let output = output.clone();
-        let target = if is_control { &mut control_jobs } else { &mut jobs };
+        let target = if is_control {
+            &mut control_jobs
+        } else {
+            &mut jobs
+        };
         target.push(tokio::spawn(async move {
             let response = runtime.dispatch(request).await;
             let mut output = output.lock().await;
@@ -1089,47 +1076,51 @@ impl<R: AsyncBufRead + Unpin> BoundedFrames<R> {
 
     async fn next(&mut self) -> std::io::Result<Option<BoundedFrame>> {
         loop {
-        let available = self.input.fill_buf().await?;
-        if available.is_empty() {
+            let available = self.input.fill_buf().await?;
+            if available.is_empty() {
+                if self.discarding {
+                    self.discarding = false;
+                    return Ok(None);
+                }
+                if self.bytes.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(Some(
+                    match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                        Ok(line) => BoundedFrame::Line(line),
+                        Err(_) => BoundedFrame::InvalidUtf8,
+                    },
+                ));
+            }
+            let newline = available.iter().position(|byte| *byte == b'\n');
+            let consumed = newline.map_or(available.len(), |index| index + 1);
+            let content_len = newline.map_or(available.len(), |index| index);
             if self.discarding {
-                self.discarding = false;
-                return Ok(None);
+                self.input.consume(consumed);
+                if newline.is_some() {
+                    self.discarding = false;
+                }
+                continue;
             }
-            if self.bytes.is_empty() {
-                return Ok(None);
+            let remaining = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
+            if content_len > remaining {
+                self.input.consume(consumed);
+                self.bytes.clear();
+                self.discarding = newline.is_none();
+                return Ok(Some(BoundedFrame::TooLong));
             }
-            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
-                Ok(line) => BoundedFrame::Line(line),
-                Err(_) => BoundedFrame::InvalidUtf8,
-            }));
-        }
-        let newline = available.iter().position(|byte| *byte == b'\n');
-        let consumed = newline.map_or(available.len(), |index| index + 1);
-        let content_len = newline.map_or(available.len(), |index| index);
-        if self.discarding {
+            self.bytes.extend_from_slice(&available[..content_len]);
             self.input.consume(consumed);
             if newline.is_some() {
-                self.discarding = false;
+                return Ok(Some(
+                    match String::from_utf8(std::mem::take(&mut self.bytes)) {
+                        Ok(line) => BoundedFrame::Line(line),
+                        Err(_) => BoundedFrame::InvalidUtf8,
+                    },
+                ));
             }
-            continue;
-        }
-        let remaining = MAX_LINE_BYTES.saturating_sub(self.bytes.len());
-        if content_len > remaining {
-            self.input.consume(consumed);
-            self.bytes.clear();
-            self.discarding = newline.is_none();
-            return Ok(Some(BoundedFrame::TooLong));
-        }
-        self.bytes.extend_from_slice(&available[..content_len]);
-        self.input.consume(consumed);
-        if newline.is_some() {
-            return Ok(Some(match String::from_utf8(std::mem::take(&mut self.bytes)) {
-                Ok(line) => BoundedFrame::Line(line),
-                Err(_) => BoundedFrame::InvalidUtf8,
-            }));
         }
     }
-}
 }
 
 fn request_id_from_malformed_line(line: &str) -> Option<String> {
@@ -1148,7 +1139,9 @@ async fn write_response<W: AsyncWrite + Unpin>(
     let bytes = serde_json::to_vec(response).map_err(std::io::Error::other)?;
     if bytes.len() > MAX_LINE_BYTES {
         let request_id = match response {
-            WireResponse::Ok { request_id, .. } | WireResponse::Err { request_id, .. } => request_id,
+            WireResponse::Ok { request_id, .. } | WireResponse::Err { request_id, .. } => {
+                request_id
+            }
         };
         let fallback = WireResponse::error(
             request_id,
@@ -1186,7 +1179,10 @@ mod tests {
                 .write_all(&vec![b'x'; MAX_LINE_BYTES + 1])
                 .await
                 .expect("oversized frame writes");
-            writer.write_all(b"\n{}\n").await.expect("next frame writes");
+            writer
+                .write_all(b"\n{}\n")
+                .await
+                .expect("next frame writes");
             writer.shutdown().await.expect("input closes");
         });
         let mut reader = BoundedFrames::new(BufReader::new(reader));
@@ -1316,9 +1312,16 @@ mod tests {
         .await;
         assert_eq!(started["ok"], true);
         assert_eq!(started["result"]["summary"]["state"], "completed");
-        assert!(started["result"]["workspace_generation"]
-            .as_str()
-            .is_some_and(|generation| !generation.is_empty()));
+        assert!(listed["result"].get("next").is_none());
+        let agents = started["result"]["agents"].as_array().expect("agent tree");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["id"], started["result"]["summary"]["id"]);
+        assert_eq!(agents[0]["children"], json!([]));
+        assert!(
+            started["result"]["workspace_generation"]
+                .as_str()
+                .is_some_and(|generation| !generation.is_empty())
+        );
     }
 
     #[tokio::test]
@@ -1377,7 +1380,7 @@ mod tests {
         );
         // Commit the durable operation, then drop the response as if the
         // connection failed after execution and before transport delivery.
-        let _dropped_response = runtime
+        let dropped_response = runtime
             .dispatch(WireRequest {
                 request_id: "stage-1".into(),
                 method: "start_session".into(),
@@ -1388,6 +1391,10 @@ mod tests {
                 }),
             })
             .await;
+        assert!(
+            matches!(dropped_response, WireResponse::Ok { ok: true, .. }),
+            "{dropped_response:?}"
+        );
         drop(runtime);
         let reopened = Arc::new(
             Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
@@ -1428,10 +1435,7 @@ mod tests {
         assert_eq!(file["ok"], true, "{file}");
         assert_eq!(file["result"]["path"], "graphcoder-fixture.txt");
         assert_eq!(file["result"]["media_type"], "text/plain");
-        assert_eq!(
-            file["result"]["bytes"],
-            json!(b"fixture:stage".as_slice())
-        );
+        assert_eq!(file["result"]["bytes"], json!(b"fixture:stage".as_slice()));
         let resumed = exchange(
             reopened.clone(),
             json!({
@@ -1453,9 +1457,11 @@ mod tests {
         )
         .await;
         assert_eq!(activity["ok"], true);
-        assert!(activity["result"]["items"]
-            .as_array()
-            .is_some_and(|items| !items.is_empty()));
+        assert!(
+            activity["result"]["items"]
+                .as_array()
+                .is_some_and(|items| !items.is_empty())
+        );
     }
 
     #[tokio::test]
@@ -1486,9 +1492,12 @@ mod tests {
 
         let empty_operation_root = tempfile::tempdir().expect("temporary root");
         let runtime = Arc::new(
-            Runtime::open(&runtime_args(empty_operation_root.path().to_owned(), "echo"))
-                .await
-                .expect("runtime opens"),
+            Runtime::open(&runtime_args(
+                empty_operation_root.path().to_owned(),
+                "echo",
+            ))
+            .await
+            .expect("runtime opens"),
         );
         let empty_operation = runtime
             .dispatch(WireRequest {
@@ -1497,7 +1506,16 @@ mod tests {
                 params: json!({"prompt":"hello", "operation_id":""}),
             })
             .await;
-        assert!(matches!(empty_operation, WireResponse::Err { error: WireError { code: "invalid_input", .. }, .. }));
+        assert!(matches!(
+            empty_operation,
+            WireResponse::Err {
+                error: WireError {
+                    code: "invalid_input",
+                    ..
+                },
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -1526,5 +1544,4 @@ mod tests {
             }
         ));
     }
-
 }
