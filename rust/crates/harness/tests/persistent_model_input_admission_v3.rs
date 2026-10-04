@@ -18,7 +18,7 @@ use acyclic_harness::{
     },
     model_input::{ModelInputManifest, PreparedModelInput},
     registry::ComponentIdentity,
-    tool::ToolDefinition,
+    tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
     Error, OperationId, Result,
 };
 use futures::{
@@ -38,6 +38,7 @@ enum FixtureMode {
     MalformedToolCall,
     ValidToolSequence,
     OutputOverflow,
+    WaitToolResult,
 }
 
 struct CapturingProvider {
@@ -166,6 +167,16 @@ impl ModelProvider for CapturingProvider {
                 Ok(ModelEvent::Completed {
                     metadata: Value::Null,
                 }),
+            ],
+            FixtureMode::WaitToolResult if call == 0 => vec![
+                Ok(ModelEvent::ToolCall {
+                    call_id: "wait-message".into(), name: "swarm.wait".into(),
+                    arguments: json!({"kind":"messages", "after":0, "limit":1}),
+                }),
+                Ok(ModelEvent::Completed { metadata: Value::Null }),
+            ],
+            FixtureMode::WaitToolResult => vec![
+                Ok(ModelEvent::Completed { metadata: Value::Null }),
             ],
         };
         Box::pin(stream::iter(events))
@@ -523,6 +534,79 @@ fn assert_manifest_matches_request(
         }
         assert_eq!(entry.files, expected_files);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provider_request() -> Result<()> {
+    // This fixture qualifies projection/admission, not mailbox delivery. The
+    // payload itself is staged and verified through production local storage.
+    struct MessageResult(Value);
+    impl ToolExecutor for MessageResult {
+        fn execute<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
+            Box::pin(async { Ok(ToolResult { value: self.0.clone() }) })
+        }
+        fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxFuture<'a, Result<Option<ToolResult>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+    impl ToolProjection for MessageResult {
+        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+            Ok(result.value.clone())
+        }
+    }
+    let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let limits = Limits::default();
+    let (provider, requests) = CapturingProvider::new(FixtureMode::WaitToolResult, None, None);
+    let harness = PersistentLocalHarness::open(root.path(), model(json!({}))?, provider.clone(), limits).await?;
+    let storage = harness.storage();
+    let payload = storage.stage(operation(0xC1), "inbox/message.txt",
+        "original λ🦀\n  message".as_bytes(), "text/plain", "message.txt").await?;
+    let current = storage.stage(operation(0xC2), "inbox/message.txt",
+        b"later mutable path content", "text/plain", "message.txt").await?;
+    assert_ne!(payload.version, current.version);
+    assert_eq!(storage.read(&payload).await?, "original λ🦀\n  message".as_bytes());
+    let result = json!({"kind":"messages", "items":[{
+        "sequence":1, "message_id":"explicit-message-1", "sender":"explicit-sender",
+        "delivered_at_epoch_ms":1, "payload":payload
+    }]});
+    let definition = acyclic_harness::communication_tools::wait_definition();
+    assert_eq!(definition.revision, "3");
+    let result_adapter = Arc::new(MessageResult(result.clone()));
+    let mut tools = storage.default_tools(limits)?;
+    tools.register(Tool { definition: definition.clone(),
+        executor: result_adapter.clone(), projection: result_adapter })?;
+    let bundle = storage.builder().model(model(json!({}))?, provider.clone())
+        .tools(tools).grant("model:generate").grant("tool:call:swarm.wait")
+        .limits(limits).build()?;
+    storage.run_prompt(&bundle, "observe the explicitly returned message reference").await?;
+    let bytes = captured(&requests);
+    assert_eq!(bytes.len(), 2);
+    let request: ModelRequest = serde_json::from_slice(&bytes[1])
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
+    assert_eq!(prepared.bytes(), bytes[1]);
+    assert!(request.tools.iter().any(|tool| tool == &definition));
+    let mut observed_results = 0;
+    for (message, entry) in request.messages.iter().zip(&prepared.manifest().messages) {
+        let parts = match &message.content {
+            ModelContent::Text(_) => &[][..],
+            ModelContent::Part(part) => std::slice::from_ref(part),
+            ModelContent::Parts(parts) => parts.as_slice(),
+        };
+        for part in parts {
+            if let ModelContentPart::ToolResult { call_id, name, value } = part
+                && name == "swarm.wait"
+            {
+                assert_eq!(call_id, "wait-message");
+                assert_eq!(value, &result);
+                assert_eq!(entry.files, vec![payload.clone()]);
+                assert!(!entry.files.contains(&current));
+                observed_results += 1;
+            }
+        }
+    }
+    assert_eq!(observed_results, 1);
     Ok(())
 }
 
