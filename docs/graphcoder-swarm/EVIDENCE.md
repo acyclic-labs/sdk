@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Persistent Root input](checkpoint-persistent-input-root-2026-10-04.json) records 6/6 current Windows tests at `3f5a619d8`, capturing actual provider bytes with real storage and cold replay. The original 5/6 run and executable are preserved; its option test was corrected to assert earlier construction rejection and no storage effects. True sibling/UI-store exclusion and recursive swarm activation remain open.
+
 [Native CLI process feature](checkpoint-native-process-feature-2026-10-04.json) records 7/7 Windows CLI tests with Harness process-tree support enabled at `15f9e870e`. It does not prove installed descendant cleanup or a fresh distributable. The subsequent persistent-input build failed at linking with disk exhaustion; its shell exit zero is explicitly not test success.
 
 [Local model-option preflight](checkpoint-local-option-preflight-2026-10-04.json) records 8/8 real-storage local regressions, 18/18 prepared-input regressions, and 4/4 model wire contracts at `229b22276`, plus 6/6 swarm module tests at `d5739ee67`. Denied options create no local session storage, swarm providers or recursive volumes. This does not qualify policy-aware persisted forks, the full recursive swarm/fault matrix, or final artifacts.
