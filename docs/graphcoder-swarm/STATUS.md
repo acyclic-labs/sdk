@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Native CLI process-tree feature selection compiles and passes 7/7 existing Windows regressions at `15f9e870e`; descendant ownership and installed cleanup remain unqualified. The new Root-bound persistent-input suite at `eb348066d` failed to link due to Q: exhaustion, with no tests executed. A separate C-drive build is underway; no cache deletion or success inference from the observer shell exit is permitted. See [scoped feature and build-failure evidence](checkpoint-native-process-feature-2026-10-04.json).
+
 Local and swarm construction now share request admission's model-option validator before durable effects. Source-bound runs pass 8/8 local, 18/18 input and 4/4 wire regressions at `229b22276`, plus 6/6 swarm module tests at `d5739ee67`. Both ordinary and recursive swarm denial leave no provider directory or volume. [Scoped evidence](checkpoint-local-option-preflight-2026-10-04.json) does not close the full recursive swarm/fault matrix or the separate valid nonempty-policy fork-verification gap.
 
 Shared durable-local composition and terminal uncertainty claim ordering now pass 7/7 existing real-storage regressions at `f2a02e1dc`. The earlier 6/7 failure is preserved in [local composition/claim evidence](checkpoint-local-composition-claim-2026-10-04.json). Historical pending records no longer mask a verified terminal Unknown outcome; no-rerun fences remain enforced. This does not qualify the full effect or recursive swarm matrix.

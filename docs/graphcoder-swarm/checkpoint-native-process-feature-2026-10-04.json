@@ -1,0 +1,51 @@
+{
+  "scope": "Native CLI regression execution with Harness native-process-tree feature enabled",
+  "source_commit": "15f9e870e6b489a666c75690f3112b916d037553",
+  "rust_tree_before_and_after": "e3b620d95278a3b841b38c0b302fcfdb01c45743",
+  "platform": "Windows native",
+  "models": "mocked",
+  "sources": [
+    {"path": "rust/crates/graphcoder-cli/Cargo.toml", "sha256": "89efaeaaf2c2b14edd58cd9a6876885fc6f484a3e83fcff796bf3155b8b644fa"},
+    {"path": "rust/crates/graphcoder-cli/src/main.rs", "sha256": "b78d4600c390549edafbb4a012f58e9282a688a8ad83b442b627ca8906bd6186"}
+  ],
+  "command": "cargo test -p acyclic-graphcoder-cli --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+  "environment": {"CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0"},
+  "process_session": 41909,
+  "exit_code": 0,
+  "passed": 7,
+  "failed": 0,
+  "ignored": 0,
+  "filtered": 0,
+  "build_duration_seconds": 377,
+  "test_duration_seconds": 4.91,
+  "artifact": {
+    "path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/15f9e870e/graphcoder_runtime-d0e5d730cabbee11.exe",
+    "sha256": "7959bbd6e07288781095206df6a8d794da92d15366c7ad60b9d7948c4a7144c8"
+  },
+  "log": {
+    "path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/15f9e870e/native-process-feature.log",
+    "sha256": "dde6487e2634bffc9ea2cd6423c7db12db51f81c78d400ee07aabe935c421d24"
+  },
+  "verified": [
+    "CLI compiles and executes existing seven regressions with SDK process-tree support enabled",
+    "Malformed and oversized transport input and incorrect operator credentials are rejected",
+    "The stage/read fixture exercises actual SDK file effects"
+  ],
+  "unmet": [
+    "This test executable is not a fresh normal distributable",
+    "No installed PTY or root-exits-first descendant-cleanup scenario is proved by this run",
+    "Enabling Harness process ownership for approved commands does not establish ownership of the Node-launched runtime root",
+    "Full recursive swarm, fault injection and final packaged qualification remain open"
+  ],
+  "subsequent_input_build_failure": {
+    "source_commit": "eb348066d7fe881b6a1183462379cd52c54a7698",
+    "rust_tree": "295c72a79021572974f8cff01c9bf55759af61d5",
+    "process_session": 38392,
+    "suite": "persistent_model_input_admission_v3",
+    "outcome": "Build failed at link.exe with exit code 1180 while Q: was full; zero tests executed",
+    "observer_shell_exit_code": 0,
+    "observer_warning": "Shell/log-write completion is not Cargo or test success; disk exhaustion also interrupted output persistence",
+    "log_path": "Q:/graphcoder-builds/root-conformance-20261004/persistent-input-root.log",
+    "qualification": false
+  }
+}
