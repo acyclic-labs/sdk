@@ -3104,6 +3104,7 @@ fn run_product_artifacts(
     } else {
         root
     };
+    ensure_product_destination(root, destination, operation)?;
     for operation in operations {
         let command = vec![
             cargo_program(),
@@ -3172,6 +3173,51 @@ fn run_product_artifacts(
         exit_code: Some(if failure.is_some() { 1 } else { 0 }),
         message: failure,
     })
+}
+
+/// Product generation is allowed to read the frozen Rust checkout, but its
+/// writes must land in the isolated generation output.  Keep this guard in
+/// the orchestrator as well as in the wire producer so an older or replaced
+/// producer cannot silently regenerate facades in the source checkout.
+fn ensure_product_destination(
+    root: &Path,
+    destination: &Path,
+    operation: Operation,
+) -> Result<(), CliError> {
+    if !matches!(operation, Operation::Generate | Operation::Check) {
+        return Ok(());
+    }
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        CliError::new(format!(
+            "product source root cannot be resolved before generation: {error}"
+        ))
+    })?;
+    let canonical_destination = if destination.exists() {
+        fs::canonicalize(destination)
+    } else {
+        let parent = destination.parent().ok_or_else(|| {
+            CliError::new("product output has no parent directory for containment check")
+        })?;
+        fs::canonicalize(parent).map(|parent| {
+            parent.join(destination.file_name().unwrap_or_default())
+        })
+    }
+    .map_err(|error| {
+        CliError::new(format!(
+            "product output cannot be resolved before generation: {error}"
+        ))
+    })?;
+    if canonical_destination == canonical_root
+        || canonical_destination.starts_with(&canonical_root)
+        || canonical_root.starts_with(&canonical_destination)
+    {
+        return Err(CliError::new(format!(
+            "product generation output must be disjoint from the frozen source checkout: source={}, output={}",
+            canonical_root.display(),
+            canonical_destination.display()
+        )));
+    }
+    Ok(())
 }
 
 /// Emit the Rust-owned language producer plan and, when a target supplies an
@@ -6422,6 +6468,27 @@ mod tests {
                 .expect_err("source mutation must fail closed");
             assert!(error.to_string().contains("output tree"));
         }
+    }
+
+    #[test]
+    fn product_generation_rejects_source_bound_output() {
+        let root = test_directory("product-destination-guard");
+        fs::create_dir_all(&root).expect("create product source root");
+        let external = test_directory("product-destination-external");
+        fs::create_dir_all(&external).expect("create product output root");
+
+        assert!(ensure_product_destination(&root, &external, Operation::Generate).is_ok());
+        assert!(ensure_product_destination(
+            &root,
+            &root.join("generated"),
+            Operation::Generate
+        )
+        .is_err());
+        assert!(ensure_product_destination(&root, &root, Operation::Check).is_err());
+        assert!(ensure_product_destination(&root, &root, Operation::Drift).is_ok());
+
+        cleanup(&root);
+        cleanup(&external);
     }
 
     #[test]
