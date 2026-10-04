@@ -21,8 +21,12 @@ The `echo` and `complete` fixtures produce deterministic text. The `stage`
 fixture emits the SDK's `acyclic.stage_file` tool call once, allowing the real
 Filesystem-backed harness to exercise a controlled file mutation.
 
-The `blocking` fixture opens one durable approval ticket at startup and holds
-its model turn until the public `cancel_session` request arrives. This fixture
-is used by the native JSON-lines tests to verify pending approval visibility,
-operator authentication, cancellation, and the absence of a false completed
-result through the production bridge.
+The `blocking` fixture opens one durable approval ticket bound to the exact
+approval operation identity and holds its model turn until the Harness accepts
+the matching `cancel_session` request. The approval operation is separate from
+the model turn identity so the durable interaction does not claim the turn's
+idempotency key. This fixture verifies pending approval
+visibility, operator authentication, durable cancellation, and the absence of
+a false completed result through the production bridge. It has no model tool
+side effect, so its approval evidence covers durable interaction routing and
+operation binding rather than effect authorization.

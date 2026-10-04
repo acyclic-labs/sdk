@@ -146,6 +146,10 @@ export async function runNativeBlockingScenario({ runtime = required("GRAPHCODER
     const denied = await next("wrong operator", "blocking-denied");
     if (denied.ok !== false || denied.error?.code !== "denied") fail(`wrong operator was not denied: ${JSON.stringify(denied)}`);
 
+    child.stdin.write(request("blocking-still-pending", "list_approvals", { session_id: sessionId }));
+    const stillPending = await next("approval remains pending", "blocking-still-pending");
+    if (stillPending.ok !== true || stillPending.result?.items?.[0]?.state !== "pending") fail(`wrong operator changed approval state: ${JSON.stringify(stillPending)}`);
+
     child.stdin.write(request("blocking-approved", "operator_approve", { operator_token: "operator-secret", session_id: sessionId, approval_id: approval.id, approved: true }));
     const approved = await next("operator approval", "blocking-approved");
     if (approved.ok !== true || approved.result?.approved !== true) fail(`operator approval did not commit: ${JSON.stringify(approved)}`);

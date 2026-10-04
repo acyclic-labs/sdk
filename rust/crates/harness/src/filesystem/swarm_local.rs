@@ -225,6 +225,17 @@ impl LocalSwarmBindings {
         self
     }
 
+    /// Installs the owner-controlled cancellation source used by admitted
+    /// task executors and communication waits.
+    #[must_use]
+    pub fn with_cancellation(
+        mut self,
+        cancellation: Arc<dyn crate::communication_tools::WaitCancellationSource>,
+    ) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
     /// Adds owner-prepared recursive fork plans and the model-facing fork tool.
     #[must_use]
     pub fn with_model_fork_plans(mut self, plans: Arc<LocalModelForkPlans>) -> Self {
@@ -2315,6 +2326,27 @@ impl PersistentLocalSwarm {
             provider,
             limits,
             None,
+            LocalSwarmBindings::default(),
+        )
+        .await
+    }
+
+    /// Opens recursive local filesystem support with owner supplied runtime
+    /// services, retaining those services in the Harness composition.
+    pub async fn open_shared_with_model_and_recursive_filesystem_with_bindings(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_inner(
+            root,
+            model,
+            provider,
+            limits,
+            None,
+            bindings,
         )
         .await
     }
@@ -2337,6 +2369,7 @@ impl PersistentLocalSwarm {
             provider,
             limits,
             Some(external),
+            LocalSwarmBindings::default(),
         )
         .await
     }
@@ -2347,6 +2380,7 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
         external: Option<LocalExternalProject>,
+        bindings: LocalSwarmBindings,
     ) -> Result<Arc<Self>> {
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
@@ -2377,7 +2411,7 @@ impl PersistentLocalSwarm {
             root.clone(),
             config,
             provider.clone(),
-            LocalSwarmBindings::default(),
+            bindings.clone(),
         )
         .await?;
         let root_task = base.root_task().await?;
@@ -2393,10 +2427,10 @@ impl PersistentLocalSwarm {
             provider,
             limits,
             match external {
-                Some(external) => LocalSwarmBindings::default()
+                Some(external) => bindings
                     .with_filesystem_fork_resolver(resolver)
                     .with_external_project(external),
-                None => LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+                None => bindings.with_filesystem_fork_resolver(resolver),
             },
         )
         .await
@@ -2539,7 +2573,7 @@ impl PersistentLocalSwarm {
             .list_approvals(task)
             .await?
             .into_iter()
-            .find(|approval| approval.ticket.id == id)
+            .find(|approval| approval.ticket.id.as_bytes() == &id.into_bytes())
             .ok_or_else(|| Error::NotFound(format!("local swarm approval {id}")))?;
         if let Some(resolution) = approval.resolution {
             let matches = match &resolution.outcome {
@@ -3190,9 +3224,20 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("task step limit exceeds u32".into()))?;
-        let output = harness
+        let cancellation = self.bindings.cancellation.clone();
+        if let Some(source) = &cancellation {
+            source.register(task)?;
+        }
+        let output_result = harness
             .run_with_max_steps(operation, prompt, max_steps)
-            .await?;
+            .await;
+        if let Some(source) = &cancellation {
+            source.remove(task)?;
+        }
+        let output = match output_result {
+            Ok(output) => output,
+            Err(error) => return Err(error),
+        };
         // The per-task mutex only fences handles in this process.  A second
         // process can cancel the task while the model is running, so the
         // registry must be refreshed before the terminal Session event is
