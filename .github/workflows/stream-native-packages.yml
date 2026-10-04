@@ -53,16 +53,14 @@ jobs:
             native_runtime: true
           - package_target: darwin-x64
             rust_target: x86_64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15-intel
             native_arch: X64
             musl: false
             llvm: false
-            # Blacksmith's macOS image is Apple Silicon; keep Intel package
-            # execution pending until an actual x64 macOS runner is available.
-            native_runtime: false
+            native_runtime: true
           - package_target: darwin-arm64
             rust_target: aarch64-apple-darwin
-            runner: blacksmith-6vcpu-macos-15
+            runner: macos-15
             native_arch: ARM64
             musl: false
             llvm: false
@@ -76,11 +74,11 @@ jobs:
             native_runtime: true
           - package_target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
-            runner: blacksmith-4vcpu-windows-2025
+            runner: windows-11-vs2026-arm
             native_arch: ARM64
             musl: false
             llvm: true
-            native_runtime: false
+            native_runtime: true
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out exact source
@@ -115,6 +113,14 @@ jobs:
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f8 # v2.0.9
         with:
           version: 20.1.8
+          arch: arm64
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select the native Windows ARM linker
+        if: matrix.llvm
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
 
       - name: Record compiler identity
         if: runner.os == 'Windows'
