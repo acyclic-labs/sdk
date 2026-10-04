@@ -824,14 +824,6 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
     }
 }
 
-impl PrefixBoundModelProvider {
-    fn admit_prepared(&self, input: &PreparedModelInput) -> Result<()> {
-        self.prefix.verify(input)?;
-        input.validate_complete_exchange()?;
-        self.provider.admit(input.request())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -87,6 +87,25 @@ impl LocalSwarmUsageSource {
     fn key(operation_id: OperationId, dispatch_id: &IdempotencyKey) -> (OperationId, String) {
         (operation_id, dispatch_id.0.clone())
     }
+
+    fn merge_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        usage: SwarmUsage,
+    ) -> Result<()> {
+        let mut counters = self
+            .usage
+            .lock()
+            .map_err(|_| Error::Storage("local swarm usage source lock is poisoned".into()))?;
+        let entry = counters.entry(Self::key(operation_id, dispatch_id)).or_default();
+        *entry = SwarmUsage {
+            model_steps: entry.model_steps.max(usage.model_steps),
+            output_bytes: entry.output_bytes.max(usage.output_bytes),
+            execution_time_ms: entry.execution_time_ms.max(usage.execution_time_ms),
+        };
+        Ok(())
+    }
 }
 
 impl SwarmUsageSource for LocalSwarmUsageSource {
@@ -115,15 +134,8 @@ impl SwarmUsageSource for LocalSwarmUsageSource {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
         usage: SwarmUsage,
-    ) {
-        if let Ok(mut counters) = self.usage.lock() {
-            let entry = counters.entry(Self::key(operation_id, dispatch_id)).or_default();
-            *entry = SwarmUsage {
-                model_steps: entry.model_steps.max(usage.model_steps),
-                output_bytes: entry.output_bytes.max(usage.output_bytes),
-                execution_time_ms: entry.execution_time_ms.max(usage.execution_time_ms),
-            };
-        }
+    ) -> Result<()> {
+        self.merge_usage(operation_id, dispatch_id, usage)
     }
 
     fn restore_runtime_usage(
@@ -131,15 +143,8 @@ impl SwarmUsageSource for LocalSwarmUsageSource {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
         usage: SwarmUsage,
-    ) {
-        if let Ok(mut counters) = self.usage.lock() {
-            let entry = counters.entry(Self::key(operation_id, dispatch_id)).or_default();
-            *entry = SwarmUsage {
-                model_steps: entry.model_steps.max(usage.model_steps),
-                output_bytes: entry.output_bytes.max(usage.output_bytes),
-                execution_time_ms: entry.execution_time_ms.max(usage.execution_time_ms),
-            };
-        }
+    ) -> Result<()> {
+        self.merge_usage(operation_id, dispatch_id, usage)
     }
 }
 
