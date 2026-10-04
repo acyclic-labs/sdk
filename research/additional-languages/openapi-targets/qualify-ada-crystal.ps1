@@ -66,6 +66,12 @@ foreach ($family in $families) {
     if ($source -notmatch '(?i)(json|to_json|from_json|application/json)') { throw "JSON serialization evidence is missing: $family" }
     if ($family -eq 'stream' -and $source -notmatch '(?i)(stream|tail|follow|read|children)') { throw "Stream operation evidence is missing: $family" }
 }
+if ($TargetId -eq 'ada') {
+    $adapter = Join-Path $scriptDir 'apply-ada-compatibility.ps1'
+    if (-not (Test-Path -LiteralPath $adapter -PathType Leaf)) { throw "Missing Rust-owned Ada compatibility adapter: $adapter" }
+    & pwsh -NoProfile -File $adapter -PackagesRoot $packages
+    if ($LASTEXITCODE -ne 0) { throw 'Ada compatibility adaptation failed' }
+}
 
 $archive = Join-Path $target ("acyclic-http-$TargetId-0.1.0.zip")
 & pwsh -NoProfile -File $zipWriter -Root $packages -Archive $archive
