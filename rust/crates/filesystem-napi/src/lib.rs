@@ -293,10 +293,15 @@ impl NativeProcessOwner {
         let pid = tree.id();
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let entry = NativeProcessEntry::with_io(tree);
-        let Ok(mut trees) = self.trees.lock() else {
-            return Err(napi_error(format!(
-                "{source}; failed to retain native recovery owner in the process registry"
-            )));
+        let mut trees = match self.trees.lock() {
+            Ok(trees) => trees,
+            Err(poisoned) => {
+                // The registry owns the only native recovery authority. A
+                // poisoned bookkeeping lock must not drop that authority;
+                // recover the map and keep the launch explicitly typed.
+                self.trees.clear_poison();
+                poisoned.into_inner()
+            }
         };
         trees.insert(token, entry);
         Ok(NativeProcessSpawn {
@@ -356,19 +361,27 @@ impl NativeProcessOwner {
             Ok(tree) => tree,
             Err(error) => return self.retain_failed_launch(error),
         };
-        let pid = tree
-            .id()
-            .ok_or_else(|| napi_error("native process did not expose a PID"))?;
+        let pid = tree.id();
         let entry = NativeProcessEntry::with_io(tree);
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
-        self.trees
-            .lock()
-            .map_err(|_| napi_error("native process owner state poisoned"))?
-            .insert(token, entry);
+        let mut trees = match self.trees.lock() {
+            Ok(trees) => trees,
+            Err(poisoned) => {
+                self.trees.clear_poison();
+                poisoned.into_inner()
+            }
+        };
+        trees.insert(token, entry);
+        let recovery = pid.is_none().then(|| NativeProcessRecovery {
+            source: "native process did not expose a PID after ownership was established"
+                .to_owned(),
+            token: token.to_string(),
+            pid: None,
+        });
         Ok(NativeProcessSpawn {
             token: token.to_string(),
-            pid,
-            recovery: None,
+            pid: pid.unwrap_or(0),
+            recovery,
         })
     }
 
