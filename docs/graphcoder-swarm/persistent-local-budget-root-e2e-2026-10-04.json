@@ -39,5 +39,13 @@
     "fixture": "rust/crates/harness/tests/local_model_swarm.rs",
     "result": "budget-enabled recursive fixture reaches real setup but fails before child provider dispatch with Error::Invalid(\"inherited conversation differs from authoritative parent history\")",
     "log_sha256": "d74543b3be83a3ff9a78cfdeab567f04cca6ac759c36f0df9d5029bdd3f790c6"
+  },
+  "current_budget_journal_gate": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --lib swarm_budget_journal::tests --target-dir C:\\graphcoder-builds\\budget-root-compatible-suite-target -j1 -- --nocapture",
+    "passed": 8,
+    "failed": 1,
+    "failure": "postdispatch_explicit_provider_denial_releases_reservation: actual Error::Indeterminate(operation) where the contract expects Error::Conflict and released reservation",
+    "log_sha256": "1f6e8dc41a25cb57edd821a410de82657ba451b1a5e0d38e3f2774167dc91f6f",
+    "diagnostic_log_sha256": "fe6dddde67a1b8fd939cf905241c30b88ae0a21c77c45750991212d0ea94fc5a"
   }
 }
