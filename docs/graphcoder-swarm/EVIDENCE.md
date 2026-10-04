@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Manifest restoration checkpoint](checkpoint-fork-policy-restoration-2026-10-04.json): current Windows request regressions 21/21; native fork-boundary suite 1/3 with both failures retained. This does not qualify full recursive forks.
+
 [Wait clock admission](checkpoint-wait-clock-admission-2026-10-04.json) records 32/32 communication cases and 2/2 real-storage cases at `57ce74ec1`. Both direct store and communication admission bound every future deadline/timeout before append, including mixed expired/future declarations. The original test compile failure is retained. Agreement with an injected owner clock and public operator cancellation authority remain separate unmet contracts.
 
 [Integrated communication](checkpoint-communication-root-2026-10-04.json) records 31/31 communication contracts, 1/1 durable-host reducer, 1/1 inbox and 6/6 local-swarm regressions at `ebc33d86a`, plus 6/6 exact-provider input regressions and 2/2 strengthened real LocalStream/LocalFs scenarios at `8500ee7cb`. The original 1/2 cancellation-fixture failure is preserved. These checks prove sender-scoped delivery and immutable metadata after provider reopen, not recursive model-selected messaging or an independent process restart.
