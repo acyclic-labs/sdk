@@ -3944,6 +3944,7 @@ fn collect_json_recursive(directory: &Path, result: &mut Vec<PathBuf>) -> Result
 }
 
 fn git_revision(root: &Path) -> Option<String> {
+    git_checkout_root(root)?;
     let output = Command::new("git")
         .args(["-C", root.to_str()?, "rev-parse", "HEAD"])
         .output()
@@ -3952,6 +3953,23 @@ fn git_revision(root: &Path) -> Option<String> {
         .status
         .success()
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+/// Return a Git checkout root only when Git's resolved top-level directory is
+/// exactly the requested source root. `git -C` otherwise walks up through
+/// parent directories, which would let an extracted source archive inherit an
+/// unrelated parent checkout revision.
+fn git_checkout_root(root: &Path) -> Option<PathBuf> {
+    let requested = fs::canonicalize(root).ok()?;
+    let output = Command::new("git")
+        .args(["-C", root.to_str()?, "rev-parse", "--show-toplevel"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let resolved = fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok()?;
+    (resolved == requested).then_some(resolved)
 }
 
 fn verify_release_qualification(
@@ -4093,6 +4111,9 @@ fn valid_release_version(version: &str) -> bool {
 }
 
 fn git_worktree_dirty(root: &Path) -> bool {
+    if git_checkout_root(root).is_none() {
+        return false;
+    }
     Command::new("git")
         .args([
             "-C",
@@ -5356,5 +5377,15 @@ mod tests {
             .expect_err("dirty worktree must fail release qualification");
         assert!(error.to_string().contains("clean Git worktree"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn source_archive_does_not_inherit_parent_git_revision() {
+        let root =
+            std::env::temp_dir().join(format!("sdk-docs-source-archive-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        assert!(git_revision(&root).is_none());
+        assert!(!git_worktree_dirty(&root));
+        fs::remove_dir_all(root).unwrap();
     }
 }
