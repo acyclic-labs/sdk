@@ -1533,6 +1533,20 @@ impl PersistentLocalHarness {
         self.storage.conversation_state(limits).await
     }
 
+    /// Reads one immutable conversation body through its recorded `FileRef`.
+    ///
+    /// This deliberately does not resolve the message path through the
+    /// current private-workspace generation. Conversation records point at an
+    /// exact retained version, so replay and UI projections observe the bytes
+    /// that were admitted with the message even after the workspace head has
+    /// moved.
+    pub async fn read_conversation_file(
+        &self,
+        file: &crate::conversation::FileRef,
+    ) -> Result<Vec<u8>> {
+        self.storage.read(file).await
+    }
+
     /// Opens this session's owner-bound conversation aggregate for typed fork
     /// publication. The aggregate verifier comes from the session descriptor.
     pub async fn conversation_aggregate(

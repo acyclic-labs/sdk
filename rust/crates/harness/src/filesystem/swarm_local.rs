@@ -1811,6 +1811,20 @@ pub struct LocalSwarmMessage {
     pub payload: FileRef,
 }
 
+/// One bounded conversation page item with its body resolved through the
+/// message's immutable content reference.
+///
+/// The body is intentionally separate from `ConversationMessage`: callers
+/// that only need history metadata can keep using `read_messages` without
+/// reading any content bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalSwarmMaterializedMessage {
+    /// Canonical message metadata and exact content reference.
+    pub message: ConversationMessage,
+    /// Bytes read from the exact version named by `message.content`.
+    pub body: Vec<u8>,
+}
+
 /// Result of one child activation and turn.
 #[derive(Clone, Debug)]
 pub struct LocalForkOutcome {
@@ -2667,6 +2681,51 @@ impl PersistentLocalSwarm {
         harness
             .conversation_events(after_revision, limit, self.config.limits)
             .await
+    }
+
+    /// Reads a bounded page of canonical messages and explicitly materializes
+    /// their bodies through each recorded immutable `FileRef`.
+    ///
+    /// `maximum_bytes` bounds the complete page, rather than each message.
+    /// The bound is checked from the descriptors before a body is read, so an
+    /// over-budget page never partially materializes and never falls back to
+    /// resolving mutable private paths or generations.
+    pub async fn read_messages_materialized(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+        maximum_bytes: u64,
+    ) -> Result<Vec<LocalSwarmMaterializedMessage>> {
+        if maximum_bytes == 0 || maximum_bytes > self.config.limits.file_bytes {
+            return Err(Error::Invalid(
+                "materialized message byte bound must be between 1 and the configured file limit"
+                    .into(),
+            ));
+        }
+        let messages = self.read_messages(task, after_sequence, limit).await?;
+        let harness = self.open_session(task).await?;
+        let mut total_bytes = 0_u64;
+        let mut materialized = Vec::with_capacity(messages.len());
+        for message in messages {
+            let declared = message.content.descriptor().byte_length();
+            total_bytes = total_bytes
+                .checked_add(declared)
+                .ok_or_else(|| Error::Invalid("materialized message bytes overflow".into()))?;
+            if total_bytes > maximum_bytes {
+                return Err(Error::Invalid(
+                    "materialized message page exceeds its byte bound".into(),
+                ));
+            }
+            let body = harness.read_conversation_file(&message.content).await?;
+            if body.len() as u64 != declared {
+                return Err(Error::Conflict(
+                    "conversation content length changed after admission".into(),
+                ));
+            }
+            materialized.push(LocalSwarmMaterializedMessage { message, body });
+        }
+        Ok(materialized)
     }
 
     /// Reads one page of owner-authenticated private files. The generation

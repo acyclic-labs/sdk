@@ -38,6 +38,9 @@ use tokio::sync::Mutex;
 use tokio::io::AsyncReadExt;
 
 const MAX_LINE_BYTES: usize = 16 * 1024 * 1024;
+/// Bound one explicitly materialized history page to the same size as one
+/// JSON-lines frame. The Harness applies its configured file limit as well.
+const MAX_MESSAGE_PAGE_BYTES: u64 = MAX_LINE_BYTES as u64;
 /// Bound the number of response tasks retained while stdin remains open.
 /// Requests beyond this window wait for an earlier response task to finish,
 /// so a producer cannot turn a slow model call into unbounded host memory.
@@ -470,40 +473,32 @@ impl Runtime {
     async fn read_messages(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let (after, limit) = page_bounds_object(params)?;
+        let (after, limit, maximum_bytes) = message_page_bounds_object(params)?;
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_messages_materialized(task, after_sequence, limit, maximum_bytes)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
-            .swarm
-            .list_files(task, "", None, None, 1)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
         let mut items = Vec::with_capacity(messages.len());
         for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes).map_err(|_| DispatchError {
-                        code: "transport",
-                        message: "message content is not UTF-8".into(),
-                    })
-                })?;
+            let body = String::from_utf8(message.body).map_err(|_| DispatchError {
+                code: "transport",
+                message: "message content is not UTF-8".into(),
+            })?;
+            let canonical = message.message;
             items.push(json!({
-                "id": message.id.to_string(),
-                "sequence": message.sequence.to_string(),
+                "id": canonical.id.to_string(),
+                "sequence": canonical.sequence.to_string(),
                 "session_id": task.to_string(),
-                "sender_id": task.to_string(),
-                "recipient_id": task.to_string(),
+                "kind": serde_json::to_value(&canonical.kind).map_err(|error| DispatchError {
+                    code: "transport",
+                    message: format!("message kind is not serializable: {error}"),
+                })?,
+                "reply_to": canonical.reply_to.map(|id| id.to_string()),
+                "tool_call_id": canonical.tool_call_id,
+                "content_ref": canonical.content,
                 "body": body,
-                "delivered_at": Value::Null,
             }));
         }
         let next = (items.len() == limit)
@@ -799,6 +794,27 @@ fn page_bounds_object(
             .ok_or_else(|| DispatchError::invalid("page limit must be between 1 and 1024"))
     })?;
     Ok((after, limit))
+}
+
+fn message_page_bounds_object(
+    object: &serde_json::Map<String, Value>,
+) -> Result<(Option<&str>, usize, u64), DispatchError> {
+    let (after, limit) = page_bounds_object(object)?;
+    let maximum_bytes = object
+        .get("query")
+        .and_then(Value::as_object)
+        .and_then(|query| query.get("max_bytes"))
+        .map_or(Ok(MAX_MESSAGE_PAGE_BYTES), |value| {
+            value
+                .as_u64()
+                .filter(|value| (1..=MAX_MESSAGE_PAGE_BYTES).contains(value))
+                .ok_or_else(|| {
+                    DispatchError::invalid(format!(
+                        "message max_bytes must be between 1 and {MAX_MESSAGE_PAGE_BYTES}"
+                    ))
+                })
+        })?;
+    Ok((after, limit, maximum_bytes))
 }
 
 fn parse_cursor(value: Option<&str>, label: &str) -> Result<u64, DispatchError> {
