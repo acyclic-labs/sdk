@@ -337,3 +337,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Recursive handoff cause: [archived native 2/3 failure](checkpoint-prefix-child-history-cause-2026-10-04.json). Child history differs from or lacks frozen prefix messages; exact boundary qualification remains open.
 
 - Private suffix correction: [native 2/3 follow-up failure](checkpoint-prefix-private-suffix-2026-10-04.json). Recursive handoff is reached; child rejection follow-up still fails private-journal authority validation.
+
+- Native recursive boundary: [3/3 archived passing evidence](checkpoint-native-recursive-prefix-pass-2026-10-04.json). All captured child requests preserve the frozen prefix, including rejection follow-up. Production coordinator and installed gates remain separate.

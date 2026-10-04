@@ -1,0 +1,11 @@
+{
+  "source_commit": "7d951663e",
+  "suite_sha256": "84CEF974240ABB729776BE17156F817D661A682CD94A2BF18A911F10BE7E92F8",
+  "artifact": "C:\\graphcoder-builds\\root-qualification-artifacts\\7d951663e\\model_fork_boundary-8cacd7eb8492e452.exe",
+  "artifact_sha256": "0AD3F77E4A0864B94B58E0DAD6A7B63483558A987AA030018CBBD76D4D282CC4",
+  "log_sha256": "CACB55532A57EA0833C43AE627CC7297B113A25320755AB964A56A1B97CAAC72",
+  "passed": 3,
+  "failed": 0,
+  "ignored": 0,
+  "scope": "Real native parent/two siblings/grandchild model boundary, explicit child rejection follow-up, actual serialized requests and frozen prefix equality. Not full coordinator or installed qualification."
+}
