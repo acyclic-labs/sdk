@@ -17,8 +17,8 @@
     "build_duration_seconds": 174,
     "test_duration_seconds": 8.64
   },
-  "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "e5b8d38cd10a5314622b07d47b49b10637dc3de2c8d31cabc4df5a38dd7859c4"},
-  "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/uncertain-replay-fence.log", "sha256": "9e4336935a363a2f6a84698b095677d38f93a22d561c2772060c329b42a7760c"},
+  "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/177d127c4/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "e5b8d38cd10a5314622b07d47b49b10637dc3de2c8d31cabc4df5a38dd7859c4"},
+  "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/177d127c4/uncertain-replay-fence.log", "sha256": "9e4336935a363a2f6a84698b095677d38f93a22d561c2772060c329b42a7760c"},
   "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/uncertain-replay-fence.exit",
   "observations": [
     "Malicious completed Unknown receipt with substituted provider is rejected before any runner call",
