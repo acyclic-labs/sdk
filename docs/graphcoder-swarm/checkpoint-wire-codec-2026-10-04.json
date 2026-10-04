@@ -1,0 +1,52 @@
+{
+  "scope": "GraphCoder TypeScript wire codec centralization",
+  "change": {
+    "private_module": "typescript/packages/graphcoder/src/newwire-codec.ts",
+    "shared": [
+      "UTF-8 bounded request and identifier validation",
+      "page query validation",
+      "decimal generation encoding and decoding",
+      "wire response serializers and transport decoders"
+    ],
+    "public_api_change": false,
+    "json_shape_change": false,
+    "lazy_message_body_behavior_changed": false
+  },
+  "verification": {
+    "typecheck": {
+      "command": "bun run --cwd typescript/packages/graphcoder check",
+      "exit_code": 0
+    },
+    "focused_tests": {
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts typescript/packages/graphcoder/test/dispatcher.test.ts",
+      "exit_code": 0,
+      "passed": 40,
+      "failed": 0,
+      "expectations": 132
+    },
+    "package_tests": {
+      "command": "bun run --cwd typescript/packages/graphcoder test",
+      "exit_code": 0,
+      "passed": 55,
+      "failed": 0,
+      "expectations": 176
+    },
+    "package_build": {
+      "command": "bun run --cwd typescript/packages/graphcoder build",
+      "exit_code": 0
+    }
+  },
+  "source_sha256": {
+    "typescript/packages/graphcoder/src/newwire-codec.ts": "2251578C63C3C53FC5A775686B2CA67AA163FE2E1155B98AE20915307294E0C5",
+    "typescript/packages/graphcoder/src/bridge.ts": "D91124AD0D2F4C23D0CB60A282A754C9D44C80BD980446A9E05F7BB5D56BDC05",
+    "typescript/packages/graphcoder/src/dispatcher.ts": "AB74CF27220E9FD4BB1502267870FE85EB1A9F3C41B741FF4B28DC0939D61FAA",
+    "typescript/packages/graphcoder/test/graphcoder.test.ts": "E63986FB1C811D1E5D61C6867EA7665CAC07C377EA40F81FA192AAFD896B6F89",
+    "typescript/packages/graphcoder/test/dispatcher.test.ts": "8E86B74306D57796FC0F911F7AFC4EA530E21E110A7B31AB2A350CAFA6FB001F"
+  },
+  "boundaries": [
+    "Internal codec only; no additional package export",
+    "GraphCoder remains a thin transport wrapper",
+    "Message body/content-reference schema remains unchanged pending the communication and lazy-loading slices",
+    "No Rust, process, terminal, or Cloud behavior is changed"
+  ]
+}

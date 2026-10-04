@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { PassThrough } from "node:stream";
 import { GraphCoderError, GraphCoderUi, agentId, approvalId, sessionId, type SessionId } from "../src/api.js";
-import { BridgeGraphCoderTransport, type GraphCoderWireRequest, type GraphCoderWireResponse } from "../src/bridge.js";
+import { BridgeGraphCoderTransport, checkedRequestId, type GraphCoderWireRequest, type GraphCoderWireResponse } from "../src/bridge.js";
 import { createMockTransport } from "../src/mock.js";
 import { GraphCoderTerminal, runCli, runCliWithTransport } from "../src/terminal.js";
 
@@ -93,6 +93,17 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedFile.readFile(sessionId("session-1"), "README.md", 1n)).rejects.toMatchObject({ code: "transport" });
     const oversized = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "x".repeat(128), state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] } }) }, "test", 256);
     await expect(oversized.listSessions()).rejects.toMatchObject({ code: "transport" });
+  });
+
+  test("bridge uses the shared UTF-8 identifier and decimal generation checks", async () => {
+    const oversizedId = "é".repeat(129);
+    expect(() => checkedRequestId(oversizedId)).toThrow(/256 UTF-8 bytes/u);
+
+    const malformedSummary = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: oversizedId, title: "inspect", state: "running", updated_at: "0", root_agent_id: "agent-1" }] } }) });
+    await expect(malformedSummary.listSessions()).rejects.toMatchObject({ code: "invalid_input" });
+
+    const malformedGeneration = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { session_id: "session-1", generation: "01", items: [] } }) });
+    await expect(malformedGeneration.listChanges(sessionId("session-1"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bridge rejects response bindings that do not match the requested session, path, generation, or receipt", async () => {

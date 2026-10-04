@@ -184,4 +184,18 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     expect(unsafePath).toMatchObject({ request_id: "r12", ok: false, error: { code: "invalid_input" } });
     expect(transport.calls.some(call => call.method === "readFile")).toBe(false);
   });
+
+  test("applies the shared UTF-8 identifier and decimal generation checks at the wire boundary", async () => {
+    const transport = createMockTransport();
+    const dispatcher = new GraphCoderWireDispatcher(transport);
+    const oversizedId = "é".repeat(129);
+
+    const invalidSession = await dispatcher.dispatch({ request_id: "r13", method: "open_session", params: { session_id: oversizedId } });
+    expect(invalidSession).toMatchObject({ request_id: "r13", ok: false, error: { code: "invalid_input" } });
+    const invalidAgent = await dispatcher.dispatch({ request_id: "r14", method: "send_message", params: { session_id: "session-1", sender_id: oversizedId, recipient_id: "agent-1", body: "hello" } });
+    expect(invalidAgent).toMatchObject({ request_id: "r14", ok: false, error: { code: "invalid_input" } });
+    const invalidGeneration = await dispatcher.dispatch({ request_id: "r15", method: "read_file", params: { session_id: "session-1", path: "README.md", generation: "01" } });
+    expect(invalidGeneration).toMatchObject({ request_id: "r15", ok: false, error: { code: "invalid_input" } });
+    expect(transport.calls).toEqual([]);
+  });
 });
