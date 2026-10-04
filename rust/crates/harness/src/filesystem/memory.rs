@@ -2290,15 +2290,38 @@ mod tests {
             attached_agents: Vec::new(),
             messages: vec![inherited.clone()],
         };
-        let prefix_file = storage
-            .stage(
-                OperationId::from_bytes([1; 16]),
-                ".system/inherited-conversation/prefix.json",
-                &frozen.canonical_bytes()?,
+        // A frozen prefix is host-owned content. Public staging deliberately
+        // rejects this reserved path; publish it through the host fixture.
+        let prefix_bytes = frozen.canonical_bytes()?;
+        let workspace = super::super::workspace_ref(
+            storage.volume.provider().clone(),
+            &storage.volume.storage_name()?,
+        )?;
+        let generation = storage.host.apply(
+            &workspace,
+            None,
+            &[
+                super::super::WorkspaceMutation::CreateDirectory {
+                    path: "/.system/inherited-conversation".into(),
+                },
+                super::super::WorkspaceMutation::PutFile {
+                    path: "/.system/inherited-conversation/prefix.json".into(),
+                    bytes: prefix_bytes.clone(),
+                },
+            ],
+            &IdempotencyKey::new("selected-prefix-fixture")?,
+        ).await?;
+        storage.host.retain_generation(&workspace, &generation).await?;
+        let prefix_file = FileRef::new(
+            storage.volume.clone(),
+            ".system/inherited-conversation/prefix.json",
+            hex::encode(generation.as_resource().key()),
+            crate::conversation::FileDescriptor::from_bytes(
+                &prefix_bytes,
                 "application/vnd.acyclic.harness.inherited-conversation+json",
-                "inherited-conversation.json",
-            )
-            .await?;
+            )?,
+            "inherited-conversation.json",
+        )?;
         let authenticated = crate::filesystem::execution_journal::AuthenticatedInheritedPrefix {
             file: prefix_file,
             parent,
