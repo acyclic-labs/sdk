@@ -1,0 +1,20 @@
+{
+  "qualification": "incomplete",
+  "source": "a5188016a454c5467de9f8b1f1984f9a84a29f52",
+  "worktree": "recovery-fences-v3/sdk",
+  "platform": "Windows native execution",
+  "compile_handle": 61634,
+  "compile_exit_code": 0,
+  "artifact_sha256": "72B64BD07D31F72B2E7AE010444FE276DAA54EA66960502AD91ECC69BBF0C973",
+  "runs": [
+    {"handle": 41774, "filter": "host_execution::tests::", "exit_code": 1, "passed": 18, "failed": 1, "filtered": 297, "duration_seconds": 16.07},
+    {"handle": 14616, "filter": "host_execution::", "exit_code": 1, "passed": 24, "failed": 4, "filtered": 288, "duration_seconds": 22.01}
+  ],
+  "failures": [
+    {"case": "protected_local_store_unknown_reopens_for_operator_resolution_without_rerun", "diagnostic": "Indeterminate operation 6f6f6f6f-6f6f-6f6f-6f6f-6f6f6f6f6f6f"},
+    {"case": "native_runner_reaps_descendant_holding_output_pipe", "diagnostic": "Fixture ping command unavailable in cleared environment; observed Exited(0), not retained-output Unknown"},
+    {"case": "native_runner_rechecks_overflow_after_fast_process_exit", "diagnostic": "Expected output-limit Invalid absent in broad run; passed earlier focused run; race remains unqualified"},
+    {"case": "native_runner_rejects_output_overflow_before_publication", "diagnostic": "Expected Invalid absent in broad run; passed earlier focused run; race remains unqualified"}
+  ],
+  "scope": "Actual Windows execution of the same compiled artifact. No required failure or intermittent case counts as qualified. Held runtime changes remain outside the root branch."
+}
