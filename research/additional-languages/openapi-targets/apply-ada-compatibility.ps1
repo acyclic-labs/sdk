@@ -109,6 +109,9 @@ package $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean);
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.ByteArray_Vectors.Vector);
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString_Vectors.Vector);
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector);
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString);
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString);
@@ -123,6 +126,9 @@ package body $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString) is begin Value.Present := False; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer) is begin Value.Present := False; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean) is begin Value.Present := False; end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.ByteArray_Vectors.Vector) is begin Value.Clear; end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString_Vectors.Vector) is begin Value.Clear; end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector) is begin null; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin null; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin null; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
@@ -165,11 +171,12 @@ end $rootUnit.Streams;
         Set-Content -LiteralPath $_.FullName -Value $text -Encoding utf8NoBOM
     }
 
-    if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-models.adb')) {
-        $bodyText = Get-Content -LiteralPath $_.FullName -Raw
+    $modelBodyPath = Join-Path $src (($rootUnit.ToLowerInvariant()) + '-models.adb')
+    if (Test-Path -LiteralPath $modelBodyPath -PathType Leaf) {
+        $bodyText = Get-Content -LiteralPath $modelBodyPath -Raw
         if ($bodyText -notmatch "use $rootUnit\.Streams;") {
             $bodyText = $bodyText.Replace("package body $rootUnit.Models is", "use $rootUnit.Streams;`npackage body $rootUnit.Models is")
-            Set-Content -LiteralPath $_.FullName -Value $bodyText -Encoding utf8NoBOM
+            Set-Content -LiteralPath $modelBodyPath -Value $bodyText -Encoding utf8NoBOM
         }
     }
 
@@ -194,7 +201,7 @@ end $rootUnit.Streams;
             $modelText = Get-Content -LiteralPath $modelSpec -Raw
             $anchor = '   type AcyclicStreamV2IdempotencyObservation_Type is'
             $blocks = @()
-            foreach ($typeName in @('AcyclicStreamV2AppendResponse_Type', 'AcyclicStreamV2CommitResponse_Type')) {
+            foreach ($typeName in @('AcyclicStreamV2CommitConflicts_Type', 'AcyclicStreamV2CommittedEnvelope_Type', 'AcyclicStreamV2AppendResponse_Type', 'AcyclicStreamV2CommitResponse_Type')) {
                 $match = [regex]::Match($modelText, "(?ms)^\s*type $typeName is.*?(?=^\s*type AcyclicStreamV2[A-Za-z0-9_]+_Type is)")
                 if ($match.Success) { $blocks += $match.Value; $modelText = $modelText.Replace($match.Value, '') }
             }
@@ -214,6 +221,49 @@ end $rootUnit.Streams;
         if ($adaProjectText -notmatch 'src/credentials') {
             $adaProjectText = $adaProjectText.Replace('"src/client");', '"src/client", "src/credentials");')
             Set-Content -LiteralPath $adaProject.FullName -Value $adaProjectText -Encoding utf8NoBOM
+        }
+    }
+
+    # Reorder model declaration blocks from their Rust-derived dependency
+    # graph. The Ada generator may emit a by-value model before the model it
+    # contains; preserving each complete type/vector/codec block while doing
+    # a stable Kahn sort fixes that without hand-authoring shared behavior.
+    $modelSpec = Join-Path $model (($rootUnit.ToLowerInvariant()) + '-models.ads')
+    if (Test-Path -LiteralPath $modelSpec -PathType Leaf) {
+        $modelText = Get-Content -LiteralPath $modelSpec -Raw
+        $blockPattern = '(?ms)^\s*type\s+(?<name>[A-Za-z0-9_]+_Type)\s+is\b.*?(?=^\s*type\s+[A-Za-z0-9_]+_Type\s+is\b|^\s*end\s+' + [regex]::Escape($rootUnit) + '\.Models;)'
+        $matches = @([regex]::Matches($modelText, $blockPattern))
+        if ($matches.Count -gt 1) {
+            $known = @{}
+            foreach ($match in $matches) { $known[$match.Groups['name'].Value] = $true }
+            $remaining = [System.Collections.Generic.List[object]]::new()
+            foreach ($match in $matches) {
+                $deps = [System.Collections.Generic.HashSet[string]]::new()
+                foreach ($dep in [regex]::Matches($match.Value, [regex]::Escape($rootUnit) + '\.Models\.([A-Za-z0-9_]+_Type)')) {
+                    $depName = $dep.Groups[1].Value
+                    if ($depName -ne $match.Groups['name'].Value -and $known.ContainsKey($depName)) { [void]$deps.Add($depName) }
+                }
+                $remaining.Add([pscustomobject]@{ Match = $match; Name = $match.Groups['name'].Value; Deps = $deps })
+            }
+            $ordered = [System.Collections.Generic.List[object]]::new()
+            while ($remaining.Count -gt 0) {
+                # A dependency is satisfied when its block is no longer in the
+                # remaining set; select blocks whose unsatisfied deps are empty.
+                $remainingNames = [System.Collections.Generic.HashSet[string]]::new([string[]]@($remaining | ForEach-Object Name))
+                $ready = @($remaining | Where-Object {
+                    $unsatisfied = @($_.Deps | Where-Object { $remainingNames.Contains($_) })
+                    $unsatisfied.Count -eq 0
+                })
+                if ($ready.Count -eq 0) { $ordered.AddRange($remaining); break }
+                foreach ($item in $ready) { $ordered.Add($item); [void]$remaining.Remove($item) }
+            }
+            if ($ordered.Count -eq $matches.Count) {
+                $prefix = $modelText.Substring(0, $matches[0].Index)
+                $suffixStart = $matches[$matches.Count - 1].Index + $matches[$matches.Count - 1].Length
+                $suffix = $modelText.Substring($suffixStart)
+                $modelText = $prefix + (($ordered | ForEach-Object { $_.Match.Value }) -join "`n") + $suffix
+                Set-Content -LiteralPath $modelSpec -Value $modelText -Encoding utf8NoBOM
+            }
         }
     }
 
