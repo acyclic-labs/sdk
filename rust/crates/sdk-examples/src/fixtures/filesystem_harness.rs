@@ -1069,4 +1069,38 @@ mod tests {
             "entries=[hello]"
         );
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn production_seed_wire_identities_are_reproducible() {
+        async fn identity() -> (Vec<u8>, Vec<u8>) {
+            let service = filesystem_service().expect("filesystem service");
+            let workspace = service
+                .filesystem()
+                .open_workspace("fixture")
+                .await
+                .expect("seeded workspace");
+            let workspace_id = workspace.id().into_bytes().to_vec();
+            let head = service
+                .get_head(Request::new(
+                    acyclic_fs::wire::filesystem::v2::GetHeadRequest {
+                        workspace: Some(acyclic_fs::wire::filesystem::v2::WorkspaceRef {
+                            workspace_id: workspace_id.clone(),
+                            name: "fixture".into(),
+                        }),
+                    },
+                ))
+                .await
+                .expect("head")
+                .into_inner()
+                .generation
+                .expect("head generation");
+            (workspace_id, head.generation_id)
+        }
+
+        let first = identity().await;
+        let second = identity().await;
+        assert_eq!(first, second);
+        assert!(!first.0.is_empty());
+        assert!(!first.1.is_empty());
+    }
 }
