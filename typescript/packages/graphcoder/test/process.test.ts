@@ -365,6 +365,29 @@ describe("JSON-lines process bridge", () => {
     await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 42 });
   });
 
+  test("halts native polling after a reader reports an uncertain error", async () => {
+    let polls = 0;
+    let errors = 0;
+    const io: NativeProcessIo = {
+      launch: () => ({ token: "native-error-token", pid: 43 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => {
+        polls += 1;
+        return { kind: "error", reason: "native reader ownership is uncertain" };
+      },
+      pollExit: () => ({ kind: "running" }),
+      terminate: () => ({ kind: "terminated" }),
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    child.on("error", () => { errors += 1; });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    expect(polls).toBe(1);
+    expect(errors).toBe(1);
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 43 });
+  });
+
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
     const connection = ownConnection({ executable: testRuntimeExecutable(), args: ["-e", script], env: env() });

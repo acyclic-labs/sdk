@@ -51,6 +51,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
     timer: ReturnType<typeof setInterval> | undefined;
     closed: boolean;
     stopping: boolean;
+    failed: boolean;
     stdoutBlocked: boolean;
     stderrBlocked: boolean;
     resume: () => void;
@@ -88,6 +89,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         timer: undefined as ReturnType<typeof setInterval> | undefined,
         closed: false,
         stopping: false,
+        failed: false,
         stdoutBlocked: false,
         stderrBlocked: false,
         resume: (): void => undefined,
@@ -114,7 +116,14 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
             const value = io.pollOutput(launch.token, stream);
             if (value.kind === "data" && value.bytes !== undefined) {
               if (value.bytes.byteLength > NATIVE_STREAM_HIGH_WATER_MARK) {
-                throw new Error(`${stream} output chunk exceeds the bounded stream limit`);
+                state.failed = true;
+                state.stopping = true;
+                if (state.timer !== undefined) {
+                  clearInterval(state.timer);
+                  state.timer = undefined;
+                }
+                child.emit("error", new Error(`${stream} output chunk exceeds the bounded stream limit`));
+                return;
               }
               if (!target.write(Buffer.from(value.bytes))) {
                 if (stream === "stdout") state.stdoutBlocked = true;
@@ -125,7 +134,16 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
                 });
               }
             }
-            if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+            if (value.kind === "error") {
+              state.failed = true;
+              state.stopping = true;
+              if (state.timer !== undefined) {
+                clearInterval(state.timer);
+                state.timer = undefined;
+              }
+              child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+              return;
+            }
             if (value.kind === "eof") {
               target.end();
               if (stream === "stdout") stdoutDone = true;
@@ -170,11 +188,11 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
           result = io.terminate(token);
         }
       } catch (error) {
-        if (state !== undefined) { state.stopping = false; state.resume(); }
+        if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
         return { kind: "unknown", pid: child.pid ?? -1, reason: error instanceof Error ? error.message : String(error) };
       }
       if (result.kind !== "terminated") {
-        if (state !== undefined) { state.stopping = false; state.resume(); }
+        if (state !== undefined && !state.failed) { state.stopping = false; state.resume(); }
         return result.kind === "timeout"
           ? { kind: "timeout", pid: child.pid ?? -1, phase: "command" }
           : { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
