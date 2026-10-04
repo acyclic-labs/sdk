@@ -232,6 +232,10 @@ pub struct ProfilePackage {
     /// Whether Cargo's manifest defaults participate in the graph.
     #[serde(default = "default_features")]
     pub default_features: bool,
+    /// Declared Cargo library kinds covered by this package. When omitted,
+    /// generation records the crate types from the package manifest.
+    #[serde(default)]
+    pub crate_types: Vec<String>,
 }
 
 const fn default_features() -> bool {
@@ -466,6 +470,13 @@ pub struct BuildOptions {
 #[derive(Clone, Debug)]
 pub struct GenerateOptions {
     pub repository_root: PathBuf,
+    /// Explicit immutable revision for an extracted release archive. When
+    /// omitted, the exact Git revision of `repository_root` is required.
+    pub source_revision: Option<String>,
+    /// Repository containing the generator implementation. This is kept
+    /// separate from `repository_root` so historical source checkouts can be
+    /// generated while the receipt still identifies the exact generator.
+    pub generator_root: Option<PathBuf>,
     pub profile_manifest: PathBuf,
     pub output_dir: PathBuf,
     pub toolchain: String,
@@ -487,6 +498,18 @@ pub struct GeneratedArtifact {
     pub rustdoc_json: String,
     pub rustdoc_json_blake3: String,
     pub receipt: String,
+    /// Cargo library kinds declared by the generated package.
+    #[serde(default)]
+    pub crate_types: Vec<String>,
+    /// Rust source files included in the source-bound public coverage.
+    #[serde(default)]
+    pub public_source_paths: Vec<String>,
+    /// Crate-owned Markdown guides and README files consumed by the website.
+    #[serde(default)]
+    pub guide_source_paths: Vec<String>,
+    /// BLAKE3 digest of sorted guide paths and their exact bytes.
+    #[serde(default)]
+    pub guide_source_blake3: String,
 }
 
 /// Reproducibility receipt for one complete profile generation invocation.
@@ -497,6 +520,68 @@ pub struct GenerationReceipt {
     pub toolchain: String,
     pub profile_manifest_blake3: String,
     pub artifacts: Vec<GeneratedArtifact>,
+    /// BLAKE3 digest of the exact sdk-docs writer executable.
+    #[serde(rename = "writerSHA", default)]
+    pub writer_sha: String,
+    /// Git revision containing the generator and source inputs.
+    #[serde(rename = "generatorGitSHA", default)]
+    pub generator_git_sha: String,
+    /// Every source input consumed by generation, including dirty and
+    /// untracked files, with the output/cache trees excluded.
+    #[serde(rename = "inputClosure", default)]
+    pub input_closure: Vec<GenerationInput>,
+    /// Every generator source input consumed by generation, kept separate
+    /// from the historical source checkout's closure.
+    #[serde(rename = "generatorInputClosure", default)]
+    pub generator_input_closure: Vec<GenerationInput>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GenerationInput {
+    pub path: String,
+    pub blake3: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct GenerationProvenance {
+    writer_sha: String,
+    source_git_sha: String,
+    generator_git_sha: String,
+    profile_manifest_blake3: String,
+    input_closure: Vec<GenerationInput>,
+    generator_input_closure: Vec<GenerationInput>,
+}
+
+/// Source-bound profile metadata for a historical checkout.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustdocProfileReceipt {
+    pub schema_version: u32,
+    pub source_revision: String,
+    pub toolchain: String,
+    pub profile_manifest_blake3: String,
+    pub profiles: Vec<RustdocProfileReceiptEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustdocProfileReceiptEntry {
+    pub name: String,
+    pub packages: Vec<RustdocProfilePackageReceipt>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustdocProfilePackageReceipt {
+    pub package: String,
+    pub target: String,
+    pub features: Vec<String>,
+    pub default_features: bool,
+    pub crate_types: Vec<String>,
+    pub source_blake3: String,
+    pub public_source_paths: Vec<String>,
+    #[serde(default)]
+    pub guide_source_paths: Vec<String>,
+    #[serde(default)]
+    pub guide_source_blake3: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -807,11 +892,16 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
     if !options.repository_root.is_dir() {
         return Err(Error::InvalidRepository(options.repository_root.clone()));
     }
-    let profiles = load_profile_manifest(&options.profile_manifest)?;
-    let profile_manifest_blake3 = digest_bytes(&fs::read(&options.profile_manifest)?);
-    fs::create_dir_all(&options.output_dir)?;
-    let source_revision =
-        git_revision(&options.repository_root).unwrap_or_else(|| "unknown".to_owned());
+    // Read and parse the exact profile bytes that will drive Cargo before
+    // capturing provenance. The before/after guard hashes the same path, so a
+    // concurrent edit between parsing and the initial capture fails closed
+    // instead of pairing an old profile with a new digest.
+    let (profiles, profile_manifest_bytes) =
+        load_profile_manifest_snapshot(&options.profile_manifest)?;
+    let generator_root = options
+        .generator_root
+        .as_deref()
+        .unwrap_or(&options.repository_root);
     let compiler_cache_root = options
         .compiler_cache_dir
         .clone()
@@ -823,7 +913,38 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
             .map(|parent| parent.join(".sdk-docs-rustdoc-cache"))
             .unwrap_or_else(|| options.output_dir.join(".cargo-target"))
     });
+    // Materialize both generated trees before the guard so their canonical
+    // paths can be excluded explicitly even when they live below a source
+    // checkout. They are compiler/output state, never source inputs.
+    fs::create_dir_all(&options.output_dir)?;
     fs::create_dir_all(&compiler_cache_root)?;
+    // Capture the complete source closure before invoking Cargo. The output
+    // and compiler cache trees are excluded by `capture_generation_provenance`.
+    // A second capture below makes generation fail closed if any source or
+    // generator input changes while the compiler is running.
+    let provenance_before = capture_generation_provenance(
+        generator_root,
+        &options.repository_root,
+        &options.output_dir,
+        &compiler_cache_root,
+        &options.profile_manifest,
+    )?;
+    if provenance_before.profile_manifest_blake3 != digest_bytes(&profile_manifest_bytes) {
+        return Err(Error::Strict(
+            "profile manifest changed while establishing generation provenance; rerun from an unchanged profile"
+                .to_owned(),
+        ));
+    }
+    let source_revision = options
+        .source_revision
+        .clone()
+        .unwrap_or_else(|| provenance_before.source_git_sha.clone());
+    if source_revision == "unknown" {
+        return Err(Error::Strict(
+            "generation source is not an exact Git checkout; pass --source-revision for a verified release archive"
+                .to_owned(),
+        ));
+    }
     let mut artifacts = Vec::new();
     for profile in profiles {
         let profile_output = options.output_dir.join(&profile.name);
@@ -838,6 +959,14 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
             let package_name = &package.package;
             let crate_dir = find_package_dir(&options.repository_root, package_name)?;
             let source_blake3 = source_content_hash(&crate_dir, &options.repository_root)?;
+            let crate_types = if package.crate_types.is_empty() {
+                declared_crate_types(&crate_dir)?
+            } else {
+                package.crate_types.clone()
+            };
+            let public_source_paths = public_source_paths(&crate_dir, &options.repository_root)?;
+            let (guide_source_paths, guide_source_blake3) =
+                guide_source_metadata(&crate_dir, &options.repository_root)?;
             let target = resolve_profile_target(&package.target, Some(&options.toolchain))?;
             let mut command = Command::new("cargo");
             command.arg(format!("+{}", options.toolchain)).args([
@@ -910,6 +1039,10 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
                 rustdoc_json: relative_path(&options.output_dir, &output_json),
                 rustdoc_json_blake3,
                 receipt: relative_path(&options.output_dir, &receipt_file),
+                crate_types,
+                public_source_paths,
+                guide_source_paths,
+                guide_source_blake3,
             });
         }
     }
@@ -918,18 +1051,214 @@ pub fn generate_rustdoc(options: &GenerateOptions) -> Result<GenerationReceipt, 
             .cmp(&right.profile)
             .then(left.package_name.cmp(&right.package_name))
     });
+    let provenance_after = capture_generation_provenance(
+        generator_root,
+        &options.repository_root,
+        &options.output_dir,
+        &compiler_cache_root,
+        &options.profile_manifest,
+    )?;
+    if provenance_before != provenance_after {
+        return Err(Error::Strict(
+            "generation inputs changed during rustdoc generation; rerun from an unchanged source and generator checkout"
+                .to_owned(),
+        ));
+    }
     let result = GenerationReceipt {
         schema_version: 1,
         source_revision,
         toolchain: options.toolchain.clone(),
-        profile_manifest_blake3,
+        profile_manifest_blake3: provenance_after.profile_manifest_blake3.clone(),
         artifacts,
+        writer_sha: provenance_after.writer_sha,
+        generator_git_sha: provenance_after.generator_git_sha,
+        input_closure: provenance_after.input_closure,
+        generator_input_closure: provenance_after.generator_input_closure,
     };
     fs::write(
         options.output_dir.join("generation-receipt.json"),
         serde_json::to_string_pretty(&result)? + "\n",
     )?;
     Ok(result)
+}
+
+/// Write source-bound profile metadata for a historical checkout without
+/// mutating that checkout or relying on the website to infer Cargo inputs.
+pub fn write_rustdoc_profile(
+    repository_root: &Path,
+    profile_manifest: &Path,
+    output: &Path,
+    toolchain: &str,
+) -> Result<RustdocProfileReceipt, Error> {
+    if !repository_root.is_dir() {
+        return Err(Error::InvalidRepository(repository_root.to_owned()));
+    }
+    let (profiles, profile_manifest_bytes) = match fs::read(profile_manifest) {
+        Ok(contents) => (
+            load_profile_manifest_bytes(&contents, profile_manifest)?,
+            contents,
+        ),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let profiles = infer_historical_profile_manifest(repository_root)?;
+            let contents = serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "profiles": &profiles,
+            }))?;
+            (profiles, contents)
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let profile_manifest_blake3 = digest_bytes(&profile_manifest_bytes);
+    let mut receipt_profiles = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let mut packages = Vec::with_capacity(profile.packages.len());
+        for package in profile.packages {
+            let crate_dir = find_package_dir(repository_root, &package.package)?;
+            let (guide_source_paths, guide_source_blake3) =
+                guide_source_metadata(&crate_dir, repository_root)?;
+            packages.push(RustdocProfilePackageReceipt {
+                package: package.package,
+                target: resolve_profile_target(&package.target, Some(toolchain))?,
+                features: normalized_features(&package.features),
+                default_features: package.default_features,
+                crate_types: if package.crate_types.is_empty() {
+                    declared_crate_types(&crate_dir)?
+                } else {
+                    package.crate_types
+                },
+                source_blake3: source_content_hash(&crate_dir, repository_root)?,
+                public_source_paths: public_source_paths(&crate_dir, repository_root)?,
+                guide_source_paths,
+                guide_source_blake3,
+            });
+        }
+        receipt_profiles.push(RustdocProfileReceiptEntry {
+            name: profile.name,
+            packages,
+        });
+    }
+    let receipt = RustdocProfileReceipt {
+        schema_version: 1,
+        source_revision: git_revision(repository_root).unwrap_or_else(|| "unknown".to_owned()),
+        toolchain: toolchain.to_owned(),
+        profile_manifest_blake3,
+        profiles: receipt_profiles,
+    };
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output, serde_json::to_string_pretty(&receipt)? + "\n")?;
+    Ok(receipt)
+}
+
+fn capture_generation_provenance(
+    generator_root: &Path,
+    input_root: &Path,
+    output_dir: &Path,
+    compiler_cache_dir: &Path,
+    profile_manifest: &Path,
+) -> Result<GenerationProvenance, Error> {
+    let writer_path = std::env::current_exe().map_err(Error::Io)?;
+    let writer_sha = digest_bytes(&fs::read(writer_path)?);
+    let source_git_sha = git_revision(input_root).unwrap_or_else(|| "unknown".to_owned());
+    let generator_git_sha = git_revision(generator_root).unwrap_or_else(|| "unknown".to_owned());
+    let profile_manifest_blake3 = digest_bytes(&fs::read(profile_manifest)?);
+    let canonical_root = input_root
+        .canonicalize()
+        .unwrap_or_else(|_| input_root.to_owned());
+    let canonical_generator_root = generator_root
+        .canonicalize()
+        .unwrap_or_else(|_| generator_root.to_owned());
+    let mut excluded_roots = vec![
+        output_dir
+            .canonicalize()
+            .unwrap_or_else(|_| output_dir.to_owned()),
+        compiler_cache_dir
+            .canonicalize()
+            .unwrap_or_else(|_| compiler_cache_dir.to_owned()),
+    ];
+    excluded_roots.sort();
+    excluded_roots.dedup();
+    let input_closure = generation_input_closure(&canonical_root, &excluded_roots)?;
+    let generator_input_closure =
+        generation_input_closure(&canonical_generator_root, &excluded_roots)?;
+    Ok(GenerationProvenance {
+        writer_sha,
+        source_git_sha,
+        generator_git_sha,
+        profile_manifest_blake3,
+        input_closure,
+        generator_input_closure,
+    })
+}
+
+fn load_profile_manifest_snapshot(
+    path: &Path,
+) -> Result<(Vec<AnalysisProfile>, Vec<u8>), Error> {
+    let bytes = fs::read(path)?;
+    let profiles = load_profile_manifest_bytes(&bytes, path)?;
+    Ok((profiles, bytes))
+}
+
+fn generation_input_closure(
+    root: &Path,
+    excluded_roots: &[PathBuf],
+) -> Result<Vec<GenerationInput>, Error> {
+    let mut paths = Vec::new();
+    collect_generation_input_paths(root, excluded_roots, &mut paths)?;
+    paths.sort();
+    paths
+        .into_iter()
+        .map(|path| {
+            let bytes = fs::read(&path)?;
+            Ok(GenerationInput {
+                path: relative_path(root, &path),
+                blake3: digest_bytes(&bytes),
+                bytes: bytes.len() as u64,
+            })
+        })
+        .collect()
+}
+
+fn collect_generation_input_paths(
+    directory: &Path,
+    excluded_roots: &[PathBuf],
+    paths: &mut Vec<PathBuf>,
+) -> Result<(), Error> {
+    if excluded_roots
+        .iter()
+        .any(|excluded| directory.starts_with(excluded))
+        || directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, ".git" | "node_modules"))
+    {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            return Err(Error::Strict(format!(
+                "symlink source input is not supported: {}",
+                path.display()
+            )));
+        }
+        if file_type.is_dir() {
+            collect_generation_input_paths(&path, excluded_roots, paths)?;
+        } else if file_type.is_file() {
+            if excluded_roots
+                .iter()
+                .any(|excluded| path.starts_with(excluded))
+            {
+                continue;
+            }
+            paths.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn cache_path_component(value: &str) -> String {
@@ -2658,6 +2987,65 @@ fn source_content_hash(crate_dir: &Path, repository_root: &Path) -> Result<Strin
     Ok(digest_bytes(text.as_bytes()))
 }
 
+fn declared_crate_types(crate_dir: &Path) -> Result<Vec<String>, Error> {
+    let manifest = fs::read_to_string(crate_dir.join("Cargo.toml"))?;
+    let mut in_lib = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_lib = trimmed == "[lib]";
+        } else if in_lib && trimmed.starts_with("crate-type") {
+            let Some((_, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            let types = value
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(|kind| kind.trim().trim_matches('"').trim_matches('\'').to_owned())
+                .filter(|kind| !kind.is_empty())
+                .collect::<Vec<_>>();
+            if !types.is_empty() {
+                return Ok(types);
+            }
+        }
+    }
+    Ok(vec!["lib".to_owned()])
+}
+
+fn public_source_paths(crate_dir: &Path, repository_root: &Path) -> Result<Vec<String>, Error> {
+    let mut paths = collect_source_files(crate_dir)?;
+    paths.retain(|path| {
+        path.strip_prefix(crate_dir.join("src"))
+            .ok()
+            .is_some_and(|relative| relative.extension().and_then(|ext| ext.to_str()) == Some("rs"))
+    });
+    paths.sort();
+    Ok(paths
+        .into_iter()
+        .map(|path| relative_path(repository_root, &path))
+        .collect())
+}
+
+fn guide_source_metadata(
+    crate_dir: &Path,
+    repository_root: &Path,
+) -> Result<(Vec<String>, String), Error> {
+    let mut paths = collect_source_files(crate_dir)?;
+    paths.retain(|path| path.extension().and_then(|ext| ext.to_str()) == Some("md"));
+    paths.sort();
+    let mut closure = String::new();
+    let mut relative_paths = Vec::with_capacity(paths.len());
+    for path in paths {
+        let bytes = fs::read(&path)?;
+        let relative = relative_path(repository_root, &path);
+        let _ = writeln!(closure, "{} {}", relative, digest_bytes(&bytes));
+        relative_paths.push(relative);
+    }
+    Ok((relative_paths, digest_bytes(closure.as_bytes())))
+}
+
 fn is_private_sdk_crate(path: &Path) -> bool {
     let directory_name = path
         .file_name()
@@ -2750,8 +3138,15 @@ fn markdown_title(contents: &str) -> Option<String> {
 }
 
 fn load_profile_manifest(path: &Path) -> Result<Vec<AnalysisProfile>, Error> {
-    let contents = fs::read_to_string(path)?;
-    let manifest: ProfileManifestFile = serde_json::from_str(&contents)?;
+    let contents = fs::read(path)?;
+    load_profile_manifest_bytes(&contents, path)
+}
+
+fn load_profile_manifest_bytes(
+    contents: &[u8],
+    path: &Path,
+) -> Result<Vec<AnalysisProfile>, Error> {
+    let manifest: ProfileManifestFile = serde_json::from_slice(contents)?;
     if manifest.schema_version != 1 {
         return Err(Error::Strict(format!(
             "unsupported rustdoc profile manifest schema {} in {}",
@@ -2790,6 +3185,46 @@ fn load_profile_manifest(path: &Path) -> Result<Vec<AnalysisProfile>, Error> {
         }
     }
     Ok(manifest.profiles)
+}
+
+/// Older releases predate the checked-in multi-target profile manifest. Their
+/// historical receipt still needs a source-bound profile, so infer a stable
+/// host profile from the Cargo package manifests that exist in that release.
+/// This intentionally records only facts present in the archived source and
+/// never imports package names or feature flags from the current checkout.
+fn infer_historical_profile_manifest(
+    repository_root: &Path,
+) -> Result<Vec<AnalysisProfile>, Error> {
+    let crates_root = repository_root.join("rust/crates");
+    let mut packages = Vec::new();
+    for entry in fs::read_dir(&crates_root)? {
+        let path = entry?.path();
+        if !path.is_dir() || !path.join("Cargo.toml").is_file() {
+            continue;
+        }
+        let manifest = fs::read_to_string(path.join("Cargo.toml"))?;
+        let Some(package) = manifest_value(&manifest, "name") else {
+            continue;
+        };
+        packages.push(ProfilePackage {
+            package,
+            target: "host".to_owned(),
+            features: Vec::new(),
+            default_features: true,
+            crate_types: Vec::new(),
+        });
+    }
+    packages.sort_by(|left, right| left.package.cmp(&right.package));
+    if packages.is_empty() {
+        return Err(Error::Strict(format!(
+            "cannot infer a historical profile: no Cargo packages found in {}",
+            crates_root.display()
+        )));
+    }
+    Ok(vec![AnalysisProfile {
+        name: "host-default-inferred".to_owned(),
+        packages,
+    }])
 }
 
 fn evaluate_profiles(
@@ -4379,9 +4814,9 @@ fn validate_release_tag_version(tag: &str, version: &str) -> Result<(), Error> {
         "stream-v",
         "typescript-v",
     ]
-        .into_iter()
-        .find(|prefix| tag.starts_with(prefix))
-        .map(|prefix| &tag[prefix.len()..]);
+    .into_iter()
+    .find(|prefix| tag.starts_with(prefix))
+    .map(|prefix| &tag[prefix.len()..]);
     let publish_scope = [
         "publish/acyclic-fs/",
         "publish/acyclic-inference/",
@@ -5039,8 +5474,13 @@ mod tests {
             bundle_blake3: "bundle-release-blake3".to_owned(),
         };
         let released_projection: serde_json::Value = serde_json::from_str(
-            &to_website_json(&released, "https://github.com/example/sdk", "clean", "release")
-                .unwrap(),
+            &to_website_json(
+                &released,
+                "https://github.com/example/sdk",
+                "clean",
+                "release",
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(
@@ -5387,6 +5827,7 @@ mod tests {
                 target: "wasm32-unknown-unknown".to_owned(),
                 features: vec!["wasm32".to_owned()],
                 default_features: false,
+                crate_types: Vec::new(),
             }],
         };
         let crate_bundle = CrateBundle {
@@ -5439,6 +5880,7 @@ mod tests {
                 target: "wasm32-unknown-unknown".to_owned(),
                 features: vec!["wasm32".to_owned()],
                 default_features: false,
+                crate_types: Vec::new(),
             }],
         };
         let item = PublicItem {
@@ -5969,6 +6411,299 @@ mod tests {
             .expect_err("dirty worktree must fail release qualification");
         assert!(error.to_string().contains("clean Git worktree"));
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rustdoc_profile_receipt_records_targets_features_crate_types_and_sources() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-profile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let crate_dir = root.join("rust/crates/profile_fixture");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"profile_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\ncrate-type = [\"cdylib\", \"rlib\"]\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("src/lib.rs"),
+            "/// Fixture API\npub fn answer() -> u32 { 42 }\n",
+        )
+        .unwrap();
+        fs::write(
+            crate_dir.join("README.md"),
+            "# Fixture guide\n\nA Rust-owned guide.\n",
+        )
+        .unwrap();
+        let manifest = root.join("profiles.json");
+        fs::write(
+            &manifest,
+            r#"{"schema_version":1,"profiles":[{"name":"synthetic","packages":[{"package":"profile_fixture","target":"host","features":["json"],"default_features":false}]}]}"#,
+        )
+        .unwrap();
+        let output = root.join("receipt.json");
+
+        let receipt = write_rustdoc_profile(&root, &manifest, &output, "1.98.1").unwrap();
+        let package = &receipt.profiles[0].packages[0];
+        assert_eq!(package.package, "profile_fixture");
+        assert!(!package.target.is_empty());
+        assert_eq!(package.features, vec!["json"]);
+        assert!(!package.default_features);
+        assert_eq!(package.crate_types, vec!["cdylib", "rlib"]);
+        assert!(package
+            .public_source_paths
+            .iter()
+            .any(|path| path.ends_with("rust/crates/profile_fixture/src/lib.rs")));
+        assert!(package
+            .guide_source_paths
+            .iter()
+            .any(|path| path.ends_with("rust/crates/profile_fixture/README.md")));
+        assert!(!package.guide_source_blake3.is_empty());
+        assert!(!package.source_blake3.is_empty());
+        let persisted: RustdocProfileReceipt =
+            serde_json::from_slice(&fs::read(&output).unwrap()).unwrap();
+        assert_eq!(persisted, receipt);
+        fs::remove_file(&manifest).unwrap();
+        let inferred = write_rustdoc_profile(&root, &manifest, &output, "1.98.1").unwrap();
+        assert_eq!(inferred.profiles[0].name, "host-default-inferred");
+        assert_eq!(inferred.profiles[0].packages[0].default_features, true);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inferred_legacy_profile_binds_exact_checkout_revision() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-legacy-profile-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let crate_dir = root.join("rust/crates/legacy_fixture");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        fs::write(
+            crate_dir.join("Cargo.toml"),
+            "[package]\nname = \"legacy_fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(crate_dir.join("src/lib.rs"), "pub fn legacy() {}\n").unwrap();
+        assert!(Command::new("git")
+            .args(["-C", root.to_str().unwrap(), "init", "--quiet"])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-C",
+                root.to_str().unwrap(),
+                "-c",
+                "user.name=profile-test",
+                "-c",
+                "user.email=profile-test@example.invalid",
+                "add",
+                ".",
+            ])
+            .status()
+            .unwrap()
+            .success());
+        assert!(Command::new("git")
+            .args([
+                "-C",
+                root.to_str().unwrap(),
+                "-c",
+                "user.name=profile-test",
+                "-c",
+                "user.email=profile-test@example.invalid",
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "legacy profile fixture",
+            ])
+            .status()
+            .unwrap()
+            .success());
+        let expected_revision = String::from_utf8(
+            Command::new("git")
+                .args(["-C", root.to_str().unwrap(), "rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let receipt = write_rustdoc_profile(
+            &root,
+            &root.join("missing-profile.json"),
+            &root.join("out/receipt.json"),
+            "1.98.1",
+        )
+        .unwrap();
+        assert_eq!(receipt.source_revision, expected_revision);
+        assert_eq!(receipt.profiles[0].name, "host-default-inferred");
+        assert_eq!(receipt.profiles[0].packages[0].package, "legacy_fixture");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn generation_provenance_separates_generator_and_source_and_detects_mutation() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-provenance-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let source_root = root.join("source");
+        let generator_root = root.join("generator");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&generator_root).unwrap();
+        fs::write(source_root.join("Cargo.toml"), b"[workspace]\n").unwrap();
+        fs::write(source_root.join("guide.md"), b"# Source\n").unwrap();
+        fs::create_dir_all(source_root.join("target")).unwrap();
+        fs::write(
+            source_root.join("target/authoritative-source.txt"),
+            b"This is source, not compiler output.\n",
+        )
+        .unwrap();
+        fs::create_dir_all(source_root.join("work")).unwrap();
+        fs::write(
+            source_root.join("work/authoritative-source.txt"),
+            b"This is also source, not compiler output.\n",
+        )
+        .unwrap();
+        fs::write(generator_root.join("Cargo.toml"), b"[workspace]\n").unwrap();
+        fs::write(generator_root.join("generator.md"), b"# Generator\n").unwrap();
+        let profile_manifest = root.join("profiles.json");
+        fs::write(&profile_manifest, b"{\"profiles\":[]}\n").unwrap();
+        for repository in [&source_root, &generator_root] {
+            assert!(Command::new("git")
+                .args(["-C", repository.to_str().unwrap(), "init", "--quiet"])
+                .status()
+                .unwrap()
+                .success());
+            assert!(Command::new("git")
+                .args([
+                    "-C",
+                    repository.to_str().unwrap(),
+                    "-c",
+                    "user.name=provenance-test",
+                    "-c",
+                    "user.email=provenance-test@example.invalid",
+                    "add",
+                    ".",
+                ])
+                .status()
+                .unwrap()
+                .success());
+            assert!(Command::new("git")
+                .args([
+                    "-C",
+                    repository.to_str().unwrap(),
+                    "-c",
+                    "user.name=provenance-test",
+                    "-c",
+                    "user.email=provenance-test@example.invalid",
+                    "-c",
+                    "commit.gpgSign=false",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    "fixture",
+                ])
+                .status()
+                .unwrap()
+                .success());
+        }
+        let output_dir = source_root.join("generated");
+        let compiler_cache_dir = source_root.join("cache");
+        let before = capture_generation_provenance(
+            &generator_root,
+            &source_root,
+            &output_dir,
+            &compiler_cache_dir,
+            &profile_manifest,
+        )
+        .unwrap();
+        assert_ne!(before.source_git_sha, before.generator_git_sha);
+        assert!(before
+            .input_closure
+            .iter()
+            .any(|input| input.path == "guide.md"));
+        assert!(before
+            .input_closure
+            .iter()
+            .any(|input| input.path == "target/authoritative-source.txt"));
+        assert!(before
+            .input_closure
+            .iter()
+            .any(|input| input.path == "work/authoritative-source.txt"));
+        assert!(before
+            .generator_input_closure
+            .iter()
+            .any(|input| input.path == "generator.md"));
+        assert!(!before.input_closure.iter().any(|input| {
+            input.path.starts_with("generated/") || input.path.starts_with("cache/")
+        }));
+        fs::write(source_root.join("guide.md"), b"# Changed source\n").unwrap();
+        fs::write(&profile_manifest, b"{\"profiles\":[1]}\n").unwrap();
+        fs::write(
+            generator_root.join("generator.md"),
+            b"# Changed generator\n",
+        )
+        .unwrap();
+        let after = capture_generation_provenance(
+            &generator_root,
+            &source_root,
+            &output_dir,
+            &compiler_cache_dir,
+            &profile_manifest,
+        )
+        .unwrap();
+        assert_eq!(before.source_git_sha, after.source_git_sha);
+        assert_ne!(before.input_closure, after.input_closure);
+        assert_ne!(
+            before.generator_input_closure,
+            after.generator_input_closure
+        );
+        assert_ne!(
+            before.profile_manifest_blake3,
+            after.profile_manifest_blake3
+        );
+        assert_ne!(before, after);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn profile_snapshot_is_the_bytes_that_provenance_guards() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-profile-snapshot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let profile = root.join("profiles.json");
+        let original = b"{\"schema_version\":1,\"profiles\":[]}\n";
+        fs::write(&profile, original).unwrap();
+        let (_profiles, snapshot) = load_profile_manifest_snapshot(&profile).unwrap();
+        assert_eq!(snapshot, original);
+        let before_digest = digest_bytes(&snapshot);
+        fs::write(&profile, b"{\"schema_version\":1,\"profiles\":[1]}\n").unwrap();
+        let observed_digest = digest_bytes(&fs::read(&profile).unwrap());
+        assert_ne!(before_digest, observed_digest);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
