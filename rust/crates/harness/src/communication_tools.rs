@@ -32,7 +32,7 @@ pub const MESSAGE_TOOL_NAME: &str = "swarm.message";
 /// Stable model-visible name for explicit task, inbox, or deadline waits.
 pub const WAIT_TOOL_NAME: &str = "swarm.wait";
 /// Revision of both model-facing communication contracts.
-pub const TOOL_REVISION: &str = "2";
+pub const TOOL_REVISION: &str = "3";
 
 /// Runtime-owned cancellation source for authenticated wait calls.
 ///
@@ -619,12 +619,9 @@ async fn wait_output(
         }),
         WaitCompletion::Messages { items } => {
             let mut output = Vec::with_capacity(items.len());
-            for item in items {
-                let message_id = crate::OperationId::parse(&item.message_id)
-                    .map_err(|error| Error::Invalid(error.to_string()))?;
-                let body = host
-                    .read_message_body(waiter, message_id, &item.payload)
-                    .await?;
+            let bodies = host.read_message_bodies(waiter, &items).await?;
+            for (item, body) in items.into_iter().zip(bodies) {
+                let message_id = item.message_id;
                 output.push(WaitMessageOutput {
                     sequence: item.sequence,
                     message_id: message_id.to_string(),
@@ -717,12 +714,27 @@ mod tests {
         OperationId::from_bytes([value; 16])
     }
 
+    struct OutputHost;
+
+    impl DurableTaskHost for OutputHost {
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> futures::future::BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     #[test]
     fn definitions_are_strict_and_stable() -> Result<()> {
         let message = message_definition();
         let wait = wait_definition();
-        assert_eq!(message.revision, "2");
-        assert_eq!(wait.revision, "2");
+        assert_eq!(message.revision, "3");
+        assert_eq!(wait.revision, "3");
         message.validate()?;
         wait.validate()?;
         assert_eq!(message.digest()?, message_definition().digest()?);
@@ -741,14 +753,25 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn wait_outputs_preserve_order_and_terminal_states() -> Result<()> {
-        let output = WaitToolOutput::Tasks {
-            outcomes: vec![
-                WaitTaskOutput { task_id: task(2).to_string(), status: WaitTaskStatus::Succeeded, value: Some(json!({"ok": true})), message: None, operation_id: None },
-                WaitTaskOutput { task_id: task(3).to_string(), status: WaitTaskStatus::Indeterminate, value: None, message: None, operation_id: Some(operation(7).to_string()) },
-            ],
-        };
+    #[tokio::test]
+    async fn wait_outputs_preserve_order_and_terminal_states() -> Result<()> {
+        let host = OutputHost;
+        let output = wait_output(
+            &host,
+            task(9),
+            WaitCompletion::Tasks {
+                outcomes: vec![
+                    (task(2), Outcome::Succeeded(json!({"ok": true}))),
+                    (
+                        task(3),
+                        Outcome::Indeterminate {
+                            operation_id: operation(7),
+                        },
+                    ),
+                ],
+            },
+        )
+        .await?;
         let value =
             serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(value["kind"], "tasks");

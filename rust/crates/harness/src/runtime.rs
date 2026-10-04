@@ -863,6 +863,7 @@ pub trait DurableTaskHost: Send + Sync {
     fn read_message_body<'a>(
         &'a self,
         _task_id: TaskId,
+        _sequence: u64,
         _message_id: OperationId,
         _payload: &'a FileRef,
     ) -> BoxFuture<'a, Result<Vec<u8>>> {
@@ -870,6 +871,37 @@ pub trait DurableTaskHost: Send + Sync {
             Err(Error::Unsupported(
                 "durable message body reads are not bound".into(),
             ))
+        })
+    }
+
+    /// Hydrates a bounded message batch. The aggregate descriptor bound is
+    /// checked before any provider read begins.
+    fn read_message_bodies<'a>(
+        &'a self,
+        task_id: TaskId,
+        items: &'a [InboxItem],
+    ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>> {
+        Box::pin(async move {
+            let total = items.iter().try_fold(0_u64, |total, item| {
+                total
+                    .checked_add(item.payload.descriptor().byte_length())
+                    .ok_or_else(|| Error::Invalid("message body aggregate is too large".into()))
+            })?;
+            if total > crate::conversation::MAX_LIMIT_RENDER_BYTES {
+                return Err(Error::Invalid(
+                    "message body aggregate exceeds the model output bound".into(),
+                ));
+            }
+            let mut bodies = Vec::with_capacity(items.len());
+            for item in items {
+                let message_id = OperationId::parse(&item.message_id)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                bodies.push(
+                    self.read_message_body(task_id, item.sequence, message_id, &item.payload)
+                        .await?,
+                );
+            }
+            Ok(bodies)
         })
     }
 
