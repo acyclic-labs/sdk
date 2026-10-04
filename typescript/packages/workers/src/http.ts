@@ -14,7 +14,7 @@ import type {
   SelectDeploymentRequest, SelectDeploymentResponse, SubmitJobRequest, SubmitJobResponse,
   ErrorCode,
 } from "../generated/proto/workers/v1/workers_pb.js";
-import { WORKERS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { WORKERS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateWorkersContentLength, validateWorkersCredential, validateWorkersEndpoint, validateWorkersInvokeDeployment, validateWorkersInvokeVersion, validateWorkersResponseChunk, validateWorkersResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpWorkersOptions {
@@ -38,6 +38,7 @@ export class HttpWorkersClient {
   constructor(options: HttpWorkersOptions) {
     const endpoint = new URL(options.endpoint);
     validateWorkersEndpoint(options.endpoint);
+    validateRustOwnedCredential(WORKERS_METHODS.invokeDeployment, options.token);
     validateWorkersCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;

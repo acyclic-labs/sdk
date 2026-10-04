@@ -11,7 +11,7 @@ use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
@@ -1546,7 +1546,7 @@ fn directory_digest(root: &Path) -> Result<String, CliError> {
 }
 
 fn tracked_files(root: &Path) -> Result<Vec<String>, CliError> {
-    let result = Command::new("git")
+    let result = repository_command()
         .args(["ls-files", "-co", "--exclude-standard", "-z"])
         .current_dir(root)
         .output()
@@ -3867,6 +3867,117 @@ fn descriptor_rpc_shapes(bytes: &[u8], source: &str) -> Result<BTreeSet<String>,
     Ok(shapes)
 }
 
+/// Return the canonical RPC identities and their descriptor-derived shapes for
+/// one authority file.  The identity intentionally comes from the descriptor
+/// package/service/method names rather than a receipt's feature labels:
+/// `package.Service/Method`.
+fn descriptor_rpc_methods(
+    bytes: &[u8],
+    source: &str,
+) -> Result<BTreeMap<String, String>, CliError> {
+    let mut matching_files = 0;
+    let mut methods = BTreeMap::new();
+    for (number, value) in descriptor_fields(bytes)? {
+        let DescriptorField::Bytes(file_bytes) = value else {
+            continue;
+        };
+        if number != 1 {
+            continue;
+        }
+        let file_fields = descriptor_fields(file_bytes)?;
+        let file_name = file_fields
+            .iter()
+            .find_map(|(field, value)| {
+                (*field == 1).then(|| match value {
+                    DescriptorField::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+                    _ => None,
+                })
+            })
+            .flatten();
+        if file_name != Some(source) {
+            continue;
+        }
+        matching_files += 1;
+        let package = file_fields
+            .iter()
+            .find_map(|(field, value)| {
+                (*field == 2).then(|| match value {
+                    DescriptorField::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+                    _ => None,
+                })
+            })
+            .flatten()
+            .unwrap_or_default();
+        for (field, value) in file_fields {
+            if field != 6 {
+                continue;
+            }
+            let DescriptorField::Bytes(service_bytes) = value else {
+                return Err(CliError::new("descriptor service field is not bytes"));
+            };
+            let service_fields = descriptor_fields(service_bytes)?;
+            let service = service_fields
+                .iter()
+                .find_map(|(field, value)| {
+                    (*field == 1).then(|| match value {
+                        DescriptorField::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+                        _ => None,
+                    })
+                })
+                .flatten()
+                .ok_or_else(|| CliError::new("descriptor service has no valid name"))?;
+            for (method_field, method_value) in service_fields {
+                if method_field != 2 {
+                    continue;
+                }
+                let DescriptorField::Bytes(method_bytes) = method_value else {
+                    return Err(CliError::new("descriptor method field is not bytes"));
+                };
+                let method_fields = descriptor_fields(method_bytes)?;
+                let method = method_fields
+                    .iter()
+                    .find_map(|(field, value)| {
+                        (*field == 1).then(|| match value {
+                            DescriptorField::Bytes(bytes) => std::str::from_utf8(bytes).ok(),
+                            _ => None,
+                        })
+                    })
+                    .flatten()
+                    .ok_or_else(|| CliError::new("descriptor method has no valid name"))?;
+                let mut client = false;
+                let mut server = false;
+                for (stream_field, stream_value) in method_fields {
+                    match (stream_field, stream_value) {
+                        (5, DescriptorField::Varint(value)) => client = value != 0,
+                        (6, DescriptorField::Varint(value)) => server = value != 0,
+                        _ => {}
+                    }
+                }
+                let shape = match (client, server) {
+                    (false, false) => "unary",
+                    (true, false) => "client",
+                    (false, true) => "server",
+                    (true, true) => "bidi",
+                };
+                let identity = if package.is_empty() {
+                    format!("{service}/{method}")
+                } else {
+                    format!("{package}.{service}/{method}")
+                };
+                if methods.insert(identity, shape.to_owned()).is_some() {
+                    return Err(CliError::new("descriptor contains duplicate RPC identity"));
+                }
+            }
+        }
+    }
+    if matching_files != 1 {
+        return Err(CliError::new(format!(
+            "family descriptor has {matching_files} source file entries: {source}"
+        )));
+    }
+    Ok(methods)
+}
+
 fn verify_authority_manifest(source_root: &Path, output: &Path) -> Result<(), CliError> {
     let path = output.join("wire/rust-authority.json");
     if !path.is_file() {
@@ -4154,6 +4265,130 @@ fn consumer_receipt_valid(output: &Path, receipt: &Value, expected: &EvidenceExp
     })
 }
 
+fn authority_rpc_inventory(
+    output: &Path,
+) -> Result<BTreeMap<String, BTreeMap<String, String>>, CliError> {
+    let manifest_path = output.join("wire/rust-authority.json");
+    let value: Value = read_json(&manifest_path)?;
+    let families = value
+        .get("families")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new("Rust authority manifest has no families"))?;
+    let mut inventory = BTreeMap::new();
+    for family in families {
+        let source = family
+            .get("source")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("Rust authority family has no source path"))?;
+        let descriptor = family
+            .get("descriptor")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("Rust authority family has no descriptor path"))?;
+        let descriptor_path = authority_path(&output.join("wire"), descriptor)?;
+        let descriptor_bytes = fs::read(&descriptor_path)?;
+        let descriptor_hash = family
+            .get("descriptor_sha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| CliError::new("Rust authority family has no descriptor hash"))?;
+        if descriptor_hash.len() != 64
+            || !descriptor_hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || hash_bytes(&descriptor_bytes) != format!("sha256:{descriptor_hash}")
+        {
+            return Err(CliError::new(format!(
+                "Rust authority descriptor hash mismatch: {descriptor}"
+            )));
+        }
+        let family_name = source
+            .split('/')
+            .next()
+            .filter(|name| !name.is_empty())
+            .ok_or_else(|| CliError::new("Rust authority family source has no family name"))?;
+        let methods = descriptor_rpc_methods(&descriptor_bytes, source)?;
+        if inventory.insert(family_name.to_owned(), methods).is_some() {
+            return Err(CliError::new(format!(
+                "duplicate Rust authority RPC family: {family_name}"
+            )));
+        }
+    }
+    Ok(inventory)
+}
+
+fn string_set_field(entry: &Value, field: &str) -> Option<BTreeSet<String>> {
+    let values = entry.get(field)?.as_array()?;
+    let mut result = BTreeSet::new();
+    for value in values {
+        let value = value.as_str()?.trim();
+        if value.is_empty() || !result.insert(value.to_owned()) {
+            return None;
+        }
+    }
+    Some(result)
+}
+
+fn receipt_family_matches_authority(
+    entry: &Value,
+    capability: &str,
+    authority_methods: Option<&BTreeMap<String, String>>,
+) -> bool {
+    if !matches!(capability, "remote" | "embedded" | "docs" | "snippets" | "install") {
+        return false;
+    }
+    let Some(family) = entry.get("family").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(features) = string_set_field(entry, "features") else {
+        return false;
+    };
+    if features.is_empty() {
+        return false;
+    }
+    let Some(methods) = string_set_field(entry, "methods") else {
+        return false;
+    };
+    let Some(shapes) = string_set_field(entry, "rpc_shapes") else {
+        return false;
+    };
+    if shapes
+        .iter()
+        .any(|shape| !matches!(shape.as_str(), "unary" | "client" | "server" | "bidi"))
+    {
+        return false;
+    }
+    // HTTP is a projection of only the families explicitly marked as HTTP
+    // capable by the Rust registry. Other transport claims remain descriptor
+    // neutral, so this does not invent RPCs for service-free families.
+    if features.contains("http") && !explicit_http_family_views().any(|view| view.name == family) {
+        return false;
+    }
+    let Some(authority_methods) = authority_methods else {
+        return !methods.is_empty() && !shapes.is_empty();
+    };
+    // A gRPC claim needs a service-backed authority family. Protocol-only
+    // descriptors are valid receipt entries, but they cannot qualify a
+    // transport that exposes RPCs.
+    if features.contains("grpc") && authority_methods.is_empty() {
+        return false;
+    }
+    let expected_methods = authority_methods.keys().cloned().collect::<BTreeSet<_>>();
+    let expected_shapes = authority_methods.values().cloned().collect::<BTreeSet<_>>();
+    // Every service-backed family must name at least one real method and one
+    // descriptor-derived shape for every capability. The protocol family is
+    // the intentional exception: it has no RPC service and therefore carries
+    // empty method and shape sets.
+    if !authority_methods.is_empty() && (methods.is_empty() || shapes.is_empty()) {
+        return false;
+    }
+    if capability == "remote" {
+        // Remote evidence must cover every descriptor method and every shape;
+        // a unary-only receipt therefore cannot qualify a streaming family.
+        methods == expected_methods && shapes == expected_shapes
+    } else {
+        // Embedded/docs/snippet/install evidence may exercise a subset, but it
+        // can never introduce a method or shape absent from Rust authority.
+        methods.is_subset(&expected_methods) && shapes.is_subset(&expected_shapes)
+    }
+}
+
 fn evidence_test_receipt(
     output: &Path,
     language: &str,
@@ -4190,50 +4425,31 @@ fn evidence_test_receipt(
             Ok(value) => value,
             Err(_) => return false,
         };
+        let authority_manifest_present = output.join("wire/rust-authority.json").is_file();
+        let authority_inventory = if authority_manifest_present {
+            authority_rpc_inventory(output).ok()
+        } else {
+            None
+        };
         let families_valid = receipt
             .get("families")
             .and_then(Value::as_array)
             .is_some_and(|families| {
+                if authority_manifest_present && authority_inventory.is_none() {
+                    return false;
+                }
                 let mut covered = BTreeSet::new();
                 let valid_entries = families.iter().all(|entry| {
                     let Some(family) = entry.get("family").and_then(Value::as_str) else {
                         return false;
                     };
-                    let methods_valid =
-                        entry
-                            .get("methods")
-                            .and_then(Value::as_array)
-                            .is_some_and(|methods| {
-                                !methods.is_empty()
-                                    && methods.iter().all(|method| {
-                                        method.as_str().is_some_and(|method| !method.is_empty())
-                                    })
-                            });
-                    let features_valid = entry
-                        .get("features")
-                        .and_then(Value::as_array)
-                        .is_some_and(|features| {
-                            !features.is_empty()
-                                && features.iter().all(|feature| {
-                                    feature.as_str().is_some_and(|feature| !feature.is_empty())
-                                })
-                        });
-                    let rpc_shapes_valid = entry
-                        .get("rpc_shapes")
-                        .and_then(Value::as_array)
-                        .is_some_and(|shapes| {
-                            !shapes.is_empty()
-                                && shapes.iter().all(|shape| {
-                                    matches!(
-                                        shape.as_str(),
-                                        Some("unary")
-                                            | Some("client")
-                                            | Some("server")
-                                            | Some("bidi")
-                                    )
-                                })
-                        });
-                    if methods_valid && features_valid && rpc_shapes_valid {
+                    let authority_methods = authority_inventory
+                        .as_ref()
+                        .and_then(|inventory| inventory.get(family));
+                    if authority_inventory.is_some() && authority_methods.is_none() {
+                        return false;
+                    }
+                    if receipt_family_matches_authority(entry, capability, authority_methods) {
                         covered.insert(family);
                         true
                     } else {
@@ -4511,16 +4727,39 @@ fn relative_or_absolute(path: &Path, root: &Path) -> String {
         .unwrap_or_else(|_| path.to_string_lossy().into_owned())
 }
 fn command_stdout(root: &Path, command: &str, args: &[&str]) -> Result<String, CliError> {
-    let output = Command::new(command)
-        .args(args)
-        .current_dir(root)
-        .output()?;
+    let mut process = Command::new(command);
+    if command == "git" {
+        clear_repository_selection_environment(&mut process);
+    }
+    let output = process.args(args).current_dir(root).output()?;
     if !output.status.success() {
         return Err(CliError::new(
             String::from_utf8_lossy(&output.stderr).into_owned(),
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn repository_command() -> Command {
+    let mut command = Command::new("git");
+    clear_repository_selection_environment(&mut command);
+    command
+}
+
+fn clear_repository_selection_environment(command: &mut Command) {
+    // Keep authentication, signing, and global configuration intact. These
+    // variables alone let a parent process redirect Git's repository reads to
+    // a different checkout, defeating the source-root identity guard.
+    for name in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_COMMON_DIR",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    ] {
+        command.env_remove(name);
+    }
 }
 
 #[cfg(test)]
@@ -5828,6 +6067,196 @@ mod tests {
     }
 
     #[test]
+    fn rpc_method_identities_and_stream_shapes_are_derived_from_descriptor_authority() {
+        let length_delimited = |field: u8, value: &[u8]| {
+            let mut encoded = vec![(field << 3) | 2, value.len() as u8];
+            encoded.extend_from_slice(value);
+            encoded
+        };
+        let method = |name: &str, client: bool, server: bool| {
+            let mut encoded = length_delimited(1, name.as_bytes());
+            if client {
+                encoded.extend_from_slice(&[0x28, 1]);
+            }
+            if server {
+                encoded.extend_from_slice(&[0x30, 1]);
+            }
+            encoded
+        };
+        let service = [
+            length_delimited(1, b"StreamService"),
+            length_delimited(2, &method("Read", false, false)),
+            length_delimited(2, &method("Watch", false, true)),
+        ]
+        .concat();
+        let file = [
+            length_delimited(1, b"stream/v2/stream.proto"),
+            length_delimited(2, b"acyclic.stream.v2"),
+            length_delimited(6, &service),
+        ]
+        .concat();
+        let descriptor = length_delimited(1, &file);
+        let actual = descriptor_rpc_methods(&descriptor, "stream/v2/stream.proto")
+            .expect("derive descriptor RPC identities");
+        assert_eq!(
+            actual,
+            BTreeMap::from([
+                (
+                    "acyclic.stream.v2.StreamService/Read".to_owned(),
+                    "unary".to_owned()
+                ),
+                (
+                    "acyclic.stream.v2.StreamService/Watch".to_owned(),
+                    "server".to_owned()
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn remote_receipts_require_authority_methods_and_stream_shapes() {
+        let authority = BTreeMap::from([
+            (
+                "acyclic.stream.v2.StreamService/Read".to_owned(),
+                "unary".to_owned(),
+            ),
+            (
+                "acyclic.stream.v2.StreamService/Watch".to_owned(),
+                "server".to_owned(),
+            ),
+        ]);
+        let entry = |methods: &[&str], shapes: &[&str]| {
+            json!({
+                "family": "stream",
+                "methods": methods,
+                "features": ["serialization", "transport"],
+                "rpc_shapes": shapes,
+            })
+        };
+        let complete = entry(
+            &[
+                "acyclic.stream.v2.StreamService/Read",
+                "acyclic.stream.v2.StreamService/Watch",
+            ],
+            &["unary", "server"],
+        );
+        assert!(receipt_family_matches_authority(
+            &complete,
+            "remote",
+            Some(&authority)
+        ));
+        let unary_only = entry(
+            &[
+                "acyclic.stream.v2.StreamService/Read",
+                "acyclic.stream.v2.StreamService/Watch",
+            ],
+            &["unary"],
+        );
+        assert!(!receipt_family_matches_authority(
+            &unary_only,
+            "remote",
+            Some(&authority)
+        ));
+        let invented = entry(
+            &[
+                "acyclic.stream.v2.StreamService/Read",
+                "acyclic.stream.v2.StreamService/Watch",
+                "acyclic.stream.v2.StreamService/Fabricated",
+            ],
+            &["unary", "server"],
+        );
+        assert!(!receipt_family_matches_authority(
+            &invented,
+            "remote",
+            Some(&authority)
+        ));
+    }
+
+    #[test]
+    fn service_free_authority_family_is_not_forced_to_claim_rpc_methods() {
+        let entry = json!({
+            "family": "filesystem",
+            "methods": [],
+            "features": ["serialization", "embedded"],
+            "rpc_shapes": [],
+        });
+        let authority = BTreeMap::new();
+        assert!(receipt_family_matches_authority(
+            &entry,
+            "embedded",
+            Some(&authority)
+        ));
+    }
+
+    #[test]
+    fn capability_validator_scopes_transports_and_service_coverage() {
+        let service_authority = BTreeMap::from([(
+            "acyclic.stream.v2.StreamService/Read".to_owned(),
+            "server".to_owned(),
+        )]);
+        let service_entry = |features: &[&str], methods: &[&str], shapes: &[&str]| {
+            json!({
+                "family": "stream",
+                "methods": methods,
+                "features": features,
+                "rpc_shapes": shapes,
+            })
+        };
+
+        let empty_docs = service_entry(&["docs"], &[], &[]);
+        assert!(!receipt_family_matches_authority(
+            &empty_docs,
+            "docs",
+            Some(&service_authority)
+        ));
+
+        let http_stream = service_entry(
+            &["http", "transport"],
+            &["acyclic.stream.v2.StreamService/Read"],
+            &["server"],
+        );
+        assert!(receipt_family_matches_authority(
+            &http_stream,
+            "remote",
+            Some(&service_authority)
+        ));
+
+        let grpc_protocol = json!({
+            "family": "protocol",
+            "methods": [],
+            "features": ["grpc", "transport"],
+            "rpc_shapes": [],
+        });
+        assert!(!receipt_family_matches_authority(
+            &grpc_protocol,
+            "install",
+            Some(&BTreeMap::new())
+        ));
+
+        let http_protocol = json!({
+            "family": "protocol",
+            "methods": [],
+            "features": ["http", "transport"],
+            "rpc_shapes": [],
+        });
+        assert!(!receipt_family_matches_authority(
+            &http_protocol,
+            "docs",
+            Some(&BTreeMap::new())
+        ));
+
+        assert!(!receipt_family_matches_authority(
+            &service_entry(
+                &["serialization"],
+                &["acyclic.stream.v2.StreamService/Read"],
+                &["server"],
+            ),
+            "unknown-capability",
+            Some(&service_authority)
+        ));
+    }
+
+    #[test]
     fn authority_manifest_rejects_nonportable_family_paths() {
         let root = test_directory("authority-path");
         let source_root = root.join("source");
@@ -5929,6 +6358,61 @@ mod tests {
                 .to_string()
                 .contains("does not match requested source root")
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn source_identity_ignores_ambient_git_repository_selection_environment() {
+        const CHILD_MARKER: &str = "ACYCLIC_SDK_GENERATION_AMBIENT_GIT_TEST";
+        const ROOT_PATH: &str = "ACYCLIC_SDK_GENERATION_AMBIENT_GIT_ROOT";
+        const EXPECTED_REVISION: &str = "ACYCLIC_SDK_GENERATION_AMBIENT_GIT_REVISION";
+
+        if env::var_os(CHILD_MARKER).is_some() {
+            let root = PathBuf::from(env::var_os(ROOT_PATH).expect("child source root"));
+            let expected = env::var(EXPECTED_REVISION).expect("child source revision");
+            let identity = source_identity(&root).expect("ambient Git variables must be ignored");
+            assert_eq!(identity.revision, expected);
+            assert!(!identity.dirty);
+            return;
+        }
+
+        let root = test_directory("ambient-git-root");
+        fs::write(root.join("existing.rs"), b"source").expect("write source");
+        initialize_git_source(&root);
+        let expected_revision =
+            command_stdout(&root, "git", &["rev-parse", "HEAD"]).expect("read source revision");
+
+        let unrelated = test_directory("ambient-git-unrelated");
+        fs::write(unrelated.join("existing.rs"), b"unrelated").expect("write unrelated source");
+        initialize_git_source(&unrelated);
+        let unrelated_git = unrelated.join(".git");
+        let child = Command::new(env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tests::source_identity_ignores_ambient_git_repository_selection_environment",
+                "--nocapture",
+            ])
+            .env(CHILD_MARKER, "1")
+            .env(ROOT_PATH, &root)
+            .env(EXPECTED_REVISION, &expected_revision)
+            .env("GIT_DIR", &unrelated_git)
+            .env("GIT_WORK_TREE", &unrelated)
+            .env("GIT_COMMON_DIR", &unrelated_git)
+            .env("GIT_INDEX_FILE", unrelated_git.join("index"))
+            .env("GIT_OBJECT_DIRECTORY", unrelated_git.join("objects"))
+            .env(
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                unrelated_git.join("objects"),
+            )
+            .output()
+            .expect("run ambient environment child");
+        assert!(
+            child.status.success(),
+            "child identity check failed: {}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        cleanup(&unrelated);
         cleanup(&root);
     }
 

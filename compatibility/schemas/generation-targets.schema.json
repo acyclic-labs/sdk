@@ -38,6 +38,11 @@
       "required": ["id", "kind", "language_family", "status", "remote", "embedded", "maturity", "generator", "package", "evidence", "outstanding"],
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "uniqueItems": true
+        },
         "kind": { "enum": ["language", "platform", "tooling"] },
         "language_family": { "type": "string", "minLength": 1 },
         "status": { "enum": ["qualified", "baseline-supported", "strong-candidate", "candidate", "experimental", "http-only", "adapter-only", "not-qualifiable"] },
