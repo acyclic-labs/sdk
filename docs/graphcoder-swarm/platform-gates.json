@@ -1,0 +1,133 @@
+{
+  "protocol": "acyclic.graphcoder.platform-gates.v1",
+  "base_commit": "31b9ff52d63c91f2b9bf87e16b78ad682d26546f",
+  "description": "Portable source and artifact gates for the local GraphCoder qualification. Each gate is executed with an argv vector and a filtered environment; platform execution evidence is supplied by the native lane.",
+  "gates": [
+    {
+      "id": "harness-rust-local",
+      "area": "rust-harness",
+      "execution_kind": "native",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "cargo",
+        "args": ["test", "-p", "acyclic-harness", "--features", "filesystem-local,native-process-tree,test-support", "--locked"]
+      },
+      "timeout_ms": 1800000,
+      "evidence": "native local-filesystem, process-tree, and physical test-support coverage with source/descriptor digests"
+    },
+    {
+      "id": "generated-bindings",
+      "area": "generated-bindings",
+      "execution_kind": "compile",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "bun",
+        "args": ["run", "check:generated"]
+      },
+      "timeout_ms": 900000,
+      "evidence": "clean generated-tree check"
+    },
+    {
+      "id": "typescript-contracts",
+      "area": "typescript-contracts",
+      "execution_kind": "compile",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "bun",
+        "args": ["run", "check:types"]
+      },
+      "timeout_ms": 900000,
+      "evidence": "TypeScript public contract compilation"
+    },
+    {
+      "id": "provider-conformance",
+      "area": "provider-conformance",
+      "execution_kind": "native",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "bun",
+        "args": ["run", "test:contracts"]
+      },
+      "timeout_ms": 1800000,
+      "evidence": "HTTP, gRPC, object, actor, and worker provider conformance"
+    },
+    {
+      "id": "filesystem-plugin-regressions",
+      "area": "filesystem-plugin",
+      "execution_kind": "native",
+      "platforms": ["linux", "macos"],
+      "command": {
+        "executable": "cargo",
+        "args": ["test", "-p", "acyclic-plugin", "--locked", "--test", "fork_join", "--", "--ignored", "--test-threads=1", "--skip", "support::"]
+      },
+      "timeout_ms": 1800000,
+      "evidence": "Filesystem/plugin fork and join regression output"
+    },
+    {
+      "id": "filesystem-plugin-regressions-windows",
+      "area": "filesystem-plugin",
+      "execution_kind": "native",
+      "platforms": ["windows"],
+      "command": {
+        "executable": "cargo",
+        "args": ["test", "-p", "acyclic-plugin", "--all-features", "--locked", "--test", "fork_join", "--", "--ignored", "--test-threads=1", "--skip", "support::"]
+      },
+      "timeout_ms": 1800000,
+      "evidence": "Windows Filesystem/plugin fork and join regression output"
+    },
+    {
+      "id": "graphcoder-package",
+      "area": "package-consumption",
+      "execution_kind": "package",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "node",
+        "args": ["scripts/graphcoder-package-gate.mjs", "run", "--output", "target/graphcoder-package-qualification"]
+      },
+      "produced_artifacts": [
+        "typescript/packages/graphcoder/dist/api.js",
+        "typescript/packages/graphcoder/dist/api.d.ts",
+        "typescript/packages/graphcoder/dist/bridge.js",
+        "typescript/packages/graphcoder/dist/bridge.d.ts",
+        "typescript/packages/graphcoder/dist/cli.js",
+        "typescript/packages/graphcoder/dist/cli.d.ts",
+        "typescript/packages/graphcoder/dist/dispatcher.js",
+        "typescript/packages/graphcoder/dist/dispatcher.d.ts",
+        "typescript/packages/graphcoder/dist/index.js",
+        "typescript/packages/graphcoder/dist/index.d.ts",
+        "typescript/packages/graphcoder/dist/mock.js",
+        "typescript/packages/graphcoder/dist/mock.d.ts",
+        "typescript/packages/graphcoder/dist/native-cli.js",
+        "typescript/packages/graphcoder/dist/native-cli.d.ts",
+        "typescript/packages/graphcoder/dist/node.js",
+        "typescript/packages/graphcoder/dist/node.d.ts",
+        "typescript/packages/graphcoder/dist/node-dispatcher.js",
+        "typescript/packages/graphcoder/dist/node-dispatcher.d.ts",
+        "typescript/packages/graphcoder/dist/process.js",
+        "typescript/packages/graphcoder/dist/process.d.ts",
+        "typescript/packages/graphcoder/dist/terminal.js",
+        "typescript/packages/graphcoder/dist/terminal.d.ts",
+        "target/graphcoder-package-qualification/graphcoder-package.tgz",
+        "target/graphcoder-package-qualification/acyclic-fs-package.tgz",
+        "target/graphcoder-package-qualification/consumer/package.json",
+        "target/graphcoder-package-qualification/consumer/bun.lock",
+        "target/graphcoder-package-qualification/consumer/verification.json",
+        "target/graphcoder-package-qualification/graphcoder-package.json"
+      ],
+      "timeout_ms": 900000,
+      "evidence": "GraphCoder generated outputs, fresh packed archive, and isolated export-map consumer checks"
+    },
+    {
+      "id": "dependency-boundaries",
+      "area": "dependency-boundaries",
+      "execution_kind": "native",
+      "platforms": ["windows", "linux", "macos"],
+      "command": {
+        "executable": "node",
+        "args": ["scripts/check-boundaries.mjs"]
+      },
+      "timeout_ms": 120000,
+      "evidence": "Harness/Filesystem/host ownership and thin-wrapper source audit"
+    }
+  ]
+}
