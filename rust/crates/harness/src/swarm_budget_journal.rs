@@ -1449,7 +1449,12 @@ mod tests {
     use crate::swarm_budget::{
         SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer, SwarmUsageSource,
     };
+    use crate::{
+        model::{ModelAttempt, ModelEvent, ModelProvider},
+        model_input::PreparedModelInput,
+    };
     use acyclic_stream::{MemoryStream, StreamClient};
+    use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
@@ -1485,6 +1490,50 @@ mod tests {
                 .lock()
                 .map(|usage| *usage)
                 .map_err(|_| Error::Storage("journal test usage lock poisoned".into()))
+        }
+
+        fn record_runtime_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+            usage: SwarmUsage,
+        ) -> Result<()> {
+            let mut current = self
+                .0
+                .lock()
+                .map_err(|_| Error::Storage("journal test usage lock poisoned".into()))?;
+            *current = SwarmUsage {
+                model_steps: current.model_steps.max(usage.model_steps),
+                output_bytes: current.output_bytes.max(usage.output_bytes),
+                execution_time_ms: current.execution_time_ms.max(usage.execution_time_ms),
+            };
+            Ok(())
+        }
+    }
+
+    struct InterruptedRootProvider;
+
+    impl ModelProvider for InterruptedRootProvider {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
+        fn generate<'a>(&'a self, _prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+            Box::pin(futures::stream::iter([
+                Ok(ModelEvent::Content {
+                    delta: "before interruption".into(),
+                }),
+                Ok(ModelEvent::Completed {
+                    metadata: serde_json::Value::Null,
+                }),
+            ]))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _attempt: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
         }
     }
 
@@ -1853,6 +1902,94 @@ mod tests {
         assert_eq!(remaining.model_steps, 1);
         assert_eq!(remaining.output_bytes, 118);
         assert_eq!(remaining.execution_time_ms, 195);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn nonzero_root_usage_survives_sequence_zero_interruption_and_reopen() -> Result<()> {
+        let stream = Arc::new(MemoryStream::default());
+        let client = StreamClient::new(stream);
+        let session_id = OperationId::new();
+        let operation_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let dispatch_id = IdempotencyKey::new("root-interrupted")?;
+        let limits = SwarmBudgetLimits {
+            max_model_steps: 4,
+            max_output_bytes: 512,
+            max_execution_time_ms: 200,
+            ..limits()
+        };
+        let source = RuntimeSource(Arc::new(Mutex::new(SwarmUsage::default())));
+        let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
+            &client,
+            session_id,
+            owner.clone(),
+            limits,
+            dispatch_id,
+        )
+        .await?;
+
+        journal
+            .claim_root_model_step(&owner, operation_id, 0, [41; 32])
+            .await?;
+        assert_eq!(journal.root_usage_cursor()?.sequence, 0);
+        assert_eq!(journal.root_usage_cursor()?.usage, None);
+
+        // Enter the real metered root provider and interrupt after its first
+        // output. The provider has recorded nonzero usage, but no receipt has
+        // reached the durable journal yet.
+        let context = journal.root_usage_context(source.clone())?;
+        let (provider, meter) = crate::swarm_budget::MeteredModelProvider::new_root(
+            Arc::new(InterruptedRootProvider),
+            context,
+        );
+        let request = crate::model::ModelRequest {
+            model: crate::model::Model::new("mock", "interrupted", "1", serde_json::json!({}))?,
+            messages: vec![crate::model::ModelMessage {
+                role: crate::model::ModelRole::User,
+                content: crate::model::ModelContent::Text("recover".into()),
+            }],
+            tools: Vec::new(),
+            max_output_tokens: Some(64),
+        };
+        let prepared = PreparedModelInput::prepare(request, crate::conversation::Limits::default())?;
+        let mut stream = provider.generate(prepared);
+        assert!(matches!(stream.next().await, Some(Ok(ModelEvent::Content { .. }))));
+        let measured = meter.usage()?;
+        assert!(measured.model_steps >= 1);
+        assert!(measured.output_bytes > 0);
+        drop(stream);
+        drop(provider);
+        drop(meter);
+        drop(journal);
+
+        // Reopen with the same owner and source as recovery would. The
+        // sequence-zero cursor and active claim must remain visible until the
+        // host measurement is durably settled.
+        let mut reopened = SwarmBudgetJournal::start_with_root_dispatch_recovering(
+            &client,
+            session_id,
+            owner.clone(),
+            limits,
+            IdempotencyKey::new("root-interrupted")?,
+        )
+        .await?;
+        assert_eq!(reopened.root_usage_cursor()?.sequence, 0);
+        let mut issuer = reopened.root_usage_receipt_issuer(source.clone())?;
+        let receipt = issuer.issue_at_least(measured)?;
+        reopened
+            .report_root_usage_with_receipt(&owner, receipt)
+            .await?;
+        assert_eq!(reopened.root_usage_cursor()?.sequence, 1);
+        assert_eq!(reopened.root_usage_cursor()?.usage, Some(measured));
+        assert_eq!(reopened.usage()?.consumed, measured);
+
+        // The interrupted claim was released exactly once: a subsequent root
+        // step can claim capacity, while the cumulative usage is unchanged.
+        reopened
+            .claim_root_model_step(&owner, OperationId::new(), 1, [42; 32])
+            .await?;
+        assert_eq!(reopened.usage()?.consumed, measured);
         Ok(())
     }
 
