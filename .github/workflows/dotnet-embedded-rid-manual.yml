@@ -125,7 +125,7 @@ jobs:
             --workdir /src \
             --env RUST_TARGET="$RUST_TARGET" \
             "$ALPINE_IMAGE" sh -euxc '
-              apk add --no-cache bash binutils build-base ca-certificates
+              apk add --no-cache bash binutils build-base ca-certificates git
               channel="$(grep -m1 ^channel rust-toolchain.toml | cut -d= -f2 | tr -cd A-Za-z0-9.)"
               test "$channel" = "1.98.1"
               rustc -Vv | grep -F "release: $channel"
