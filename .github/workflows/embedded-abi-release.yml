@@ -28,6 +28,11 @@ jobs:
             shell: pwsh
             rust_target: x86_64-pc-windows-msvc
             kind: windows
+          - platform: windows-arm64-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            shell: pwsh
+            rust_target: aarch64-pc-windows-msvc
+            kind: windows-cross
           - platform: linux-x64-musl
             runner: blacksmith-4vcpu-ubuntu-2404
             shell: bash
@@ -73,6 +78,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends musl-tools
 
+      - name: Install pinned Windows ARM64 linker
+        if: matrix.kind == 'windows-cross'
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: 20.1.8
+          directory: ${{ runner.temp }}/llvm
+          env: false
+
+      - name: Select Windows ARM64 linker
+        if: matrix.kind == 'windows-cross'
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
+
       - name: Fetch locked embedded dependencies
         shell: bash
         run: |
@@ -86,6 +104,16 @@ jobs:
           pwsh -NoLogo -NoProfile -File cpp/embedded-consumer/portable-package-test.ps1
           -Root $env:GITHUB_WORKSPACE
           -BuildDirectory (Join-Path $env:RUNNER_TEMP 'embedded-abi')
+
+      - name: Cross compile the Windows ARM64 installed package
+        if: matrix.kind == 'windows-cross'
+        shell: pwsh
+        run: >-
+          pwsh -NoLogo -NoProfile -File cpp/embedded-consumer/portable-package-test.ps1
+          -Root $env:GITHUB_WORKSPACE
+          -BuildDirectory (Join-Path $env:RUNNER_TEMP 'embedded-abi')
+          -RustTarget ${{ matrix.rust_target }}
+          -SkipExecution
 
       - name: Run the Unix and Darwin installed-package consumers
         if: matrix.kind == 'unix'

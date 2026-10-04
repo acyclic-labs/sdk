@@ -97,9 +97,9 @@
       "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
     },
     "windows-aarch64-msvc": {
-      "status": "pending-runner",
+      "status": "pending-native-execution",
       "required_target": "aarch64-pc-windows-msvc",
-      "required_tools": ["MSVC or pinned LLVM ARM64 linker"],
+      "required_tools": ["pinned LLVM ARM64 linker", "Windows ARM64 runtime runner or emulator"],
       "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
     },
     "macos": {

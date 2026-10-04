@@ -11,7 +11,7 @@
   ],
   "properties": {
     "schema": { "const": "acyclic.sdk.embedded.platform-package.v1" },
-    "status": { "const": "passed" },
+    "status": { "enum": ["passed", "pending-execution"] },
     "target": { "type": "string", "minLength": 1 },
     "source_revision": { "$ref": "#/$defs/hex40" },
     "source_digest": { "pattern": "^sha256:[0-9a-fA-F]{64}$" },
@@ -35,8 +35,8 @@
         "cpp": { "$ref": "#/$defs/consumer" }
       }
     },
-    "ctest": { "const": "passed" },
-    "clean_prefix": { "const": "passed" }
+    "ctest": { "enum": ["passed", "compiled-only-cross-target"] },
+    "clean_prefix": { "enum": ["passed", "compiled-only-cross-target"] }
   },
   "$defs": {
     "hex40": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$" },
@@ -52,10 +52,10 @@
         "package_artifact_sha256", "checks"
       ],
       "properties": {
-        "status": { "const": "passed" },
+        "status": { "enum": ["passed", "compiled-only-cross-target"] },
         "scope": { "const": "embedded-native-abi" },
-        "invoked": { "const": true },
-        "exit_code": { "const": 0 },
+        "invoked": { "type": "boolean" },
+        "exit_code": { "type": ["integer", "null"] },
         "source_revision": { "$ref": "#/$defs/hex40" },
         "source": { "$ref": "#/$defs/portablePath" },
         "source_sha256": { "$ref": "#/$defs/hex64" },

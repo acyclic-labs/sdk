@@ -169,8 +169,9 @@ json.dump({
             "package_artifact_sha256": hashlib.sha256(pathlib.Path(runtime_path).read_bytes()).hexdigest(),
             "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"],
         },
-        "ctest": "passed", "clean_prefix": "passed"
-    },
+        },
+    "ctest": "passed",
+    "clean_prefix": "passed"
 }, pathlib.Path(output).open('w', encoding='utf-8'), indent=2)
 PY
 
