@@ -59,7 +59,10 @@ struct CapturedModel {
     overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         let serialized = prepared.bytes().to_vec();
         let binding_digest = prepared.manifest().binding_digest;
@@ -1444,9 +1447,30 @@ impl ModelBatchPublisher for ForkAtBatch {
     }
 }
 
-#[tokio::test]
-async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix() -> Result<()>
-{
+#[test]
+fn native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix() -> Result<()> {
+    // This qualification fixture builds a broad nested async future. Keep the
+    // larger test-only stack out of production task execution and make the
+    // Windows native lane deterministic.
+    std::thread::Builder::new()
+        .name("model-fork-boundary-e2e".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            runtime.block_on(
+                run_native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix(),
+            )
+        })
+        .map_err(|error| Error::Invalid(error.to_string()))?
+        .join()
+        .map_err(|_| Error::Invalid("model fork boundary E2E thread panicked".into()))?
+}
+
+async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_model_prefix()
+-> Result<()> {
     let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let provider = ProviderRef::new("model-fork-e2e", "filesystem", "2")?;
     let stream_provider = ProviderRef::new("model-fork-e2e", "stream", "2")?;
@@ -1911,10 +1935,8 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         workspace_ref(provider.clone(), &parent_project.storage_name()?)?;
     let parent_private_workspace =
         workspace_ref(provider.clone(), &parent_private.storage_name()?)?;
-    let child_project_workspace =
-        workspace_ref(provider.clone(), &child_project.storage_name()?)?;
-    let child_private_workspace =
-        workspace_ref(provider.clone(), &child_private.storage_name()?)?;
+    let child_project_workspace = workspace_ref(provider.clone(), &child_project.storage_name()?)?;
+    let child_private_workspace = workspace_ref(provider.clone(), &child_private.storage_name()?)?;
     let parent_project_before = host.resolve(&parent_project_workspace).await?;
     let parent_private_before = host.resolve(&parent_private_workspace).await?;
     assert!(matches!(
