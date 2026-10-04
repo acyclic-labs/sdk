@@ -999,6 +999,19 @@ fn default_local_bundle(
 }
 
 impl PersistentLocalHarness {
+    /// Finishes a crate-owned composition without reopening its storage.
+    /// Call only before exposing the session or admitting a model turn.
+    pub(crate) fn with_local_tools(
+        mut self,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+    ) -> Result<Self> {
+        self.bundle = default_local_bundle(&self.storage, model, provider, limits, extension)?;
+        Ok(self)
+    }
+
     /// Composes a durable harness from provider and identity descriptors that
     /// the application has already persisted.
     pub async fn from_providers(
