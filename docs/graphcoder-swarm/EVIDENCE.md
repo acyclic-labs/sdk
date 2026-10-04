@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[Executor rejection occurrences](checkpoint-executor-rejection-occurrences-2026-10-04.json): fresh isolated native executor selection passes 25/25, including exact provider bytes, repeated equal rejection envelopes, fresh-provider replay, and duplicate preparation refusal. Its journal is in memory. [Native rejection/reference checks](checkpoint-native-input-rejection-2026-10-04.json): 2/2 cases pass with actual persistent storage; descriptor corruption does not prove physical requested-object corruption. Both are scoped checkpoints, not recursive swarm or final artifact qualification.
+
 [Native CLI option-policy checkpoint](checkpoint-native-cli-option-policy-2026-10-04.json): fresh isolated Windows native execution passes all seven CLI cases, including actual staged-file effects and cold response replay. [Shared path validation](checkpoint-shared-path-validation-2026-10-04.json): 38 source transport/UI/terminal tests and TypeScript checking pass after removing the duplicate validator. Neither checkpoint qualifies the full recursive swarm, installed artifacts, or PTY matrix.
 
 [checkpoint-build-interruption-recovery-2026-10-04.json](checkpoint-build-interruption-recovery-2026-10-04.json) records a missing CLI build handle, null-byte branch-reference corruption, and an incomplete CLI artifact. The isolated branch was restored from its verified reflog with a preserved metadata backup. No CLI success is inferred; a new dedicated build remains required.
