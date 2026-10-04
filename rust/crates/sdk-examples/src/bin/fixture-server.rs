@@ -441,14 +441,27 @@ impl HarnessWireApi for HarnessFixtureApi {
         _request: harness_wire::HandshakeRequest,
     ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::HandshakeResponse>>
     {
-        async { Ok(Default::default()) }.boxed()
+        async {
+            Ok(harness_wire::HandshakeResponse {
+                protocol: Some(acyclic_harness::wire_api::current_protocol()),
+                supported: Some(Default::default()),
+            })
+        }
+        .boxed()
     }
 
     fn submit<'a>(
         &'a self,
-        _command: harness_wire::CommandEnvelope,
+        command: harness_wire::CommandEnvelope,
     ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::Admission>> {
-        async { Ok(Default::default()) }.boxed()
+        async move {
+            Ok(harness_wire::Admission {
+                operation: command.operation,
+                state: harness_wire::AdmissionState::Accepted as i32,
+                error: None,
+            })
+        }
+        .boxed()
     }
 
     fn replay<'a>(
@@ -465,17 +478,51 @@ impl HarnessWireApi for HarnessFixtureApi {
 
     fn observe<'a>(
         &'a self,
-        _request: harness_wire::ObserveRequest,
+        request: harness_wire::ObserveRequest,
     ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::OperationStatus>>
     {
-        async { Ok(Default::default()) }.boxed()
+        async move {
+            Ok(harness_wire::OperationStatus {
+                operation: Some(harness_wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: String::new(),
+                }),
+                state: harness_wire::CompletionState::Running as i32,
+                error: None,
+                protocol: request.protocol,
+                owner: request.owner,
+                cancellation_requested: false,
+                revision: 0,
+            })
+        }
+        .boxed()
     }
 
     fn cancel<'a>(
         &'a self,
-        _request: harness_wire::CancelRequest,
+        request: harness_wire::CancelRequest,
     ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::CancelResponse>> {
-        async { Ok(Default::default()) }.boxed()
+        async move {
+            Ok(harness_wire::CancelResponse {
+                status: Some(harness_wire::OperationStatus {
+                    operation: Some(harness_wire::OperationIdentity {
+                        operation_id: request.operation_id.clone(),
+                        idempotency_key: String::new(),
+                    }),
+                    state: harness_wire::CompletionState::Cancelled as i32,
+                    error: None,
+                    protocol: request.protocol.clone(),
+                    owner: request.owner.clone(),
+                    cancellation_requested: false,
+                    revision: 1,
+                }),
+                operation: Some(harness_wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: request.idempotency_key,
+                }),
+            })
+        }
+        .boxed()
     }
 }
 #[derive(Clone)]
