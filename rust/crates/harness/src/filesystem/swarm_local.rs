@@ -2535,23 +2535,28 @@ impl PersistentLocalSwarm {
             .cloned()
             .collect();
         let harness = self.open_session(task).await?;
-        let aggregate = harness.conversation_aggregate(self.config.limits).await?;
-        let conversation = aggregate
-            .reducer()
-            .conversation()
-            .cloned()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let workspace_generation = match harness.list_private_directory("", None, None, 1).await {
-            Ok(page) => Some(page.generation),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
+        // Snapshot is a metadata projection. Read only the conversation
+        // stream tail and leave private workspace generation/content lazy.
+        let conversation_revision = self.conversation_tail(&harness).await?;
         Ok(LocalSwarmSnapshot {
             session,
             children,
-            conversation_revision: conversation.messages.len() as u64,
-            workspace_generation,
+            conversation_revision,
+            workspace_generation: None,
         })
+    }
+
+    async fn conversation_tail(&self, harness: &PersistentLocalHarness) -> Result<u64> {
+        let path = harness.storage().conversation().stream_path()?;
+        let stream = self
+            .conversation_stream
+            .stream(path)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        match stream.tail().await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(Error::Storage(error.to_string())),
+        }
     }
 
     /// Reads a bounded page of authoritative conversation events. The cursor
@@ -3557,6 +3562,16 @@ impl PersistentLocalSwarm {
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let payload = self
+            .stage_fork_payload(
+                &parent_storage,
+                request,
+                seed,
+                report,
+                &publication,
+                &declaration,
+            )
+            .await?;
         append_record_at(
             &registry,
             StoredEvent::ForkPrepared {
@@ -3570,12 +3585,12 @@ impl PersistentLocalSwarm {
                 child_agent: request.child_agent.clone(),
                 task: request.task.clone(),
                 prompt: request.prompt.clone(),
-                seed: Some(seed.clone()),
+                seed: None,
                 seed_digest: Some(fork_seed_digest(seed)?),
-                report: Some(report.clone()),
-                publication: Some(publication.clone()),
-                declaration: Some(declaration.clone()),
-                payload: None,
+                report: None,
+                publication: None,
+                declaration: None,
+                payload: Some(payload),
             },
             observed_tail,
         )
