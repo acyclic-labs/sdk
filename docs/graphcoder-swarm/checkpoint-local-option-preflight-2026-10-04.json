@@ -1,0 +1,62 @@
+{
+  "scope": "Local model-option admission before durable construction; shared request-policy regressions",
+  "source_commit": "229b2227637aebaffda82f2fcd697b380ff4b982",
+  "rust_tree_before_and_after": "b47d9647651a51ccd95b37f7c8e5000255f95846",
+  "platform": "Windows native",
+  "models": "mocked",
+  "sources_and_suites": [
+    {"path": "rust/crates/harness/src/filesystem/local.rs", "sha256": "f679a9c372a8bef41a040b5e6142b1263874dc799354703ac551be2bee998869"},
+    {"path": "rust/crates/harness/src/model.rs", "sha256": "684bad95207d412b805b8899244280b8015d9337f82f3820572a50229763d9b4"},
+    {"path": "rust/crates/harness/src/model_input.rs", "sha256": "e2fb8927f0405bf42c13bc3a0a4c74dad4014fa03790250c25d74c392b6c0e37"}
+  ],
+  "artifact": {
+    "path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/229b22276/acyclic_harness-9fe0aa1bb5097eba.exe",
+    "sha256": "1dadf230cb7ae266afe4cc4e31235af589d50acd1b448a25491f530219227103"
+  },
+  "runs": [
+    {
+      "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --lib filesystem::local::tests --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+      "environment": {"CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0"},
+      "process_session": 57565,
+      "exit_code": 0,
+      "passed": 8,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 318,
+      "build_duration_seconds": 163,
+      "test_duration_seconds": 1.00,
+      "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/229b22276/local-option-preflight.log", "sha256": "b2594ebbcbfa087500f4b0abad1af793f08fc508c40fbba0529d284f1ec17e80"}
+    },
+    {
+      "command": "archived executable model_input::tests",
+      "exit_code": 0,
+      "passed": 18,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 308,
+      "test_duration_seconds": 0.70,
+      "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/229b22276/model-input-regressions.log", "sha256": "2dc974c4e35ab6380828d6c035ae51fb9004d2ab979bbcfd70c797ced7b0c653"}
+    },
+    {
+      "command": "archived executable model::wire_contract_tests",
+      "exit_code": 0,
+      "passed": 4,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 322,
+      "test_duration_seconds": 0.02,
+      "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/229b22276/model-option-regressions.log", "sha256": "a5c4a26e41117ce55a26dcae0e2d9d17e7f3c833f4855c950404e666036157f6"}
+    }
+  ],
+  "verified": [
+    "Unregistered nonempty options and a registered rejecting policy produce no local session directory or provider dispatch",
+    "Existing real LocalStream/Filesystem claim, cancellation, history overflow and reopen regressions still pass",
+    "Prepared input and default provider admission use one option-policy validator, preserving registered identity/schema binding and immutable-prefix checks"
+  ],
+  "boundaries": [
+    "Four deepest PersistentLocalHarness constructors are preflighted; direct entrypoint coverage beyond open is source review rather than separate black-box cases",
+    "Swarm entrypoint preflight follow-up d5739ee67 has a separate running qualification and is not qualified by this artifact",
+    "Policy-aware persisted fork verification for valid nonempty options remains a separate unmet contract",
+    "No full recursive swarm, complete fault matrix, sandbox, root writeback or packaged qualification is claimed"
+  ]
+}
