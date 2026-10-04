@@ -360,3 +360,6 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Current fork rebind port: [compile failure at7b495b775](checkpoint-fork-port-compile-failure-2026-10-04.json). No tests executed. Missing foundational APIs/fields must be ported before rerunning library/coordinator/fault tests. Prior wrong test-target invocation is also retained.
 
 - Candidate integration audit: [open holds and exact candidate commits](checkpoint-integration-holds-2026-10-04.json). No candidate is counted as current Root or installed qualification. Communication ownership interleavings and public writeback recovery/conflicts remain explicit unmet gates.
+
+- Integrated fork foundation: [353/353 Harness library; production 0/1; faults 2/5](checkpoint-integrated-fork-native-2026-10-04.json), source4ba8293a9. Exact staged-file authority and replay duplicates remain open.
+- Windows Filesystem library: [1112 passed, 36 ignored](checkpoint-filesystem-native-2026-10-04.json), source239c00bb8. Owned/shared hard-crash tests pass; ignored cases are not qualified.

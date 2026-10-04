@@ -1,51 +1,28 @@
 # Local swarm implementation status
 
-The goal remains active. All 68 entries in [requirements.json](requirements.json) remain required; the locked matrix SHA256 is `4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef`. Missing, skipped, failing, or flaky verification prevents completion.
+The goal remains active. All 68 entries in [requirements.json](requirements.json) remain required. Its locked SHA256 is `4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef`. Missing, ignored, failing, or flaky required verification prevents completion.
 
-## Current integration evidence
+## Current integrated evidence
 
-- Exact request restoration is centralized in Harness. At `6ebee3fd3`, integrated generated model-boundary contracts and registered option-policy coverage pass 20/20 native model-input regressions. See [current contract evidence](checkpoint-model-boundary-contracts-current-2026-10-04.json). The full generated audit failed after reaching Inference because its untracked WASM package was missing; see [audit failure evidence](checkpoint-generated-audit-missing-artifact-2026-10-04.json). No audit retry is currently running. Fresh generated bindings and the full audit remain required after the final Rust change. Other source-bound focused request, persistent-input, scope, and serialization checks are indexed in [EVIDENCE.md](EVIDENCE.md). These checks do not qualify the production recursive swarm.
-- Historical rejection evidence is restored through authenticated conversation-to-journal bindings at `3febb6285`, with multi-call correlation corrected at `03797e793`. At `6d22aba49`, the archived native boundary executable overflows the default Windows test stack. The same executable with a 32 MiB test stack passes both negative cases but fails recursive child follow-up because inherited journal events belong to the parent's private volume. See [context boundary evidence](checkpoint-context-history-private-journal-2026-10-04.json). At `024e26e34`, a dedicated fixture stack runs all cases without a global stack override and preserves the same 2/3 authority failure; see [dedicated-stack evidence](checkpoint-context-dedicated-stack-2026-10-04.json). Inherited evidence must remain frozen without granting mutable parent-journal access.
-- Cancellation persistence failure keeps late process success uncertain and fences redispatch after real-storage reopen. The source-bound host suite at `f97519f57` passes 25/26; its held-pipe marker failure remains recorded in [cancellation evidence](checkpoint-cancellation-persistence-fence-2026-10-04.json). At `d00d687de`, the repaired fixture and complete host suite pass 26/26 against the archived Windows executable. See [current host evidence](checkpoint-host-execution-current-2026-10-04.json). Installed native cleanup and the complete swarm fault matrix remain unqualified.
-- Public receipt reconciliation rejects substituted operation and effect identities at `5e78977b4`, passing its focused case. See [receipt identity evidence](checkpoint-reconcile-receipt-identities-2026-10-04.json).
-- Git transition routing at `275fe2da5` passes its public abort regression. See [Git transition evidence](checkpoint-git-transition-routing-2026-10-04.json). This does not qualify approved root writeback.
-- The most recent source-bound production coordinator run, at `7d951663e`, passes 0/1 recursive model swarm cases and 1/5 recovery fault cases. See [archived production failure evidence](checkpoint-production-prefix-failures-2026-10-04.json). The captured-history/publication-revision mismatch remains open; passing focused prefix tests do not qualify this coordinator.
+At source `4ba8293a9`, all 353 Windows native Harness library tests pass with no ignored cases. The recursive production swarm fails on a missing exact read capability for an inherited staged file. The separate fault suite passes 2/5: two cases observe three provider dispatches instead of two, and cold fork-intent recovery duplicates completion text. See [source, suite, log and executable evidence](checkpoint-integrated-fork-native-2026-10-04.json). These failures remain acceptance blockers; library results do not qualify production orchestration.
 
-At source 7d951663e, the native recursive boundary suite passes 3/3, including exact prefix checks on every captured child request and an explicit rejection follow-up. The executable and log are archived in checkpoint-native-recursive-prefix-pass-2026-10-04.json. This closes the focused private-prefix fixture failures; production coordinator capture/publication and recovery qualification remain open.
+At source `239c00bb8`, the Filesystem default-feature native library run finishes with 1112 passed, zero failed and 36 ignored. Both owned/shared crash-atomic cases pass. Ignored cases remain unqualified. See [archived Filesystem evidence](checkpoint-filesystem-native-2026-10-04.json).
 
-At `d9090b0ac`, the focused memory composition suite passes 12/12, including exact cross-operation rejection provenance and selected inherited-message absence negatives. See [focused rejection evidence](checkpoint-rejection-provenance-strengthening-2026-10-04.json). Communication admission centralization at `85331945d` and bounded history refresh/append-only conformance at `eeafbf7e8` are integrated source changes with verification still pending; neither is counted as qualified by older receipts.
+The cold recursive model boundary at source `9dfc54cb5` passes 3/3 after every original provider handle is released. Each cold request preserves inherited prefix bytes, serialization, binding and durable manifest. See [cold-prefix evidence](checkpoint-cold-prefix-native-pass-2026-10-04.json). This focused boundary suite does not qualify the production coordinator.
 
-The native local Stream checks at `eeafbf7e8` pass 2/2: adversarial middle-record replacement is rejected by public conformance, and exact committed records survive cold reopen. See [Stream immutability evidence](checkpoint-stream-immutable-native-2026-10-04.json). Harness aggregate refresh, communication admission, and installed swarm gates remain pending.
+Earlier passing and failing checkpoints are retained in [EVIDENCE.md](EVIDENCE.md). A receipt proves only its source and stated scope. The earlier fork-port compilation failures are repaired in the current source; their evidence remains historical.
 
-## Required integration and qualification gates
+## Remaining integration and qualification
 
-The stronger recursive manifest/cold-reopen fixture at `9dfc54cb5` passes 3/3 cases after all original provider handles are released. Fresh providers preserve generation-pinned content and every captured cold request's prefix, serialized bytes, binding and durable manifest. See [cold boundary passing evidence](checkpoint-cold-prefix-native-pass-2026-10-04.json). The earlier exclusive-provider fixture failure remains recorded in [prior failure evidence](checkpoint-cold-prefix-exclusive-reopen-failure-2026-10-04.json). Production coordinator recovery remains a separate open gate.
-
-At `39707322e`, the locked native Harness run passes 34/34 focused storage, bounded message-page and communication cases with no ignored tests. The configured conversation cache preserves limits validation and sees external writes; suffix refresh reads bounded anchors and rejects rollback/missing history. See [current focused evidence](checkpoint-bounded-messages-native-2026-10-04.json). The [earlier focused receipt](checkpoint-harness-refresh-communication-native-2026-10-04.json) retains preceding compile failures and the malformed-payload fixture failure. Production fork publication and installed swarm qualification remain open.
-
-1. Preserve exact recursive prefixes and rejection evidence across child follow-up, parallel batches, deeper forks, and restart. Preserve the dedicated native fixture stack and resolve the production capture/publication revision mismatch.
-2. Integrate and independently qualify current-root durable resource budgeting, communications/waits, and lazy activation/listing. Isolated worker checkpoints are candidate changes, not final qualification.
-3. Complete effect recovery and process ownership, including output overflow, responsive cancellation during blocked stdin, descendant cleanup, retained uncertain outcomes, and installed native transport.
-4. Provide a usable public inspect/approve/apply root-writeback path. Bind every physical root mutation to exact durable approval and reconcile concurrent user edits, including deletions and crash replay.
-5. Build fresh distributables after the final source change. Run the entire locked matrix through those artifacts, including Windows terminal PTY, package consumption, generated bindings, provider conformance, Filesystem/plugin regressions, and applicable platform lanes.
-6. Audit library ownership and dependency boundaries, record final source/suite/descriptor/artifact digests, and confirm committed isolated branch state with no merge.
-
-Historical checkpoint results and failures are retained in [EVIDENCE.md](EVIDENCE.md) and their source-bound receipts. They must not be reused to qualify newer source or broader requirements.
+1. Repair exact reference inheritance in the production recursive swarm, without granting mutable parent-private access. Repair duplicated dispatch/output in fault recovery.
+2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
+3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
+4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
+5. Build fresh distributables after final source changes. Execute every locked matrix gate, including Windows PTY, package consumption, generated bindings, provider conformance, Filesystem/plugin regressions and actual supported platform lanes.
+6. Audit library ownership and dependency boundaries, record final digests, and confirm all intended changes committed on the isolated branch without a merge.
 
 ## Boundaries
 
-Harness owns orchestration, model inputs, forks, communication, admission, effects, and recovery. Filesystem owns workspace semantics and its host execution adapter. GraphCoder remains a composition and terminal wrapper.
+Harness owns model inputs, orchestration, forks, communication, admission, effects and recovery. Filesystem owns workspace semantics and its host adapter. GraphCoder stays a composition and terminal wrapper.
 
-Models are mocked. No sandbox or cloud is implemented. Workspace routing is not process confinement. Host commands require exact approval and exclude inherited credentials. Root writeback requires approval and concurrent-edit reconciliation. The original checkout must remain untouched; all implementation stays on the isolated `codex/graphcoder-sdk` branch without merging.
-
-
-
-
-Latest focused checkpoint: source39707322e passes 34/34 native storage, message-page and communication cases; receipt and archived artifact recorded. No production or installed gate is closed by this focused run.
-
-
-Cold recursive boundary checkpoint: source9dfc54cb5 passes 3/3 with fresh providers after releasing original handles. The production coordinator and fault-injection failures remain independent open gates.
-
-Current full library checkpoint: source131b2e2b9 passes 349/349 Windows native Harness library tests; see [receipt](checkpoint-full-harness-native-2026-10-04.json). No installed or production coordinator gate is closed by this library run.
-
-Current source caveat: fork port7b495b775 fails native compilation due omitted foundational capture/rebind helpers and fields. The worker is completing the port. Earlier349/349 and3/3 results do not qualify this newer source. See [failure receipt](checkpoint-fork-port-compile-failure-2026-10-04.json).
+Models are mocked. There is no sandbox or cloud implementation. Workspace routing is not process confinement. Host commands require exact approval and exclude inherited credentials. Root writeback requires approval and reconciliation with concurrent user changes. The original checkout remains untouched; work stays on `codex/graphcoder-sdk` without merging.

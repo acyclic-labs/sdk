@@ -1,0 +1,55 @@
+{
+  "source_commit": "4ba8293a902149981ee62a38eec6ef7bdca8476e",
+  "source_tree": "525fabddf45b8470df0df2e32215a20a425b5d2d",
+  "suite_tree": "1da9babfc4b58840f312768656db111228f3b5a5",
+  "platform": "Windows native",
+  "requirements_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF",
+  "lock_sha256": "48095856B845B20159465F61CEBB719DDCEB5E7D77B277FAA5DB663AC6D1E4C9",
+  "harness_library": {
+    "failed": 0,
+    "ignored": 0,
+    "passed": 353
+  },
+  "production_swarm": {
+    "failed": 1,
+    "failure": "Unauthorized volume-read capability for inherited staged file",
+    "passed": 0
+  },
+  "fault_suite": {
+    "failed": 3,
+    "ignored": 0,
+    "failures": [
+      "prepared batch replay dispatch count 3 vs 2",
+      "precompletion replay dispatch count 3 vs 2",
+      "cold fork intent output duplicated"
+    ],
+    "passed": 2
+  },
+  "commands": [
+    "cargo test --locked -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults",
+    "cargo test --locked -p acyclic-harness --features filesystem-local --test local_swarm_faults"
+  ],
+  "artifacts": [
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\4ba8293a9\\acyclic_harness-641f85f696abacc6.exe",
+      "sha256": "68CAC5471158374705383AFC5DC6ED7B729BF98EE5855CDE7BD412C0C835B3AB"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\4ba8293a9\\faults.txt",
+      "sha256": "99A2F9ED64DDA13ED4E44CAC57ED5ABE6EE800A9DAA61C3740C21703CE72D701"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\4ba8293a9\\harness-production.txt",
+      "sha256": "AB5C4DE2D3F24262E60D8FB9344F3A28FF4E30A00C3CF8761B09334A7A77A594"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\4ba8293a9\\local_model_swarm-b5d1df9216f26b8b.exe",
+      "sha256": "EBAD7BB75168B934E49794D027EA27A9FE15A2E727E16FD2A50B2DDCCFA41DD4"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\4ba8293a9\\local_swarm_faults-cf47ef77f7bcbf61.exe",
+      "sha256": "EDB77CB5C2874C169BB613ACE4FCBEF588941192BBBE24042C681A4945A511E7"
+    }
+  ],
+  "scope": "Library gate passes; production and recovery gates fail. No installed artifact or terminal qualification claim."
+}
