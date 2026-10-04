@@ -12,5 +12,8 @@
     "proto-lens-runtime-0.7.0.8": "25a1508a886d0c5dd40e4b0b454f589f95e51b2fa2c63e373fa608ef82d16c38",
     "proto-lens-protoc-0.9.0.1": "513e4338ca74b06929251f78e1c0cd1cc6b26d5e32e80cbcbcc23848ac16e446"
   },
-  "remote_qualification": "manual-release-fixture-required"
+  "remote_qualification": "runner-wired-pending-rust-fixture-conformance",
+  "request_manifest": "request-manifest.json",
+  "request_manifest_sha256": "90b56f1db5a0bfcf5321fd35333289ad9740af5b45ec00c86e26e03c0693a47a",
+  "remote_runner": "run-remote-prototype.ps1"
 }

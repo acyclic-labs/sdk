@@ -31,3 +31,15 @@ executable acyclic-haskell-prototype
   default-language: Haskell2010
   default-extensions: OverloadedStrings, TypeApplications
   ghc-options: -Wall
+
+executable acyclic-haskell-remote
+  hs-source-dirs: app
+  main-is: RemoteMain.hs
+  build-depends:
+      base >= 4.16 && < 4.17
+    , acyclic-haskell-grapesy-prototype
+    , grapesy == 1.2.1
+    , proto-lens == 0.7.1.7
+  default-language: Haskell2010
+  default-extensions: DataKinds, ImportQualifiedPost, OverloadedStrings, TypeApplications, TypeFamilies
+  ghc-options: -Wall
