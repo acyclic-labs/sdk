@@ -18,6 +18,7 @@ use crate::{
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::TurnOutput,
+    host_execution::NativeExecutionForkCaptureProvider,
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
@@ -632,7 +633,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     storage.owner_scope().clone(),
                     swarm.config.limits.file_bytes,
                 )?);
-                let preparer = FilesystemForkPreparer::new(
+                let mut preparer = FilesystemForkPreparer::new(
                     self.host.clone(),
                     parent.reducer().clone(),
                     storage.verifier(),
@@ -643,6 +644,16 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 )?;
                 let mut original_request = report.request.clone();
                 original_request.parent_revision = report.captured_history_revision()?;
+                if let Some(selection) = original_request.selections.iter().find(|selection| {
+                    matches!(selection.revision, ResourceRevision::Process(_))
+                }) {
+                    let provider = NativeExecutionForkCaptureProvider::from_selection(
+                        parent_harness.execution_receipt_store()?,
+                        selection.revision.provider().clone(),
+                        selection,
+                    )?;
+                    preparer = preparer.with_capture_provider(Arc::new(provider))?;
+                }
                 let rebind_proof = preparer
                     .authenticate_rebind_records(&original_request)
                     .await?;
@@ -808,7 +819,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 storage.owner_scope().clone(),
                 swarm.config.limits.file_bytes,
             )?);
-            let preparer = FilesystemForkPreparer::new(
+            let mut preparer = FilesystemForkPreparer::new(
                 self.host.clone(),
                 parent.reducer().clone(),
                 storage.verifier(),
@@ -817,6 +828,16 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 self.stream_provider.clone(),
                 parent_reader,
             )?;
+            if let Some(selection) = request.selections.iter().find(|selection| {
+                matches!(selection.revision, ResourceRevision::Process(_))
+            }) {
+                let provider = NativeExecutionForkCaptureProvider::from_selection(
+                    parent_harness.execution_receipt_store()?,
+                    selection.revision.provider().clone(),
+                    selection,
+                )?;
+                preparer = preparer.with_capture_provider(Arc::new(provider))?;
+            }
             let report = parent.prepare_fork(&preparer, request.clone()).await?;
             let declaration = LocalInheritedModelDeclaration {
                 boundary,

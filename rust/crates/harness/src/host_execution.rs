@@ -10,8 +10,8 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, VolumeRef},
     core::{AuthorityIssuer, EffectGuarantee, EffectStatus, Scope},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
-    fork::{Capture, ForkCaptureProvider, ForkRequest, ForkSelection},
-    resources::{CheckpointRef, ProviderRef, ResourceRevision},
+    fork::{Capture, ForkCaptureProvider, ForkRequest, ForkSelection, ResourceRevision},
+    resources::ProviderRef,
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
@@ -953,6 +953,9 @@ pub struct NativeExecutionForkCaptureProvider {
 }
 
 impl NativeExecutionForkCaptureProvider {
+    const IDENTITY_PREFIX: &'static [u8] = b"acyclic-native-attempt-v1\0";
+
+    /// Binds a host-owned receipt journal to one admitted native attempt.
     pub fn new(
         store: Arc<dyn ExecutionReceiptStore>,
         provider: ProviderRef,
@@ -970,6 +973,45 @@ impl NativeExecutionForkCaptureProvider {
             operation_id,
             attempt_id,
         })
+    }
+
+    /// Builds a capture bridge only from an explicitly selected process
+    /// identity. The selection key is opaque to callers, but its operation
+    /// and attempt tuple is decoded and then rechecked by `matches` before
+    /// any receipt lookup. Fork defaults never create this provider.
+    pub fn from_selection(
+        store: Arc<dyn ExecutionReceiptStore>,
+        provider: ProviderRef,
+        selection: &ForkSelection,
+    ) -> Result<Self> {
+        let ResourceRevision::Process(checkpoint) = &selection.revision else {
+            return Err(Error::Invalid(
+                "native process capture requires a process selection".into(),
+            ));
+        };
+        if checkpoint.as_resource().provider() != &provider {
+            return Err(Error::Conflict(
+                "native process selection provider does not match capture provider".into(),
+            ));
+        }
+        let key = checkpoint.as_resource().key();
+        let operation_offset = Self::IDENTITY_PREFIX.len();
+        let expected = operation_offset + 16 + 16;
+        if key.len() != expected || !key.starts_with(Self::IDENTITY_PREFIX) {
+            return Err(Error::Invalid(
+                "native process selection has an invalid authenticated identity".into(),
+            ));
+        }
+        let mut operation = [0; 16];
+        operation.copy_from_slice(&key[operation_offset..operation_offset + 16]);
+        let mut attempt = [0; 16];
+        attempt.copy_from_slice(&key[operation_offset + 16..]);
+        Self::new(
+            store,
+            provider,
+            OperationId::from_bytes(operation),
+            EffectAttemptId::from_bytes(attempt),
+        )
     }
 
     fn matches(&self, selection: &ForkSelection) -> Result<()> {
@@ -992,7 +1034,7 @@ impl NativeExecutionForkCaptureProvider {
     /// attempt. It carries identity only; it is never a PID or host handle.
     #[must_use]
     pub fn identity_key(&self) -> Vec<u8> {
-        let mut key = b"acyclic-native-attempt-v1\0".to_vec();
+        let mut key = Self::IDENTITY_PREFIX.to_vec();
         key.extend_from_slice(&self.operation_id.into_bytes());
         key.extend_from_slice(&self.attempt_id.into_bytes());
         key
