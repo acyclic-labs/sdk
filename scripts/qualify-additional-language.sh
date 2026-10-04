@@ -34,11 +34,18 @@ python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
   "$product_root" "$inventory_json"
 read -r rpc_count archived_rpc_count all_rpc_count < <(
   python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
-    "$product_root" "$inventory_json" --counts
+    "$product_root" "$inventory_json" --counts | tr -d '\r'
 )
 mapfile -t contract_protos < <(
   python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
-    "$product_root" "$inventory_json" --current-protos
+    "$product_root" "$inventory_json" --current-protos | tr -d '\r' |
+    while IFS= read -r contract_proto; do
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -u "$contract_proto"
+      else
+        printf '%s\n' "$contract_proto"
+      fi
+    done
 )
 contract_proto_count=${#contract_protos[@]}
 [[ "$all_rpc_count" == $((rpc_count + archived_rpc_count)) ]] || {
@@ -144,20 +151,31 @@ case "$language" in
     cat >"$output_root/rust-semantic-oracle.json" <<EOF
 {"schema":"acyclic.rust-semantic-oracle.v1","source_revision":"$source_revision","status":"passed","test":"semantic_oracle::tests::only_exercised_scenarios_have_expectations"}
 EOF
-    mix new "$project" --sup >/dev/null
+    # `elixir` is reserved by the runtime, so the output directory cannot be
+    # used as Mix's inferred application name on Windows or current Elixir.
+    mix new "$project" --app acyclic_sdk_qualification --sup >/dev/null
     python3 - "$project/mix.exs" <<'PY'
 from pathlib import Path
 import sys
 p = Path(sys.argv[1])
 s = p.read_text()
-s = s.replace('defp deps do\n      []', 'defp deps do\n      [{:protobuf, "0.13.2"}, {:grpc, "1.0.3"}]')
+s = s.replace('defp deps do\n      []', 'defp deps do\n      [{:protobuf, "0.13.0"}, {:grpc, "1.0.3"}]')
 p.write_text(s)
 PY
     pushd "$project" >/dev/null
     mix do deps.get, deps.compile
-    mix escript.install hex protobuf 0.13.2 --force
+    mix escript.install hex protobuf 0.13.0 --force
     plugin="$HOME/.mix/escripts/protoc-gen-elixir"
-    test -x "$plugin"
+    # On Windows the escript launcher is a batch file; protoc must be given
+    # that launcher rather than the Unix text escript itself.
+    if [[ "${OSTYPE:-}" == msys* || "${OSTYPE:-}" == cygwin* ]]; then
+      plugin+=".bat"
+      # Git Bash does not report Windows batch launchers as executable even
+      # though protoc can invoke them through the Windows command shim.
+      test -f "$plugin"
+    else
+      test -x "$plugin"
+    fi
     mkdir -p lib/generated
     protoc -I "$proto_root" -I "$output_root" --plugin="$plugin" \
       --elixir_out=plugins=grpc:"$project/lib/generated" "${contract_protos[@]}"
@@ -194,16 +212,61 @@ PY
       mkdir -p "$project/proto/$(dirname "$relative")"
       cp "$contract_proto" "$project/proto/$relative"
     done < <(printf '%s\n' "${contract_protos[@]}")
-    cat >"$project/rebar.config" <<'EOF'
+    # The current service inventory intentionally excludes option-only files
+    # from its RPC count, but gpb still needs those Rust-owned imports while
+    # compiling typed modules (for example validation/v1/options.proto).
+    while IFS= read -r dependency_proto; do
+      relative=${dependency_proto#"$product_root/"}
+      mkdir -p "$project/proto/$(dirname "$relative")"
+      cp "$dependency_proto" "$project/proto/$relative"
+    done < <(find "$product_root" -type f -name '*.proto' -print)
+    # grpcbox_plugin scans one directory level, while the Rust-owned products
+    # preserve package directories. Pass every generated proto directory so
+    # nested Rust packages are all compiled without flattening their imports.
+    proto_dirs=()
+    while IFS= read -r contract_proto; do
+      relative=${contract_proto#"$product_root/"}
+      proto_dir=$(dirname "$relative")
+      found=false
+      for existing_dir in "${proto_dirs[@]}"; do
+        [[ "$existing_dir" == "$proto_dir" ]] && found=true && break
+      done
+      # grpcbox resolves each configured directory relative to the rebar
+      # project root. The copied Rust products live below `proto/`, so keep
+      # that prefix in the generated configuration instead of asking the
+      # plugin to search a sibling path that cannot contain the sources.
+      [[ "$found" == true ]] || proto_dirs+=("proto/$proto_dir")
+    done < <(printf '%s\n' "${contract_protos[@]}")
+    {
+      cat <<'EOF'
 {erl_opts, [debug_info]}.
 {deps, [{grpcbox, "0.18.0"}]}.
 {plugins, [{grpcbox_plugin, "0.9.0"}]}.
-{grpc, [{protos, "proto"}, {gpb_opts, [{module_name_suffix, "_pb"}, maps]}]}.
+{grpc, [{protos, [
 EOF
+      for proto_index in "${!proto_dirs[@]}"; do
+        [[ "$proto_index" -gt 0 ]] && printf ','
+        printf '"%s"' "${proto_dirs[$proto_index]}"
+      done
+      cat <<'EOF'
+]}, {gpb_opts, [{module_name_suffix, "_pb"}, maps, {i, "proto"},
+  {rename, {msg_fqname, {prefix, {by_proto, [
+    {actors, "actors_"}, {filesystem, "filesystem_"}, {harness, "harness_"},
+    {inference, "inference_"}, {machines, "machines_"}, {objects, "objects_"},
+    {protocol, "protocol_"}, {stream, "stream_"}, {validation, "validation_"},
+    {workers, "workers_"}
+  ]}}}}
+]}]}.
+EOF
+    } >"$project/rebar.config"
     cat >"$project/src/acyclic_qualification.app.src" <<'EOF'
 {application, acyclic_qualification, [{description, "Rust-derived Acyclic qualification"}, {vsn, "0.0.0"}, {applications, [kernel, stdlib, grpcbox]}]}.
 EOF
     pushd "$project" >/dev/null
+    # grpcbox_plugin compiles each generated protobuf module immediately and
+    # writes its beam beside the application. Prime the fresh rebar project so
+    # that ebin exists before the plugin starts emitting Rust-owned modules.
+    rebar3 compile
     rebar3 grpc gen
     rebar3 compile
     test -n "$(find src -type f -name '*_pb.erl' -print -quit)"
