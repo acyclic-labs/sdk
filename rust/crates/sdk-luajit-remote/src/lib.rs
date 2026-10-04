@@ -22,9 +22,14 @@ use acyclic_stream::{AppendOutcome, StreamClient, StreamError, grpc};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use prost::Message;
-use prost_reflect::{DescriptorPool, DynamicMessage};
+use prost_reflect::{DescriptorPool, DynamicMessage, MethodDescriptor};
 use reqwest::Url;
 use tokio::{runtime::Runtime, sync::Notify, task::JoinHandle};
+use tonic::codec::{Codec, DecodeBuf, Decoder, EncodeBuf, Encoder};
+use tonic::codegen::http::uri::PathAndQuery;
+use tonic::metadata::MetadataValue;
+use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
+use tonic::{Request, Status};
 
 const ABI_VERSION: u32 = 1;
 const READ_MODE: u32 = 0;
@@ -144,9 +149,60 @@ impl Drop for RemoteRuntime {
 struct RemoteClient {
     runtime: RemoteRuntime,
     provider: Arc<grpc::Client>,
+    grpc_channel: Channel,
     http: reqwest::Client,
     endpoint: Url,
     token: String,
+}
+
+/// Tonic codec that keeps protobuf reflection in Rust while exposing no
+/// generated language-specific wire implementation to the FFI consumer.
+#[derive(Clone)]
+struct DynamicCodec {
+    output: prost_reflect::MessageDescriptor,
+}
+
+struct DynamicEncoder;
+struct DynamicDecoder {
+    descriptor: prost_reflect::MessageDescriptor,
+}
+
+impl Codec for DynamicCodec {
+    type Encode = DynamicMessage;
+    type Decode = DynamicMessage;
+    type Encoder = DynamicEncoder;
+    type Decoder = DynamicDecoder;
+
+    fn encoder(&mut self) -> Self::Encoder {
+        DynamicEncoder
+    }
+
+    fn decoder(&mut self) -> Self::Decoder {
+        DynamicDecoder {
+            descriptor: self.output.clone(),
+        }
+    }
+}
+
+impl Encoder for DynamicEncoder {
+    type Item = DynamicMessage;
+    type Error = Status;
+
+    fn encode(&mut self, item: Self::Item, dst: &mut EncodeBuf<'_>) -> Result<(), Self::Error> {
+        item.encode(dst)
+            .map_err(|error| Status::internal(format!("encode dynamic protobuf: {error}")))
+    }
+}
+
+impl Decoder for DynamicDecoder {
+    type Item = DynamicMessage;
+    type Error = Status;
+
+    fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
+        DynamicMessage::decode(self.descriptor.clone(), src)
+            .map(Some)
+            .map_err(|error| Status::internal(format!("decode dynamic protobuf: {error}")))
+    }
 }
 struct RemoteReader {
     _client: Arc<RemoteClient>,
@@ -158,6 +214,7 @@ struct RemoteReader {
 }
 enum ReaderMessage {
     Record(acyclic_stream::Record),
+    Wire(Vec<u8>),
     End,
     Error(StreamError),
 }
@@ -467,6 +524,161 @@ async fn http_json_wire_call(
         .map_err(|error| format!("decode {family}/{operation} JSON response: {error}"))?;
     Ok(response.encode_to_vec())
 }
+
+fn family_method(family: &str, operation: &str) -> Result<(MethodDescriptor, String), String> {
+    let view =
+        family_view(family).ok_or_else(|| format!("unknown Rust contract family: {family}"))?;
+    let pool = DescriptorPool::decode(view.model.descriptor().as_slice())
+        .map_err(|error| format!("decode {family} descriptor: {error}"))?;
+    pool.services()
+        .filter(|service| service.parent_file().package() == view.package())
+        .flat_map(|service| {
+            service.methods().map(|method| {
+                let rpc = format!("{}/{}", service.full_name(), method.name());
+                let route = view.routes().iter().find(|route| {
+                    (route.operation_id == operation || route.rpc == operation)
+                        && route.rpc.ends_with(&rpc)
+                });
+                let mut fallback = method.name().to_owned();
+                if let Some(first) = fallback.get_mut(..1) {
+                    first.make_ascii_lowercase();
+                }
+                let matches =
+                    route.is_some() || fallback == operation || method.name() == operation;
+                (method, format!("/{rpc}"), matches)
+            })
+        })
+        .find_map(|(method, path, matches)| matches.then_some((method, path)))
+        .ok_or_else(|| format!("unknown Rust-owned operation {family}/{operation}"))
+}
+
+async fn grpc_wire_call(
+    client: &RemoteClient,
+    family: &str,
+    operation: &str,
+    request: &[u8],
+) -> Result<Vec<u8>, String> {
+    let (method, path) = family_method(family, operation)?;
+    if method.is_client_streaming() || method.is_server_streaming() {
+        return Err(format!(
+            "{family}/{operation} is streaming and requires the stream handle ABI"
+        ));
+    }
+    let input = DynamicMessage::decode(method.input(), request)
+        .map_err(|error| format!("decode {family}/{operation} request: {error}"))?;
+    let mut request = Request::new(input);
+    let authorization = MetadataValue::try_from(format!("Bearer {}", client.token))
+        .map_err(|_| "invalid Rust-owned bearer credential".to_owned())?;
+    request
+        .metadata_mut()
+        .insert("authorization", authorization);
+    let mut grpc = tonic::client::Grpc::new(client.grpc_channel.clone());
+    grpc.ready()
+        .await
+        .map_err(|error| format!("{family}/{operation} gRPC readiness: {error}"))?;
+    let response = grpc
+        .unary(
+            request,
+            PathAndQuery::try_from(path)
+                .map_err(|error| format!("{family}/{operation} gRPC path: {error}"))?,
+            DynamicCodec {
+                output: method.output(),
+            },
+        )
+        .await
+        .map_err(|error| format!("{family}/{operation} gRPC: {error}"))?;
+    Ok(response.into_inner().encode_to_vec())
+}
+
+fn open_grpc_family_stream(
+    client: Arc<RemoteClient>,
+    family: &str,
+    operation: &str,
+    request: &[u8],
+) -> Result<RemoteReader, StreamError> {
+    if runtime_reentry() {
+        return Err(StreamError::InvalidArgument);
+    }
+    let (method, path) =
+        family_method(family, operation).map_err(|_| StreamError::InvalidArgument)?;
+    if !method.is_server_streaming() || method.is_client_streaming() {
+        return Err(StreamError::Unsupported);
+    }
+    let input = DynamicMessage::decode(method.input(), request)
+        .map_err(|_| StreamError::InvalidArgument)?;
+    let path = PathAndQuery::try_from(path).map_err(|_| StreamError::InvalidArgument)?;
+    let authorization = MetadataValue::try_from(format!("Bearer {}", client.token))
+        .map_err(|_| StreamError::InvalidArgument)?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(64);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let wake = Arc::new(Notify::new());
+    let task_cancelled = Arc::clone(&cancelled);
+    let task_wake = Arc::clone(&wake);
+    let channel = client.grpc_channel.clone();
+    let task = client.runtime.spawn(async move {
+        let mut request = Request::new(input);
+        request
+            .metadata_mut()
+            .insert("authorization", authorization);
+        let mut grpc = tonic::client::Grpc::new(channel);
+        if grpc.ready().await.is_err() {
+            let _ = sender.send(ReaderMessage::Error(StreamError::Unavailable));
+            return;
+        }
+        let response = match grpc
+            .server_streaming(
+                request,
+                path,
+                DynamicCodec {
+                    output: method.output(),
+                },
+            )
+            .await
+        {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = sender.send(ReaderMessage::Error(StreamError::Unavailable));
+                return;
+            }
+        };
+        let mut stream = response.into_inner();
+        loop {
+            if task_cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            let next = tokio::select! {
+                _ = task_wake.notified() => return,
+                item = stream.message() => item,
+            };
+            match next {
+                Ok(Some(value)) => {
+                    if sender
+                        .send(ReaderMessage::Wire(value.encode_to_vec()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(None) => {
+                    let _ = sender.send(ReaderMessage::End);
+                    return;
+                }
+                Err(_) => {
+                    let _ = sender.send(ReaderMessage::Error(StreamError::Unavailable));
+                    return;
+                }
+            }
+        }
+    });
+    Ok(RemoteReader {
+        _client: client,
+        receiver: Mutex::new(receiver),
+        cancelled,
+        terminal: AtomicU32::new(NO_TERMINAL),
+        wake,
+        task: Mutex::new(Some(task)),
+    })
+}
 fn spawn_reader(
     client: Arc<RemoteClient>,
     path: String,
@@ -605,14 +817,14 @@ pub extern "C" fn acyclic_remote_family_wire_call(
         };
         match client
             .runtime
-            .block_on(http_json_wire_call(&client, family, operation, request))
+            .block_on(grpc_wire_call(&client, family, operation, request))
         {
             Ok(response) => AcyclicRemoteWireResult {
                 status: AcyclicRemoteStatus::Ok,
                 response: owned_buffer(response),
                 message: empty_buffer(),
             },
-            Err(error) if error.contains("no Rust-owned HTTP projection") => {
+            Err(error) if error.starts_with("unknown Rust-owned operation") => {
                 AcyclicRemoteWireResult {
                     status: AcyclicRemoteStatus::InvalidArgument,
                     response: empty_buffer(),
@@ -625,6 +837,64 @@ pub extern "C" fn acyclic_remote_family_wire_call(
     result.unwrap_or_else(|_| AcyclicRemoteWireResult {
         status: AcyclicRemoteStatus::Panic,
         response: empty_buffer(),
+        message: message("panic contained at ABI boundary"),
+    })
+}
+
+/// Opens a Rust-owned server stream for one descriptor method. Each reader
+/// value is the encoded protobuf response for that method and cancellation
+/// aborts the underlying tonic task through the shared reader handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_stream_open(
+    client: u64,
+    family_ptr: *const u8,
+    family_len: usize,
+    operation_ptr: *const u8,
+    operation_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> AcyclicRemoteOpenResult {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(client) = client_lookup(client) else {
+            return invalid_open("client handle is invalid");
+        };
+        let family = match input_text(family_ptr, family_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_open(error),
+        };
+        let operation = match input_text(operation_ptr, operation_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_open(error),
+        };
+        let request = match input_bytes(request_ptr, request_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_open(error),
+        };
+        match open_grpc_family_stream(Arc::clone(&client), family, operation, request) {
+            Ok(reader) => {
+                let Some(id) = next_id() else {
+                    return invalid_open("reader ID exhausted");
+                };
+                if let Ok(mut all) = readers().lock() {
+                    all.insert(id, Arc::new(reader));
+                    AcyclicRemoteOpenResult {
+                        status: AcyclicRemoteStatus::Ok,
+                        reader: id,
+                        message: empty_buffer(),
+                    }
+                } else {
+                    invalid_open("reader mutex unavailable")
+                }
+            }
+            Err(StreamError::Unsupported) => {
+                invalid_open("operation streaming shape is unsupported")
+            }
+            Err(error) => provider_open(error),
+        }
+    }));
+    result.unwrap_or_else(|_| AcyclicRemoteOpenResult {
+        status: AcyclicRemoteStatus::Panic,
+        reader: 0,
         message: message("panic contained at ABI boundary"),
     })
 }
@@ -830,6 +1100,21 @@ pub extern "C" fn acyclic_remote_client_open(
             Ok(http) => http,
             Err(_) => return 0,
         };
+        let mut grpc_endpoint = match Endpoint::from_shared(list[0].to_owned()) {
+            Ok(endpoint) => endpoint,
+            Err(_) => return 0,
+        };
+        if !ca.is_empty() {
+            grpc_endpoint = match grpc_endpoint.tls_config(
+                ClientTlsConfig::new()
+                    .with_enabled_roots()
+                    .ca_certificate(Certificate::from_pem(ca)),
+            ) {
+                Ok(endpoint) => endpoint,
+                Err(_) => return 0,
+            };
+        }
+        let grpc_channel = grpc_endpoint.connect_lazy();
         let provider = match runtime.block_on(async {
             if ca.is_empty() {
                 grpc::Client::connect_endpoints(list, token).await
@@ -843,6 +1128,7 @@ pub extern "C" fn acyclic_remote_client_open(
         let client = Arc::new(RemoteClient {
             runtime,
             provider: Arc::new(provider),
+            grpc_channel,
             http,
             endpoint,
             token: token.to_owned(),
@@ -990,6 +1276,12 @@ pub extern "C" fn acyclic_remote_reader_next(reader: u64) -> AcyclicRemoteNextRe
                 status: AcyclicRemoteStatus::Ok,
                 sequence: record.sequence,
                 value: owned_buffer(record.value.to_vec()),
+                message: empty_buffer(),
+            },
+            Ok(ReaderMessage::Wire(value)) => AcyclicRemoteNextResult {
+                status: AcyclicRemoteStatus::Ok,
+                sequence: 0,
+                value: owned_buffer(value),
                 message: empty_buffer(),
             },
             Ok(ReaderMessage::End) => {

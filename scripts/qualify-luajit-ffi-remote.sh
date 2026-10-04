@@ -42,6 +42,7 @@ AcyclicRemoteBuffer acyclic_remote_family_name(size_t index);
 size_t acyclic_remote_family_operation_count(const uint8_t *family, size_t family_len);
 AcyclicRemoteBuffer acyclic_remote_family_operation_name(const uint8_t *family, size_t family_len, size_t index);
 AcyclicRemoteWireResult acyclic_remote_family_wire_call(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
+AcyclicRemoteOpenResult acyclic_remote_family_stream_open(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
 size_t acyclic_remote_stream_operation_count(void);
 AcyclicRemoteBuffer acyclic_remote_stream_operation_name(size_t index);
 AcyclicRemoteWireResult acyclic_remote_wire_call(uint64_t client, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
