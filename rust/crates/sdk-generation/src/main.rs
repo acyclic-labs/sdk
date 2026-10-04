@@ -3119,6 +3119,12 @@ fn run_tools(
                                     message: Some(error.to_string()),
                                 });
                             }
+                            let evidence_result = run_contract_wire_with_evidence(
+                                root,
+                                output,
+                                relative_request.clone(),
+                            )?;
+                            results.push(evidence_result);
                         }
                     }
                 }
@@ -4597,6 +4603,85 @@ fn tool_result(
         message: (!process.status.success())
             .then(|| String::from_utf8_lossy(&process.stderr).trim().to_owned()),
     })
+}
+
+/// Re-run the Rust authority after the executable examples producer has
+/// emitted its typed wire evidence. The first contract stage creates the
+/// schemas needed by downstream producers; this second invocation binds the
+/// final authority manifest to bytes observed by the Rust fixture exporter.
+fn run_contract_wire_with_evidence(
+    root: &Path,
+    output: &Path,
+    request: String,
+) -> Result<ToolResult, CliError> {
+    let manifest = root.join("rust/crates/sdk-contract-wire/Cargo.toml");
+    let evidence = output.join("sdk-transport-fixtures-manifest.json");
+    if !evidence.is_file() {
+        return Ok(ToolResult {
+            id: "sdk-contract-wire-evidence".into(),
+            status: "failed".into(),
+            required: true,
+            command: Vec::new(),
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: Some(1),
+            message: Some(format!(
+                "Rust typed wire evidence is missing: {}",
+                evidence.display()
+            )),
+        });
+    }
+    let command = vec![
+        cargo_program(),
+        OsString::from("run"),
+        OsString::from("--manifest-path"),
+        manifest.as_os_str().to_os_string(),
+        OsString::from("--locked"),
+        OsString::from("--bin"),
+        OsString::from("sdk-contract-wire"),
+        OsString::from("--"),
+        OsString::from("generate"),
+        OsString::from("--out"),
+        output.join("wire").as_os_str().to_os_string(),
+        OsString::from("--root"),
+        root.as_os_str().to_os_string(),
+        OsString::from("--evidence"),
+        evidence.as_os_str().to_os_string(),
+    ];
+    let command_text = command
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let process = Command::new(&command[0])
+        .args(&command[1..])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output();
+    match process {
+        Ok(process) => tool_result(
+            "sdk-contract-wire-evidence",
+            true,
+            request,
+            command_text,
+            process,
+            output,
+        ),
+        Err(error) => Ok(ToolResult {
+            id: "sdk-contract-wire-evidence".into(),
+            status: "failed".into(),
+            required: true,
+            command: command_text,
+            request,
+            stdout_sha256: None,
+            stderr_sha256: None,
+            exit_code: None,
+            message: Some(format!(
+                "could not start Rust authority evidence generation: {error}"
+            )),
+        }),
+    }
 }
 
 /// Materialize the examples producer's source closure as an independent
