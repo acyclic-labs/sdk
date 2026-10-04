@@ -35,7 +35,7 @@ package $rootUnit is
    function Is_Null (Value : Nullable_Boolean) return Boolean;
    subtype ByteArray is UString;
    type One_Of_String_Integer is new Ada.Strings.Unbounded.Unbounded_String;
-   type Value_Type is tagged null record;
+   type Value_Type is null record;
    package Value_Vectors is new Ada.Containers.Vectors (Positive, Value_Type);
    subtype Value_Array_Type is Value_Vectors.Vector;
    function To_String (Value : Value_Type) return String;
@@ -52,12 +52,12 @@ package $rootUnit is
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean);
    type Mime_List is array (Positive range 1 .. 1) of Integer;
    Mime_Json : constant Integer := 1;
-   type URI_Type is tagged record Path : UString; end record;
+   type URI_Type is record Path : UString; end record;
    procedure Set_Path (URI : in out URI_Type; Value : String);
    type Request_Type is record Stream : Output_Stream; end record;
    type Client_Base_Type is tagged null record;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List);
-   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accept : Mime_List);
+   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List);
    procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type);
    procedure Set_Server (Client : in out Client_Base_Type; Value : UString);
    procedure Set_Credentials (Client : in out Client_Base_Type; Value : access Integer);
@@ -87,7 +87,7 @@ package body $rootUnit is
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean) is begin null; end;
    procedure Set_Path (URI : in out URI_Type; Value : String) is begin URI.Path := To_UString (Value); end;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List) is begin null; end;
-   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accept : Mime_List) is begin null; end;
+   procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List) is begin null; end;
    procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type) is begin null; end;
    procedure Set_Server (Client : in out Client_Base_Type; Value : UString) is begin null; end;
    procedure Set_Credentials (Client : in out Client_Base_Type; Value : access Integer) is begin null; end;
@@ -104,15 +104,24 @@ package $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean);
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString);
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer);
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString);
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer);
 end $rootUnit.Streams;
 "@
     $streamsBody = @"
+with Ada.Strings.Unbounded;
 package body $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Value_Type) is begin null; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Value_Array_Type) is begin Value.Clear; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_UString) is begin Value.Present := False; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Integer) is begin Value.Present := False; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.Nullable_Boolean) is begin Value.Present := False; end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin null; end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin null; end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
+   procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.One_Of_String_Integer) is begin Value := $rootUnit.One_Of_String_Integer'(Ada.Strings.Unbounded.To_Unbounded_String ("")); end;
 end $rootUnit.Streams;
 "@
     Set-Content -LiteralPath (Join-Path $src (($rootUnit.ToLowerInvariant()) + '-streams.ads')) -Value $streamsSpec -Encoding utf8NoBOM
@@ -130,11 +139,16 @@ end $rootUnit.Streams;
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-clients.ads')) {
             $text = [regex]::Replace($text, "(?m)^with $rootUnit\.Clients;\r?\n", '')
             $text = $text.Replace("new $rootUnit.Clients.Client_Type", "new $rootUnit.Client_Base_Type")
-            $text = $text.Replace("   type Client_Type is new $rootUnit.Client_Base_Type with null record;", "   subtype URI_Type is $rootUnit.URI_Type;`n   subtype Request_Type is $rootUnit.Request_Type;`n   POST : constant Integer := $rootUnit.POST;`n`n   type Client_Type is new $rootUnit.Client_Base_Type with null record;")
+            $text = [regex]::Replace($text, "(?ms)^   subtype URI_Type is $rootUnit\.URI_Type;\r?\n   subtype Request_Type is $rootUnit\.Request_Type;\r?\n   POST : constant Integer := $rootUnit\.POST;\r?\n\r?\n", '')
+            if ($text -notmatch "subtype URI_Type") {
+                $text = $text.Replace("   type Client_Type is new $rootUnit.Client_Base_Type with null record;", "   subtype URI_Type is $rootUnit.URI_Type;`n   subtype Request_Type is $rootUnit.Request_Type;`n   POST : constant Integer := $rootUnit.POST;`n`n   type Client_Type is new $rootUnit.Client_Base_Type with null record;")
+            }
         }
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-client.adb')) {
             $text = [regex]::Replace($text, "(?m)^\s*C\.Set_Credentials \(Cred'Unchecked_Access\);\r?\n", "      null;`n")
         }
+        $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
+        $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path \(", "$rootUnit.Set_Path (`$1,")
         Set-Content -LiteralPath $_.FullName -Value $text -Encoding utf8NoBOM
     }
 

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)] [ValidateSet('ruby', 'php', 'dart', 'swift', 'cpp', 'bash', 'perl', 'powershell', 'ada', 'crystal', 'nim', 'r')] [string] $TargetId,
+    [Parameter(Mandatory = $true)] [ValidateSet('ruby', 'php', 'dart', 'swift', 'cpp', 'c', 'clojure', 'elm', 'gdscript', 'bash', 'perl', 'powershell', 'ada', 'crystal', 'nim', 'r')] [string] $TargetId,
     [Parameter(Mandatory = $true)] [string] $SourceRoot,
     [Parameter(Mandatory = $true)] [string] $WireRoot,
     [Parameter(Mandatory = $true)] [string] $AuthorityManifest,
@@ -174,12 +174,21 @@ switch ($TargetId) {
         )
         $env:PROTOC = $protoc
         $env:PROTOC_GEN_DART = $dartPlugin
-        $env:PUB_CACHE = Join-Path $SourceRoot 'dart/.pub-cache'
+        $pubCache = @(
+            (Join-Path $SourceRoot 'dart/.pub-cache'),
+            $env:PUB_CACHE,
+            'Q:\sdk\dart\.pub-cache',
+            'C:\Users\varun\AppData\Local\Pub\Cache'
+        ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+        if (-not $pubCache) { throw 'Dart producer requires a pinned PUB_CACHE with the locked dependencies' }
+        $env:PUB_CACHE = $pubCache
         $toolPaths.Add($dart)
         $toolPaths.Add($protoc)
         $toolPaths.Add($dartPlugin)
         $input = Join-Path $OutputRoot '.producer-input/dart'
         Copy-Tree (Join-Path $SourceRoot 'dart') $input
+        & $dart pub get --offline --directory $input
+        if ($LASTEXITCODE -ne 0) { throw "Dart dependency restore failed with exit code $LASTEXITCODE" }
         & $dart 'run' (Join-Path $input 'tool/generate.dart') '--schema-root' $WireRoot '--manifest' $wireManifest
         if ($LASTEXITCODE -ne 0) { throw "Dart producer failed with exit code $LASTEXITCODE" }
         Copy-PackageTree $input $TargetOutput @('.dart_tool', '.pub-cache', '.toolchain', 'test')
@@ -216,6 +225,16 @@ switch ($TargetId) {
         $toolPaths.Add($plugin)
         & (Join-Path $SourceRoot 'cpp/Generate.ps1') -Protoc $protoc -GrpcCppPlugin $plugin -ProtoRoot $WireRoot -OutputDirectory $TargetOutput
         if ($LASTEXITCODE -ne 0) { throw "C++ producer failed with exit code $LASTEXITCODE" }
+    }
+    { $_ -in @('c', 'clojure', 'elm', 'gdscript') } {
+        $java = Resolve-PinnedTool 'java' @('C:\Program Files\Eclipse Adoptium\jdk-17.0.14.7-hotspot\bin\java.exe', (Join-Path $SourceRoot 'build/jdk-17/bin/java.exe'))
+        $env:PATH = "$(Split-Path -Parent $java);$([Environment]::GetEnvironmentVariable('PATH'))"
+        $toolPaths.Add($java)
+        $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+        $toolPaths.Add((Resolve-Path -LiteralPath $jar).Path)
+        & (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/produce-c-clojure-elm-gdscript.ps1') -TargetId $TargetId -SourceRoot $SourceRoot -AuthorityManifest $AuthorityManifest -OutputRoot $OutputRoot -TargetOutput $TargetOutput -Request $Request
+        if ($LASTEXITCODE -ne 0) { throw "OpenAPI HTTP producer failed for $TargetId" }
     }
     { $_ -in @('bash', 'perl', 'powershell') } {
         $java = Resolve-PinnedTool 'java' @(
