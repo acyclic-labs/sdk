@@ -9,34 +9,36 @@
 
 use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
-    Error, IdempotencyKey, OperationId, Result,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
-        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
-        LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
+        workspace_ref, FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase,
+        LocalSwarmBindings, LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation,
     },
     model::{Model, ModelContent, ModelEvent, ModelProvider, ModelRequest},
     resources::ProviderRef,
-    swarm_budget::{SwarmBudgetLimits, SwarmUsage, SwarmUsageSource},
-    TaskId,
+    swarm_budget::{
+        SwarmBudgetLimits, SwarmForkRequest, SwarmResourceRequest, SwarmUsage, SwarmUsageSource,
+    },
+    swarm_budget_journal::SwarmBudgetJournal,
+    Error, IdempotencyKey, OperationId, Result, TaskId,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
-    StreamExt as _,
     future::BoxFuture,
     stream::{self, BoxStream},
+    StreamExt as _,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::Path,
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex,
     },
 };
 use tempfile::tempdir;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 fn operation(byte: u8) -> OperationId {
     OperationId::from_bytes([byte; 16])
@@ -47,9 +49,9 @@ fn task(byte: u8) -> TaskId {
 }
 
 fn has_task(request: &ModelRequest, needle: &str) -> bool {
-    request.messages.iter().any(|message| {
-        matches!(&message.content, ModelContent::Text(text) if text.contains(needle))
-    })
+    request.messages.iter().any(
+        |message| matches!(&message.content, ModelContent::Text(text) if text.contains(needle)),
+    )
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,18 +144,21 @@ impl ModelProvider for BudgetProvider {
             }
             if matches!(self.mode, ProviderMode::BlockChildren) {
                 let released = self.released.clone();
-                return Box::pin(stream::once(async move {
-                    while !released.load(Ordering::SeqCst) {
-                        tokio::task::yield_now().await;
-                    }
-                    Ok(ModelEvent::Content {
-                        delta: "child result".into(),
+                return Box::pin(
+                    stream::once(async move {
+                        while !released.load(Ordering::SeqCst) {
+                            tokio::task::yield_now().await;
+                        }
+                        Ok(ModelEvent::Content {
+                            delta: "child result".into(),
+                        })
                     })
-                }).chain(stream::once(async {
-                    Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    })
-                })));
+                    .chain(stream::once(async {
+                        Ok(ModelEvent::Completed {
+                            metadata: Value::Null,
+                        })
+                    })),
+                );
             }
             return Box::pin(stream::iter([
                 Ok(ModelEvent::Content {
@@ -198,13 +203,11 @@ impl ModelProvider for BudgetProvider {
                     }),
                 ]
             };
-            return Box::pin(stream::iter(
-                children
-                    .into_iter()
-                    .chain(std::iter::once(Ok(ModelEvent::Completed {
-                        metadata: Value::Null,
-                    }))),
-            ));
+            return Box::pin(stream::iter(children.into_iter().chain(std::iter::once(
+                Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }),
+            ))));
         }
         Box::pin(stream::iter([
             Ok(ModelEvent::Content {
@@ -228,6 +231,7 @@ impl ModelProvider for BudgetProvider {
 struct RecordingUsageSource {
     counters: Mutex<BTreeMap<(OperationId, String), SwarmUsage>>,
     failing_operation: Mutex<Option<OperationId>>,
+    reads: Mutex<Vec<(OperationId, String)>>,
 }
 
 impl RecordingUsageSource {
@@ -237,6 +241,10 @@ impl RecordingUsageSource {
 
     fn clear_failure(&self) {
         *self.failing_operation.lock().expect("failure lock") = None;
+    }
+
+    fn reads(&self) -> Vec<(OperationId, String)> {
+        self.reads.lock().expect("reads lock").clone()
     }
 }
 
@@ -250,6 +258,10 @@ impl SwarmUsageSource for RecordingUsageSource {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> Result<SwarmUsage> {
+        self.reads
+            .lock()
+            .map_err(|_| Error::Storage("reads lock poisoned".into()))?
+            .push((operation_id, dispatch_id.0.clone()));
         if self
             .failing_operation
             .lock()
@@ -417,7 +429,9 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
     )
     .await?;
 
-    let output = swarm.run_root(operation(0x01), "start budget children").await?;
+    let output = swarm
+        .run_root(operation(0x01), "start budget children")
+        .await?;
     assert_eq!(output.text, "root result");
     let usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(usage.active_agents, 1);
@@ -457,8 +471,8 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
 }
 
 #[tokio::test]
-async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_completion() -> Result<()>
-{
+async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_completion(
+) -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let budget = limits(2, 3, 1);
     let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-capacity-owner", 0)?;
@@ -475,7 +489,11 @@ async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_com
     .await?;
     let run = tokio::spawn({
         let swarm = swarm.clone();
-        async move { swarm.run_root(operation(0x02), "exercise sibling capacity").await }
+        async move {
+            swarm
+                .run_root(operation(0x02), "exercise sibling capacity")
+                .await
+        }
     });
 
     timeout(Duration::from_secs(5), async {
@@ -517,7 +535,9 @@ async fn persistent_local_budget_retains_capacity_when_measurement_is_uncertain(
         source.clone(),
     )
     .await?;
-    let _ = swarm.run_root(operation(0x03), "retain uncertain child reservation").await;
+    let _ = swarm
+        .run_root(operation(0x03), "retain uncertain child reservation")
+        .await;
     let usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(usage.active_agents, 2);
     let child = swarm
@@ -526,17 +546,23 @@ async fn persistent_local_budget_retains_capacity_when_measurement_is_uncertain(
         .into_iter()
         .find(|session| session.task == task(0xA1))
         .ok_or_else(|| Error::NotFound("uncertain child session".into()))?;
-    assert!(matches!(child.phase, LocalSessionPhase::Activating | LocalSessionPhase::Failed(_)));
+    assert!(matches!(
+        child.phase,
+        LocalSessionPhase::Activating | LocalSessionPhase::Failed(_)
+    ));
 
     source.clear_failure();
     let _ = swarm.cancel(child.task).await?;
-    assert_eq!(swarm.budget_usage().await?.expect("budget").active_agents, 1);
+    assert_eq!(
+        swarm.budget_usage().await?.expect("budget").active_agents,
+        1
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn persistent_local_budget_cancels_before_release_for_non_storage_provider_error() -> Result<()>
-{
+async fn persistent_local_budget_cancels_before_release_for_non_storage_provider_error(
+) -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let budget = limits(2, 3, 1);
     let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-error-owner", 0)?;
@@ -582,7 +608,9 @@ async fn persistent_local_budget_recursive_reopen_does_not_charge_grandchild_aga
         source.clone(),
     )
     .await?;
-    let output = swarm.run_root(operation(0x05), "recursive budget recovery").await?;
+    let output = swarm
+        .run_root(operation(0x05), "recursive budget recovery")
+        .await?;
     let first_usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(swarm.sessions().await.len(), 3);
     assert_eq!(
@@ -605,10 +633,162 @@ async fn persistent_local_budget_recursive_reopen_does_not_charge_grandchild_aga
     .await?;
     assert_eq!(reopened.budget_usage().await?.expect("budget"), first_usage);
     assert_eq!(
-        reopened.run_root(operation(0x05), "recursive budget recovery").await?,
+        reopened
+            .run_root(operation(0x05), "recursive budget recovery")
+            .await?,
         output
     );
     assert_eq!(provider.calls.load(Ordering::SeqCst), calls_before_reopen);
     assert!(provider.request_count() >= 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn persistent_local_budget_usage_failure_is_bound_to_exact_dispatch_identity() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let budget = limits(3, 4, 2);
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-identity-owner", 0)?;
+    let source = Arc::new(RecordingUsageSource::default());
+    source.fail_for(operation(0xA1));
+    let provider = BudgetProvider::new(ProviderMode::Normal);
+    let swarm = open_swarm(
+        directory.path(),
+        provider,
+        ProviderMode::Normal,
+        budget,
+        owner,
+        source.clone(),
+    )
+    .await?;
+
+    let _ = swarm
+        .run_root(operation(0x06), "fail only child A measurement")
+        .await;
+    let reads = source.reads();
+    assert!(reads
+        .iter()
+        .any(|(operation_id, _)| *operation_id == operation(0xA1)));
+    assert!(reads
+        .iter()
+        .any(|(operation_id, _)| *operation_id == operation(0xB1)));
+    assert!(reads
+        .iter()
+        .filter(|(operation_id, _)| *operation_id == operation(0xB1))
+        .all(|(_, dispatch_id)| !dispatch_id.is_empty()));
+    assert!(
+        swarm
+            .sessions()
+            .await
+            .into_iter()
+            .any(|session| session.task == task(0xB1)
+                && session.phase == LocalSessionPhase::Completed)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_stream_budget_cas_orders_concurrent_child_reservations() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (_host, stream, _project) = local_project(directory.path()).await?;
+    let budget = limits(3, 3, 1);
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-cas-owner", 0)?;
+    let session = operation(0xD1);
+    let root_dispatch = IdempotencyKey::new("root-budget-cas")?;
+    let _root = SwarmBudgetJournal::start_with_root_dispatch(
+        &stream,
+        session,
+        owner.clone(),
+        budget,
+        root_dispatch,
+    )
+    .await?;
+    let mut left = SwarmBudgetJournal::open(&stream, session).await?;
+    let mut right = SwarmBudgetJournal::open(&stream, session).await?;
+    let resources = SwarmResourceRequest {
+        model_steps: 4,
+        output_bytes: 1_024,
+        execution_time_ms: 10_000,
+    };
+    let left_request = SwarmForkRequest {
+        operation_id: operation(0xD2),
+        idempotency_key: IdempotencyKey::new("budget-cas-left")?,
+        parent_operation_id: Some(session),
+        depth: 1,
+        resources,
+        admission_digest: None,
+    };
+    let right_request = SwarmForkRequest {
+        operation_id: operation(0xD3),
+        idempotency_key: IdempotencyKey::new("budget-cas-right")?,
+        parent_operation_id: Some(session),
+        depth: 1,
+        resources,
+        admission_digest: None,
+    };
+    let (left_result, right_result) = tokio::join!(
+        left.reserve_child(left_request),
+        right.reserve_child(right_request)
+    );
+    assert!(
+        left_result.is_ok(),
+        "left reservation failed: {left_result:?}"
+    );
+    assert!(
+        right_result.is_ok(),
+        "right reservation failed: {right_result:?}"
+    );
+    left.refresh().await?;
+    assert_eq!(left.usage()?.active_agents, 3);
+    assert_eq!(left.usage()?.total_agents, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_stream_budget_fences_stale_owner_claim_and_cancel() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (_host, stream, _project) = local_project(directory.path()).await?;
+    let budget = limits(2, 2, 1);
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-stale-owner", 0)?;
+    let session = operation(0xE1);
+    let root_dispatch = IdempotencyKey::new("root-stale-owner")?;
+    let mut primary = SwarmBudgetJournal::start_with_root_dispatch(
+        &stream,
+        session,
+        owner.clone(),
+        budget,
+        root_dispatch,
+    )
+    .await?;
+    let request = SwarmForkRequest {
+        operation_id: operation(0xE2),
+        idempotency_key: IdempotencyKey::new("stale-child")?,
+        parent_operation_id: Some(session),
+        depth: 1,
+        resources: SwarmResourceRequest {
+            model_steps: 4,
+            output_bytes: 1_024,
+            execution_time_ms: 10_000,
+        },
+        admission_digest: None,
+    };
+    primary.reserve_child(request).await?;
+    let mut stale = SwarmBudgetJournal::open(&stream, session).await?;
+    let next_owner = primary
+        .takeover(&owner, "budget-stale-owner-recovered")
+        .await?;
+    stale.refresh().await?;
+    let claim = stale
+        .claim_root_model_step(&owner, session, 0, [0xA5; 32])
+        .await
+        .expect_err("stale owner must lose root permit");
+    assert!(matches!(claim, Error::Conflict(message) if message.contains("stale")));
+    let cancel = stale
+        .cancel(operation(0xE2), &owner)
+        .await
+        .expect_err("stale owner must not cancel the rebound child");
+    assert!(matches!(cancel, Error::Conflict(message) if message.contains("stale")));
+    primary.refresh().await?;
+    assert_eq!(primary.descriptor()?.1, next_owner);
+    assert_eq!(primary.usage()?.active_agents, 2);
     Ok(())
 }
