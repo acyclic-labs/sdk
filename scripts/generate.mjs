@@ -8,8 +8,8 @@ import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const buf = join(root, "node_modules", ".bin", process.platform === "win32" ? "buf.exe" : "buf");
 let authorityCargoEnv = { ...process.env };
-const run = args => {
-  const result = spawnSync(buf, args, { cwd: root, stdio: "inherit", env: authorityCargoEnv });
+const run = (args, cwd = root) => {
+  const result = spawnSync(buf, args, { cwd, stdio: "inherit", env: authorityCargoEnv });
   if (result.error) throw result.error;
   if (result.status !== 0) process.exit(result.status ?? 1);
 };
@@ -29,8 +29,9 @@ const authorityFor = source => {
 for (const [source, destination] of generatedDescriptors) {
   mkdirSync(dirname(join(root, destination)), { recursive: true });
   const family = authorityFor(source);
-  const input = family ? join(authorityInput, family.source) : join(root, source);
-  run(["build", "--path", input, "-o", join(root, destination)]);
+  const buildRoot = family ? authorityInput : root;
+  const input = family ? family.source : source;
+  run(["build", "--path", input, "-o", join(root, destination)], buildRoot);
 }
 writeFileSync(
   join(root, "typescript/packages/filesystem/generated/descriptor-digest.js"),

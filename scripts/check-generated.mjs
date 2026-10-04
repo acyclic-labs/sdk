@@ -191,21 +191,58 @@ try {
   }
   const freshRust = join(temporary, "generated/rust");
   const committedRust = join(root, "generated/rust");
+  const rustProductFiles = new Set(
+    packagedRustBindings
+      .filter(([relative]) => /^(?:acyclic)\/(?:actors|workers|objects)\//.test(relative.replaceAll("\\", "/")))
+      .map(([relative]) => relative.replaceAll("\\", "/")),
+  );
   const freshRustFiles = generatedFiles(freshRust);
   if (JSON.stringify(freshRustFiles) !== JSON.stringify(generatedFiles(committedRust))) {
     throw new Error("generated Rust file set drift; run bun run generate");
   }
   for (const relative of freshRustFiles) {
-    const fresh = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(freshRust, relative), "utf8"));
-    const committed = normalizeGeneratedRust(relative.replaceAll("\\", "/"), readFileSync(join(committedRust, relative), "utf8"));
+    const normalized = relative.replaceAll("\\", "/");
+    if (rustProductFiles.has(normalized)) continue;
+    const fresh = normalizeGeneratedRust(normalized, readFileSync(join(freshRust, relative), "utf8"));
+    const committed = normalizeGeneratedRust(normalized, readFileSync(join(committedRust, relative), "utf8"));
     if (fresh !== committed) throw new Error(`generated Rust drift: ${relative}`);
   }
+  const products = spawnSync(
+    "cargo",
+    [
+      "run",
+      "--quiet",
+      "--locked",
+      "--offline",
+      "--manifest-path",
+      join(root, "rust/crates/sdk-contract-wire/Cargo.toml"),
+      "--",
+      "check-products",
+      "--root",
+      root,
+    ],
+    { cwd: root, encoding: "utf8", env: authorityCargoEnv },
+  );
+  if (products.status !== 0) {
+    process.stderr.write(products.stdout ?? "");
+    process.stderr.write(products.stderr ?? "");
+    throw new Error(`Rust product parity failed with status ${products.status ?? "unknown"}`);
+  }
+  const rustProductDescriptors = new Set([
+    "rust/crates/filesystem/src/generated/acyclic-filesystem-v2.bin",
+    "rust/crates/objects/src/generated/acyclic-objects-v2.bin",
+    "rust/crates/machines/src/generated/acyclic-machines-v1.bin",
+    "rust/crates/inference/inference_descriptor.bin",
+    "rust/crates/inference-contract/inference_descriptor.bin",
+  ]);
   for (const [source, destination] of generatedDescriptors) {
+    if (rustProductDescriptors.has(destination)) continue;
     const descriptor = join(temporary, destination.replaceAll("/", "-"));
     const family = authorityFor(source);
-    const input = family ? join(authorityInput, family.source) : join(root, source);
+    const buildRoot = family ? authorityInput : root;
+    const input = family ? family.source : source;
     const built = spawnSync(executable, ["build", "--path", input, "-o", descriptor], {
-      cwd: root,
+      cwd: buildRoot,
       encoding: "utf8",
       env: authorityCargoEnv,
     });
