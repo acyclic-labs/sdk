@@ -707,6 +707,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
         let inherited_through_sequence = request.preparation.inherited_through_sequence;
         let report = ForkReport {
             request,
+            original_request_digest: None,
             captures,
             child_private_volume: private.clone(),
             child_private_generation,

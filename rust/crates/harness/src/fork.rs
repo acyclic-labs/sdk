@@ -1242,6 +1242,11 @@ impl CapturedResource {
 pub struct ForkReport {
     /// The original immutable request.
     pub request: ForkRequest,
+    /// Digest of the exact request before a durable publication rebind. This
+    /// is present only when the publication predecessor advanced while the
+    /// immutable history capture remained pinned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_request_digest: Option<[u8; 32]>,
     /// One result per selection in the same order.
     pub captures: Vec<Capture>,
     /// Newly created empty child-owned private volume.
@@ -1264,7 +1269,67 @@ impl ForkReport {
     /// Validates a prepared report even when a required capture is still
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
+        self.request.validate()?;
+        self.validate_body()
+    }
+
+    /// Validates a report after its publication predecessor was durably
+    /// rebound. The digest proves the older capture came from the exact
+    /// request before the rebind; arbitrary older history is rejected.
+    pub(crate) fn validate_rebound(&self) -> Result<()> {
         self.request.validate_rebound()?;
+        let captured = self.captured_history_revision()?;
+        if captured < self.request.parent_revision {
+            let digest = self.original_request_digest.ok_or_else(|| {
+                Error::Conflict("rebound fork report has no original request proof".into())
+            })?;
+            let mut original = self.request.clone();
+            original.parent_revision = captured;
+            if crate::contract::canonical_json_digest(&original)? != digest {
+                return Err(Error::Conflict(
+                    "rebound fork report original request proof changed".into(),
+                ));
+            }
+        } else if self.original_request_digest.is_some() {
+            return Err(Error::Conflict(
+                "exact fork report carries a rebound request proof".into(),
+            ));
+        }
+        self.validate_body()
+    }
+
+    fn captured_history_revision(&self) -> Result<u64> {
+        let mut captured = None;
+        for capture in &self.captures {
+            let Capture::Captured(resource) = capture else {
+                continue;
+            };
+            if let ResourceRevision::History(reference) = &resource.source {
+                let ResourceRevision::History(revision) = &resource.revision else {
+                    return Err(Error::Invalid(
+                        "fork history capture has a non-history child revision".into(),
+                    ));
+                };
+                if reference != revision {
+                    return Err(Error::Invalid(
+                        "fork history capture source and child revision differ".into(),
+                    ));
+                }
+                let version = reference
+                    .as_resource()
+                    .version()
+                    .and_then(|version| version.parse::<u64>().ok())
+                    .filter(|version| *version > 0)
+                    .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
+                if captured.replace(version).is_some() {
+                    return Err(Error::Invalid("fork history capture appears twice".into()));
+                }
+            }
+        }
+        captured.ok_or_else(|| Error::Invalid("fork report has no history capture".into()))
+    }
+
+    fn validate_body(&self) -> Result<()> {
         if self.inherited_through_sequence > MAX_FORK_INHERITED_MESSAGES
             || self.inherited_context.len() > MAX_FORK_RESOURCES
             || self.shared_grants.len() > MAX_FORK_REFERENCES
@@ -1354,7 +1419,11 @@ impl ForkReport {
 
     /// Produces a publishable seed only when every required capture succeeded.
     pub fn into_seed(self) -> Result<ForkSeed> {
-        self.validate()?;
+        if self.original_request_digest.is_some() {
+            self.validate_rebound()?;
+        } else {
+            self.validate()?;
+        }
         let mut resources = Vec::new();
         let mut omissions = Vec::new();
         for (selection, capture) in self.request.selections.iter().zip(self.captures) {
@@ -2450,6 +2519,7 @@ mod tests {
                 boundary: None,
                 model_boundary: None,
             },
+            original_request_digest: None,
             captures: seed
                 .resources
                 .iter()

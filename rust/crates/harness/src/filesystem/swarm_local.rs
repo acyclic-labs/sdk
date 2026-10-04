@@ -324,8 +324,26 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
 }
 
 fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Result<()> {
+    let captured = report
+        .captures
+        .iter()
+        .find_map(|capture| match capture {
+            Capture::Captured(resource)
+                if matches!(&resource.source, ResourceRevision::History(_)) =>
+            {
+                resource.source.as_resource().version()?.parse::<u64>().ok()
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Invalid("fork report has no captured history revision".into()))?;
+    if captured >= parent_revision {
+        return Err(Error::Conflict(
+            "fork report rebind requires an advanced publication revision".into(),
+        ));
+    }
+    report.original_request_digest = Some(crate::contract::canonical_json_digest(&report.request)?);
     report.request.parent_revision = parent_revision;
-    report.validate()
+    report.validate_rebound()
 }
 
 /// Owner allocator invoked only after the parent completed batch is
@@ -567,7 +585,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 .get(&child_task)
                 .cloned();
             if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
-                report.validate()?;
+                report.validate_rebound()?;
                 let seed = report.clone().into_seed()?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
@@ -790,7 +808,7 @@ impl LocalModelForkPlan {
                 "model fork plan publication identity is empty".into(),
             ));
         }
-        self.report.validate()?;
+        self.report.validate_rebound()?;
         let seed = self.report.clone().into_seed()?;
         let fork_operation = self.request.fork_operation.ok_or_else(|| {
             Error::Invalid("model fork plan requires a fork operation identity".into())
@@ -3268,7 +3286,7 @@ impl PersistentLocalSwarm {
         let fork_operation = request.fork_operation.ok_or_else(|| {
             Error::Invalid("typed fork publication requires a fork operation identity".into())
         })?;
-        report.validate()?;
+        report.validate_rebound()?;
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
             || report.request.operation_id != fork_operation
@@ -3484,7 +3502,7 @@ impl PersistentLocalSwarm {
         declaration: LocalInheritedModelDeclaration,
     ) -> Result<ForkSeed> {
         request.validate()?;
-        report.validate()?;
+        report.validate_rebound()?;
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
             || request.fork_operation != Some(report.request.operation_id)
@@ -4306,8 +4324,13 @@ fn apply_record(
             declaration,
             ..
         } => {
+            if seed.is_some() != report.is_some() {
+                return Err(Error::Conflict(
+                    "persisted fork seed and report must be restored together".into(),
+                ));
+            }
             if let (Some(seed), Some(report)) = (&seed, &report) {
-                report.validate()?;
+                report.validate_rebound()?;
                 if report.clone().into_seed()? != *seed {
                     return Err(Error::Conflict(
                         "persisted fork report is not bound to its typed seed".into(),
@@ -4377,7 +4400,7 @@ fn apply_record(
                 seeds.insert(child, seed);
             }
             if let Some(report) = report {
-                report.validate()?;
+                report.validate_rebound()?;
                 if let Some(existing) = reports.get(&child)
                     && existing != &report
                 {
