@@ -209,6 +209,17 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 "scenario {family}/{rpc} omitted Rust response rules"
             ));
         }
+        let rule_results = semantic
+            .get("rule_results")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no semantic rule results"))?;
+        for rule in &authority_shape.response_rules {
+            if rule_results.get(rule).and_then(Value::as_bool) != Some(true) {
+                return Err(format!(
+                    "scenario {family}/{rpc} did not prove response rule {rule}"
+                ));
+            }
+        }
         if authority_shape
             .response_rules
             .iter()
@@ -247,6 +258,7 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         }
         if !check_set.contains("invocation")
             || !check_set.contains("transport")
+            || !check_set.contains("receiver-response")
             || !check_set.contains("serialization")
         {
             return Err(format!("scenario {family}/{rpc} lacks invocation or transport evidence"));
@@ -682,6 +694,30 @@ mod tests {
         cleanup(&output);
     }
 
+    #[test]
+    fn receipt_writer_rejects_response_type_drift() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["response_type"] = json!("evil.Response");
+        });
+        let error = write(&options).expect_err("response type drift must fail closed");
+        assert!(error.contains("response type evil.Response differs from Rust authority"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_response_fields_outside_rust_descriptor() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["present_fields"] = json!(["untrusted"]);
+        });
+        let error = write(&options).expect_err("unknown response fields must fail closed");
+        assert!(error.contains("response fields outside the Rust descriptor"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
     fn fixture(missing_rpc: bool, in_process: bool, rpc_error: bool) -> (PathBuf, PathBuf, Options) {
         let root = env::temp_dir().join(format!(
             "acyclic-sdk-receipt-helper-{}-{}-{}",
@@ -704,7 +740,7 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"identity_matches":false},"checks":["invocation","transport","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false},"checks":["invocation","transport","receiver-response","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let outcome = if rpc_error {
             r#"{"status":"ok","code":12,"response_count":0}"#
@@ -769,8 +805,36 @@ mod tests {
         )
     }
 
+    fn mutate_scenario(output: &Path, mutation: impl FnOnce(&mut Value)) {
+        let scenario_path = output.join("qualification/consumers/actors-create.json");
+        let mut scenario = read_json(&scenario_path).expect("read scenario fixture");
+        mutation(&mut scenario);
+        write_json(&scenario_path, &scenario);
+        let scenario_bytes = fs::read(&scenario_path).expect("read mutated scenario");
+
+        let manifest_path = output.join("sdk-generation-manifest.json");
+        let mut manifest = read_json(&manifest_path).expect("read generation manifest");
+        let artifacts = manifest["artifacts"].as_array_mut().expect("manifest artifacts");
+        let artifact = artifacts
+            .iter_mut()
+            .find(|artifact| artifact.get("path").and_then(Value::as_str)
+                == Some("qualification/consumers/actors-create.json"))
+            .expect("scenario manifest artifact");
+        artifact["sha256"] = json!(sha256(&scenario_bytes));
+        artifact["bytes"] = json!(scenario_bytes.len());
+        write_json(&manifest_path, &manifest);
+
+        let log_path = output.join("scenario-log.json");
+        let mut log = read_json(&log_path).expect("read scenario log");
+        let scenarios = log["scenarios"].as_array_mut().expect("scenario log entries");
+        scenarios[0]["output_sha256"] = json!(sha256(&scenario_bytes));
+        write_json(&log_path, &log);
+    }
+
     fn git(root: &Path, args: &[&str]) {
-        let result = Command::new("git")
+        let mut command = Command::new("git");
+        clear_git_selection(&mut command);
+        let result = command
             .args(args)
             .current_dir(root)
             .output()

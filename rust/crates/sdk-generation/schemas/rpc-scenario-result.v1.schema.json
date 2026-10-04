@@ -32,11 +32,12 @@
     "semantic_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["response_type", "present_fields", "checked_rules", "identity_matches"],
+      "required": ["response_type", "present_fields", "checked_rules", "rule_results", "identity_matches"],
       "properties": {
         "response_type": { "type": "string", "minLength": 1 },
         "present_fields": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "checked_rules": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "rule_results": { "type": "object", "additionalProperties": { "type": "boolean" } },
         "identity_matches": { "type": "boolean" }
       }
     },
@@ -47,6 +48,7 @@
       "contains": { "const": "invocation" },
       "allOf": [
         { "contains": { "const": "transport" } },
+        { "contains": { "const": "receiver-response" } },
         { "contains": { "const": "serialization" } }
       ],
       "items": {

@@ -307,25 +307,30 @@ final class RpcScenarioEvidenceTest {
       throw new AssertionError(rpc + " returned a non-protobuf response");
     }
     var descriptor = message.getDescriptorForType();
-    List<String> fields = descriptor.getFields().stream()
+    List<String> descriptorFields = descriptor.getFields().stream()
+        .map(field -> field.getJsonName())
+        .toList();
+    List<String> presentFields = message.getAllFields().keySet().stream()
         .map(field -> field.getJsonName())
         .toList();
     assertEquals(expectation.response(), descriptor.getFullName(),
         rpc + " response type is not the Rust authority response");
-    assertEquals(expectation.responseFields(), fields,
+    assertEquals(expectation.responseFields(), descriptorFields,
         rpc + " response fields drifted from the Rust authority descriptor");
-    assertEquals(expectation.allowEmptyResponse(), fields.isEmpty(),
+    assertEquals(expectation.allowEmptyResponse(), descriptorFields.isEmpty(),
         rpc + " empty-response allowance must come from the Rust descriptor");
     // The Rust descriptor is the authority for whether an operation's output
     // message has fields. A genuinely fieldless protobuf response is valid;
     // for every typed response, a default instance is evidence that the
     // fixture never exercised the Rust wire contract.
     boolean identityMatches = true;
+    Map<String, Boolean> ruleResults = new LinkedHashMap<>();
     boolean hasIdentityRule = expectation.responseRules().stream().anyMatch(rule -> rule.contains("identity"));
     if (expectation.allowEmptyResponse()) {
-      return new ResponseObservation(descriptor.getFullName(), fields, expectation.responseRules(), true);
+      for (String rule : expectation.responseRules()) ruleResults.put(rule, true);
+      return new ResponseObservation(descriptor.getFullName(), presentFields, expectation.responseRules(), ruleResults, true);
     }
-    if (message.getAllFields().isEmpty() || message.getSerializedSize() == 0) {
+    if (presentFields.isEmpty() || message.getSerializedSize() == 0) {
       throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
     }
     for (String rule : expectation.responseRules()) {
@@ -338,8 +343,9 @@ final class RpcScenarioEvidenceTest {
         assertMatchingIdentityFields(requestMessage, message, rpc);
       }
       if (rule.contains("identity")) identityMatches = true;
+      ruleResults.put(rule, true);
     }
-    return new ResponseObservation(descriptor.getFullName(), fields, expectation.responseRules(),
+    return new ResponseObservation(descriptor.getFullName(), presentFields, expectation.responseRules(), ruleResults,
         !hasIdentityRule || identityMatches);
   }
 
@@ -474,7 +480,7 @@ final class RpcScenarioEvidenceTest {
   private record InvocationResult(int responseCount, ResponseObservation semantic) {}
 
   private record ResponseObservation(String responseType, List<String> presentFields,
-      List<String> checkedRules, boolean identityMatches) {}
+      List<String> checkedRules, Map<String, Boolean> ruleResults, boolean identityMatches) {}
 
   private record Scenario(String revision, String family, String rpc, String shape,
       String executionMode, int responseCount, ResponseObservation semantic) {
@@ -488,10 +494,21 @@ final class RpcScenarioEvidenceTest {
           + responseCount + "},\"semantic_evidence\":{\"response_type\":\""
           + RpcScenarioEvidenceTest.json(semantic.responseType()) + "\",\"present_fields\":"
           + stringArray(semantic.presentFields()) + ",\"checked_rules\":"
-          + stringArray(semantic.checkedRules()) + ",\"identity_matches\":"
+          + stringArray(semantic.checkedRules()) + ",\"rule_results\":"
+          + booleanMap(semantic.ruleResults()) + ",\"identity_matches\":"
           + semantic.identityMatches() + "},"
           + "\"checks\":[\"invocation\",\"transport\",\"receiver-response\",\"serialization\"]}\n";
     }
+  }
+
+  private static String booleanMap(Map<String, Boolean> values) {
+    StringBuilder result = new StringBuilder("{");
+    int index = 0;
+    for (var entry : values.entrySet()) {
+      if (index++ > 0) result.append(',');
+      result.append('"').append(json(entry.getKey())).append("\":").append(entry.getValue());
+    }
+    return result.append('}').toString();
   }
 
   private static String stringArray(List<String> values) {
