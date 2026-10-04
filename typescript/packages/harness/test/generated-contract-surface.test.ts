@@ -42,14 +42,16 @@ function sourceExports(source: string): ExportedFunction[] {
     const functionLine = lines[declaration] ?? "";
     const functionMatch = /^\s*pub\s+(?:async\s+)?fn\s+([A-Za-z0-9_]+)/u.exec(functionLine);
     if (functionMatch === null) continue;
+    const rustName = functionMatch[1];
+    if (rustName === undefined) continue;
     const nameMatch = /\bjs_name\s*=\s*(?:"([A-Za-z0-9_]+)"|([A-Za-z0-9_]+))/u.exec(attribute);
-    const name = nameMatch?.[1] ?? nameMatch?.[2] ?? functionMatch[1];
+    const name = nameMatch?.[1] ?? nameMatch?.[2] ?? rustName;
     // Constructors are represented by a class constructor rather than an
     // exported function. Methods are checked through the public declaration,
     // while the low-level assertion below covers only free functions.
     const method = implDepth !== undefined || lines.slice(Math.max(0, index - 3), index)
       .some(previous => /^\s*(?:pub\s+)?impl\b/u.test(previous));
-    exports.push({ name, rustName: functionMatch[1], method });
+    exports.push({ name, rustName, method });
     braceDepth += braceDelta(attribute);
     if (implDepth !== undefined && braceDepth <= implDepth) implDepth = undefined;
   }

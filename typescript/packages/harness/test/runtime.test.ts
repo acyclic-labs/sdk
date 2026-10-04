@@ -42,6 +42,7 @@ import {
   type FileRef,
   type VolumeRef,
   type ConversationMessageId,
+  type NativeJsonValue,
 } from "../src/index.js";
 import { HARNESS_CHILD_PAGE_DEFAULT, HARNESS_CHILD_PAGE_MAXIMUM, HARNESS_CHILD_SLOT_MAX_BYTES } from "../src/child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "../src/private-directory-page-contract.js";
@@ -136,13 +137,13 @@ test("Rust and WASM share the canonical v3 prerequisite admission fixture", asyn
     operation_id: admission.operation_id,
     name: admission.task.name,
     version: admission.task.version,
-    input: admission.input,
+    input: admission.input as NativeJsonValue,
     input_schema: admission.input_schema,
     output_schema: admission.output_schema,
     requirements: [],
     machine_digest: admission.machine.digest,
     parent: admission.parent,
-    dependencies: admission.dependencies,
+    dependencies: admission.dependencies!,
     grants: admission.grants,
     limits: {
       file_bytes: BigInt(admission.limits.file_bytes),
@@ -228,6 +229,7 @@ test("Rust owns durable task and batch projection identities", () => {
     "42345678-1234-4234-8234-123456789abc",
     "32345678-1234-4234-8234-123456789abc",
   ];
+  const firstPrerequisite = prerequisites[0]!;
   const deferred = contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4, dependencies: prerequisites,
   });
@@ -239,7 +241,7 @@ test("Rust owns durable task and batch projection identities", () => {
     dependencies: [...prerequisites].reverse(),
   }).dependencies).toEqual(deferred.dependencies);
   expect(() => contracts.validate("task_admission", {
-    ...deferred, dependencies: [prerequisites[0], prerequisites[0]],
+    ...deferred, dependencies: [firstPrerequisite, firstPrerequisite],
   })).toThrow();
   expect(() => contracts.validate("task_admission", {
     ...deferred, dependencies: [...deferred.dependencies!].reverse(),
@@ -252,7 +254,7 @@ test("Rust owns durable task and batch projection identities", () => {
   })).toThrow();
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4,
-    dependencies: [prerequisites[0], prerequisites[0]],
+    dependencies: [firstPrerequisite, firstPrerequisite],
   })).toThrow();
   expect(() => contracts.admitTask({
     ...common, operation_id: task.operation_id, input: 4, dependencies: [task.operation_id],
