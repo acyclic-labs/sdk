@@ -506,10 +506,11 @@ fn family_operation_names(family: &str) -> Vec<String> {
         return Vec::new();
     };
     pool.services()
-        .filter(|service| service.parent_file().package() == view.package())
+        .filter(|service| service.parent_file().package_name() == view.package())
         .flat_map(|service| {
-            service.methods().map(|method| {
-                let rpc = format!("{}/{}", service.full_name(), method.name(),);
+            let service_name = service.full_name().to_owned();
+            service.methods().collect::<Vec<_>>().into_iter().map(move |method| {
+                let rpc = format!("{service_name}/{}", method.name(),);
                 view.routes()
                     .iter()
                     .find(|route| route.rpc.ends_with(&rpc))
@@ -610,10 +611,11 @@ fn family_method(family: &str, operation: &str) -> Result<(MethodDescriptor, Str
     let pool = DescriptorPool::decode(view.model.descriptor().as_slice())
         .map_err(|error| format!("decode {family} descriptor: {error}"))?;
     pool.services()
-        .filter(|service| service.parent_file().package() == view.package())
+        .filter(|service| service.parent_file().package_name() == view.package())
         .flat_map(|service| {
-            service.methods().map(|method| {
-                let rpc = format!("{}/{}", service.full_name(), method.name());
+            let service_name = service.full_name().to_owned();
+            service.methods().collect::<Vec<_>>().into_iter().map(move |method| {
+                let rpc = format!("{service_name}/{}", method.name());
                 let route = view.routes().iter().find(|route| {
                     (route.operation_id == operation || route.rpc == operation)
                         && route.rpc.ends_with(&rpc)
