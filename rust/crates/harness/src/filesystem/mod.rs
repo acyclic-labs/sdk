@@ -2575,6 +2575,16 @@ fn map_error(error: WorkspaceError) -> Error {
         | WorkspaceError::ContentLengthOverflow
         | WorkspaceError::Work(_) => Error::Invalid(error.to_string()),
         WorkspaceError::Cancelled(error) => Error::Storage(error.to_string()),
+        // `Fs::open_workspace` reports an absent workspace as an empty
+        // authority. The filesystem facade currently carries that typed
+        // absence through its engine wrapper, so preserve the harness
+        // `NotFound` contract instead of turning a missing allocation into a
+        // generic storage failure. This is especially important for fork
+        // preflight: callers must be able to prove that forged requests left
+        // no child workspace behind.
+        WorkspaceError::Engine(value) if value == "volume authority has no creation fact" => {
+            Error::NotFound("workspace path".into())
+        }
         WorkspaceError::Engine(value) => Error::Storage(value),
     }
 }
