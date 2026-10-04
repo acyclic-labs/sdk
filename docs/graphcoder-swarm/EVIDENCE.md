@@ -295,6 +295,8 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 ## Recursive reader and typed storage follow-up
 
+[Central owner-clock qualification](checkpoint-central-owner-clock-qualified-2026-10-04.json) records 33 passing communication unit cases and four passing real LocalStream/LocalFs cases at `d188c488d`. The host and concrete wait-store constructor share one owner clock; forged mailbox records fail closed. Logs, suites, source tree, and executables are digest-bound. Production native composition and full recursive messaging qualification remain open.
+
 [Recursive fixture evidence](checkpoint-recursive-reader-and-result-2026-10-04.json) records two passing negative fork cases and the failing recursive positive case at `7487f76db`. The fixture now compares inherited content under direct-parent authority and decodes persisted tool results through their typed envelope. The grandchild reads the exact expected bytes; rejection-evidence validation remains unresolved. No production authority or prefix invariant was weakened.
 
 [Focused storage regressions](checkpoint-file-grants-and-workspace-errors-2026-10-04.json) records 10 passing Harness file-access/local-composition cases and one passing Filesystem workspace regression, including distinct missing and corrupt outcomes. Artifact and log digests are retained in an exclusive D-drive target. These scoped passes do not qualify the full swarm, fault matrix, or final installed artifacts.
