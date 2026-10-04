@@ -29,11 +29,13 @@ const REQUIRED_CHECKS: &[&str] = &[
 const REQUIRED_RPCS: &[&str] = &[
     "acyclic.stream.v2.StreamService/Append",
     "acyclic.stream.v2.StreamService/Read",
+    "acyclic.stream.v2.StreamService/Children",
     "acyclic.stream.v2.StreamService/InspectIdempotency",
     "acyclic.stream.v2.StreamService/Commit",
     "acyclic.stream.v2.StreamService/ReadCommit",
     "acyclic.stream.v2.StreamService/ChildrenPage",
     "acyclic.stream.v2.StreamService/Follow",
+    "acyclic.stream.v2.StreamService/Fork",
     "acyclic.stream.v2.StreamService/Tail",
 ];
 
@@ -217,7 +219,7 @@ fn verify(
             return Err(format!("scenario output hash differs: {rpc}"));
         }
     }
-    let required: BTreeSet<_> = REQUIRED_RPCS.iter().copied().collect();
+    let required: BTreeSet<String> = REQUIRED_RPCS.iter().map(|rpc| (*rpc).to_owned()).collect();
     if observed != required {
         return Err(format!("Stream scenario inventory is incomplete: {observed:?}"));
     }
@@ -354,7 +356,7 @@ mod tests {
 
     #[test]
     fn native_gate_requires_the_complete_stream_surface() {
-        assert_eq!(REQUIRED_RPCS.len(), 8);
+        assert_eq!(REQUIRED_RPCS.len(), 10);
         assert_eq!(
             REQUIRED_RPCS.iter().copied().collect::<BTreeSet<_>>().len(),
             REQUIRED_RPCS.len()
