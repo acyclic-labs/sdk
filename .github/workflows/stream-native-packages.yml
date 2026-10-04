@@ -116,6 +116,14 @@ jobs:
           if [[ "${{ matrix.package_target }}" == 'win32-x64' ]]; then
             verify_install='--verify-install'
           fi
+          if [[ "${{ matrix.musl }}" == 'true' ]]; then
+            # Rust's musl target spec does not infer the provisioned wrapper on
+            # every runner image. Bind the linker explicitly so the package
+            # cannot accidentally link against the host glibc toolchain.
+            target_env=$(printf '%s' "${{ matrix.rust_target }}" | tr '[:lower:]-' '[:upper:]_')
+            export "CARGO_TARGET_${target_env}_LINKER=musl-gcc"
+            command -v musl-gcc
+          fi
           node scripts/build-stream-native-package.mjs \
             --target "${{ matrix.package_target }}" \
             --target-dir "$CARGO_TARGET_DIR" \
