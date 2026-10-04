@@ -2,13 +2,13 @@
 
 This lane verifies the Haskell OSS path from the Rust contract itself:
 
-1. @@BT@@source/stream.proto@@BT@@ is copied from @@BT@@rust/crates/stream/proto/stream/v2/stream.proto@@BT@@.
-2. @@BT@@proto-lens-protoc@@BT@@ 0.9.0.1 produces @@BT@@generated/Proto/Stream/V2/Stream.hs@@BT@@ and its field module.
-3. @@BT@@Acyclic.Stream.Api@@BT@@ maps the generated @@BT@@StreamService@@BT@@ methods to grapesy @@BT@@Protobuf@@BT@@ RPC types. Shared request and response behavior stays in generated bindings and grapesy.
-4. @@BT@@run-prototype.ps1@@BT@@ invokes the pinned GHC 9.2.8 and Cabal 3.10.2.1 toolchain from the task cache and runs the generated wire proof.
-5. @@BT@@run-remote-prototype.ps1 -RustGrpcFixture@@BT@@ regenerates from the canonical Rust proto, builds an installable source archive, installs the archive into an isolated directory, and runs the installed typed consumer against the Rust fixture over HTTP/2.
+1. The contract proto set is copied from the Rust-owned `proto/` projection plus `rust/crates/stream/proto/stream/v2/stream.proto`.
+2. `proto-lens-protoc` 0.9.0.1 produces bindings for every active family and archived v1 binding, retaining the generated type-level service method lists.
+3. `Acyclic.Stream.Api` maps the generated `StreamService` methods to grapesy `Protobuf` RPC types. `FullTypedMain.hs` consumes the generated `ServiceMethods` type families and proves the active Rust surface contains exactly 106 methods across 18 services at compile time.
+4. `run-prototype.ps1` invokes the pinned GHC 9.2.8 and Cabal 3.10.2.1 toolchain from the task cache, compiles all 23 generated binding modules, and runs both the generated wire proof and the type-level 106-method proof.
+5. `run-remote-prototype.ps1 -RustGrpcFixture` regenerates from the canonical Rust proto set, builds an installable source archive, installs the archive into an isolated directory, and runs the installed typed consumer against the Rust fixture over HTTP/2.
 
-The remote consumer carries a Rust-owned request manifest for @@BT@@StreamService/Append@@BT@@. It exercises append and recovery on the live connection, configures grapesy cancellation deadlines and exponential reconnect, and exposes TLS through @@BT@@ACYCLIC_HASKELL_GRPC_TLS@@BT@@ for a TLS endpoint.
+The remote consumer carries a Rust-owned request manifest for `StreamService/Append`. It exercises append and recovery on the live connection, configures grapesy cancellation deadlines and exponential reconnect, and exposes TLS through `ACYCLIC_HASKELL_GRPC_TLS` for a TLS endpoint. The remote fixture run remains separate from the local 106-method type proof so a fixture build failure cannot be mistaken for a type-surface pass.
 
 Pinned OSS sources:
 

@@ -8,7 +8,30 @@ build-type:         Simple
 
 library
   hs-source-dirs:      src, generated
-  exposed-modules:     Acyclic.Stream.Api, Proto.Stream.V2.Stream, Proto.Stream.V2.Stream_Fields
+  exposed-modules:
+      Acyclic.Stream.Api
+    , Proto.Actors.V1.Actors
+    , Proto.Actors.V1.Actors_Fields
+    , Proto.Filesystem.V2.Filesystem
+    , Proto.Filesystem.V2.Filesystem_Fields
+    , Proto.Harness.V2.Harness
+    , Proto.Harness.V2.Harness_Fields
+    , Proto.Inference.V1.Inference
+    , Proto.Inference.V1.Inference_Fields
+    , Proto.Machines.V1.Machines
+    , Proto.Machines.V1.Machines_Fields
+    , Proto.Objects.V1.Objects
+    , Proto.Objects.V1.Objects_Fields
+    , Proto.Objects.V2.Objects
+    , Proto.Objects.V2.Objects_Fields
+    , Proto.Protocol.V1.Protocol
+    , Proto.Protocol.V1.Protocol_Fields
+    , Proto.Stream.V2.Stream
+    , Proto.Stream.V2.Stream_Fields
+    , Proto.Validation.V1.Options
+    , Proto.Validation.V1.Options_Fields
+    , Proto.Workers.V1.Workers
+    , Proto.Workers.V1.Workers_Fields
   build-depends:
       base >= 4.16 && < 4.17
     , bytestring >= 0.11 && < 0.12
@@ -42,4 +65,15 @@ executable acyclic-haskell-remote
     , proto-lens == 0.7.1.7
   default-language: Haskell2010
   default-extensions: DataKinds, ImportQualifiedPost, OverloadedStrings, TypeApplications, TypeFamilies
+  ghc-options: -Wall
+
+executable acyclic-haskell-full-typed
+  hs-source-dirs: app
+  main-is: FullTypedMain.hs
+  build-depends:
+      base >= 4.16 && < 4.17
+    , acyclic-haskell-grapesy-prototype
+    , proto-lens == 0.7.1.7
+  default-language: Haskell2010
+  default-extensions: AllowAmbiguousTypes, DataKinds, FlexibleContexts, FlexibleInstances, ImportQualifiedPost, KindSignatures, ScopedTypeVariables, TypeApplications, TypeOperators, UndecidableInstances
   ghc-options: -Wall
