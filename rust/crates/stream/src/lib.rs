@@ -689,6 +689,86 @@ impl<P: StreamProvider> StreamClient<P> {
     pub async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
         self.provider.read_commit(commit_id).await
     }
+
+    /// Executes the canonical protobuf projection against any provider.
+    ///
+    /// Native bindings call these methods instead of translating Stream behavior into the
+    /// consumer language. The generated request and response types remain the wire contract.
+    pub async fn inspect_idempotency_wire(
+        &self,
+        request: wire::InspectIdempotencyRequest,
+    ) -> Result<wire::InspectIdempotencyResponse, StreamError> {
+        let key = IdempotencyKey::new(request.idempotency_key)?;
+        let observation = self
+            .inspect_idempotency(key)
+            .await?
+            .map(wire_codec::observation_wire);
+        Ok(wire::InspectIdempotencyResponse { observation })
+    }
+
+    /// Executes the canonical append projection against any provider.
+    pub async fn append_wire(
+        &self,
+        request: wire::AppendRequest,
+    ) -> Result<wire::AppendResponse, StreamError> {
+        let request = wire_codec::append_from_wire(request)?;
+        Ok(wire_codec::append_outcome_to_wire(
+            self.provider.append(request).await?,
+        ))
+    }
+
+    /// Executes the canonical tail projection against any provider.
+    pub async fn tail_wire(&self, request: wire::TailRequest) -> Result<wire::TailResponse, StreamError> {
+        Ok(wire::TailResponse {
+            tail: self.provider.tail(StreamPath::new(request.path)?).await?,
+        })
+    }
+
+    /// Executes the canonical fork projection against any provider.
+    pub async fn fork_wire(&self, request: wire::ForkRequest) -> Result<wire::ForkReceipt, StreamError> {
+        Ok(wire_codec::fork_receipt_to_wire(
+            &self.provider.fork(wire_codec::fork_from_wire(request)?).await?,
+        ))
+    }
+
+    /// Executes the canonical children-page projection against any provider.
+    pub async fn children_page_wire(
+        &self,
+        request: wire::ChildrenPageRequest,
+    ) -> Result<wire::ChildrenPageResponse, StreamError> {
+        Ok(wire_codec::children_page_to_wire(
+            self.provider.children_page(wire_codec::children_page_from_wire(request)?).await?,
+        ))
+    }
+
+    /// Executes the canonical coordinated-commit projection against any provider.
+    pub async fn commit_wire(
+        &self,
+        request: wire::CommitRequest,
+    ) -> Result<wire::CommitResponse, StreamError> {
+        let deadline = request.deadline_unix_millis;
+        let request = wire_codec::commit_from_wire(request)?;
+        let outcome = match deadline {
+            Some(deadline) => self.provider.commit_before(request, deadline).await?,
+            None => self.provider.commit(request).await?,
+        };
+        Ok(wire_codec::commit_outcome_to_wire(outcome))
+    }
+
+    /// Executes the canonical committed-envelope projection against any provider.
+    pub async fn read_commit_wire(
+        &self,
+        request: wire::ReadCommitRequest,
+    ) -> Result<wire::CommittedEnvelope, StreamError> {
+        let bytes: [u8; 32] = request
+            .commit_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| StreamError::InvalidArgument)?;
+        Ok(wire_codec::envelope_wire(
+            self.provider.read_commit(CommitId::from_bytes(bytes)).await?,
+        ))
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
