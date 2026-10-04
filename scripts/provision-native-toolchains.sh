@@ -7,17 +7,40 @@ mkdir -p "$root/src" "$root/bin"
 jobs="${CMAKE_BUILD_PARALLEL_LEVEL:-2}"
 
 protoc_version='36.2'
-protoc_sha256='f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3'
-protoc_archive="$root/protoc-${protoc_version}.zip"
-protoc_root="$root/protoc-${protoc_version}"
+protoc_platform=''
+protoc_sha256=''
+case "$(uname -s):$(uname -m)" in
+  Linux:x86_64)
+    protoc_platform='linux-x86_64'
+    protoc_sha256='121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278'
+    ;;
+  Linux:aarch64)
+    protoc_platform='linux-aarch_64'
+    protoc_sha256='8b8f18bd2b30346efbc698dd5a73dd7c805f3ef8380f6dfc95c768f3f1852f6a'
+    ;;
+  Darwin:arm64)
+    protoc_platform='osx-aarch_64'
+    protoc_sha256='9cd98a532c5c5e0c4161314de0225de27e4c8a323917b6ea7b1b714d3ae23466'
+    ;;
+  *)
+    echo "unsupported protoc host: $(uname -s):$(uname -m)" >&2
+    exit 2
+    ;;
+esac
+protoc_archive="$root/protoc-${protoc_version}-${protoc_platform}.zip"
+protoc_root="$root/protoc-${protoc_version}-${protoc_platform}"
 
 if [[ ! -x "$protoc_root/bin/protoc" ]]; then
   command -v curl >/dev/null
   command -v unzip >/dev/null
   curl --fail --location --silent --show-error --retry 3 \
-    "https://github.com/protocolbuffers/protobuf/releases/download/v${protoc_version}/protoc-${protoc_version}-linux-x86_64.zip" \
+    "https://github.com/protocolbuffers/protobuf/releases/download/v${protoc_version}/protoc-${protoc_version}-${protoc_platform}.zip" \
     --output "$protoc_archive"
-  echo "${protoc_sha256}  ${protoc_archive}" | sha256sum --check --status
+  if command -v sha256sum >/dev/null 2>&1; then
+    echo "${protoc_sha256}  ${protoc_archive}" | sha256sum --check --status
+  else
+    echo "${protoc_sha256}  ${protoc_archive}" | shasum -a 256 -c - >/dev/null
+  fi
   rm -rf "$protoc_root"
   mkdir -p "$protoc_root"
   unzip -q "$protoc_archive" -d "$protoc_root"
@@ -149,4 +172,5 @@ PY
     exit 2
     ;;
 esac
+
 
