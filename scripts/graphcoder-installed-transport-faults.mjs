@@ -62,6 +62,54 @@ async function runCase({ Bridge, packageRoot, fixture, mode, requestId, expected
   }
 }
 
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid, label) {
+  return deadline(new Promise(resolvePromise => {
+    const check = () => {
+      if (!processIsAlive(pid)) resolvePromise();
+      else setTimeout(check, 10);
+    };
+    check();
+  }), label);
+}
+
+async function runDescendantCase({ Bridge, packageRoot, fixture }) {
+  const diagnostics = [];
+  const bridge = new Bridge({
+    executable: process.execPath,
+    args: [fixture, "descendant"],
+    cwd: resolve("."),
+    env: { PATH: process.env.PATH ?? "" },
+    onDiagnostic: event => diagnostics.push(event),
+  });
+  let descendantPid;
+  try {
+    const response = await deadline(bridge.request({ request_id: "fault-descendant", method: "list_sessions", params: {} }), "descendant request");
+    if (response.ok !== true || !Number.isInteger(response.result?.descendant_pid)) fail("descendant fixture did not return its child pid");
+    descendantPid = response.result.descendant_pid;
+  } finally {
+    bridge.close("qualification descendant cleanup");
+    await waitForDiagnostic(diagnostics, event => event.kind === "exit", "descendant process exit");
+  }
+  if (descendantPid === undefined) fail("descendant fixture omitted its child pid");
+  try {
+    await waitForProcessExit(descendantPid, "descendant process cleanup");
+  } catch (error) {
+    // Never leave a fixture descendant behind when this qualification fails.
+    try { process.kill(descendantPid); } catch { /* cleanup remains bounded */ }
+    throw error;
+  }
+  return { mode: "descendant", descendant_pid: descendantPid, descendant_exited: true };
+}
+
 async function assertRejected(promise, mode) {
   try {
     await deadline(promise, `${mode} request`);
@@ -86,12 +134,15 @@ export async function runInstalledTransportFaults({ packageRoot = required("GRAP
     await runCase({ Bridge: JsonLineGraphCoderBridge, packageRoot, fixture, mode: "unmatched", requestId: "fault-unmatched", expectedDiagnostic: "unmatched_response" }),
     await runCase({ Bridge: JsonLineGraphCoderBridge, packageRoot, fixture, mode: "cancel", requestId: "fault-cancel", expectedDiagnostic: "cancelled_response" }),
   ];
+  if (process.env.GRAPHCODER_REQUIRE_DESCENDANT_CLEANUP === "1") {
+    cases.push(await runDescendantCase({ Bridge: JsonLineGraphCoderBridge, packageRoot, fixture }));
+  }
   return { cases };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   runInstalledTransportFaults().then(result => {
-    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["malformed-framing", "correlation-rejection", "cancelled-response", "bounded-cleanup", "installed-package-export"], result }, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify({ ok: true, markers: ["malformed-framing", "correlation-rejection", "cancelled-response", "bounded-cleanup", ...(process.env.GRAPHCODER_REQUIRE_DESCENDANT_CLEANUP === "1" ? ["descendant-cleanup"] : []), "installed-package-export"], result }, null, 2)}\n`);
   }).catch(error => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;

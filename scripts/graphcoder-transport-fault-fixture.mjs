@@ -4,9 +4,10 @@
 // driver. It never invokes a model or touches a workspace.
 
 import { createInterface } from "node:readline";
+import { spawn } from "node:child_process";
 
 const mode = process.argv[2];
-if (!["malformed", "unmatched", "cancel"].includes(mode)) process.exit(2);
+if (!["malformed", "unmatched", "cancel", "descendant"].includes(mode)) process.exit(2);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 lines.on("line", line => {
   let request;
@@ -14,6 +15,14 @@ lines.on("line", line => {
   catch { return; }
   if (mode === "malformed") {
     process.stdout.write("not-json\n");
+    return;
+  }
+  if (mode === "descendant") {
+    const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    process.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, result: { descendant_pid: descendant.pid } })}\n`);
     return;
   }
   const response = JSON.stringify({ request_id: mode === "unmatched" ? "wrong-id" : request.request_id, ok: true, result: { items: [] } });
