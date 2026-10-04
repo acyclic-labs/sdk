@@ -1450,7 +1450,10 @@ mod tests {
         SwarmResourceRequest, SwarmUsage, SwarmUsageReceiptIssuer, SwarmUsageSource,
     };
     use acyclic_stream::{MemoryStream, StreamClient};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
 
     fn limits() -> SwarmBudgetLimits {
         SwarmBudgetLimits {
@@ -1508,6 +1511,151 @@ mod tests {
         ) -> Result<SwarmUsage> {
             Ok(SwarmUsage::default())
         }
+    }
+
+    struct FailingSource {
+        reads: Arc<AtomicUsize>,
+    }
+
+    impl SwarmUsageSource for FailingSource {
+        fn provider_identity(&self) -> &str {
+            "journal-failing-provider"
+        }
+
+        fn cumulative_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Err(Error::Storage("provider measurement unavailable".into()))
+        }
+    }
+
+    async fn prepared_child() -> Result<(
+        SwarmBudgetJournal<MemoryStream>,
+        SwarmOwnerFence,
+        OperationId,
+        VerifiedForkPublication,
+    )> {
+        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let session_id = OperationId::new();
+        let owner = SwarmOwnerFence::new("worker", 0)?;
+        let mut journal = SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits())
+            .await?;
+        let child = OperationId::new();
+        journal
+            .reserve_child(SwarmForkRequest {
+                operation_id: child,
+                idempotency_key: IdempotencyKey::new("postdispatch-child")?,
+                parent_operation_id: None,
+                depth: 1,
+                resources: SwarmResourceRequest {
+                    model_steps: 4,
+                    output_bytes: 64,
+                    execution_time_ms: 100,
+                },
+                admission_digest: None,
+            })
+            .await?;
+        let publication = VerifiedForkPublication::from_verified(ForkPublication {
+            operation_id: child,
+            parent_operation_id: None,
+            completed_boundary_digest: [11; 32],
+            workspace_generation_digest: [12; 32],
+        })?;
+        Ok((journal, owner, child, publication))
+    }
+
+    #[tokio::test]
+    async fn postdispatch_measurement_failure_is_classified_after_provider_entry() -> Result<()> {
+        let (mut journal, owner, child, publication) = prepared_child().await?;
+        let started = Arc::new(AtomicUsize::new(0));
+        let reads = Arc::new(AtomicUsize::new(0));
+        let result = journal
+            .dispatch_after_publication_with_usage(
+                child,
+                owner.clone(),
+                IdempotencyKey::new("postdispatch-measurement")?,
+                publication,
+                FailingSource {
+                    reads: reads.clone(),
+                },
+                {
+                    let started = started.clone();
+                    move |mut context| async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        context.issue_usage_receipt().map(|_| ())
+                    }
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Storage(_))));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        let usage = journal.usage()?;
+        assert_eq!(usage.active_agents, 2);
+        assert_eq!(usage.reserved.model_steps, 4);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn postdispatch_provider_storage_failure_retains_active_reservation() -> Result<()> {
+        let (mut journal, owner, child, publication) = prepared_child().await?;
+        let started = Arc::new(AtomicUsize::new(0));
+        let result = journal
+            .dispatch_after_publication_with_usage(
+                child,
+                owner,
+                IdempotencyKey::new("postdispatch-storage")?,
+                publication,
+                ZeroSource,
+                {
+                    let started = started.clone();
+                    move |_context| async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        Err::<(), _>(Error::Storage("provider storage failed".into()))
+                    }
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Storage(_))));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        let usage = journal.usage()?;
+        assert_eq!(usage.active_agents, 2);
+        assert_eq!(usage.reserved.model_steps, 4);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn postdispatch_explicit_provider_denial_releases_reservation() -> Result<()> {
+        let (mut journal, owner, child, publication) = prepared_child().await?;
+        let started = Arc::new(AtomicUsize::new(0));
+        let result = journal
+            .dispatch_after_publication_with_usage(
+                child,
+                owner,
+                IdempotencyKey::new("postdispatch-denied")?,
+                publication,
+                ZeroSource,
+                {
+                    let started = started.clone();
+                    move |_context| async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        Err::<(), _>(Error::Conflict("provider denied dispatch".into()))
+                    }
+                },
+            )
+            .await;
+
+        assert!(matches!(result, Err(Error::Conflict(_))));
+        assert_eq!(started.load(Ordering::SeqCst), 1);
+        let usage = journal.usage()?;
+        assert_eq!(usage.active_agents, 1);
+        assert_eq!(usage.reserved, SwarmUsage::default());
+        Ok(())
     }
 
     #[tokio::test]
