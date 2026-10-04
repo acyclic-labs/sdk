@@ -76,8 +76,7 @@ $sourceRows = foreach ($proto in $protoFiles) {
     $hash = (Get-FileHash -LiteralPath $proto.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     [ordered]@{ path = $relative; sha256 = $hash }
 }
-$sourceDigestText = ($sourceRows | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "
-"
+$sourceDigestText = ($sourceRows | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "`n"
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
     $sourceDigestBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourceDigestText))
@@ -106,11 +105,3 @@ $receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output
 Write-Host "Generated $($protoFiles.Count) protobuf source files under $OutputDirectory"
 Write-Host "Source-bound generation receipt: $(Join-Path $OutputDirectory 'generation-receipt.json')"
 Write-Host "Status: transport bindings only; run the CMake and conformance gates before packaging."
-
-
-
-
-
-
-
-
