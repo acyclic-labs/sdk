@@ -762,7 +762,7 @@ impl<P: StreamProvider> StreamClient<P> {
     ) -> Result<wire::CommittedEnvelope, StreamError> {
         let bytes: [u8; 32] = request
             .commit_id
-            .as_bytes()
+            .as_ref()
             .try_into()
             .map_err(|_| StreamError::InvalidArgument)?;
         Ok(wire_codec::envelope_wire(
