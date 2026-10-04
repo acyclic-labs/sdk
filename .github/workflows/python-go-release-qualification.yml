@@ -1,0 +1,175 @@
+name: Python and Go Rust-authority qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: python-go-release-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    # Downstream SDK installation and runtime calls stay off pull requests.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      PYTHONUNBUFFERED: '1'
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+        with:
+          components: rustfmt
+
+      - name: Install pinned Python and Go toolchains
+        uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6
+        with:
+          python-version: '3.12.9'
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version: '1.27.1'
+
+      - name: Install pinned protobuf and Python runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends protobuf-compiler
+          python -m pip install --disable-pip-version-check --no-cache-dir \
+            grpcio==1.83.0 grpcio-tools==1.83.0 protobuf==7.36.0 \
+            setuptools==84.0.0 wheel==0.46.3
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.10
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Export Rust authority and generate Python package
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/python-go"
+          mkdir -p "$out"
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- \
+            generate --out "$out/authority"
+          cargo run --locked --manifest-path rust/crates/sdk-python/Cargo.toml -- \
+            generate --schema-root "$out/authority" --output "$out/python-generated"
+          cp -a python "$out/python-package"
+          rm -rf "$out/python-package/src/acyclic_sdk/generated"
+          mkdir -p "$out/python-package/src/acyclic_sdk/generated"
+          cp -a "$out/python-generated/." "$out/python-package/src/acyclic_sdk/generated/"
+          SOURCE_DATE_EPOCH=1735689600 python -m pip wheel "$out/python-package" \
+            --no-deps --no-build-isolation --wheel-dir "$out/python-dist"
+          python -m pip install --no-deps --target "$out/python-site" \
+            "$out/python-dist"/*.whl
+          git rev-parse HEAD > "$out/source-revision"
+
+      - name: Build Rust fixture and start it
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- \
+            --port 18080 --grpc-port 18081 >"$RUNNER_TEMP/fixture.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/fixture.pid"
+          for _ in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/fixture.log"
+          exit 1
+
+      - name: Run installed Python against every Rust-authority RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/python-go"
+          python research/acceptance/python-go/release-python-consumer.py \
+            --authority "$out/authority/rust-authority.json" \
+            --package-root "$out/python-site" \
+            --endpoint 127.0.0.1:18081 \
+            --source-revision "$(cat "$out/source-revision")" \
+            --out "$out/python-runtime.json"
+          python research/acceptance/python-go/validate-runtime-frames.py \
+            --authority "$out/authority/rust-authority.json" \
+            --observed "$out/python-runtime.json" \
+            --source-revision "$(cat "$out/source-revision")" \
+            --out "$out/python-frame-validation.json"
+
+      - name: Generate and build the Go package from Rust authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/python-go"
+          cat > "$out/go-request.json" <<EOF
+          {"schema":"acyclic.sdk.generation.request.v1","target":"go","source_root":"$GITHUB_WORKSPACE","output":"$out/go-package","contract_scope":"rust-authority"}
+          EOF
+          pwsh -NoProfile -File research/acceptance/python-go/produce-go.ps1 \
+            -SourceRoot "$GITHUB_WORKSPACE" -AuthorityRoot "$out/authority" \
+            -OutputRoot "$out/go-generation" -TargetOutput "$out/go-package" \
+            -Request "$out/go-request.json" -GoBin "$(command -v go)" -Protoc "$(command -v protoc)" \
+            -ProtocGenGo "$(command -v protoc-gen-go)" -ProtocGenGoGrpc "$(command -v protoc-gen-go-grpc)"
+          mkdir -p "$out/go-consumer"
+          cp research/acceptance/python-go/release-go-consumer.go "$out/go-consumer/main.go"
+          cat > "$out/go-consumer/go.mod" <<EOF
+          module acyclic-release-consumer
+
+          go 1.27
+
+          require github.com/acyclic-labs/sdk/go v0.0.0
+          require google.golang.org/grpc v1.76.0
+          require google.golang.org/protobuf v1.36.10
+          replace github.com/acyclic-labs/sdk/go => $out/go-package
+          EOF
+          (cd "$out/go-consumer" && go mod tidy && go build -o "$out/go-consumer/qualifier" .)
+
+      - name: Run installed Go against every Rust-authority RPC
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/python-go"
+          "$out/go-consumer/qualifier" \
+            --authority "$out/authority/rust-authority.json" \
+            --endpoint 127.0.0.1:18081 \
+            --source-revision "$(cat "$out/source-revision")" \
+            --out "$out/go-runtime.json"
+          python research/acceptance/python-go/validate-runtime-frames.py \
+            --authority "$out/authority/rust-authority.json" \
+            --observed "$out/go-runtime.json" \
+            --source-revision "$(cat "$out/source-revision")" \
+            --out "$out/go-frame-validation.json"
+
+      - name: Stop Rust fixture
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/fixture.pid" ]; then kill "$(cat "$RUNNER_TEMP/fixture.pid")" || true; fi
+
+      - name: Upload Python and Go qualification evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: python-go-rust-authority-qualification
+          path: ${{ runner.temp }}/python-go
+          if-no-files-found: error
+          retention-days: 7
