@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "source_commit": "2d1c9253b",
+  "rust_tree": "df1f876591ad9f19a2bc3aeebf82139c3bae788e",
+  "suite": "model_fork_boundary",
+  "exit_code": 101,
+  "passed": 2,
+  "failed": 1,
+  "ignored": 0,
+  "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\2d1c9253b\\fork-follow-up-phase.log",
+  "log_sha256": "a168e41054e1c5be4b7827859f131be7b6b66081421d7841676647919837ab7b",
+  "artifact": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\2d1c9253b\\model_fork_boundary.exe",
+  "artifact_sha256": "371101ab3f8c2738491ccdaf1c96edceb5cac9ca9b1469da74ba3185ee1486cd",
+  "verified_phase": "Initial recursive root/sibling/grandchild run, inherited reads, prefix assertions, and completed root replay pass before failure.",
+  "failure": "follow-up root conversation failed: conflict: rejection feedback does not exactly match the pinned malformed calls",
+  "unmet": "Authenticated historical rejection evidence across new operations; full production swarm and fault qualification.",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+}
