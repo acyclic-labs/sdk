@@ -130,6 +130,7 @@ struct ForkFaultProvider {
     child_a_blocked: AtomicBool,
     release_child_a: Arc<AtomicBool>,
     child_a_started: AtomicBool,
+    child_a_dispatched: Arc<tokio::sync::Notify>,
     dispatches: AtomicUsize,
     child_a: OperationId,
     child_b: OperationId,
@@ -149,6 +150,7 @@ impl ForkFaultProvider {
             child_a_blocked: AtomicBool::new(false),
             release_child_a: Arc::new(AtomicBool::new(false)),
             child_a_started: AtomicBool::new(false),
+            child_a_dispatched: Arc::new(tokio::sync::Notify::new()),
             dispatches: AtomicUsize::new(0),
             child_a,
             child_b,
@@ -293,6 +295,7 @@ impl ModelProvider for ForkFaultProvider {
 
         if is_child_a {
             self.child_a_started.store(true, Ordering::SeqCst);
+            self.child_a_dispatched.notify_waiters();
             if self.child_a_blocked.load(Ordering::SeqCst) {
                 let release = self.release_child_a.clone();
                 let first = stream::once(async move {
@@ -431,13 +434,16 @@ async fn open_swarm(
 }
 
 async fn wait_for_child_dispatch(provider: &ForkFaultProvider) {
-    timeout(Duration::from_secs(2), async {
-        while !provider.child_a_started.load(Ordering::SeqCst) {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("child dispatch did not reach the provider");
+    if provider.child_a_started.load(Ordering::SeqCst) {
+        return;
+    }
+    let notified = provider.child_a_dispatched.notified();
+    if provider.child_a_started.load(Ordering::SeqCst) {
+        return;
+    }
+    timeout(Duration::from_secs(30), notified)
+        .await
+        .expect("child dispatch did not reach the provider");
 }
 
 #[tokio::test]

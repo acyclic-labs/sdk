@@ -2097,6 +2097,13 @@ enum StoredEvent {
         #[serde(default)]
         rebind_proof: Option<ForkRebindProof>,
     },
+    /// Durable single-winner fence for the child model activation. The claim
+    /// is recorded after admission and before any provider dispatch so a
+    /// second handle cannot start the same child turn concurrently.
+    ForkActivationClaimed {
+        child: TaskId,
+        operation: OperationId,
+    },
     ForkCompleted {
         child: TaskId,
         operation: OperationId,
@@ -3931,6 +3938,74 @@ impl PersistentLocalSwarm {
         Ok(seed)
     }
 
+    /// Acquires the durable single-winner fence for a child model turn.
+    ///
+    /// The in-process task gate prevents duplicate work within one handle,
+    /// while this append-at-tail claim fences independent handles and
+    /// processes. A claim is cleared by a terminal registry event; an
+    /// unresolved claim remains indeterminate until its owner is reconciled,
+    /// which is safer than dispatching a second provider request.
+    async fn claim_child_activation(
+        &self,
+        stream: &acyclic_stream::Stream<LocalStream>,
+        child: TaskId,
+        operation: OperationId,
+    ) -> Result<bool> {
+        for _ in 0..4 {
+            let records = load_records(stream).await?;
+            let mut claimed = None;
+            for record in records {
+                match record.event {
+                    StoredEvent::ForkActivationClaimed {
+                        child: recorded_child,
+                        operation: recorded_operation,
+                    } if recorded_child == child => {
+                        claimed = Some(recorded_operation);
+                    }
+                    StoredEvent::ForkCompleted {
+                        child: recorded_child,
+                        ..
+                    }
+                    | StoredEvent::ForkFailed {
+                        child: recorded_child,
+                        ..
+                    }
+                    | StoredEvent::ForkCancelled {
+                        child: recorded_child,
+                    } if recorded_child == child => {
+                        claimed = None;
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(existing) = claimed {
+                if existing != operation {
+                    return Err(Error::Conflict(
+                        "child activation is already bound to another operation".into(),
+                    ));
+                }
+                return Ok(false);
+            }
+            let observed_tail = match stream.tail().await {
+                Ok(tail) => tail,
+                Err(StreamError::NotFound) => 0,
+                Err(error) => return Err(Error::Storage(error.to_string())),
+            };
+            match append_record_at(
+                stream,
+                StoredEvent::ForkActivationClaimed { child, operation },
+                observed_tail,
+            )
+            .await
+            {
+                Ok(()) => return Ok(true),
+                Err(Error::Conflict(_)) => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Err(Error::Indeterminate(operation))
+    }
+
     async fn activate_child_with_harness(
         &self,
         request: LocalForkRequest,
@@ -3968,6 +4043,23 @@ impl PersistentLocalSwarm {
                 operation: request.child_operation,
                 output,
             });
+        }
+        if !self
+            .claim_child_activation(&stream, child, request.child_operation)
+            .await?
+        {
+            self.refresh_registry_state().await?;
+            if let Some(output) = self
+                .recover_completed_output(&stream, child, request.child_operation, &harness)
+                .await?
+            {
+                return Ok(LocalForkOutcome {
+                    child,
+                    operation: request.child_operation,
+                    output,
+                });
+            }
+            return Err(Error::Indeterminate(request.child_operation));
         }
         let suffix = declared_suffix.unwrap_or_else(|| {
             vec![ModelMessage {
@@ -4038,17 +4130,50 @@ impl PersistentLocalSwarm {
                 "child operation was cancelled before completion acknowledgement".into(),
             ));
         }
-        append_record(
-            &stream,
-            StoredEvent::ForkCompleted {
-                child,
-                operation: request.child_operation,
-                output: inline_output,
-                output_ref,
-                output_digest: Some(output_digest),
-            },
-        )
-        .await?;
+        let completion = StoredEvent::ForkCompleted {
+            child,
+            operation: request.child_operation,
+            output: inline_output,
+            output_ref,
+            output_digest: Some(output_digest),
+        };
+        let mut published = false;
+        for _ in 0..4 {
+            let observed_tail = self.refresh_registry_state_with_tail().await?;
+            match append_record_at(&stream, completion.clone(), observed_tail).await {
+                Ok(()) => {
+                    published = true;
+                    break;
+                }
+                Err(Error::Conflict(_)) => {}
+                Err(error) => return Err(error),
+            }
+            self.refresh_registry_state().await?;
+            if let Some(recovered) = self
+                .recover_completed_output(&stream, child, request.child_operation, &harness)
+                .await?
+            {
+                return Ok(LocalForkOutcome {
+                    child,
+                    operation: request.child_operation,
+                    output: recovered,
+                });
+            }
+            if self
+                .records
+                .lock()
+                .await
+                .get(&child)
+                .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            {
+                return Err(Error::Conflict(
+                    "child operation was cancelled before completion acknowledgement".into(),
+                ));
+            }
+        }
+        if !published {
+            return Err(Error::Indeterminate(request.child_operation));
+        }
         self.refresh_registry_state().await?;
         let _refresh = self.registry_refresh.lock().await;
         self.outcomes.lock().await.insert(child, output.clone());
@@ -4739,6 +4864,7 @@ fn apply_record(
             }
         }
         StoredEvent::ForkIssuerBinding { .. } => {}
+        StoredEvent::ForkActivationClaimed { .. } => {}
         StoredEvent::ForkPrepared {
             parent,
             parent_operation,
