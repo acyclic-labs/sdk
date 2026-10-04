@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "filesystem_source_commit": "7487f76db",
+  "filesystem_tree": "1d85023f4184170c6eb99a42a829640dbb975549",
+  "harness_memory_source_commit": "f12e4401d",
+  "harness_memory_tree": "242339f86c79d8f67761089c884e2b6652ac9aa8",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "evidence": [
+    {
+      "suite": "harness-filesystem-memory",
+      "passed": 10,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 327,
+      "exit_code": 0,
+      "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db-focused\\child-content-authority.log",
+      "log_sha256": "825085b4432f156571784943792ba020b649b332a3e4e69713cd4e9f4d55efd9",
+      "artifact": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db-focused\\acyclic_harness-41fc1555027bbefa.exe",
+      "artifact_sha256": "cac740c6adab1dd3a6e96900c43faddcab95ade148398948a0493e9aa334ef8d"
+    },
+    {
+      "suite": "filesystem-typed-absence",
+      "passed": 1,
+      "failed": 0,
+      "ignored": 0,
+      "filtered": 1147,
+      "exit_code": 0,
+      "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db-focused\\filesystem-typed-absence.log",
+      "log_sha256": "4694a6c53c4e589d511f4f2921029d2768a5b71779ce50d68290f0e53ae657cc",
+      "artifact": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db-focused\\acyclic_fs-e6ab0acd92b5bad3.exe",
+      "artifact_sha256": "92d112bb67ac7acf3d9c54d8dee901a734a7f7a379abe768c5170383ba544393"
+    }
+  ],
+  "scope": "Focused local storage/file grants and typed missing versus corrupt workspace errors. Not full swarm qualification."
+}
