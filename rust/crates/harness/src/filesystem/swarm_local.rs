@@ -10,7 +10,8 @@ use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
     InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
     FilesystemGitFacade, LocalHarnessTools, PersistentLocalHarness, ProjectMergeRecovery,
-    ProjectMergeRecoveryEntry, RootWritebackApproval, RootWritebackRequest, workspace_ref,
+    ProjectMergeRecoveryEntry, RootWritebackApproval, RootWritebackInspection,
+    RootWritebackRequest, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
@@ -1905,6 +1906,8 @@ struct StoredRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
+    /// Harness-owned immutable root writeback inspection handle.
+    WritebackInspection { inspection: RootWritebackInspection },
     Session(StoredSession),
     /// Immutable swarm-level operator trust binding. The verifier key is
     /// never persisted; only its identity fingerprint and exact audience are
@@ -2773,6 +2776,157 @@ impl PersistentLocalSwarm {
             child,
             child_project: child_project.clone(),
         })
+    }
+
+    /// Inspects a direct-child writeback and persists only its ref-only handle.
+    /// The provider merge plan never leaves Harness.
+    pub async fn inspect_root_writeback(
+        &self,
+        task: TaskId,
+        inspection_id: OperationId,
+        approval_id: InteractionId,
+        target_project: &VolumeRef,
+        child: Authority,
+        child_project: &VolumeRef,
+        operation_id: OperationId,
+    ) -> Result<RootWritebackInspection> {
+        let root_task = self.root_task().await?;
+        if task != root_task {
+            return Err(Error::Unauthorized(
+                "root writeback inspection must be owned by the root session".into(),
+            ));
+        }
+        let context = self.root_writeback_context(target_project).await?;
+        if context.root_project() != target_project {
+            return Err(Error::Unauthorized(
+                "writeback target is not this swarm's root project".into(),
+            ));
+        }
+        let plan = context
+            .prepare_project_merge_for_child(&child, child_project)
+            .await?;
+        let source_generation = context.host().generation_ref_id(plan.source_head())?;
+        let expected_target_generation = context.host().generation_ref_id(plan.target_head())?;
+        if plan.child_project() != child_project {
+            return Err(Error::Conflict("inspected child project changed".into()));
+        }
+        let inspection = RootWritebackInspection::new(
+            inspection_id,
+            approval_id,
+            target_project.clone(),
+            child_project.clone(),
+            child,
+            operation_id,
+            source_generation,
+            expected_target_generation,
+        )?;
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &stream,
+            StoredEvent::WritebackInspection {
+                inspection: inspection.clone(),
+            },
+        )
+        .await?;
+        Ok(inspection)
+    }
+
+    /// Reopens an immutable Harness-owned inspection handle after restart.
+    pub async fn reopen_root_writeback_inspection(
+        &self,
+        inspection_id: OperationId,
+    ) -> Result<RootWritebackInspection> {
+        let stream = self
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let mut found = None;
+        for record in load_records(&stream).await? {
+            if let StoredEvent::WritebackInspection { inspection } = record.event {
+                inspection.validate()?;
+                if inspection.inspection_id == inspection_id {
+                    if found
+                        .as_ref()
+                        .is_some_and(|value: &RootWritebackInspection| value != &inspection)
+                    {
+                        return Err(Error::Conflict(
+                            "root writeback inspection identity was reused".into(),
+                        ));
+                    }
+                    found = Some(inspection);
+                }
+            }
+        }
+        found.ok_or_else(|| {
+            Error::NotFound(format!("root writeback inspection {inspection_id}"))
+        })
+    }
+
+    /// Applies one reopened handle through the sealed approved-publication API.
+    pub async fn apply_root_writeback_inspection(
+        &self,
+        task: TaskId,
+        inspection: &RootWritebackInspection,
+        notice: ConversationMessage,
+    ) -> Result<crate::merge::ProjectJoinOutcome> {
+        inspection.validate()?;
+        let current = self
+            .reopen_root_writeback_inspection(inspection.inspection_id)
+            .await?;
+        if current != *inspection {
+            return Err(Error::Conflict(
+                "root writeback inspection changed after reopen".into(),
+            ));
+        }
+        let approved = self
+            .issue_approved_root_writeback(
+                task,
+                inspection.approval_id,
+                &inspection.root_project,
+                inspection.child_authority.clone(),
+                &inspection.child_project,
+                inspection.source_generation.clone(),
+                inspection.expected_target_generation.clone(),
+            )
+            .await?;
+        let plan = approved.prepare_merge_plan().await?;
+        approved.apply_with_recovery(&plan, notice).await
+    }
+
+    /// Reconciles a durable provider recovery entry without dispatching again.
+    pub async fn recover_root_writeback_inspection(
+        &self,
+        task: TaskId,
+        inspection: &RootWritebackInspection,
+        entry: &ProjectMergeRecoveryEntry,
+    ) -> Result<crate::merge::ProjectMergeReceipt> {
+        inspection.validate()?;
+        if entry.intent.operation_id != inspection.operation_id
+            || entry.intent.source_project != inspection.child_project
+            || entry.intent.target_project != inspection.root_project
+            || entry.intent.child != inspection.child_authority
+            || entry.intent.source_generation != inspection.source_generation
+            || entry.intent.expected_target_generation != inspection.expected_target_generation
+        {
+            return Err(Error::Conflict(
+                "recovery entry does not match root writeback inspection".into(),
+            ));
+        }
+        let approved = self
+            .issue_approved_root_writeback(
+                task,
+                inspection.approval_id,
+                &inspection.root_project,
+                inspection.child_authority.clone(),
+                &inspection.child_project,
+                inspection.source_generation.clone(),
+                inspection.expected_target_generation.clone(),
+            )
+            .await?;
+        approved.recover_receipt(entry).await
     }
 
     /// Returns the host-only signer bound to one task's durable interaction
@@ -4769,6 +4923,7 @@ fn apply_record(
     record: StoredRecord,
 ) -> Result<()> {
     match record.event {
+        StoredEvent::WritebackInspection { inspection } => inspection.validate()?,
         StoredEvent::Session(session) => {
             if session.version != REGISTRY_VERSION {
                 return Err(Error::Conflict("unsupported local session version".into()));
