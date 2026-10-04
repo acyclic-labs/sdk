@@ -898,6 +898,84 @@ fn validate_descriptor(
     Ok(())
 }
 
+/// Ensures the durable local session descriptor exists and returns the host
+/// signing material that it already authenticates. Recursive local
+/// composition uses this before constructing its fork resolver so the
+/// resolver and every reopened harness share one persisted authority key.
+pub(crate) async fn ensure_session_signing_key(
+    root: &Path,
+    model: &Model,
+    limits: Limits,
+    project: Option<&VolumeRef>,
+    host: &Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+    stream: &StreamClient<LocalStream>,
+) -> Result<[u8; 32]> {
+    limits.validate()?;
+    if let Some(project) = project
+        && (project.class() != VolumeClass::Project || project.provider() != &host.provider)
+    {
+        return Err(Error::Invalid(
+            "local session project belongs to another provider or class".into(),
+        ));
+    }
+    let descriptor_stream = stream
+        .stream(shared_session_descriptor_path(root))
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let missing = match descriptor_stream.tail().await {
+        Ok(1) => false,
+        Ok(0) | Err(StreamError::NotFound) => true,
+        Ok(_) => {
+            return Err(Error::Storage(
+                "invalid local session descriptor tail".into(),
+            ));
+        }
+        Err(error) => return Err(Error::Storage(error.to_string())),
+    };
+    if missing {
+        let descriptor = SessionDescriptor::fresh_with_provider(
+            model.clone(),
+            limits,
+            project.cloned(),
+            host.provider.clone(),
+        )?;
+        match descriptor_stream
+            .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?
+        {
+            AppendOutcome::Committed(_) => {}
+            AppendOutcome::TailConflict { .. } => {
+                return Err(Error::Conflict(
+                    "local initialization lost ownership".into(),
+                ));
+            }
+        }
+    }
+    let mut records = descriptor_stream
+        .read(0, 1)
+        .await
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let record = records
+        .next()
+        .await
+        .ok_or_else(|| Error::Storage("local descriptor is missing".into()))?
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    let descriptor: SessionDescriptor = serde_json::from_slice(&record.value)
+        .map_err(|error| Error::Storage(error.to_string()))?;
+    validate_descriptor(&descriptor, model, limits, project)?;
+    if descriptor.private_volume.provider() != &host.provider
+        || descriptor
+            .project
+            .as_ref()
+            .is_some_and(|project| project.provider() != &host.provider)
+    {
+        return Err(Error::Conflict(
+            "local session descriptor belongs to another filesystem provider".into(),
+        ));
+    }
+    Ok(descriptor.signing_key)
+}
+
 /// Ready-to-run, reopenable local agent with pinned composition.
 pub struct PersistentLocalHarness {
     storage: DurableHarnessStorage,

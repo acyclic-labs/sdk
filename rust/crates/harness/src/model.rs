@@ -390,6 +390,22 @@ pub struct ModelAttempt {
     pub observed: Vec<ModelEvent>,
 }
 
+/// Opaque budget mutation carried into the execution journal's coordinated
+/// commit.  The execution journal appends its `ModelStarted` observation in
+/// the same Stream commit, so a provider cannot begin after only one side of
+/// the admission has become durable.
+#[derive(Clone, Debug)]
+pub struct ModelDispatchPermit {
+    /// Budget stream path whose tail is being conditionally advanced.
+    pub(crate) budget_path: String,
+    /// Budget tail observed while preparing this permit.
+    pub(crate) budget_tail: u64,
+    /// Serialized budget ledger record to append atomically with ModelStarted.
+    pub(crate) budget_record: Vec<u8>,
+    /// Stable account-scoped commit retry identity.
+    pub(crate) idempotency_key: Vec<u8>,
+}
+
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
     /// Returns the registered model-visible option policy for this provider.
@@ -402,6 +418,50 @@ pub trait ModelProvider: Send + Sync {
     /// This hook must not perform I/O or mutate the request.
     fn admit(&self, request: &ModelRequest) -> Result<()> {
         validate_model_options(&request.model.options, self.model_option_policy())
+    }
+
+    /// Refreshes durable admission state immediately before a provider call.
+    ///
+    /// Providers that bind a request to an external journal can override this
+    /// hook to reload the authoritative ceiling after input preparation and
+    /// before [`Self::generate`] or [`Self::reconcile`] starts work. The
+    /// default keeps existing providers synchronous and unchanged.
+    fn before_model_prepare<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn before_model_dispatch<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _step: u32,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Prepares an optional cross-stream dispatch permit.  Implementations
+    /// that bind a budget journal return one opaque mutation; the execution
+    /// journal adds its `ModelStarted` record and commits both tails together.
+    fn prepare_model_dispatch<'a>(
+        &'a self,
+        _operation_id: OperationId,
+        _step: u32,
+        _request_digest: [u8; 32],
+    ) -> BoxFuture<'a, Result<Option<ModelDispatchPermit>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// Refreshes durable admission state before reconciling an already
+    /// claimed model attempt after interruption.
+    fn before_model_reconcile<'a>(&'a self) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    /// Converts an admitted byte ceiling to the provider's token unit.
+    /// Providers return `None` when they cannot prove an exact conversion;
+    /// the executor then rejects the request before constructing a provider
+    /// dispatch rather than sending an unbounded output request.
+    fn output_token_limit_for_bytes(&self, _max_output_bytes: u64) -> Option<u32> {
+        None
     }
 
     /// Starts one request from the exact bytes admitted by the harness.
