@@ -5,7 +5,7 @@
 //! executable router so the router can install the same source-owned service
 //! in every transport test.
 
-use std::{collections::BTreeMap, sync::Arc, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::BTreeMap, sync::Arc};
 
 use acyclic_actors::wire as actors_wire;
 use acyclic_workers::wire as workers_wire;
@@ -17,11 +17,7 @@ fn fixture_digest() -> Vec<u8> {
     Sha256::digest(b"acyclic-rust-fixture").to_vec()
 }
 
-fn now_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_millis() as u64)
-}
+const FIXTURE_CHECKPOINT_UNIX_MILLIS: u64 = 1_700_000_000_123;
 
 fn actor_observation() -> actors_wire::ActorObservation {
     actors_wire::ActorObservation {
@@ -135,7 +131,7 @@ impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
         let mut state = self.state.lock().await;
         if !request.actor_id.is_empty() && request.actor_id != state.actor_id { return Err(Status::not_found("actor not found")); }
         state.checkpoint_epoch += 1;
-        state.checkpoint_unix_millis = Some(now_millis());
+        state.checkpoint_unix_millis = Some(FIXTURE_CHECKPOINT_UNIX_MILLIS);
         Ok(Response::new(actors_wire::CheckpointActorResponse { actor: Some(state.clone()) }))
     }
 

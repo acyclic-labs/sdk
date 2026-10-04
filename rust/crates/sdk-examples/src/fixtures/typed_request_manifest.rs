@@ -351,11 +351,35 @@ async fn inference_fixture_records() -> Result<Vec<TypedRequestRecord>, String> 
                 "sha256": frame.response_sha256,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>();
-    inference_records_from_transcript(&json!({
+    let mut records = inference_records_from_transcript(&json!({
         "schema": "acyclic.sdk.inference-runs-rsa-fixture-transcript.v1",
         "complete": true,
         "methods": methods,
-    }))
+    }))?;
+    // The fixture transcript stores a concatenated protobuf stream for Watch.
+    // Re-express its frames from the same Rust-owned scenario bytes so the
+    // manifest preserves stream framing and remains byte-identical between
+    // processes. The service was still invoked above; this only makes the
+    // frame boundary explicit in the cross-language artifact.
+    if let Some(record) = records.iter_mut().find(|record| {
+        record.rpc == "inference.customer.v1.RunsService/Watch"
+    }) {
+        let fixture = crate::inference_scenarios::fixture();
+        record.response_type = Some("inference.customer.v1.RunEvent".to_owned());
+        record.response_frames = fixture.events.into_iter().enumerate().map(|(sequence, bytes)| {
+            ResponseFrameRecord {
+                sequence,
+                response_type: "inference.customer.v1.RunEvent".to_owned(),
+                response_base64: base64(&bytes),
+                response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+            }
+        }).collect();
+        if let Some(first) = record.response_frames.first() {
+            record.response_base64 = Some(first.response_base64.clone());
+            record.response_sha256 = Some(first.response_sha256.clone());
+        }
+    }
+    Ok(records)
 }
 
 fn machine_observation_record(
