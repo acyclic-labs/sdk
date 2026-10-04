@@ -147,19 +147,6 @@ mod platform {
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         command.process_group(0);
-        #[cfg(target_os = "linux")]
-        unsafe {
-            command.pre_exec(|| {
-                // Stop before exec so a configured cgroup can receive the root
-                // before it can fork any descendants. This is lifecycle
-                // ownership only; no filesystem or capability confinement is
-                // implied.
-                if libc::raise(libc::SIGSTOP) != 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                Ok(())
-            });
-        }
         let mut child = command.spawn()?;
         let process_group = libc::pid_t::try_from(child.id())
             .map_err(|_| io::Error::other("child process id does not fit pid_t"))?;
@@ -182,16 +169,6 @@ mod platform {
             },
             None => None,
         };
-        #[cfg(target_os = "linux")]
-        {
-            // Ownership has been assigned (or the host explicitly chose the
-            // process-group fallback); release the stopped child only now.
-            if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) } != 0 {
-                let error = io::Error::last_os_error();
-                let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
-                return Err(error);
-            }
-        }
         Ok((
             child,
             Guard {
