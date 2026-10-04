@@ -55,6 +55,23 @@ function parseLine(line, label, expectedRequestId) {
   return value;
 }
 
+export function correlateResponses(lines, expectedRequestIds = ["list-1", "invalid-fixture"]) {
+  const expected = new Set(expectedRequestIds);
+  const responses = new Map();
+  for (const line of lines) {
+    let value;
+    try { value = JSON.parse(line); }
+    catch (error) { fail(`native preflight returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+    if (!value || typeof value.request_id !== "string") fail("native preflight returned a response without request_id");
+    if (!expected.has(value.request_id)) fail(`native preflight returned an unknown request_id ${JSON.stringify(value.request_id)}`);
+    if (responses.has(value.request_id)) fail(`native preflight returned duplicate request_id ${JSON.stringify(value.request_id)}`);
+    responses.set(value.request_id, value);
+  }
+  for (const requestId of expected) if (!responses.has(requestId)) fail(`native preflight omitted request_id ${JSON.stringify(requestId)}`);
+  if (responses.size !== expected.size) fail("native preflight returned extra responses");
+  return responses;
+}
+
 function assertNoAttachments(value, label) {
   if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "attachments")) fail(`${label} unexpectedly exposed automatic attachments`);
 }
@@ -102,19 +119,8 @@ function runPreflight(runtime, root) {
   const lines = result.stdout.trim().split(/\r?\n/u).filter(Boolean);
   if (lines.length !== 2) fail(`native preflight returned ${lines.length} responses`);
   // The runtime may complete independent requests concurrently. Correlate by
-  // the durable request identity instead of assuming response order, while
-  // rejecting duplicate, unknown, or missing responses.
-  const responses = new Map();
-  for (const line of lines) {
-    let value;
-    try { value = JSON.parse(line); }
-    catch (error) { fail(`native preflight returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
-    if (!value || typeof value.request_id !== "string") fail("native preflight returned a response without request_id");
-    if (!["list-1", "invalid-fixture"].includes(value.request_id)) fail(`native preflight returned an unknown request_id ${JSON.stringify(value.request_id)}`);
-    if (responses.has(value.request_id)) fail(`native preflight returned duplicate request_id ${JSON.stringify(value.request_id)}`);
-    responses.set(value.request_id, value);
-  }
-  if (responses.size !== 2 || !responses.has("list-1") || !responses.has("invalid-fixture")) fail("native preflight omitted a requested response");
+  // the durable request identity instead of assuming response order.
+  const responses = correlateResponses(lines);
   const listed = parseLine(JSON.stringify(responses.get("list-1")), "list_sessions", "list-1");
   if (listed.ok !== true || !Array.isArray(listed.result?.items)) fail(`list_sessions response was invalid: ${JSON.stringify(listed)}`);
   const invalid = parseLine(JSON.stringify(responses.get("invalid-fixture")), "invalid fixture", "invalid-fixture");
