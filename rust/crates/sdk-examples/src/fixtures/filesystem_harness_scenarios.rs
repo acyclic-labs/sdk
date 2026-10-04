@@ -212,28 +212,6 @@ where
         &state,
     ));
 
-    let open = fs_wire::OpenWorkspaceRequest {
-        selector: Some(fs_wire::open_workspace_request::Selector::Workspace(
-            created_ref.clone(),
-        )),
-    };
-    let opened = service.open_workspace(Request::new(open.clone())).await?.into_inner();
-    let opened_workspace = opened
-        .workspace
-        .clone()
-        .ok_or_else(|| Status::internal("open response omitted workspace"))?;
-    let opened_ref = workspace_ref(&opened_workspace)?;
-    state.insert("opened_workspace_id", b64(&opened_ref.workspace_id));
-    output.push(evidence(
-        "filesystem",
-        "OpenWorkspace",
-        "acyclic.filesystem.v2.OpenWorkspaceRequest",
-        &open,
-        "acyclic.filesystem.v2.WorkspaceResponse",
-        &opened,
-        &state,
-    ));
-
     // Read-only operations use the seeded workspace, whose returned head is
     // the actual generation identity used in every following protobuf input.
     let fixture = service
@@ -855,4 +833,86 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
         &state,
     ));
     Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::export;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn export_executes_all_typed_filesystem_and_harness_steps() {
+        let records = export().await.expect("typed fixture export");
+        assert_eq!(records.len(), 35);
+
+        let operations: Vec<&str> = records
+            .iter()
+            .map(|record| record["operation"].as_str().expect("operation"))
+            .collect();
+        assert_eq!(
+            operations,
+            [
+                "Handshake",
+                "CreateWorkspace",
+                "OpenWorkspace",
+                "GetHead",
+                "GetGeneration",
+                "Read",
+                "Stat",
+                "ListDirectory",
+                "ReadLink",
+                "PlanExtents",
+                "ApplyTransaction",
+                "RebaseTransaction",
+                "ForkWorkspace",
+                "Diff",
+                "Rebase",
+                "PlanJoin",
+                "ApplyJoin",
+                "Checkpoint",
+                "Pin",
+                "Export",
+                "Import",
+                "IssueMountCredential",
+                "IssueS3Credential",
+                "GetSourceState",
+                "ReconcileSource",
+                "RescanSource",
+                "SealSource",
+                "Observe",
+                "Cancel",
+                "DeleteWorkspace",
+                "Handshake",
+                "Submit",
+                "Replay",
+                "Observe",
+                "Cancel",
+            ]
+        );
+
+        for record in &records {
+            assert_eq!(record["source"], super::SOURCE);
+            let request = record["request"].as_object().expect("typed request");
+            assert!(!request["type"].as_str().unwrap_or_default().is_empty());
+            assert!(!request["bytes_base64"].as_str().unwrap_or_default().is_empty());
+            assert!(request["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
+
+            let response = record["response"].as_object().expect("response evidence");
+            if let Some(bytes) = response.get("bytes_base64") {
+                assert!(!bytes.as_str().unwrap_or_default().is_empty());
+                assert!(response["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
+            } else {
+                assert!(!response["status"].as_str().unwrap_or_default().is_empty());
+                assert!(!response["message"].as_str().unwrap_or_default().is_empty());
+            }
+            assert!(record["state"].is_object());
+        }
+
+        let harness_cancel = records
+            .iter()
+            .rev()
+            .find(|record| record["family"] == "harness" && record["operation"] == "Cancel")
+            .expect("harness cancel evidence");
+        assert_eq!(harness_cancel["state"]["operation_id"], "fixture-op");
+        assert_eq!(harness_cancel["state"]["authority"], "task:fixture");
+    }
 }
