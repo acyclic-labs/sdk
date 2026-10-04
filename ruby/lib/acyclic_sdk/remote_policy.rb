@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "generated_remote_policy"
+require_relative "type_policy" if File.file?(File.join(__dir__, "type_policy.rb"))
 
 module Acyclic
   # Rust-owned transport selection for the thin remote facade. The injected
@@ -104,7 +105,22 @@ module Acyclic
       end
 
       def call(operation, request)
+        request = Acyclic::TypePolicy::Wire.normalize_request(family: @family, request: request) if defined?(Acyclic::TypePolicy::Wire)
         @invoker.call(operation, request, @transport)
+      end
+
+      # Convert a response field back to the Rust-owned nominal value object.
+      # The wire message remains available to callers that need protobuf
+      # compatibility, while public facade code can retain the stronger type.
+      def typed_field(response, field)
+        value = if response.is_a?(Hash)
+          response[field.to_sym] || response[field.to_s]
+        elsif response.respond_to?(field)
+          response.public_send(field)
+        end
+        return value unless defined?(Acyclic::TypePolicy::Wire)
+
+        Acyclic::TypePolicy::Wire.typed_field(family: @family, field: field, value: value)
       end
     end
   end

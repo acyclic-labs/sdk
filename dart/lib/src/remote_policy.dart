@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'generated_remote_policy.dart' as generated;
+import 'type_policy.dart';
 
 enum RemoteTransport { grpc, grpcWeb, httpJson }
 
@@ -169,5 +170,10 @@ class RemoteClient {
   final RemoteInvoker _invoker;
 
   FutureOr<Object?> call(String operation, Object? request) =>
-      _invoker(operation, request, transport);
+      _invoker(operation, TypePolicyWire.normalizeRequest(family, request), transport);
+
+  Object? typedField(Object? response, String field) {
+    if (response is! Map || response[field] == null) return response;
+    return TypePolicyWire.typedField(family: family, field: field, value: response[field]!);
+  }
 }

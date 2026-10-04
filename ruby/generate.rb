@@ -164,6 +164,40 @@ if manifest_path
         "    end",
       ].join("\n")
     end,
+    "    FIELD_TYPES = {",
+    *type_policy.fetch("field_mappings").map do |mapping|
+      key = "[#{mapping.fetch("family").to_s.inspect}, #{mapping.fetch("field").to_s.inspect}]"
+      "      #{key} => #{pascal_identifier(mapping.fetch("semantic_type"))},"
+    end,
+    "    }.freeze",
+    "",
+    "    module Wire",
+    "      module_function",
+    "",
+    "      def coerce(family:, field:, value:)",
+    "        type = FIELD_TYPES[[family.to_s, field.to_s]]",
+    "        return value unless type",
+    "        value.is_a?(type) ? value.value : type.from(value).value",
+    "      end",
+    "",
+    "      def normalize_request(family:, request:)",
+    "        return request unless request",
+    "        FIELD_TYPES.each_key do |mapped_family, field|",
+    "          next unless mapped_family == family.to_s",
+    "          reader = field.to_s",
+    "          writer = \"\#{field}=\"",
+    "          next unless request.respond_to?(reader) && request.respond_to?(writer)",
+    "          current = request.public_send(reader)",
+    "          request.public_send(writer, coerce(family: mapped_family, field: field, value: current)) unless current.nil?",
+    "        end",
+    "        request",
+    "      end",
+    "",
+    "      def typed_field(family:, field:, value:)",
+    "        type = FIELD_TYPES[[family.to_s, field.to_s]]",
+    "        type ? (value.is_a?(type) ? value : type.from(value)) : value",
+    "      end",
+    "    end",
     "  end",
     "end",
     "",
@@ -178,8 +212,26 @@ if manifest_path
     rbs += ["    class #{class_name}", "      attr_reader value: #{value_type}", "      def self.from: (#{value_type} value) -> #{class_name}", "    end"]
     rbi += ["    class #{class_name}", "      extend T::Sig", "      sig { returns(#{value_type}) }", "      def value; end", "      sig { params(value: #{value_type}).returns(#{class_name}) }", "      def self.from(value); end", "    end"]
   end
-  rbs += ["  end", "end", ""]
-  rbi += ["  end", "end", ""]
+  rbs += [
+    "    module Wire",
+    "      def self.coerce: (family: String, field: String, value: untyped) -> untyped",
+    "      def self.normalize_request: (family: String, request: untyped) -> untyped",
+    "      def self.typed_field: (family: String, field: String, value: untyped) -> untyped",
+    "    end",
+    "  end", "end", ""
+  ]
+  rbi += [
+    "    module Wire",
+    "      extend T::Sig",
+    "      sig { params(family: String, field: String, value: T.untyped).returns(T.untyped) }",
+    "      def self.coerce(family:, field:, value:); end",
+    "      sig { params(family: String, request: T.untyped).returns(T.untyped) }",
+    "      def self.normalize_request(family:, request:); end",
+    "      sig { params(family: String, field: String, value: T.untyped).returns(T.untyped) }",
+    "      def self.typed_field(family:, field:, value:); end",
+    "    end",
+    "  end", "end", ""
+  ]
   # OUT is rebuilt by protoc below; keep these values in memory and emit the
   # declarations again after protobuf generation has created the directory.
   negative_cases = semantic_types.filter_map do |item|
@@ -192,9 +244,20 @@ if manifest_path
             end
     value && [pascal_identifier(item.fetch("id")), value]
   end
-  negative_test = ["# Generated negative contract checks from the Rust type policy.", "require \"minitest/autorun\"", "require_relative \"../lib/acyclic_sdk/type_policy\"", "class RustTypePolicyNegativeTest < Minitest::Test"]
+  negative_test = ["# Generated contract checks from the Rust type policy.", "require \"minitest/autorun\"", "require_relative \"../lib/acyclic_sdk\"", "class RustTypePolicyNegativeTest < Minitest::Test"]
   negative_cases.each { |class_name, value| negative_test += ["  def test_rejects_invalid_#{class_name.downcase}", "    assert_raises(ArgumentError) { Acyclic::TypePolicy::#{class_name}.from(#{value}) }", "  end"] }
-  negative_test += ["end", ""]
+  negative_test += [
+    "  def test_public_remote_client_serializes_rust_owned_value_objects",
+    "    request_class = Struct.new(:path)",
+    "    captured = nil",
+    "    client = Acyclic::Remote::Client.new(family: \"stream\", invoker: ->(_operation, request, _transport) { captured = request; :ok }, installed: { grpc: false, http_json: true }, endpoint: { grpc: false, http_json: true })",
+    "    assert_equal :ok, client.call(\"append\", request_class.new(Acyclic::TypePolicy::Path.from(\"events\")))",
+    "    assert_equal \"events\", captured.path",
+    "    assert_raises(ArgumentError) { client.call(\"append\", request_class.new(\"\")) }",
+    "  end",
+    "end",
+    "",
+  ]
   FileUtils.mkdir_p(File.join(__dir__, "test"))
   File.write(File.join(__dir__, "test", "type_policy_negative_test.rb"), negative_test.join("\n"))
   type_policy_metadata["artifacts"] = ["lib/acyclic_sdk/type_policy.rb", "generated/type_policy.rbs", "generated/type_policy.rbi", "test/type_policy_negative_test.rb"]

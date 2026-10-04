@@ -381,10 +381,15 @@ Future<void> main(List<String> arguments) async {
     final policySource = <String>[
       '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
       '',
+      'abstract interface class _RustOwnedValue {',
+      '  Object get wireValue;',
+      '}',
+      '',
     ];
     final negativeTests = <String>[
       "import 'package:test/test.dart';",
       "import '../lib/src/type_policy.dart';",
+      "import '../lib/src/remote_policy.dart';",
       '',
       'void main() {',
     ];
@@ -392,15 +397,17 @@ Future<void> main(List<String> arguments) async {
       final className = pascalIdentifier(raw['id'] as String);
       final valueType = dartValueType(raw['wire_kind'] as String);
       policySource.addAll([
-        'sealed class $className {',
+        'sealed class $className implements _RustOwnedValue {',
         '  const $className._();',
         '  $valueType get value;',
+        '  @override Object get wireValue => value;',
         '  factory $className.from($valueType value) => ${className}Value.from(value);',
         '}',
         '',
         'final class ${className}Value extends $className {',
+        '  ${className}Value._(this.value) : super._();',
         '  @override final $valueType value;',
-        '  const ${className}Value._(this.value) : super._();',
+        '  @override Object get wireValue => value;',
         '  factory ${className}Value.from($valueType value) {',
         ...dartValidationLines(raw).map((line) => '    $line'),
         '    return ${className}Value._(value);',
@@ -425,6 +432,59 @@ Future<void> main(List<String> arguments) async {
         negativeTests.add("  test('rejects invalid $className', () { expect(() => $className.from($invalid), throwsArgumentError); });");
       }
     }
+    final semanticWireKinds = <String, String>{
+      for (final raw in semanticTypes.whereType<Map>()) raw['id'] as String: raw['wire_kind'] as String,
+    };
+    policySource.addAll([
+      'final class TypePolicyWire {',
+      '  static final Map<String, Object Function(Object)> _factories = {',
+      ...((decoded['field_mappings'] as List?) ?? const <dynamic>[]).whereType<Map>().map((mapping) {
+        final semantic = mapping['semantic_type'] as String;
+        final wireKind = semanticWireKinds[semantic];
+        final valueType = dartValueType(wireKind ?? 'string');
+        final className = pascalIdentifier(semantic);
+        final key = '${mapping['family']}.${mapping['field']}';
+        final cast = valueType == 'List<int>' ? 'value as List<int>' : 'value as $valueType';
+        return "    '$key': (value) => $className.from($cast),";
+      }),
+      '  };',
+      '',
+      '  static Object toWire({required String family, required String field, required Object value}) {',
+      "    final factory = _factories['\${family.toLowerCase()}.$field'];",
+      '    if (value is _RustOwnedValue) return value.wireValue;',
+      '    return factory == null ? value : (factory(value) as _RustOwnedValue).wireValue;',
+      '  }',
+      '',
+      '  static Object? normalizeRequest(String family, Object? request) {',
+      '    if (request is! Map) return request;',
+      '    final normalized = <String, Object?>{};',
+      '    request.forEach((key, value) { normalized[key.toString()] = value; });',
+      '    for (final key in normalized.keys.toList()) {',
+      '      final value = normalized[key];',
+      '      if (value != null && _factories.containsKey("\${family.toLowerCase()}.$key")) {',
+      '        normalized[key] = toWire(family: family, field: key, value: value);',
+      '      }',
+      '    }',
+      '    return normalized;',
+      '  }',
+      '',
+      '  static Object typedField({required String family, required String field, required Object value}) {',
+      "    final factory = _factories['\${family.toLowerCase()}.$field'];",
+      '    if (value is _RustOwnedValue || factory == null) return value;',
+      '    return factory(value);',
+      '  }',
+      '}',
+      '',
+    ]);
+    negativeTests.addAll([
+      "  test('public remote facade serializes Rust-owned value objects', () async {",
+      '    Object? captured;',
+      '    final client = RemoteClient(family: \'stream\', installed: const {RemoteTransport.grpc: false, RemoteTransport.grpcWeb: false, RemoteTransport.httpJson: true}, endpoint: const {RemoteTransport.grpc: false, RemoteTransport.grpcWeb: false, RemoteTransport.httpJson: true}, invoker: (operation, request, transport) { captured = request; return \'ok\'; });',
+      '    expect(await client.call(\'append\', {\'path\': Path.from(\'events\')}), \'ok\');',
+      '    expect((captured as Map)[\'path\'], \'events\');',
+      '    expect(() => client.call(\'append\', {\'path\': \'\'}), throwsArgumentError);',
+      '  });',
+    ]);
     negativeTests.addAll(['}', '']);
     File('${package.path}${Platform.pathSeparator}lib${Platform.pathSeparator}src${Platform.pathSeparator}type_policy.dart')
         .writeAsStringSync('${policySource.join('\n')}\n');

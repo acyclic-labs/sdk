@@ -243,6 +243,56 @@ if ($manifestPath !== null) {
         $typePolicyClasses[] = '';
     }
     $typePolicyClasses[] = '';
+    $fieldTypes = [];
+    foreach (($typePolicy['field_mappings'] ?? []) as $mapping) {
+        if (is_array($mapping) && isset($mapping['family'], $mapping['field'], $mapping['semantic_type'])) {
+            $fieldTypes[$mapping['family'] . '.' . $mapping['field']] = pascalIdentifier((string) $mapping['semantic_type']);
+        }
+    }
+    $typePolicyWire = [
+        '<?php',
+        'declare(strict_types=1);',
+        '',
+        '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
+        'namespace Acyclic\\TypePolicy;',
+        '',
+        'final class Wire',
+        '{',
+        '    /** @return array<string, class-string> */',
+        '    private static function fieldTypes(): array',
+        '    {',
+        '        return ' . var_export($fieldTypes, true) . ';',
+        '    }',
+        '',
+        '    public static function toWire(string $family, string $field, mixed $value): mixed',
+        '    {',
+        '        $className = self::fieldTypes()[strtolower($family) . "." . $field] ?? null;',
+        '        $class = $className === null ? null : __NAMESPACE__ . "\\\\" . $className;',
+        '        if ($class === null) { return $value; }',
+        '        return $value instanceof $class ? $value->value : $class::from($value)->value;',
+        '    }',
+        '',
+        '    public static function normalizeRequest(string $family, mixed $request): mixed',
+        '    {',
+        '        if (!is_array($request)) { return $request; }',
+        '        foreach (self::fieldTypes() as $key => $_class) {',
+        '            [$mappedFamily, $field] = explode(".", $key, 2);',
+        '            if ($mappedFamily === strtolower($family) && array_key_exists($field, $request) && $request[$field] !== null) {',
+        '                $request[$field] = self::toWire($mappedFamily, $field, $request[$field]);',
+        '            }',
+        '        }',
+        '        return $request;',
+        '    }',
+        '',
+        '    public static function typedField(string $family, string $field, mixed $value): mixed',
+        '    {',
+        '        $className = self::fieldTypes()[strtolower($family) . "." . $field] ?? null;',
+        '        $class = $className === null ? null : __NAMESPACE__ . "\\\\" . $className;',
+        '        return $class === null || $value instanceof $class ? $value : $class::from($value);',
+        '    }',
+        '}',
+        '',
+    ];
     $typePolicyDirectory = $root . '/src/Acyclic/TypePolicy';
     if (!is_dir($typePolicyDirectory) && !mkdir($typePolicyDirectory, 0777, true) && !is_dir($typePolicyDirectory)) {
         throw new RuntimeException('unable to create Rust type policy directory');
@@ -269,7 +319,7 @@ if ($manifestPath !== null) {
     }
     $negative[] = "echo 'Rust type policy negative checks passed', PHP_EOL;";
     file_put_contents($root . '/tests/type_policy_negative.php', implode(PHP_EOL, $negative) . PHP_EOL);
-    $typePolicyMetadata['artifacts'] = ['src/Acyclic/TypePolicy/Types.php', 'type-policy.phpstan.neon', 'type-policy.psalm.xml', 'tests/type_policy_negative.php'];
+    $typePolicyMetadata['artifacts'] = ['src/Acyclic/TypePolicy/Types.php', 'src/Acyclic/TypePolicy/Wire.php', 'type-policy.phpstan.neon', 'type-policy.psalm.xml', 'tests/type_policy_negative.php'];
 }
 
 function executable(string $name): string
@@ -346,6 +396,9 @@ if ($typePolicyMetadata !== null) {
     }
     if (file_put_contents($typePolicyDirectory . '/Types.php', implode(PHP_EOL, $typePolicyClasses)) === false) {
         throw new RuntimeException('unable to write generated Rust type policy classes');
+    }
+    if (file_put_contents($typePolicyDirectory . '/Wire.php', implode(PHP_EOL, $typePolicyWire)) === false) {
+        throw new RuntimeException('unable to write generated Rust type policy wire bridge');
     }
 }
 
