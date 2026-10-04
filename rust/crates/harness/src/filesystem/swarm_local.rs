@@ -16,7 +16,10 @@ use crate::{
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    core::{
+        AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee,
+        SchemaRegistry, Scope,
+    },
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -89,9 +92,140 @@ pub struct LocalSwarmUsageSource {
 }
 
 #[cfg(feature = "filesystem-local")]
+/// Explicit operator evidence for repairing one uncertain durable usage publication.
+///
+/// Recovery is bound to one storage instance, one operation/dispatch key, the
+/// exact backup bytes selected by the operator, and an observed cumulative
+/// usage high-water mark. Normal durable reopen never promotes a backup.
+pub struct LocalUsageRecoveryApproval {
+    storage_fingerprint: [u8; 32],
+    storage_identity: String,
+    operation_id: OperationId,
+    dispatch_id: IdempotencyKey,
+    observed_usage: SwarmUsage,
+    backup_digest: [u8; 32],
+}
+
+#[cfg(feature = "filesystem-local")]
+impl LocalUsageRecoveryApproval {
+    /// Issues approval from a verified operator scope carrying the exact
+    /// recovery grant for this storage, operation, dispatch, and backup.
+    pub fn issue(
+        verifier: &AuthorityVerifier,
+        scope: &Scope,
+        root: impl AsRef<Path>,
+        storage_identity: impl Into<String>,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        observed_usage: SwarmUsage,
+        backup_digest: [u8; 32],
+    ) -> Result<Self> {
+        verifier.verify(scope)?;
+        let storage_identity = storage_identity.into();
+        let storage_fingerprint = LocalSwarmUsageSource::storage_fingerprint(
+            root.as_ref(),
+            &storage_identity,
+        )?;
+        let approval = Self::new(
+            storage_fingerprint,
+            storage_identity,
+            operation_id,
+            dispatch_id,
+            observed_usage,
+            backup_digest,
+        )?;
+        if !scope.capabilities().contains(&approval.capability_grant()) {
+            return Err(Error::Unauthorized(
+                "operator scope lacks the exact durable usage recovery grant".into(),
+            ));
+        }
+        Ok(approval)
+    }
+
+    /// Returns the exact capability an authenticated operator must grant for
+    /// this recovery evidence.
+    pub fn recovery_capability(
+        root: impl AsRef<Path>,
+        storage_identity: &str,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        backup_digest: [u8; 32],
+    ) -> Result<String> {
+        let storage_identity = LocalSwarmUsageSource::parse_storage_identity(storage_identity)?;
+        let storage_fingerprint =
+            LocalSwarmUsageSource::storage_fingerprint(root.as_ref(), &storage_identity)?;
+        Ok(format!(
+            "local:usage-recovery:v1:{}",
+            recovery_capability_digest(
+                &storage_fingerprint,
+                &storage_identity,
+                operation_id,
+                dispatch_id,
+                backup_digest,
+            )
+        ))
+    }
+
+    fn new(
+        storage_fingerprint: [u8; 32],
+        storage_identity: impl Into<String>,
+        operation_id: OperationId,
+        dispatch_id: IdempotencyKey,
+        observed_usage: SwarmUsage,
+        backup_digest: [u8; 32],
+    ) -> Result<Self> {
+        let storage_identity = storage_identity.into();
+        let storage_identity = LocalSwarmUsageSource::parse_storage_identity(&storage_identity)?;
+        Ok(Self {
+            storage_fingerprint,
+            storage_identity,
+            operation_id,
+            dispatch_id,
+            observed_usage,
+            backup_digest,
+        })
+    }
+
+    fn capability_grant(&self) -> String {
+        format!(
+            "local:usage-recovery:v1:{}",
+            recovery_capability_digest(
+                &self.storage_fingerprint,
+                &self.storage_identity,
+                self.operation_id,
+                &self.dispatch_id,
+                self.backup_digest,
+            )
+        )
+    }
+}
+
+#[cfg(feature = "filesystem-local")]
+fn recovery_capability_digest(
+    storage_fingerprint: &[u8; 32],
+    storage_identity: &str,
+    operation_id: OperationId,
+    dispatch_id: &IdempotencyKey,
+    backup_digest: [u8; 32],
+) -> String {
+    let mut bytes = b"acyclic:harness:local-usage-recovery:v1".to_vec();
+    bytes.extend_from_slice(storage_fingerprint);
+    bytes.push(0);
+    bytes.extend_from_slice(storage_identity.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&operation_id.into_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(dispatch_id.0.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(&backup_digest);
+    blake3::hash(&bytes).to_hex().to_string()
+}
+#[cfg(feature = "filesystem-local")]
 const LOCAL_USAGE_SNAPSHOT_VERSION: u16 = 1;
 #[cfg(feature = "filesystem-local")]
 const LOCAL_USAGE_IDENTITY_FILE: &str = "usage.identity";
+#[cfg(feature = "filesystem-local")]
+const LOCAL_USAGE_IDENTITY_TEMP_FILE: &str = "usage.identity.tmp";
 
 impl Default for LocalSwarmUsageSource {
     fn default() -> Self {
@@ -105,6 +239,23 @@ impl Default for LocalSwarmUsageSource {
 }
 
 impl LocalSwarmUsageSource {
+    #[cfg(feature = "filesystem-local")]
+    fn storage_fingerprint(root: &Path, storage_identity: &str) -> Result<[u8; 32]> {
+        let canonical_root = fs::canonicalize(root)
+            .map_err(|error| {
+                Error::Storage(format!("local usage journal identity failed: {error}"))
+            })?;
+        Ok(*blake3::hash(
+            format!(
+                "local.runtime.meter:{}:{}",
+                canonical_root.display(),
+                storage_identity
+            )
+            .as_bytes(),
+        )
+        .as_bytes())
+    }
+
     /// Creates an explicitly ephemeral source for memory/WASM compositions.
     /// The capability is unique to this source instance and is intentionally
     /// not recoverable across a cold restart; native local composition uses
@@ -124,14 +275,15 @@ impl LocalSwarmUsageSource {
     }
 
     #[cfg(feature = "filesystem-local")]
+    /// Opens the durable local usage source and verifies its immutable storage
+    /// identity. Uncertain publication returns an error that requires an
+    /// explicit [`LocalUsageRecoveryApproval`].
     pub fn durable(root: impl AsRef<Path>) -> Result<Self> {
         use fs2::FileExt;
 
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)
             .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
-        let canonical_root = fs::canonicalize(&root)
-            .map_err(|error| Error::Storage(format!("local usage journal identity failed: {error}")))?;
         // Serialize marker creation with the same lock used for snapshots. The
         // marker is an immutable storage-instance capability, so a torn or
         // concurrently-created value must fail closed rather than fork the
@@ -148,15 +300,7 @@ impl LocalSwarmUsageSource {
         let storage_identity = Self::load_or_create_storage_identity(&root);
         let _ = lock.unlock();
         let storage_identity = storage_identity?;
-        let fingerprint = *blake3::hash(
-            format!(
-                "local.runtime.meter:{}:{}",
-                canonical_root.display(),
-                storage_identity
-            )
-            .as_bytes(),
-        )
-        .as_bytes();
+        let fingerprint = Self::storage_fingerprint(&root, &storage_identity)?;
         let source = Self {
             usage: Arc::new(StdMutex::new(BTreeMap::new())),
             durable_root: Some(root),
@@ -167,6 +311,107 @@ impl LocalSwarmUsageSource {
         Ok(source)
     }
 
+    #[cfg(feature = "filesystem-local")]
+    /// Repairs one uncertain publication only with explicit operator evidence.
+    /// The selected backup bytes and cumulative high-water mark are bound to
+    /// one operation/dispatch identity; ordinary reopen never calls this.
+    pub fn recover_durable_with_approval(
+        root: impl AsRef<Path>,
+        approval: LocalUsageRecoveryApproval,
+    ) -> Result<Self> {
+        use fs2::FileExt;
+
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir_all(&root)
+            .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(root.join("usage.lock"))
+            .map_err(|error| Error::Storage(format!("local usage journal lock failed: {error}")))?;
+        lock.lock_exclusive().map_err(|error| {
+            Error::Storage(format!("local usage journal exclusive lock failed: {error}"))
+        })?;
+        let result = (|| {
+            let identity_path = root.join(LOCAL_USAGE_IDENTITY_FILE);
+            let (identity, identity_from_temp) = match fs::read_to_string(&identity_path) {
+                Ok(identity) => (Self::parse_storage_identity(&identity)?, false),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    let identity = fs::read_to_string(root.join(LOCAL_USAGE_IDENTITY_TEMP_FILE))
+                        .map_err(|error| {
+                            Error::Storage(format!(
+                                "local usage storage identity recovery failed: {error}"
+                            ))
+                        })?;
+                    (Self::parse_storage_identity(&identity)?, true)
+                }
+                Err(error) => {
+                    return Err(Error::Storage(format!(
+                        "local usage storage identity read failed: {error}"
+                    )));
+                }
+            };
+            if identity != approval.storage_identity {
+                return Err(Error::Conflict(
+                    "storage identity recovery approval targets another instance".into(),
+                ));
+            }
+            let fingerprint = Self::storage_fingerprint(&root, &identity)?;
+            if approval.storage_fingerprint != fingerprint {
+                return Err(Error::Conflict(
+                    "storage recovery approval targets another root".into(),
+                ));
+            }
+            let source = Self {
+                usage: Arc::new(StdMutex::new(BTreeMap::new())),
+                durable_root: Some(root.clone()),
+                provider: "local.runtime.meter".into(),
+                fingerprint,
+            };
+            let backup = root.join("usage.snapshot.bak");
+            let backup_bytes = fs::read(&backup)
+                .map_err(|error| {
+                    Error::Storage(format!("local usage recovery backup read failed: {error}"))
+                })?;
+            if *blake3::hash(&backup_bytes).as_bytes() != approval.backup_digest {
+                return Err(Error::Conflict(
+                    "storage recovery approval does not match the selected backup".into(),
+                ));
+            }
+            let mut records = source.read_snapshot_file(&backup)?;
+            let key = Self::key(approval.operation_id, &approval.dispatch_id);
+            let existing = records.get(&key).ok_or_else(|| {
+                Error::Conflict(
+                    "storage recovery approval has no recorded operation high-water mark".into(),
+                )
+            })?;
+            if approval.observed_usage.model_steps < existing.model_steps
+                || approval.observed_usage.output_bytes < existing.output_bytes
+                || approval.observed_usage.execution_time_ms < existing.execution_time_ms
+            {
+                return Err(Error::Conflict(
+                    "storage recovery evidence is below the verified backup high-water mark".into(),
+                ));
+            }
+            records.insert(key, approval.observed_usage);
+            if identity_from_temp {
+                fs::rename(root.join(LOCAL_USAGE_IDENTITY_TEMP_FILE), &identity_path)
+                    .map_err(|error| {
+                        Error::Storage(format!(
+                            "local usage storage identity recovery publish failed: {error}"
+                        ))
+                    })?;
+            } else {
+                let _ = fs::remove_file(root.join(LOCAL_USAGE_IDENTITY_TEMP_FILE));
+            }
+            let _ = fs::remove_file(root.join("usage.snapshot.tmp"));
+            source.write_snapshot_locked(&root, &records)?;
+            Ok(source)
+        })();
+        let _ = lock.unlock();
+        result
+    }
     #[cfg(feature = "filesystem-local")]
     fn parse_storage_identity(identity: &str) -> Result<String> {
         let identity = identity.trim();
@@ -184,9 +429,16 @@ impl LocalSwarmUsageSource {
     #[cfg(feature = "filesystem-local")]
     fn load_or_create_storage_identity(root: &Path) -> Result<String> {
         let path = root.join(LOCAL_USAGE_IDENTITY_FILE);
-        let temp = root.join("usage.identity.tmp");
+        let temp = root.join(LOCAL_USAGE_IDENTITY_TEMP_FILE);
         match fs::read_to_string(&path) {
-            Ok(identity) => Self::parse_storage_identity(&identity),
+            Ok(identity) => {
+                if temp.exists() {
+                    return Err(Error::Storage(
+                        "local usage storage identity publication is uncertain; operator resolution required".into(),
+                    ));
+                }
+                Self::parse_storage_identity(&identity)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 if temp.exists() {
                     return Err(Error::Storage(
@@ -267,7 +519,10 @@ impl LocalSwarmUsageSource {
             Error::Storage(format!("local usage snapshot is corrupt: {error}"))
         })?;
         if snapshot.version != LOCAL_USAGE_SNAPSHOT_VERSION {
-            return Err(Error::Conflict("local usage snapshot version changed".into()));
+            return Err(Error::Unsupported(format!(
+                "local usage snapshot version {} is unsupported; explicit migration is required",
+                snapshot.version
+            )));
         }
         if snapshot.provider != self.provider || snapshot.fingerprint != self.fingerprint {
             return Err(Error::Conflict("local usage source identity changed".into()));
@@ -275,7 +530,7 @@ impl LocalSwarmUsageSource {
         if snapshot.digest != snapshot_digest(&snapshot)? {
             return Err(Error::Storage("local usage snapshot integrity mismatch".into()));
         }
-        let mut records = BTreeMap::new();
+        let mut records: BTreeMap<(OperationId, String), SwarmUsage> = BTreeMap::new();
         for record in snapshot.records {
             let operation_id: OperationId = serde_json::from_str(&format!(
                 "\"{}\"",
@@ -317,6 +572,7 @@ impl LocalSwarmUsageSource {
                 }
                 Ok(BTreeMap::new())
             }
+            Err(error @ Error::Unsupported(_)) => Err(error),
             Err(error) => Err(Error::Storage(format!(
                 "local usage snapshot is uncertain; operator resolution required: {error}"
             ))),
@@ -2561,9 +2817,9 @@ impl PersistentLocalSwarm {
     /// the same authenticated providers after restart.
     pub async fn open_with_bindings(
         root: impl AsRef<Path>,
-        mut config: LocalSwarmConfig,
+        config: LocalSwarmConfig,
         provider: Arc<dyn ModelProvider>,
-        mut bindings: LocalSwarmBindings,
+        bindings: LocalSwarmBindings,
     ) -> Result<Arc<Self>> {
         let bindings = if let Some(plans) = bindings.model_fork_plans.clone() {
             bindings.with_model_fork_plans(plans)
@@ -5926,6 +6182,40 @@ mod tests {
     };
 
     #[cfg(feature = "filesystem-local")]
+    fn issue_usage_recovery_approval(
+        root: &Path,
+        storage_identity: String,
+        operation: OperationId,
+        dispatch: IdempotencyKey,
+        usage: SwarmUsage,
+        backup_digest: [u8; 32],
+    ) -> Result<LocalUsageRecoveryApproval> {
+        let authority = Authority {
+            kind: AggregateKind::Session,
+            id: "local-usage-operator".into(),
+        };
+        let issuer = AuthorityIssuer::new("local-usage-operator", [31; 32], authority);
+        let capability = LocalUsageRecoveryApproval::recovery_capability(
+            root,
+            &storage_identity,
+            operation,
+            &dispatch,
+            backup_digest,
+        )?;
+        let scope = issuer.root("usage-recovery", Capabilities::new([capability]));
+        LocalUsageRecoveryApproval::issue(
+            &issuer.verifier(),
+            &scope,
+            root,
+            storage_identity,
+            operation,
+            dispatch,
+            usage,
+            backup_digest,
+        )
+    }
+
+    #[cfg(feature = "filesystem-local")]
     #[test]
     fn local_usage_source_reopens_cumulative_runtime_usage() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -5982,19 +6272,132 @@ mod tests {
             LocalSwarmUsageSource::durable(root.path()),
             Err(Error::Storage(message)) if message.contains("operator resolution")
         ));
-        fs::copy(
-            root.path().join("usage.snapshot.bak"),
-            root.path().join("usage.snapshot"),
-        )
-        .map_err(|error| Error::Storage(error.to_string()))?;
-        let reopened = LocalSwarmUsageSource::durable(root.path())?;
+        let storage_identity = fs::read_to_string(root.path().join(LOCAL_USAGE_IDENTITY_FILE))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let backup_bytes = fs::read(root.path().join("usage.snapshot.bak"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let approval = issue_usage_recovery_approval(
+            root.path(),
+            storage_identity,
+            operation,
+            dispatch.clone(),
+            second,
+            *blake3::hash(&backup_bytes).as_bytes(),
+        )?;
+        let reopened = LocalSwarmUsageSource::recover_durable_with_approval(
+            root.path(),
+            approval,
+        )?;
         assert_eq!(
             reopened.cumulative_usage(operation, &dispatch)?,
-            first,
-            "operator-resolved recovery may use the last verified snapshot"
+            second,
+            "approved recovery must preserve the observed operation high-water mark"
         );
         reopened.record_runtime_usage(operation, &dispatch, second)?;
         assert_eq!(reopened.cumulative_usage(operation, &dispatch)?, second);
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_recovers_torn_identity_with_approval() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let operation = OperationId::new();
+        let dispatch = IdempotencyKey::new("identity-torn")?;
+        let first_usage = SwarmUsage {
+            model_steps: 1,
+            output_bytes: 4,
+            execution_time_ms: 9,
+        };
+        let usage = SwarmUsage {
+            model_steps: 2,
+            output_bytes: 7,
+            execution_time_ms: 13,
+        };
+        let source = LocalSwarmUsageSource::durable(root.path())?;
+        source.record_runtime_usage(operation, &dispatch, first_usage)?;
+        source.record_runtime_usage(operation, &dispatch, usage)?;
+        drop(source);
+
+        let identity = fs::read_to_string(root.path().join(LOCAL_USAGE_IDENTITY_FILE))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let backup_bytes = fs::read(root.path().join("usage.snapshot.bak"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        fs::remove_file(root.path().join(LOCAL_USAGE_IDENTITY_FILE))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        fs::write(
+            root.path().join(LOCAL_USAGE_IDENTITY_TEMP_FILE),
+            identity.as_bytes(),
+        )
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Storage(message)) if message.contains("operator resolution")
+        ));
+
+        let authority = Authority {
+            kind: AggregateKind::Session,
+            id: "local-usage-operator".into(),
+        };
+        let issuer = AuthorityIssuer::new("local-usage-operator", [31; 32], authority);
+        let unscoped = issuer.root(
+            "usage-recovery",
+            Capabilities::new(std::iter::empty::<String>()),
+        );
+        assert!(matches!(
+            LocalUsageRecoveryApproval::issue(
+                &issuer.verifier(),
+                &unscoped,
+                root.path(),
+                identity.clone(),
+                operation,
+                dispatch.clone(),
+                usage,
+                *blake3::hash(&backup_bytes).as_bytes(),
+            ),
+            Err(Error::Unauthorized(message)) if message.contains("exact durable usage recovery grant")
+        ));
+
+        let approval = issue_usage_recovery_approval(
+            root.path(),
+            identity,
+            operation,
+            dispatch.clone(),
+            usage,
+            *blake3::hash(&backup_bytes).as_bytes(),
+        )?;
+        let recovered =
+            LocalSwarmUsageSource::recover_durable_with_approval(root.path(), approval)?;
+        assert_eq!(
+            recovered.cumulative_usage(operation, &dispatch)?,
+            usage,
+            "identity recovery must publish the approved durable high-water mark"
+        );
+        assert!(root.path().join(LOCAL_USAGE_IDENTITY_FILE).is_file());
+        assert!(!root.path().join(LOCAL_USAGE_IDENTITY_TEMP_FILE).exists());
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_rejects_unsupported_snapshot_schema() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let source = LocalSwarmUsageSource::durable(root.path())?;
+        drop(source);
+        let current = root.path().join("usage.snapshot");
+        let bytes = fs::read(&current).map_err(|error| Error::Storage(error.to_string()))?;
+        let mut snapshot: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        snapshot["version"] = json!(0);
+        fs::write(
+            current,
+            serde_json::to_vec(&snapshot).map_err(|error| Error::Storage(error.to_string()))?,
+        )
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Unsupported(message)) if message.contains("explicit migration")
+        ));
         Ok(())
     }
 
