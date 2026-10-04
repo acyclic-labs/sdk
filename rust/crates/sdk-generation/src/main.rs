@@ -2406,6 +2406,30 @@ fn run_docs_rustdoc(root: &Path, output: &Path, request: String) -> Result<ToolR
     }
     fs::create_dir_all(&profile_root)?;
     let rustdoc_output = output.join("rustdoc-json");
+    // Keep Cargo's rustdoc target trees outside the generated bundle. Windows
+    // link paths become too deep when the cache is nested below a full output
+    // checkout path. CI may provide a shared cache explicitly; local runs use
+    // a short revision-keyed directory under the host temporary directory.
+    let docs_cache = env::var_os("SDK_DOCS_RUSTDOC_CACHE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let revision = source_identity(root)
+                .map(|identity| identity.revision)
+                .unwrap_or_else(|_| "unknown".to_owned());
+            let component = revision
+                .chars()
+                .filter(|character| character.is_ascii_alphanumeric() || *character == '-')
+                .take(16)
+                .collect::<String>();
+            env::temp_dir()
+                .join("acyclic-sdk-docs")
+                .join(if component.is_empty() {
+                    "unknown".to_owned()
+                } else {
+                    component
+                })
+        });
+    fs::create_dir_all(&docs_cache)?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut first_command = Vec::new();
@@ -2432,6 +2456,7 @@ fn run_docs_rustdoc(root: &Path, output: &Path, request: String) -> Result<ToolR
         match Command::new(&command[0])
             .args(&command[1..])
             .current_dir(root)
+            .env("SDK_DOCS_RUSTDOC_CACHE_DIR", &docs_cache)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .output()
@@ -2502,6 +2527,10 @@ fn run_docs_rustdoc(root: &Path, output: &Path, request: String) -> Result<ToolR
     }
     let logs = output.join("logs");
     fs::create_dir_all(&logs)?;
+    fs::write(
+        logs.join("sdk-docs-rustdoc-cache.txt"),
+        docs_cache.to_string_lossy().as_bytes(),
+    )?;
     fs::write(logs.join("sdk-docs-rustdoc.stdout"), &stdout)?;
     fs::write(logs.join("sdk-docs-rustdoc.stderr"), &stderr)?;
     Ok(ToolResult {
