@@ -36,7 +36,7 @@
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Commit f2058d3db adds Actors/Workers platform-default clients. Native checks pass in owner evidence. Stream WASM passes only existing feature profile; plain default WASM fails Tokio/mio and target dependency correction is assigned. Embedded prototype14 Rust tests and exact debug C/Python DLL consumers pass; release ABI and complete Linux/macOS/musl artifacts remain outstanding.",
+      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs.",
       "state": "partial"
     },
     {
@@ -56,8 +56,8 @@
     },
     {
       "id": "website-presentation",
-      "evidence": "Persistent local preview receipt Q:/sdk/work/website-preview-7878.receipt.json records server32012 and output logs. HTTP/source route checks and static version/isolation/Svelte checks pass in scoped evidence. Current strict bundle import, removal of obsolete authored SDK pages and fresh desktop/mobile rendered verification remain outstanding; HTTP200 is not visual proof.",
-      "state": "unverified"
+      "evidence": "Root actual IAB tab2 desktop screenshot verified readable theme afterwebsiteca1ba1a. At390x844, responsive single-column cards and expanded/collapsed documentation navigation with version selector were observed; viewport restored. Current full API references, search, language switching, complete version archives and strict executable snippet bundle remain outstanding.",
+      "state": "partial"
     },
     {
       "id": "typescript-removal",
@@ -96,47 +96,27 @@
     }
   ],
   "latest_coordinator_iteration": {
-    "observed_at": "2026-10-04T08:50:46.8994991Z",
+    "observed_at": "2026-10-04T20:09:45.3059814Z",
     "status": "incomplete",
-    "authorization": "User explicitly authorized PR and merge only when absolutely confident. Root alone may merge after every completion requirement passes; no auto-merge, registry publication or production deployment.",
     "pr": "https://github.com/acyclic-labs/sdk/pull/241",
-    "hosted_run": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099",
-    "hosted_source_revision": "74a9049a660c80447e43394e67e78f50d8cb8772",
-    "hosted_conclusion": "failure",
-    "successful_embedded_jobs": [
-      "macos-arm64",
-      "windows-x64-msvc",
-      "windows-arm64-msvc"
+    "pushed_source_revision": "49d0b30169dbd4bff19b3b4b8163711384dae098",
+    "hosted_native_run": "https://github.com/acyclic-labs/sdk/actions/runs/37230477025",
+    "hosted_native_source": "39bac2d963bb1286ea591dde2fd0bcbe5a6a03c3",
+    "hosted_native_verified_scope": "Windows x64 release DLL build/upload only;7otherplatforms skipped build",
+    "hosted_startup_failures": [
+      37230202076,
+      37230197286,
+      37230193747
     ],
-    "hosted_receipt": "research/acceptance/coordinator-hosted-qualification-37188978099.json",
-    "verified_local_checks": [
-      {
-        "scope": "nominal RPC qualification receipt rejection",
-        "passed": 4,
-        "failed": 0
-      },
-      {
-        "scope": "fast CI lane policy",
-        "passed": 16,
-        "failed": 0,
-        "test_duration_ms": 25.444
-      }
-    ],
-    "resolved": [
-      "Actual CI observation retained with no qualification claim",
-      "Signed isolated commits verified against repository allowed signers",
-      "Stream invalid LLVM action pin corrected by owner",
-      "Accidental provenance removal restored without reverting later work"
-    ],
+    "shared_index_repair": "Forward repair b866082321c97e26a1b4699ae3b733532aee29d2 restored unrelated680-file accidental staged tree; netbaseline39bac onlyObjectsclockexport; physicalsource preserved",
     "next_required": [
-      "Complete and exercise actual full Rust fixture with successful method responses",
-      "Fresh clean generation and negative drift checks",
-      "Installed language packages with remote nominal success for every RPC",
-      "Native platform artifacts and runtime receipts",
-      "Complete Rustdoc graph and executable snippets",
-      "Every released docs version and rendered desktop/mobile website verification",
-      "All inventoried viable language targets and replaced TypeScript removal",
-      "Full PR signature range integrity"
+      "Coherent source-bound106RPC collector and deterministic independent runtime fixtures",
+      "Rust descriptor-derived frame cardinality and legitimate error/cancellation receipts",
+      "Actual installed language package and all54snippet runtimes",
+      "Full8RID native package installation and execution",
+      "Allreleased version Rustdoc provenance and generated website search/reference completeness",
+      "Fresh clean generation reproducibility and Rust-source propagation",
+      "Allviableinventoried targets and qualified sharedTypeScript removal"
     ],
     "merge_performed": false,
     "goal_completed": false
