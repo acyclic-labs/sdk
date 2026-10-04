@@ -747,6 +747,31 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
     })
 }
 
+fn crate_has_library_target(crate_dir: &Path) -> bool {
+    if crate_dir.join("src/lib.rs").is_file() {
+        return true;
+    }
+    let Ok(manifest) = fs::read_to_string(crate_dir.join("Cargo.toml")) else {
+        return false;
+    };
+    let mut in_lib = false;
+    for line in manifest.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            in_lib = trimmed == "[lib]";
+            continue;
+        }
+        if in_lib && trimmed.starts_with("path") && trimmed.split_once('=').is_some() {
+            let Some((_, value)) = trimmed.split_once('=') else {
+                continue;
+            };
+            let path = value.trim().trim_matches('"').trim_matches('\'');
+            return crate_dir.join(path).is_file();
+        }
+    }
+    false
+}
+
 fn resolve_profile_target(target: &str, toolchain: Option<&str>) -> Result<String, Error> {
     if target != "host" {
         return Ok(target.to_owned());
