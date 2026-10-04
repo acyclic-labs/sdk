@@ -1,0 +1,54 @@
+{
+  "schema": "acyclic.sdk.python.semantic-objects-filesystem-stream.v1",
+  "consumer": "python",
+  "execution_mode": "remote",
+  "transport": "grpc",
+  "fixture_address": "127.0.0.1:58315",
+  "fixture_binary_sha256": "988C78B31A3B0CB1B9A3BBFEC297B3A7A5233CF7C87C7E7F9DAC9B4446184AB3",
+  "fixture_source_sha256": "450D36071754E385CB1495A76F54D4B836C5B5688EB85C3787750C810A0D2A0A",
+  "model_source_sha256": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "package_sha256": "19DC8E788379B6FF5624BFCE4A18398FBA31883FC542FC95C407396783BDD544",
+  "rows": [
+    {
+      "operation": "ObjectsService/PutObject",
+      "status": "passed",
+      "request_frames": 3,
+      "response": ""
+    },
+    {
+      "operation": "ObjectsService/GetObject",
+      "status": "passed",
+      "response_frames": 2,
+      "frame_kinds": [
+        "header",
+        "body"
+      ],
+      "etag": "fixture-object-etag",
+      "size": 25,
+      "body_utf8": "rust-owned-object-payload"
+    },
+    {
+      "operation": "FilesystemService/Export",
+      "status": "passed",
+      "response_frames": 1,
+      "cursor": "fixture-export-cursor-1",
+      "object_id": "fixture-export-object-1",
+      "contents_utf8": "rust-owned-filesystem-export",
+      "terminal": true
+    },
+    {
+      "operation": "StreamService/Follow",
+      "status": "passed",
+      "event": "cancellation",
+      "cancelled": true
+    },
+    {
+      "operation": "StreamService/Append",
+      "status": "passed",
+      "event": "recovery",
+      "response_bytes": 40
+    }
+  ],
+  "passed": 5,
+  "failed": 0
+}
