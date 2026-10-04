@@ -4930,6 +4930,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recursive_local_wait_cancellation_replays_after_restart() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let waiter = swarm.root_task().await?;
+        let host = swarm
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("communication host missing".into()))?;
+        let waits = swarm
+            .bindings
+            .wait_store
+            .clone()
+            .ok_or_else(|| Error::Unsupported("wait store missing".into()))?;
+        let cancellation = swarm
+            .bindings
+            .cancellation
+            .as_ref()
+            .and_then(|source| source.receiver(waiter))
+            .ok_or_else(|| Error::Unsupported("live cancellation scope missing".into()))?;
+        let request = crate::communication::WaitRequest {
+            operation_id: OperationId::from_bytes([0xa9; 16]),
+            waiter,
+            target: crate::communication::WaitTarget::Deadline {
+                deadline_epoch_ms: host.now_unix_millis().saturating_add(60_000),
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(OperationId::from_bytes([0xaa; 16])),
+        };
+        let pending = tokio::spawn({
+            let request = request.clone();
+            async move {
+                crate::communication::DurableCommunication::new(host)
+                    .with_wait_store(waits)
+                    .wait(request, Some(cancellation))
+                    .await
+            }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        swarm.cancel(waiter).await?;
+        assert_eq!(pending.await.map_err(|error| Error::Storage(error.to_string()))??,
+            crate::communication::WaitCompletion::Cancelled);
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let host = reopened
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("reopened communication host missing".into()))?;
+        let waits = reopened
+            .bindings
+            .wait_store
+            .clone()
+            .ok_or_else(|| Error::Unsupported("reopened wait store missing".into()))?;
+        assert_eq!(
+            crate::communication::DurableCommunication::new(host)
+                .with_wait_store(waits)
+                .wait(request, None)
+                .await?,
+            crate::communication::WaitCompletion::Cancelled
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn recursive_local_composition_delivers_pinned_mail_after_reopen() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
