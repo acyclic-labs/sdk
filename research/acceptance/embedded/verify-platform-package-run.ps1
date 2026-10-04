@@ -59,6 +59,10 @@ foreach ($platform in $expectedTargets.Keys) { $targetToPlatform[$expectedTarget
 
 $actualRevision = (& git -C $sourcePath rev-parse HEAD).Trim()
 Assert-Hex $actualRevision 40 "source checkout revision"
+$dirtyEntries = @(& git -C $sourcePath status --porcelain --untracked-files=all)
+if ($dirtyEntries.Count -ne 0) {
+    throw "Source checkout is dirty; embedded ABI run provenance requires a clean tree (first entry: $($dirtyEntries[0]))"
+}
 $records = @()
 $seenTargets = @{}
 $runSourceDigest = $null
