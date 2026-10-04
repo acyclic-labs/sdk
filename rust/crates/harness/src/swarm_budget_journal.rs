@@ -704,6 +704,28 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         step: u32,
         request_digest: [u8; 32],
     ) -> Result<crate::model::ModelDispatchPermit> {
+        // A settled claim is still a consumed provider right.  Consult the
+        // durable history before projecting a fresh claim so replaying the
+        // same operation/step cannot reopen a provider call after its receipt
+        // was settled, and a changed request cannot reuse its identity.
+        for event in &self.events {
+            if let SwarmBudgetEvent::RootModelStepClaimed {
+                operation_id: claimed_operation,
+                step: claimed_step,
+                request_digest: claimed_digest,
+                ..
+            } = event
+                && *claimed_operation == operation_id
+                && *claimed_step == step
+            {
+                if *claimed_digest == request_digest {
+                    return Err(Error::Indeterminate(operation_id));
+                }
+                return Err(Error::Conflict(
+                    "root model dispatch identity differs from durable history".into(),
+                ));
+            }
+        }
         let projected = SwarmBudget::replay(self.events.clone())?;
         let dispatch_id = IdempotencyKey::new(format!("root:{operation_id}:{step}"))?;
         let usage = projected.claim_root_model_step(
@@ -1459,6 +1481,7 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
+    use std::{fs, path::PathBuf};
 
     fn limits() -> SwarmBudgetLimits {
         SwarmBudgetLimits {
@@ -1508,6 +1531,67 @@ mod tests {
                 execution_time_ms: current.execution_time_ms.max(usage.execution_time_ms),
             };
             Ok(())
+        }
+    }
+
+    #[derive(Clone)]
+    struct DurableRuntimeSource {
+        path: PathBuf,
+        provider: String,
+    }
+
+    impl DurableRuntimeSource {
+        fn new(path: PathBuf, provider: impl Into<String>) -> Self {
+            Self {
+                path,
+                provider: provider.into(),
+            }
+        }
+
+        fn read(&self) -> Result<SwarmUsage> {
+            match fs::read(&self.path) {
+                Ok(bytes) => serde_json::from_slice(&bytes)
+                    .map_err(|error| Error::Storage(format!("durable usage is invalid: {error}"))),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    Ok(SwarmUsage::default())
+                }
+                Err(error) => Err(Error::Storage(format!("durable usage read failed: {error}"))),
+            }
+        }
+
+        fn write(&self, usage: SwarmUsage) -> Result<()> {
+            let bytes = serde_json::to_vec(&usage)
+                .map_err(|error| Error::Storage(format!("durable usage encode failed: {error}")))?;
+            fs::write(&self.path, bytes)
+                .map_err(|error| Error::Storage(format!("durable usage write failed: {error}")))
+        }
+    }
+
+    impl SwarmUsageSource for DurableRuntimeSource {
+        fn provider_identity(&self) -> &str {
+            &self.provider
+        }
+
+        fn cumulative_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+        ) -> Result<SwarmUsage> {
+            self.read()
+        }
+
+        fn record_runtime_usage(
+            &self,
+            _operation_id: OperationId,
+            _dispatch_id: &IdempotencyKey,
+            usage: SwarmUsage,
+        ) -> Result<()> {
+            let current = self.read()?;
+            self.write(SwarmUsage {
+                model_steps: current.model_steps.max(usage.model_steps),
+                output_bytes: current.output_bytes.max(usage.output_bytes),
+                execution_time_ms: current.execution_time_ms.max(usage.execution_time_ms),
+            })
         }
     }
 
@@ -1919,7 +2003,9 @@ mod tests {
             max_execution_time_ms: 200,
             ..limits()
         };
-        let source = RuntimeSource(Arc::new(Mutex::new(SwarmUsage::default())));
+        let source_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let source_path = source_root.path().join("provider-usage.json");
+        let source = DurableRuntimeSource::new(source_path.clone(), "journal-durable-provider");
         let mut journal = SwarmBudgetJournal::start_with_root_dispatch(
             &client,
             session_id,
@@ -1955,10 +2041,13 @@ mod tests {
         let prepared = PreparedModelInput::prepare(request, crate::conversation::Limits::default())?;
         let mut stream = provider.generate(prepared);
         assert!(matches!(stream.next().await, Some(Ok(ModelEvent::Content { .. }))));
-        let measured = meter.usage()?;
-        assert!(measured.model_steps >= 1);
-        assert!(measured.output_bytes > 0);
+        let metered_before_drop = meter.usage()?;
+        assert!(metered_before_drop.model_steps >= 1);
+        assert!(metered_before_drop.output_bytes > 0);
         drop(stream);
+        let measured = source.cumulative_usage(session_id, &IdempotencyKey::new("root-interrupted")?)?;
+        assert!(measured.model_steps >= metered_before_drop.model_steps);
+        assert!(measured.output_bytes >= metered_before_drop.output_bytes);
         drop(provider);
         drop(meter);
         drop(journal);
@@ -1975,7 +2064,14 @@ mod tests {
         )
         .await?;
         assert_eq!(reopened.root_usage_cursor()?.sequence, 0);
-        let mut issuer = reopened.root_usage_receipt_issuer(source.clone())?;
+        // Reconstruct a fresh source object from the durable host counter,
+        // rather than sharing the pre-interruption in-memory source.
+        let reopened_source = DurableRuntimeSource::new(
+            source_path,
+            "journal-durable-provider",
+        );
+        assert_eq!(reopened_source.cumulative_usage(session_id, &IdempotencyKey::new("root-interrupted")?)?, measured);
+        let mut issuer = reopened.root_usage_receipt_issuer(reopened_source)?;
         let receipt = issuer.issue_at_least(measured)?;
         reopened
             .report_root_usage_with_receipt(&owner, receipt)
@@ -1983,6 +2079,28 @@ mod tests {
         assert_eq!(reopened.root_usage_cursor()?.sequence, 1);
         assert_eq!(reopened.root_usage_cursor()?.usage, Some(measured));
         assert_eq!(reopened.usage()?.consumed, measured);
+
+        let mut wrong_provider = reopened.root_usage_receipt_issuer(
+            DurableRuntimeSource::new(
+                source_root.path().join("provider-usage.json"),
+                "different-reopened-provider",
+            ),
+        )?;
+        let wrong_receipt = wrong_provider.issue_at_least(measured)?;
+        assert!(matches!(
+            reopened
+                .report_root_usage_with_receipt(&owner, wrong_receipt)
+                .await,
+            Err(Error::Conflict(message)) if message.contains("provider identity")
+        ));
+        assert!(matches!(
+            reopened.root_dispatch_permit(&owner, operation_id, 0, [41; 32]),
+            Err(Error::Indeterminate(id)) if id == operation_id
+        ));
+        assert!(matches!(
+            reopened.root_dispatch_permit(&owner, operation_id, 0, [43; 32]),
+            Err(Error::Conflict(message)) if message.contains("durable history")
+        ));
 
         // The interrupted claim was released exactly once: a subsequent root
         // step can claim capacity, while the cumulative usage is unchanged.

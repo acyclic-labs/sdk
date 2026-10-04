@@ -2027,6 +2027,9 @@ struct SwarmBudgetState {
     root_usage: SwarmUsage,
     root_usage_sequence: u64,
     root_dispatch_id: Option<IdempotencyKey>,
+    /// Provider identity pinned by the first authenticated root receipt.
+    /// Reopened issuers must continue using the same host capability.
+    root_provider_identity: Option<String>,
     /// Durable root step claims that have not yet been reflected in a
     /// cumulative provider usage receipt.
     root_claims: BTreeMap<(OperationId, u32), ([u8; 32], IdempotencyKey, SwarmUsage)>,
@@ -2086,6 +2089,7 @@ impl SwarmBudget {
                 root_usage: SwarmUsage::default(),
                 root_usage_sequence: 0,
                 root_dispatch_id,
+                root_provider_identity: None,
                 root_claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
@@ -3410,6 +3414,13 @@ fn update_root_usage(
 ) -> Result<SwarmUsage> {
     if let Some(receipt) = receipt {
         receipt.validate()?;
+        if let Some(provider) = &state.root_provider_identity {
+            if provider != &receipt.provider {
+                return Err(Error::Conflict(
+                    "swarm root usage provider identity changed across receipts".into(),
+                ));
+            }
+        }
         let expected_sequence = state
             .root_usage_sequence
             .checked_add(1)
@@ -3457,6 +3468,7 @@ fn update_root_usage(
         remaining_claims = remaining_claims.saturating_sub(1);
     }
     if let Some(receipt) = receipt {
+        state.root_provider_identity = Some(receipt.provider.clone());
         state.root_usage_sequence = receipt.sequence;
     }
     Ok(usage)
