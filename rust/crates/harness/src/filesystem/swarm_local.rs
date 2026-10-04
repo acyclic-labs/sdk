@@ -3861,9 +3861,31 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        let output = match self.run_child_turn(&harness, &bundle, &request).await {
-            Ok(output) => output,
+        // Child turns can publish recursively. Run each turn as a separately
+        // scheduled task so a nested publisher does not grow the caller's
+        // poll stack once per recursive child.
+        let max_steps = u32::try_from(
+            self.config
+                .run_limits
+                .max_steps
+                .unwrap_or(self.config.limits.model_steps),
+        )
+        .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        let output = match tokio::spawn(Self::run_child_turn(
+            harness.clone(),
+            bundle.clone(),
+            request.clone(),
+            max_steps,
+        ))
+        .await
+        {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => {
+                self.mark_failed(child, error.to_string()).await?;
+                return Err(error);
+            }
             Err(error) => {
+                let error = Error::Storage(format!("child turn task failed: {error}"));
                 self.mark_failed(child, error.to_string()).await?;
                 return Err(error);
             }
@@ -4017,10 +4039,10 @@ impl PersistentLocalSwarm {
     }
 
     async fn run_child_turn(
-        &self,
-        harness: &PersistentLocalHarness,
-        bundle: &crate::Harness,
-        request: &LocalForkRequest,
+        harness: Arc<PersistentLocalHarness>,
+        bundle: crate::Harness,
+        request: LocalForkRequest,
+        max_steps: u32,
     ) -> Result<TurnOutput> {
         let content = harness
             .storage()
@@ -4032,16 +4054,9 @@ impl PersistentLocalSwarm {
                 "prompt.txt",
             )
             .await?;
-        let max_steps = u32::try_from(
-            self.config
-                .run_limits
-                .max_steps
-                .unwrap_or(self.config.limits.model_steps),
-        )
-        .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
         harness
             .storage()
-            .run_conversation(bundle, request.child_operation, content, vec![], max_steps)
+            .run_conversation(&bundle, request.child_operation, content, vec![], max_steps)
             .await
     }
 
