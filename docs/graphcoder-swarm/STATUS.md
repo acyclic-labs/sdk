@@ -42,7 +42,9 @@ The existing public terminal tests pass 7/7 at source `f07b958d8`. Frozen depend
 
 ## Remaining integration and qualification
 
-1. Repair the cancellation fault timeout exposed after independently scheduling recursive child turns. The ordinary Windows production recursive scenario now passes without a larger stack; concurrent activation, cancellation and full recovery still require qualification.
+At candidate source `231de6a78`, all three production recursive tests and all five fault tests pass on Windows with no ignored cases. Harness shares a live cancellation signal across handles of one composition root, signals only after durable cancellation, and awaits the owned child's termination before inspecting its journal. The cancellation fixture leaves its provider blocked and verifies that cancellation itself drops the stream. Depth denial rejects grandchild publication and dispatch while retaining the already admitted child activation for recovery. See [candidate source and artifact evidence](checkpoint-cancellation-repair-native-2026-10-04.json). These changes are integrated through `bed152979`; the full integrated library and runtime run remains required. The prior two-pass/one-failure test expectation is preserved in [earlier evidence](checkpoint-recursive-cleanup-native-2026-10-04.json).
+
+1. Qualify the integrated cancellation repair with the full Harness library and recursive/fault suites. Concurrent activation and full recovery remain required beyond the focused candidate evidence.
 2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
 3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
 4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
