@@ -114,6 +114,18 @@ for (const [family, service] of services) {
         const values = await collect(stream, { controller, timeoutMs: method.name === "Follow" ? 250 : 1500 });
         result.frames = values.length;
         result.serialized = values.every((value) => value.$typeName === method.output.typeName);
+        if (family === "harness" && method.name === "Replay") {
+          const events = values.flatMap((delivery) => delivery.events ?? []);
+          result.semantic = {
+            nonEmptyDelivery: values.length > 0,
+            eventCount: events.length,
+            operationIds: events.map((event) => event.operationId),
+            eventTypes: events.map((event) => event.eventType),
+          };
+          assert.ok(values.length > 0, "Harness Replay returned no Rust journal delivery");
+          assert.ok(events.some((event) => event.operationId === operationId), "Harness Replay operation identity mismatch");
+          assert.ok(events.some((event) => event.eventType === "fixture.command.accepted"), "Harness Replay event type mismatch");
+        }
       } else {
         const input = method.methodKind === "client_streaming"
           ? (async function* () { yield request; yield request; })()
