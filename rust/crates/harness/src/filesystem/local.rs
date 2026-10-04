@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, Scope},
+    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
     effects::EffectRegistry,
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
