@@ -2,7 +2,7 @@
 
 // Create the source-bound native stage suite configuration after a fresh
 // package and native runtime build. This records provenance; it does not build
-// artifacts or launch a process.
+// artifacts or launch the qualified runtime.
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
