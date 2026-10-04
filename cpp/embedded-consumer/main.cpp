@@ -35,13 +35,7 @@ int main() {
   require(append.status == Ok, "append failed");
   acyclic_append_result_release(append);
 
-  const AcyclicOpenResult opened = acyclic_embedded_reader_open(
-      engine, reinterpret_cast<const uint8_t*>(path), sizeof(path) - 1,
-      0, 1, 0);
-  require(opened.status == Ok && opened.reader != 0,
-          "reader open failed");
-
-  const AcyclicNextResult next = acyclic_embedded_reader_next(opened.reader);
+  AcyclicOpenResult opened = acyclic_embedded_reader_open(\n      engine, reinterpret_cast<const uint8_t*>(path), sizeof(path) - 1,\n      0, 1, 0);\n  require(opened.status == Ok && opened.reader != 0,\n          "reader open failed");\n  const uint64_t reader = acyclic_open_result_take_reader(&opened);\n  require(reader != 0 && opened.reader == 0, "reader ownership transfer failed");\n\n  const AcyclicNextResult next = acyclic_embedded_reader_next(reader);
   require(next.status == Ok, "reader next failed");
   require(next.value.len == sizeof(value) - 1, "payload length mismatch");
   require(memcmp(next.value.ptr, value, sizeof(value) - 1) == 0,
