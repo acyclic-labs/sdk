@@ -23,6 +23,22 @@ on:
         required: true
         default: true
         type: boolean
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+      target:
+        description: Rust target triple to build, or all for the full RID matrix
+        required: false
+        default: all
+        type: string
+      publish_artifact:
+        description: Upload the RID assets and hashes for review
+        required: false
+        default: true
+        type: boolean
   release:
     types: [published]
 
@@ -61,8 +77,9 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.target }}
       - name: Install musl linker

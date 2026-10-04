@@ -377,7 +377,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification, windows, rust_source, rust_embedded, rust_stream_native]
+    needs: [plan, qualification, windows, rust_source, rust_embedded, rust_stream_native, additional_languages, dotnet_native]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -390,6 +390,8 @@ jobs:
           RUST_SOURCE_RESULT: ${{ needs.rust_source.result }}
           RUST_EMBEDDED_RESULT: ${{ needs.rust_embedded.result }}
           RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
+          ADDITIONAL_LANGUAGES_RESULT: ${{ needs.additional_languages.result }}
+          DOTNET_NATIVE_RESULT: ${{ needs.dotnet_native.result }}
           REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           test "$PLAN_RESULT" = success
@@ -403,6 +405,8 @@ jobs:
             test "$RUST_SOURCE_RESULT" = success
             test "$RUST_EMBEDDED_RESULT" = success
             test "$RUST_STREAM_RESULT" = success
+            test "$ADDITIONAL_LANGUAGES_RESULT" = success
+            test "$DOTNET_NATIVE_RESULT" = success
           fi
 
   rust_source:
@@ -423,3 +427,19 @@ jobs:
     uses: ./.github/workflows/stream-native-packages.yml
     with:
       source_revision: ${{ github.sha }}
+
+  additional_languages:
+    name: Additional language package qualification
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/additional-language-qualification.yml
+    with:
+      ref: ${{ github.sha }}
+
+  dotnet_native:
+    name: .NET native transport RID qualification
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/dotnet-native-rid-manual.yml
+    with:
+      ref: ${{ github.sha }}
+      target: all
+      publish_artifact: true
