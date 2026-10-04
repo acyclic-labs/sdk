@@ -1022,7 +1022,9 @@ impl ForkAtBatch {
                 ..
             }
         )));
-        let child_follow_operation = OperationId::from_bytes([61; 16]);
+        // Operation identities are global across the shared journal provider;
+        // child one's initial operation already uses 61.
+        let child_follow_operation = OperationId::from_bytes([161; 16]);
         let child_follow_input = child_zero
             .1
             .stage(
