@@ -7,9 +7,10 @@ set -euo pipefail
 # Cargo: the target and linker are supplied by the release runner.
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUILD_DIRECTORY="${BUILD_DIRECTORY:-${RUNNER_TEMP:-$ROOT}/acyclic-embedded-${RUST_TARGET:-host}}"
 RUST_TARGET="${RUST_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
+BUILD_DIRECTORY="${BUILD_DIRECTORY:-${RUNNER_TEMP:-$ROOT}/acyclic-embedded-$RUST_TARGET}"
 CXX="${CXX:-c++}"
+CC="${CC:-cc}"
 
 case "$RUST_TARGET" in
   *-apple-darwin) RUNTIME_NAME="libacyclic_sdk_embedded_prototype.dylib"; RUNTIME_ENV="DYLD_LIBRARY_PATH" ;;
@@ -27,9 +28,13 @@ INSTALLED_BUILD="$BUILD_DIRECTORY/installed-consumer"
 
 mkdir -p "$BUILD_DIRECTORY"
 command -v cargo >/dev/null
+command -v rustc >/dev/null
 command -v cmake >/dev/null
 command -v ctest >/dev/null
+command -v ninja >/dev/null
 command -v "$CXX" >/dev/null
+command -v "$CC" >/dev/null
+command -v python3 >/dev/null
 
 cargo build --locked --offline --release --target "$RUST_TARGET" \
   --target-dir "$TARGET_DIRECTORY" --manifest-path "$MANIFEST"
@@ -47,19 +52,36 @@ cmake --build "$CONSUMER_BUILD"
 ctest --test-dir "$CONSUMER_BUILD" --output-on-failure
 cmake --install "$CONSUMER_BUILD" --prefix "$PREFIX"
 
+INSTALLED_RUNTIME="$(find "$PREFIX" -type f -name "$RUNTIME_NAME" -print -quit)"
+INSTALLED_HEADER="$PREFIX/include/acyclic_embedded_prototype.h"
+test -f "$INSTALLED_RUNTIME"
+test -f "$INSTALLED_HEADER"
+INSTALLED_LIBRARY_DIRECTORY="$(dirname "$INSTALLED_RUNTIME")"
+C_CONSUMER="$BUILD_DIRECTORY/c-consumer"
+"$CC" -std=c11 -I"$PREFIX/include" \
+  "$ROOT/rust/crates/sdk-embedded-prototype/tests/c_consumer.c" \
+  "$INSTALLED_RUNTIME" -o "$C_CONSUMER"
+env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$C_CONSUMER"
+env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" \
+  python3 "$ROOT/rust/crates/sdk-embedded-prototype/tests/python_consumer.py" "$INSTALLED_RUNTIME"
+
 cmake -S "$CONSUMER_SOURCE/install-consumer" -B "$INSTALLED_BUILD" -G Ninja \
   -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_PREFIX_PATH="$PREFIX"
 cmake --build "$INSTALLED_BUILD"
-env "$RUNTIME_ENV=$PREFIX/lib" "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
+env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 
-python3 - "$BUILD_DIRECTORY/platform-package.json" "$PREFIX" "$RUST_TARGET" "$RUNTIME_NAME" <<'PY'
+python3 - "$BUILD_DIRECTORY/platform-package.json" "$PREFIX" "$RUST_TARGET" "$RUNTIME_NAME" "$ROOT" "$INSTALLED_RUNTIME" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 
-output, prefix, target, runtime = sys.argv[1:]
+output, prefix, target, runtime, source_root, runtime_path = sys.argv[1:]
 root = pathlib.Path(prefix)
+source_root = pathlib.Path(source_root)
+import subprocess
+source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_root, text=True).strip()
+runtime_package_path = pathlib.Path(runtime_path).relative_to(root).as_posix()
 files = {}
 for path in sorted(p for p in root.rglob('*') if p.is_file()):
     files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -67,10 +89,40 @@ json.dump({
     "schema": "acyclic.sdk.embedded.platform-package.v1",
     "status": "passed",
     "target": target,
+    "source_revision": source_revision,
     "runtime": runtime,
     "package_root": "prefix",
     "artifacts": files,
-    "consumers": {"ctest": "passed", "clean_prefix": "passed"},
+    "consumers": {
+        "c": {
+            "status": "passed", "scope": "embedded-native-abi", "invoked": True, "exit_code": 0,
+            "source_revision": source_revision,
+            "source": "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+            "source_sha256": hashlib.sha256((source_root / "rust/crates/sdk-embedded-prototype/tests/c_consumer.c").read_bytes()).hexdigest(),
+            "package_artifact": runtime_package_path,
+            "package_artifact_sha256": hashlib.sha256(pathlib.Path(runtime_path).read_bytes()).hexdigest(),
+            "checks": ["layout", "append", "read", "release", "stale_handles"],
+        },
+        "python": {
+            "status": "passed", "scope": "embedded-native-abi", "invoked": True, "exit_code": 0,
+            "source_revision": source_revision,
+            "source": "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+            "source_sha256": hashlib.sha256((source_root / "rust/crates/sdk-embedded-prototype/tests/python_consumer.py").read_bytes()).hexdigest(),
+            "package_artifact": runtime_package_path,
+            "package_artifact_sha256": hashlib.sha256(pathlib.Path(runtime_path).read_bytes()).hexdigest(),
+            "checks": ["append", "follow", "owned_buffers", "cancel", "stale_handles"],
+        },
+        "cpp": {
+            "status": "passed", "scope": "embedded-native-abi", "invoked": True, "exit_code": 0,
+            "source_revision": source_revision,
+            "source": "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+            "source_sha256": hashlib.sha256((source_root / "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp").read_bytes()).hexdigest(),
+            "package_artifact": runtime_package_path,
+            "package_artifact_sha256": hashlib.sha256(pathlib.Path(runtime_path).read_bytes()).hexdigest(),
+            "checks": ["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"],
+        },
+        "ctest": "passed", "clean_prefix": "passed"
+    },
 }, pathlib.Path(output).open('w', encoding='utf-8'), indent=2)
 PY
 
