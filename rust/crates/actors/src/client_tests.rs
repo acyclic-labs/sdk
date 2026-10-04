@@ -77,6 +77,98 @@ impl ProtocolService for Control {
     }
 }
 
+struct ActorFixture;
+#[tonic::async_trait]
+impl crate::wire::actors_service_server::ActorsService for ActorFixture {
+    async fn inspect_actor(
+        &self,
+        request: Request<crate::wire::InspectActorRequest>,
+    ) -> Result<Response<crate::wire::InspectActorResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Ok(Response::new(crate::wire::InspectActorResponse {
+            actor: Some(crate::wire::ActorObservation {
+                actor_id: request.into_inner().actor_id,
+                home_region: "eu".into(),
+                state: crate::wire::ActorState::Active as i32,
+                ..Default::default()
+            }),
+        }))
+    }
+    async fn create_actor(
+        &self,
+        request: Request<crate::wire::CreateActorRequest>,
+    ) -> Result<Response<crate::wire::CreateActorResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn update_actor(
+        &self,
+        request: Request<crate::wire::UpdateActorRequest>,
+    ) -> Result<Response<crate::wire::UpdateActorResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn add_subscription(
+        &self,
+        request: Request<crate::wire::AddSubscriptionRequest>,
+    ) -> Result<Response<crate::wire::AddSubscriptionResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn remove_subscription(
+        &self,
+        request: Request<crate::wire::RemoveSubscriptionRequest>,
+    ) -> Result<Response<crate::wire::RemoveSubscriptionResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn resume_subscription(
+        &self,
+        request: Request<crate::wire::ResumeSubscriptionRequest>,
+    ) -> Result<Response<crate::wire::ResumeSubscriptionResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn checkpoint_actor(
+        &self,
+        request: Request<crate::wire::CheckpointActorRequest>,
+    ) -> Result<Response<crate::wire::CheckpointActorResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+    async fn invoke_actor(
+        &self,
+        request: Request<crate::wire::InvokeActorRequest>,
+    ) -> Result<Response<crate::wire::InvokeActorResponse>, Status> {
+        assert_eq!(
+            request.metadata().get("authorization").unwrap(),
+            "Bearer fixture-token"
+        );
+        Err(Status::unimplemented("fixture operation rejected"))
+    }
+}
+
 async fn endpoint(
     mode: Mode,
 ) -> (
@@ -110,6 +202,7 @@ async fn endpoint(
             .tls_config(ServerTlsConfig::new().identity(identity))
             .unwrap()
             .add_service(ProtocolServiceServer::new(service))
+            .add_service(crate::wire::actors_service_server::ActorsServiceServer::new(ActorFixture))
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = receiver.await;
             })
@@ -126,10 +219,19 @@ async fn native_prefers_verified_grpc_and_never_replays_an_application_error() {
         .unwrap();
     assert_eq!(client.transport(), "grpc");
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let error = client
+    let actor = client
         .inspect_actor(&crate::wire::InspectActorRequest {
             actor_id: "fixture-actor".into(),
         })
+        .await
+        .unwrap()
+        .actor
+        .unwrap();
+    assert_eq!(actor.actor_id, "fixture-actor");
+    assert_eq!(actor.home_region, "eu");
+    assert_eq!(actor.state, crate::wire::ActorState::Active as i32);
+    let error = client
+        .create_actor(&crate::wire::CreateActorRequest::default())
         .await
         .unwrap_err();
     assert!(matches!(
