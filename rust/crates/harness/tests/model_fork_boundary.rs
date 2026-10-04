@@ -980,7 +980,10 @@ impl ForkAtBatch {
             // boundary before the child is released to finish its turn.
             biased;
             _ = child_zero_ready.notified() => {}
-            _ = &mut all_children => {
+            completed = &mut all_children => {
+                for child in completed {
+                    child?;
+                }
                 return Err(Error::Conflict(
                     "child completed before recursive boundary handoff".into(),
                 ));
