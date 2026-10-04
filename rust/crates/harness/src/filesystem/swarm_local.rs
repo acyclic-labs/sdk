@@ -28,6 +28,7 @@ use crate::{
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
+    scheduler::InboxItem,
     store::StreamAggregate,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
@@ -1815,13 +1816,24 @@ pub struct LocalSwarmMessage {
 /// message's immutable content reference.
 ///
 /// The body is intentionally separate from `ConversationMessage`: callers
-/// that only need history metadata can keep using `read_messages` without
-/// reading any content bytes.
+/// that only need history metadata can use `read_messages` without reading
+/// any content bytes, while explicit history materialization uses
+/// `read_messages_materialized`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LocalSwarmMaterializedMessage {
     /// Canonical message metadata and exact content reference.
     pub message: ConversationMessage,
     /// Bytes read from the exact version named by `message.content`.
+    pub body: Vec<u8>,
+}
+
+/// One bounded durable inbox item with its recipient-owned body resolved from
+/// the exact payload reference.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalSwarmMaterializedInboxMessage {
+    /// Canonical owner-journal delivery metadata and exact payload reference.
+    pub item: InboxItem,
+    /// Bytes read from the recipient-owned immutable payload.
     pub body: Vec<u8>,
 }
 
@@ -2703,22 +2715,26 @@ impl PersistentLocalSwarm {
                     .into(),
             ));
         }
-        let messages = self.read_messages(task, after_sequence, limit).await?;
         let harness = self.open_session(task).await?;
-        let mut total_bytes = 0_u64;
+        let messages = harness
+            .storage()
+            .conversation_messages(after_sequence, limit, self.config.limits)
+            .await?;
+        let total_bytes = messages.iter().try_fold(0_u64, |total, message| {
+            let declared = message.content.descriptor().byte_length();
+            total
+                .checked_add(declared)
+                .ok_or_else(|| Error::Invalid("materialized message bytes overflow".into()))
+        })?;
+        if total_bytes > maximum_bytes {
+            return Err(Error::Invalid(
+                "materialized message page exceeds its byte bound".into(),
+            ));
+        }
         let mut materialized = Vec::with_capacity(messages.len());
         for message in messages {
-            let declared = message.content.descriptor().byte_length();
-            total_bytes = total_bytes
-                .checked_add(declared)
-                .ok_or_else(|| Error::Invalid("materialized message bytes overflow".into()))?;
-            if total_bytes > maximum_bytes {
-                return Err(Error::Invalid(
-                    "materialized message page exceeds its byte bound".into(),
-                ));
-            }
             let body = harness.read_conversation_file(&message.content).await?;
-            if body.len() as u64 != declared {
+            if body.len() as u64 != message.content.descriptor().byte_length() {
                 return Err(Error::Conflict(
                     "conversation content length changed after admission".into(),
                 ));
@@ -2933,6 +2949,50 @@ impl PersistentLocalSwarm {
         DurableCommunication::new(host)
             .inbox(task, after_sequence, limit)
             .await
+    }
+
+    /// Reads a bounded durable inbox page and materializes each payload from
+    /// the recipient's exact immutable `FileRef` after the complete page has
+    /// passed its aggregate byte bound.
+    pub async fn read_inbox_materialized(
+        &self,
+        task: TaskId,
+        after_sequence: u64,
+        limit: usize,
+        maximum_bytes: u64,
+    ) -> Result<Vec<LocalSwarmMaterializedInboxMessage>> {
+        if maximum_bytes == 0 || maximum_bytes > self.config.limits.file_bytes {
+            return Err(Error::Invalid(
+                "materialized inbox byte bound must be between 1 and the configured file limit"
+                    .into(),
+            ));
+        }
+        let items = self.read_inbox(task, after_sequence, limit).await?;
+        let total_bytes = items.iter().try_fold(0_u64, |total, item| {
+            total
+                .checked_add(item.payload.descriptor().byte_length())
+                .ok_or_else(|| Error::Invalid("materialized inbox bytes overflow".into()))
+        })?;
+        if total_bytes > maximum_bytes {
+            return Err(Error::Invalid(
+                "materialized inbox page exceeds its byte bound".into(),
+            ));
+        }
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        let harness = self.open_session(task).await?;
+        let mut materialized = Vec::with_capacity(items.len());
+        for item in items {
+            let body = harness.read_conversation_file(&item.payload).await?;
+            if body.len() as u64 != item.payload.descriptor().byte_length() {
+                return Err(Error::Conflict(
+                    "inbox payload length changed after admission".into(),
+                ));
+            }
+            materialized.push(LocalSwarmMaterializedInboxMessage { item, body });
+        }
+        Ok(materialized)
     }
 
     /// Durably cancels one task and propagates the owner cancellation signal
@@ -5257,6 +5317,82 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[tokio::test]
+    async fn materialized_message_budget_rejects_before_any_body_read() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        swarm.run_root(OperationId::new(), "materialize messages").await?;
+        let history = swarm.read_messages(task, 0, 1_024).await?;
+        assert!(history.len() > 1, "fixture must create a multi-message page");
+        let first_message_bytes = history[0].content.descriptor().byte_length();
+
+        crate::filesystem::local::reset_conversation_file_reads();
+        let error = swarm
+            .read_messages_materialized(task, 0, 1_024, first_message_bytes)
+            .await
+            .expect_err("an over-budget page must be rejected");
+        assert!(matches!(error, Error::Invalid(message) if message.contains("byte bound")));
+        assert_eq!(crate::filesystem::local::conversation_file_reads(), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn materialized_message_rejects_corrupted_descriptor() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let harness = swarm.open_session(task).await?;
+        let file = harness
+            .storage()
+            .stage(
+                OperationId::new(),
+                "descriptor-corruption.txt",
+                b"descriptor body",
+                "text/plain",
+                "descriptor-corruption.txt",
+            )
+            .await?;
+        let corrupted_descriptor = crate::conversation::FileDescriptor::new(
+            [0; 32],
+            file.descriptor().byte_length(),
+            file.descriptor().media_type(),
+        )?;
+        let corrupted = FileRef::new(
+            file.volume().clone(),
+            file.path(),
+            file.version(),
+            corrupted_descriptor,
+            file.display_name(),
+        )?;
+        let error = harness
+            .read_conversation_file(&corrupted)
+            .await
+            .expect_err("a corrupted descriptor must not materialize");
+        assert!(matches!(error, Error::Invalid(_) | Error::NotFound(_)));
+        Ok(())
     }
 
     #[tokio::test]

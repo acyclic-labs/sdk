@@ -26,7 +26,12 @@ use acyclic_stream::{
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Persistent providers own durability; storage semantics are shared with memory.
 pub type DurableHarnessStorage =
@@ -34,6 +39,19 @@ pub type DurableHarnessStorage =
 
 const EXECUTION_RECEIPT_STREAM: &str = "harness/system/execution-receipts";
 const EXECUTION_RECEIPT_MAX_BYTES: u64 = 4 * 1024 * 1024;
+
+#[cfg(test)]
+static CONVERSATION_FILE_READS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_conversation_file_reads() {
+    CONVERSATION_FILE_READS.store(0, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn conversation_file_reads() -> usize {
+    CONVERSATION_FILE_READS.load(Ordering::SeqCst)
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -1544,6 +1562,8 @@ impl PersistentLocalHarness {
         &self,
         file: &crate::conversation::FileRef,
     ) -> Result<Vec<u8>> {
+        #[cfg(test)]
+        CONVERSATION_FILE_READS.fetch_add(1, Ordering::SeqCst);
         self.storage.read(file).await
     }
 

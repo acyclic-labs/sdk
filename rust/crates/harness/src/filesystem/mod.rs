@@ -85,7 +85,8 @@ pub use swarm_local::{
     LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
     LocalModelForkResolver,
     LocalSessionPhase, LocalSwarmAgent, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
-    LocalSwarmMaterializedMessage, LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession,
+    LocalSwarmMaterializedInboxMessage, LocalSwarmMaterializedMessage, LocalSwarmMessage,
+    LocalSwarmPage, LocalSwarmSession,
     LocalSwarmSnapshot, PersistentLocalSwarm,
 };
 

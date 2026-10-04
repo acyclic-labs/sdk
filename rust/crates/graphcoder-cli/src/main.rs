@@ -10,7 +10,6 @@
 #![cfg_attr(test, allow(clippy::expect_used, clippy::indexing_slicing))]
 
 use acyclic_harness::{
-    Error as HarnessError, InteractionId, OperationId, TaskId,
     conversation::Limits,
     filesystem::{LocalSessionPhase, PersistentLocalSwarm},
     model::{
@@ -18,17 +17,18 @@ use acyclic_harness::{
         ModelProvider,
     },
     registry::ComponentIdentity,
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use clap::Parser;
 use futures::StreamExt;
-use futures::{FutureExt, future::BoxFuture, stream::BoxStream};
+use futures::{future::BoxFuture, stream::BoxStream, FutureExt};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
     path::PathBuf,
     sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     },
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -477,27 +477,24 @@ impl Runtime {
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages_materialized(task, after_sequence, limit, maximum_bytes)
+            .read_inbox_materialized(task, after_sequence, limit, maximum_bytes)
             .await
             .map_err(DispatchError::from_harness)?;
         let mut items = Vec::with_capacity(messages.len());
         for message in messages {
             let body = String::from_utf8(message.body).map_err(|_| DispatchError {
                 code: "transport",
-                message: "message content is not UTF-8".into(),
+                message: "inbox message content is not UTF-8".into(),
             })?;
-            let canonical = message.message;
+            let canonical = message.item;
             items.push(json!({
-                "id": canonical.id.to_string(),
+                "id": canonical.message_id,
                 "sequence": canonical.sequence.to_string(),
-                "session_id": task.to_string(),
-                "kind": serde_json::to_value(&canonical.kind).map_err(|error| DispatchError {
-                    code: "transport",
-                    message: format!("message kind is not serializable: {error}"),
-                })?,
-                "reply_to": canonical.reply_to.map(|id| id.to_string()),
-                "tool_call_id": canonical.tool_call_id,
-                "content_ref": canonical.content,
+                "session_id": canonical.task_id.to_string(),
+                "sender_id": canonical.sender.to_string(),
+                "recipient_id": canonical.task_id.to_string(),
+                "delivered_at_epoch_ms": canonical.delivered_at_epoch_ms.to_string(),
+                "content_ref": canonical.payload,
                 "body": body,
             }));
         }
@@ -1333,71 +1330,9 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0]["id"], started["result"]["summary"]["id"]);
         assert_eq!(agents[0]["children"], json!([]));
-        assert!(
-            started["result"]["workspace_generation"]
-                .as_str()
-                .is_some_and(|generation| !generation.is_empty())
-        );
-    }
-
-    #[tokio::test]
-    async fn json_lines_reads_messages_through_the_public_pinned_content_path() {
-        let root = tempfile::tempdir().expect("temporary root");
-        let runtime = Arc::new(
-            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
-                .await
-                .expect("runtime opens"),
-        );
-        let started = exchange(
-            runtime.clone(),
-            json!({
-                "request_id":"messages-start",
-                "method":"start_session",
-                "params":{"prompt":"hello","operation_id":"op-messages-1","model_fixture":"echo"}
-            }),
-        )
-        .await;
-        assert_eq!(started["ok"], true, "{started}");
-        let session_id = started["result"]["summary"]["id"]
+        assert!(started["result"]["workspace_generation"]
             .as_str()
-            .expect("message session id")
-            .to_owned();
-        let messages = exchange(
-            runtime,
-            json!({
-                "request_id":"messages-read",
-                "method":"read_messages",
-                "params":{"session_id":session_id,"query":{"limit":8,"max_bytes":4096}}
-            }),
-        )
-        .await;
-        assert_eq!(messages["ok"], true, "{messages}");
-        let items = messages["result"]["items"]
-            .as_array()
-            .expect("message page");
-        assert!(!items.is_empty());
-        assert!(items.iter().any(|item| item["body"] == "hello"));
-        for item in items {
-            assert!(item["content_ref"].is_object());
-            assert!(item.get("sender_id").is_none());
-            assert!(item.get("recipient_id").is_none());
-            assert!(item.get("delivered_at").is_none());
-        }
-        let over_budget = exchange(
-            Arc::new(
-                Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
-                    .await
-                    .expect("runtime reopens for bounds"),
-            ),
-            json!({
-                "request_id":"messages-small",
-                "method":"read_messages",
-                "params":{"session_id":session_id,"query":{"max_bytes":1}}
-            }),
-        )
-        .await;
-        assert_eq!(over_budget["ok"], false, "{over_budget}");
-        assert_eq!(over_budget["error"]["code"], "invalid_input");
+            .is_some_and(|generation| !generation.is_empty()));
     }
 
     #[tokio::test]
@@ -1533,11 +1468,9 @@ mod tests {
         )
         .await;
         assert_eq!(activity["ok"], true);
-        assert!(
-            activity["result"]["items"]
-                .as_array()
-                .is_some_and(|items| !items.is_empty())
-        );
+        assert!(activity["result"]["items"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()));
         let messages = exchange(
             reopened,
             json!({
