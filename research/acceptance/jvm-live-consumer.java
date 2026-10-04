@@ -58,6 +58,7 @@ final class JvmLiveConsumer {
     String rpc;
     String requestBase64;
     String requestJsonBase64;
+    String requestPath;
     List<String> expectedFields = List.of();
     String scenario = "inventory";
   }
@@ -387,6 +388,36 @@ final class JvmLiveConsumer {
       Object values = object.get("rpcs");
       if (!(values instanceof List<?>)) values = object.get("scenarios");
       if (!(values instanceof List<?>)) values = object.get("requests");
+      if (!(values instanceof List<?>) && object.get("fixtures") instanceof List<?> fixtures) {
+        // sdk-examples' Rust-owned transport-fixtures manifest is accepted
+        // directly. Request paths are resolved relative to that manifest.
+        Map<String, InventoryRecord> fixtureRecords = new LinkedHashMap<>();
+        for (Object fixtureValue : fixtures) {
+          Map<String, Object> fixture = asObject(fixtureValue);
+          String rpc = firstString(fixture, "operation_id", "rpc");
+          Object requestsValue = fixture.get("requests");
+          if (rpc == null || !(requestsValue instanceof List<?> requests) || requests.isEmpty()) continue;
+          Map<String, Object> request = asObject(requests.get(0));
+          InventoryRecord record = new InventoryRecord();
+          record.rpc = rpc;
+          record.requestPath = firstString(request, "path");
+          Object expected = fixture.get("response_fields");
+          if (!(expected instanceof List<?>)) expected = fixture.get("expected_fields");
+          if (expected instanceof List<?> fields) {
+            List<String> strings = new ArrayList<>();
+            for (Object field : fields) if (field != null) strings.add(String.valueOf(field));
+            record.expectedFields = List.copyOf(strings);
+          }
+          if (record.requestPath != null) {
+            Path requestPath = path.getParent().resolve(record.requestPath).normalize();
+            if (!requestPath.startsWith(path.getParent()) || !Files.isRegularFile(requestPath))
+              throw new IOException("Rust fixture request missing: " + requestPath);
+            record.requestBase64 = Base64.getEncoder().encodeToString(Files.readAllBytes(requestPath));
+          }
+          fixtureRecords.put(rpc, record);
+        }
+        return fixtureRecords;
+      }
       records = values instanceof List<?> list ? list : List.of();
     }
     Map<String, InventoryRecord> result = new LinkedHashMap<>();
