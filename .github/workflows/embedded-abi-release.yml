@@ -42,13 +42,13 @@ jobs:
             shell: bash
             rust_target: x86_64-unknown-linux-musl
             kind: musl-container
-            musl_image: alpine:3.22.6@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764
+            musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
           - platform: linux-arm64-musl
             runner: blacksmith-4vcpu-ubuntu-2404-arm
             shell: bash
             rust_target: aarch64-unknown-linux-musl
             kind: musl-container
-            musl_image: alpine:3.22.6@sha256:2e1a7aa4cbc4e9e5222bb4c24a839aa1a6170ea5492d644777ce7b178824e44f
+            musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
           - platform: macos-x64
             runner: blacksmith-6vcpu-macos-15
             shell: bash
@@ -148,15 +148,11 @@ jobs:
             --env RUST_TARGET="$RUST_TARGET" \
             --env BUILD_DIRECTORY=/tmp/embedded-abi \
             "$ALPINE_IMAGE" sh -euxc '
-              apk add --no-cache bash binutils build-base ca-certificates cmake curl git ninja python3
+              apk add --no-cache bash binutils build-base ca-certificates cmake git ninja python3
               channel="$(awk -F '"' '/^channel = / { print $2; exit }' rust-toolchain.toml)"
               test -n "$channel"
-              export RUSTUP_HOME=/usr/local/rustup
-              export CARGO_HOME=/usr/local/cargo
-              curl --fail --silent --show-error --location https://sh.rustup.rs | sh -s -- -y --default-toolchain none
-              export PATH="$CARGO_HOME/bin:$PATH"
-              rustup toolchain install "$channel" --profile minimal --target "$RUST_TARGET"
-              rustup default "$channel"
+              rustc -Vv | grep -F "release: $channel"
+              rustc -Vv | grep -F "host: $RUST_TARGET"
               cargo fetch --locked --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml
               bash cpp/embedded-consumer/portable-package-test.sh
             '
