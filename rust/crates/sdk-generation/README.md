@@ -131,7 +131,17 @@ digest. The file must contain JSON with this schema and identity binding:
     "version": "<consumer version>",
     "source_revision": "<manifest source revision>",
     "artifact_path": "qualification/consumers/remote.bin",
-    "artifact_sha256": "sha256:<consumer artifact hash>"
+    "artifact_sha256": "sha256:<consumer artifact hash>",
+    "scenarios": [
+      {
+        "family": "actors",
+        "rpc": "acyclic.actors.v1.ActorsService/List",
+        "shape": "unary",
+        "status": "passed",
+        "output_path": "qualification/consumers/actors-list.json",
+        "output_sha256": "sha256:<scenario-result hash>"
+      }
+    ]
   },
   "families": [
     {
@@ -149,11 +159,20 @@ hash-valid, identity-matched to the current generated output, and records a
 passed suite with a nonzero assertion count. The `consumer` object proves that
 an executable consumer actually ran and binds its portable runtime path and
 SHA-256 to the generated artifact manifest. A stale executable relabeled with
-the current source revision therefore fails the byte check. The `families`
-array must cover every Rust descriptor family emitted in `wire/`; each entry
-names the methods and exercised features. Each capability is evaluated
-independently. An unavailable capability can be marked `excluded` only with a
-nonempty scoped `scope` value; an unscoped exclusion remains pending.
+the current source revision therefore fails the byte check. Every
+`consumer.scenarios` entry must also be present in that same artifact manifest;
+its `output_path` and `output_sha256` bind to a JSON
+`acyclic.sdk.rpc-scenario-result.v1` result with `invoked: true`, zero exit
+status, the exact family/RPC/shape identity, and invocation/transport checks.
+This prevents a producer from qualifying a method by merely naming it in a
+receipt or by relabeling an unrelated output file. The `families` array must
+cover every Rust descriptor family emitted in `wire/`; each entry names the
+methods and exercised features, and its method set must agree with the
+scenario set. Each capability is evaluated independently. An unavailable
+capability can be marked `excluded` only with a nonempty scoped `scope` value;
+an unscoped exclusion remains pending. A receipt that exercises only a subset
+of the Rust-authoritative methods is `partial` only when the capability has an
+explicit nonempty `scope`; otherwise it remains pending.
 
 Rust snippets in `sdk-examples-manifest.json` have a stricter receipt. A
 generic `cargo test` result for the examples crate does not qualify a rendered
