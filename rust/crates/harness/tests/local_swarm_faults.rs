@@ -13,10 +13,12 @@ use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
+    core::AuthorityIssuer,
     filesystem::{
-        FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
-        PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
+        FilesystemHost, LocalFilesystemForkResolver, LocalHarnessTools, LocalSessionPhase,
+        LocalSwarmBindings, PersistentLocalHarness, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
+    fork::ForkSeed,
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider,
         ModelRequest,
@@ -825,6 +827,103 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     );
     assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
     assert_eq!(provider.requests_matching("child task: child-b").len(), 0);
+    provider.assert_request_digests();
+    Ok(())
+}
+
+fn child_issuer(seed: &ForkSeed, operation: OperationId) -> AuthorityIssuer {
+    let mut key = blake3::Hasher::new_keyed(&[0x5A; 32]);
+    key.update(b"acyclic.local-swarm.child-authority.v1\0");
+    key.update(seed.child.id.as_bytes());
+    key.update(&operation.into_bytes());
+    AuthorityIssuer::new(
+        "local-swarm-fork",
+        *key.finalize().as_bytes(),
+        seed.child.clone(),
+    )
+}
+
+#[tokio::test]
+async fn concurrent_handle_reconciles_live_admission_without_duplicate_dispatch() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path(), true).await?;
+    let child_a = operation(0xA6);
+    let child_b = operation(0xB6);
+    let provider = ForkFaultProvider::new(child_a, child_b);
+    provider.child_a_blocked.store(true, Ordering::SeqCst);
+    let first = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let second = open_swarm(
+        directory.path(),
+        provider.clone(),
+        host.clone(),
+        stream.clone(),
+        project.clone(),
+    )
+    .await?;
+    let root_operation = operation(0x06);
+    let first_run = tokio::spawn(async move {
+        first
+            .run_root(root_operation, "reconcile a live child admission")
+            .await
+    });
+    wait_for_child_dispatch(&provider).await;
+
+    // Child A has a durable ModelStarted record while the first provider
+    // stream is still blocked. Reopen its parent aggregate and ask a second
+    // handle to retry the exact published child. The local live fence must
+    // retain the claim until the first owner has finished, without another
+    // provider dispatch or concurrent journal writer.
+    provider.reconcile_completed.store(true, Ordering::SeqCst);
+    let root_task = second.root_task().await?;
+    let root_harness = PersistentLocalHarness::open_with_tools_and_project_on_providers(
+        directory.path().join("tasks").join(root_task.to_string()),
+        model()?,
+        provider.clone(),
+        Limits::default(),
+        LocalHarnessTools::new(),
+        Some(project.clone()),
+        host.clone(),
+        stream.clone(),
+        ProviderRef::new("local", "stream", "2")?,
+    )
+    .await?;
+    let mut parent = root_harness
+        .conversation_aggregate(Limits::default())
+        .await?;
+    second.sessions().await?;
+    let seed = second.published_seed(task(child_a)).await?;
+    let recovered = second
+        .retry_published_child(
+            task(child_a),
+            host.clone(),
+            stream.clone(),
+            child_issuer(&seed, child_a),
+            &mut parent,
+        )
+        .await;
+    assert!(
+        matches!(recovered, Err(Error::Indeterminate(operation)) if operation == child_a),
+        "live retry must retain the activation claim while the first handle owns the provider stream: {recovered:?}"
+    );
+    assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
+
+    second.cancel(task(child_a)).await?;
+    let first_output = timeout(Duration::from_secs(5), first_run)
+        .await
+        .expect("first handle did not stop after cancellation")
+        .expect("first handle panicked");
+    assert!(first_output.is_err());
+    assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
+    assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
+    assert_eq!(provider.requests_matching("child task: child-b").len(), 0);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
     provider.assert_request_digests();
     Ok(())
 }
