@@ -977,13 +977,14 @@ impl LocalHarnessTools {
     }
 }
 
-fn default_local_builder(
+fn default_local_bundle(
     storage: &DurableHarnessStorage,
     model: Model,
     provider: Arc<dyn ModelProvider>,
     limits: Limits,
-) -> Result<crate::bundle::HarnessBuilder> {
-    Ok(storage
+    extension: LocalHarnessTools,
+) -> Result<crate::Harness> {
+    let builder = storage
         .builder()
         .model(model, provider)
         .tools(storage.default_tools(limits)?)
@@ -991,7 +992,8 @@ fn default_local_builder(
         .grant("tool:call:acyclic.read_file")
         .grant("tool:call:acyclic.stage_file")
         .grant("tool:call:acyclic.list_files")
-        .limits(limits))
+        .limits(limits);
+    extension.install_into(builder)?.build()
 }
 
 impl PersistentLocalHarness {
@@ -1100,8 +1102,7 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
-        let builder = default_local_builder(&storage, model, provider, limits)?;
-        let bundle = extension.install_into(builder)?.build()?;
+        let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
         Ok(Self { storage, bundle })
     }
 
@@ -1194,8 +1195,7 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
-        let builder = default_local_builder(&storage, model, provider, limits)?;
-        let bundle = extension.install_into(builder)?.build()?;
+        let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
         Ok(Self { storage, bundle })
     }
 
@@ -1348,8 +1348,7 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
-        let builder = default_local_builder(&storage, model, provider, limits)?;
-        let bundle = extension.install_into(builder)?.build()?;
+        let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
         Ok(Self { storage, bundle })
     }
 
@@ -1476,8 +1475,7 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
-        let builder = default_local_builder(&storage, model, provider, limits)?;
-        let bundle = extension.install_into(builder)?.build()?;
+        let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
         Ok(Self { storage, bundle })
     }
     /// Runs or recovers an exact prompt with a caller-retained operation identity.
