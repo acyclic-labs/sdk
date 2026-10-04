@@ -5,13 +5,22 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { makeNativeStageConfig } from "./graphcoder-native-stage-config.mjs";
 
+function validWindowsX64Pe() {
+  const bytes = Buffer.alloc(128);
+  bytes.write("MZ", 0, "ascii");
+  bytes.writeUInt32LE(64, 0x3c);
+  bytes.writeUInt32LE(0x00004550, 64);
+  bytes.writeUInt16LE(0x8664, 68);
+  return bytes;
+}
+
 test("native stage config binds package and runtime to one source provenance", () => {
   const directory = mkdtempSync(join(tmpdir(), "graphcoder-native-config-"));
   try {
     const packageArchive = join(directory, "graphcoder.tgz");
     const runtime = join(directory, "graphcoder-runtime.exe");
     writeFileSync(packageArchive, "package bytes\n");
-    writeFileSync(runtime, "MZruntime bytes\n");
+    writeFileSync(runtime, validWindowsX64Pe());
     const gitOps = { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : "b".repeat(40) };
     const config = makeNativeStageConfig({
       sourceCwd: directory,
@@ -43,7 +52,7 @@ test("native stage config refuses package and runtime provenance drift", () => {
     const packageArchive = join(directory, "graphcoder.tgz");
     const runtime = join(directory, "graphcoder-runtime.exe");
     writeFileSync(packageArchive, "package bytes\n");
-    writeFileSync(runtime, "MZruntime bytes\n");
+    writeFileSync(runtime, validWindowsX64Pe());
     let call = 0;
     const gitOps = { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : `${"b".repeat(39)}${call++ % 2}` };
     assert.throws(() => makeNativeStageConfig({
@@ -77,7 +86,7 @@ test("native stage config rejects a non-PE runtime before recording provenance",
       buildId: "build-1",
       builtAt: "2026-10-03T10:00:00.000Z",
       gitOps,
-    }), /Windows PE executable/);
+    }), /valid win32-x64 PE executable/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

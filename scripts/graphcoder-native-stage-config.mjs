@@ -4,7 +4,8 @@
 // package and native runtime build. This records provenance; it does not build
 // artifacts or launch a process.
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeArtifact } from "./graphcoder-artifact.mjs";
@@ -19,9 +20,17 @@ function required(value, label) {
 }
 
 function validateWindowsExecutable(path) {
-  const bytes = readFileSync(path);
-  if (bytes.length < 2 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) {
-    fail(`runtime is not a Windows PE executable: ${path}`);
+  const verifier = fileURLToPath(new URL("./verify-release-binary.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [verifier, "win32-x64", path], {
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) fail(`runtime PE validation failed: ${result.error.message}`);
+  if (result.status !== 0) {
+    const detail = String(result.stderr ?? result.stdout ?? "").trim();
+    fail(`runtime is not a valid win32-x64 PE executable${detail === "" ? "" : `: ${detail}`}`);
   }
 }
 
