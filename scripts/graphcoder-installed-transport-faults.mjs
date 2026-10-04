@@ -97,6 +97,13 @@ async function runDescendantCase({ Bridge, packageRoot, fixture }) {
     descendantPid = response.result.descendant_pid;
   } finally {
     bridge.close("qualification descendant cleanup");
+    const termination = await waitForDiagnostic(diagnostics, event => event.kind === "termination", "descendant process cleanup outcome");
+    if (termination.outcome?.kind === "unknown") {
+      // The Node bridge cannot prove a Windows descendant's ownership after
+      // the root has exited. Resolve this exact fixture PID explicitly before
+      // awaiting the bridge's close proof; this is recovery, not confinement.
+      try { process.kill(descendantPid); } catch { /* fixture may have exited */ }
+    }
     await waitForDiagnostic(diagnostics, event => event.kind === "exit", "descendant process exit");
   }
   if (descendantPid === undefined) fail("descendant fixture omitted its child pid");

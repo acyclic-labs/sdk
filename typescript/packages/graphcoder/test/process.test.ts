@@ -156,6 +156,7 @@ describe("JSON-lines process bridge", () => {
         try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
         await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
       } else {
+        expect(termination.kind).toBe("terminated");
         await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
       }
       await expect(waitForStableSize(marker)).resolves.toBeGreaterThan(0);
@@ -225,8 +226,8 @@ describe("JSON-lines process bridge", () => {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", chunk => { stderr += String(chunk); });
     await waitForChildClose(child, 5_000);
-    expect(child.exitCode).toBe(0);
-    expect(stderr).toBe("");
+    expect(child.exitCode).toBe(1);
+    expect(stderr).toContain("runtime process cleanup unknown");
   });
 
   test("composes the process bridge with the public transport adapter", async () => {

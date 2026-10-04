@@ -18,11 +18,13 @@ lines.on("line", line => {
     return;
   }
   if (mode === "descendant") {
+    const detached = process.platform === "win32";
     const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      stdio: "ignore",
+      detached,
+      stdio: ["ignore", "inherit", "inherit"],
       windowsHide: true,
     });
-    process.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, result: { descendant_pid: descendant.pid } })}\n`);
+    process.stdout.write(`${JSON.stringify({ request_id: request.request_id, ok: true, result: { descendant_pid: descendant.pid } })}\n`, () => process.exit(0));
     return;
   }
   const response = JSON.stringify({ request_id: mode === "unmatched" ? "wrong-id" : request.request_id, ok: true, result: { items: [] } });

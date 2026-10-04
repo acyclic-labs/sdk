@@ -8,6 +8,7 @@ export type OwnedProcessTermination =
 
 type OwnedProcessState = { closed: boolean; errored: boolean };
 type ProcessWait = "closed" | "timeout" | "error";
+type GroupWait = "gone" | "timeout" | "error";
 type TaskkillOutcome =
   | { readonly kind: "closed"; readonly code: number | null }
   | { readonly kind: "error"; readonly message: string }
@@ -87,7 +88,6 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
     // recycle a PID through taskkill in that state; surface uncertainty until
     // the host's native process boundary can resolve ownership safely.
     if (!isAlive(child)) {
-      if (track(child).closed) return { kind: "terminated", pid };
       return { kind: "unknown", pid, reason: "owned process root exited before Windows tree cleanup" };
     }
     const command = await terminateWindowsProcessTree(pid, child, Math.max(graceMs, 1_000));
@@ -105,13 +105,13 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
   }
 
   const softSignal = signalProcessGroup(pid, "SIGTERM", child);
-  const softWait = await waitForClose(child, graceMs);
-  if (softWait === "closed") return { kind: "terminated", pid };
-  if (softWait === "error") return { kind: "unknown", pid, reason: "owned process emitted an error during termination" };
+  const softWait = await waitForProcessGroupGone(pid, graceMs);
+  if (softWait === "gone") return { kind: "terminated", pid };
+  if (softWait === "error") return { kind: "unknown", pid, reason: "owned process group state became unavailable" };
   const hardSignal = signalProcessGroup(pid, "SIGKILL", child);
-  const hardWait = await waitForClose(child, graceMs);
-  if (hardWait === "closed") return { kind: "terminated", pid };
-  if (hardWait === "error") return { kind: "unknown", pid, reason: "owned process emitted an error during termination" };
+  const hardWait = await waitForProcessGroupGone(pid, graceMs);
+  if (hardWait === "gone") return { kind: "terminated", pid };
+  if (hardWait === "error") return { kind: "unknown", pid, reason: "owned process group state became unavailable" };
   if (softSignal === "error" || hardSignal === "error") {
     return { kind: "unknown", pid, reason: "owned process group rejected termination" };
   }
@@ -163,6 +163,32 @@ function waitForClose(child: ChildProcess, timeoutMs: number): Promise<ProcessWa
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
     child.once("close", () => finish("closed"));
     child.once("error", () => finish("error"));
+  });
+}
+
+function waitForProcessGroupGone(pid: number, timeoutMs: number): Promise<GroupWait> {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise(resolve => {
+    const check = (): void => {
+      try {
+        process.kill(-pid, 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+          resolve("gone");
+          return;
+        }
+        if ((error as NodeJS.ErrnoException).code !== "EPERM") {
+          resolve("error");
+          return;
+        }
+      }
+      if (Date.now() >= deadline) {
+        resolve("timeout");
+        return;
+      }
+      setTimeout(check, Math.min(20, Math.max(1, deadline - Date.now())));
+    };
+    check();
   });
 }
 
