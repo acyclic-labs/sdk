@@ -2699,6 +2699,7 @@ fn collect_rustdoc_generated_sources(
         return Ok(());
     };
     let package_marker = format!("/{}-", package_name).to_ascii_lowercase();
+    let mut seen_paths = HashSet::new();
     for item in index.values() {
         if item.get("crate_id").and_then(serde_json::Value::as_u64) != Some(0) {
             continue;
@@ -2717,6 +2718,9 @@ fn collect_rustdoc_generated_sources(
             || !lowered.ends_with(".rs")
             || !lowered.contains(&package_marker)
         {
+            continue;
+        }
+        if !seen_paths.insert(path_identity(&normalized)) {
             continue;
         }
         let source_path = PathBuf::from(filename);
@@ -4393,6 +4397,45 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "rustdoc_external_source_skipped"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rustdoc_generated_source_missing_is_reported_once_per_path() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-missing-{}",
+            std::process::id()
+        ));
+        let crate_dir = root.join("rust/crates/stream");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        let missing = root.join("target/debug/build/acyclic-stream-test-abc/out/wire.rs");
+        let value = serde_json::json!({
+            "index": {
+                "1": {"crate_id": 0, "span": {"filename": missing.to_string_lossy(), "begin": [1, 1]}, "inner": {"struct": {}}},
+                "2": {"crate_id": 0, "span": {"filename": missing.to_string_lossy(), "begin": [2, 1]}, "inner": {"struct": {}}}
+            }
+        });
+        let mut sources = Vec::new();
+        let mut aliases = HashMap::new();
+        let mut diagnostics = Vec::new();
+        collect_rustdoc_generated_sources(
+            &value,
+            &root,
+            &crate_dir,
+            "acyclic-stream",
+            "host-default",
+            &mut sources,
+            &mut aliases,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "rustdoc_generated_source_missing")
+                .count(),
+            1
+        );
         let _ = fs::remove_dir_all(root);
     }
 
