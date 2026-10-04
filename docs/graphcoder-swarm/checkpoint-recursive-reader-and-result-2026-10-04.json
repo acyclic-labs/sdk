@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "source_commit": "7487f76dbee19b054b22a8f70dc35c511de4e136",
+  "rust_tree": "cd4ae256e414cfbcf15662fa30054beccd89753c",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "suite": "model_fork_boundary",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --test model_fork_boundary --target-dir D:/graphcoder-builds/root-fork-20261004/target -j2",
+  "exit_code": 101,
+  "passed": 2,
+  "failed": 1,
+  "ignored": 0,
+  "log_path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db\\fork-typed-result.log",
+  "log_sha256": "cb194fc70d15471f7fc7040fde3abb7caa17bcd36502e950b76fcd283a4fceff",
+  "artifact_path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\7487f76db\\model_fork_boundary.exe",
+  "artifact_sha256": "73decc0bbd79be66bdb7bf6bcc983500f1b4dee4461f33098285b5848a725adb",
+  "verified": [
+    "invalid model attestation denied before allocation",
+    "stale completed boundary denied before publication",
+    "recursive grandchild read returned root bytes through typed ToolResult"
+  ],
+  "unresolved": [
+    "recursive positive scenario fails rejection feedback evidence validation",
+    "full production swarm and fault suite not qualified"
+  ],
+  "interpretation": "The earlier file-read authorization error came from comparing grandchild inherited content through root storage rather than the direct parent. The subsequent missing text assertion came from reading ToolResult as a bare value. Neither repair broadens production authority."
+}
