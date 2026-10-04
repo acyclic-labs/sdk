@@ -18,9 +18,13 @@ use acyclic_harness::{
     },
     core::Scope,
     interaction::InteractionResponse,
-    model::{Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest},
+    model::{
+        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
+        ModelProvider,
+    },
+    registry::ComponentIdentity,
     resources::ProviderRef,
-    Error as HarnessError, InteractionId, OperationId, Result, TaskId,
+    Error as HarnessError, InteractionId, OperationId, TaskId,
 };
 use acyclic_fs::{LocalFs, LocalOptions};
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
@@ -69,6 +73,7 @@ struct Args {
 struct EchoModel {
     fixture: String,
     calls: Arc<AtomicUsize>,
+    option_policy: ModelOptionPolicy,
 }
 
 impl ModelProvider for EchoModel {
@@ -227,6 +232,10 @@ impl ModelProvider for EchoModel {
     ) -> BoxFuture<'a, acyclic_harness::Result<Option<Vec<ModelEvent>>>> {
         async { Ok(None) }.boxed()
     }
+
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        Some(&self.option_policy)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,13 +303,18 @@ struct Runtime {
 /// default terminal entrypoint remains fail-closed because it has no authority
 /// from which it could mint a responder scope.
 type ApprovalAuthorizer = Arc<
-    dyn Fn(TaskId, InteractionId) -> BoxFuture<'static, Result<Scope>> + Send + Sync,
+    dyn Fn(TaskId, InteractionId) -> BoxFuture<'static, acyclic_harness::Result<Scope>>
+        + Send
+        + Sync,
 >;
 
-fn unavailable_approval_authorizer(_: TaskId, _: InteractionId) -> BoxFuture<'static, Result<Scope>> {
+fn unavailable_approval_authorizer(
+    _: TaskId,
+    _: InteractionId,
+) -> BoxFuture<'static, acyclic_harness::Result<Scope>> {
     async {
         Err(HarnessError::Unsupported(
-            "approval resolution requires a host-owned operator authorizer",
+            "approval resolution requires a host-owned operator authorizer".to_owned(),
         ))
     }
     .boxed()
@@ -308,7 +322,7 @@ fn unavailable_approval_authorizer(_: TaskId, _: InteractionId) -> BoxFuture<'st
 
 async fn recursive_project(
     root: &std::path::Path,
-) -> Result<(
+) -> acyclic_harness::Result<(
     Arc<FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
     StreamClient<LocalStream>,
     VolumeRef,
@@ -337,7 +351,7 @@ async fn recursive_project(
 }
 
 impl Runtime {
-    async fn open(args: &Args) -> Result<Self, HarnessError> {
+    async fn open(args: &Args) -> acyclic_harness::Result<Self> {
         Self::open_with_authorizer(args, Arc::new(unavailable_approval_authorizer)).await
     }
 
@@ -347,7 +361,7 @@ impl Runtime {
     async fn open_with_authorizer(
         args: &Args,
         approval_authorizer: ApprovalAuthorizer,
-    ) -> Result<Self, HarnessError> {
+    ) -> acyclic_harness::Result<Self> {
         let fixture = match args.model_fixture.as_str() {
             "echo" | "complete" | "stage" | "recursive" => args.model_fixture.clone(),
             value => {
@@ -362,10 +376,26 @@ impl Runtime {
             "1",
             json!({ "fixture": fixture }),
         )?;
+        let option_policy = ModelOptionPolicy::new(
+            ComponentIdentity {
+                name: "graphcoder.mock.options".into(),
+                version: "1".into(),
+                digest: [0x67; 32],
+            },
+            json!({
+                "type": "object",
+                "required": ["fixture"],
+                "properties": {
+                    "fixture": {"enum": ["echo", "complete", "stage", "recursive"]}
+                },
+                "additionalProperties": false,
+            }),
+        )?;
         let config = LocalSwarmConfig::new(model.clone(), Limits::default())?;
         let provider = Arc::new(EchoModel {
             fixture: fixture.clone(),
             calls: Arc::new(AtomicUsize::new(0)),
+            option_policy,
         });
         let swarm = if fixture == "recursive" {
             let (host, stream, project) = recursive_project(&args.root).await?;
@@ -1572,7 +1602,7 @@ mod tests {
             let callback_seen = callback_seen.clone();
             async move {
                 *callback_seen.lock().await = Some((task, id));
-                Err(HarnessError::Unsupported("test host authorizer"))
+                Err(HarnessError::Unsupported("test host authorizer".to_owned()))
             }
             .boxed()
         });
