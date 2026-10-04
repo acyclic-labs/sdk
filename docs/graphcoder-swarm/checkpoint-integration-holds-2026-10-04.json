@@ -1,0 +1,21 @@
+{
+  "reviewed_candidates": {
+    "lazy": "67411b8d4",
+    "budget": "d0b3ac024",
+    "writeback": "a4f28151f",
+    "communication": "95794fb22",
+    "recovery": "a3be04840",
+    "fork": "6de20506c"
+  },
+  "current_root": "c97272d325f4cc335169a7aab6749014f2f06cd0",
+  "integration_policy": "Candidate source checks and isolated focused passes do not qualify current Root or installed artifacts.",
+  "holds": [
+    "Fork foundation dependency repair must compile before production rerun; native7b log is authoritative failure.",
+    "Communication bool scope ownership does not fence concurrent retry-success/first-failure or replacement; require production admit interleaving regression.",
+    "Lazy shared refresh/direct-mutation fence needs source-grounded deadlock and completeness review.",
+    "Opaque writeback still needs concurrent-edit/deletion/conflict and post-effect missing-receipt recovery coverage through public handle.",
+    "External operator authority requires minimal current-root port and fresh terminal/swarm qualification.",
+    "Budget scheduler binding and marker atomicity need latest review and native verification."
+  ],
+  "locked_requirements_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF"
+}

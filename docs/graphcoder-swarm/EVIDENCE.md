@@ -358,3 +358,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Full integrated Harness library: [349/349 native tests](checkpoint-full-harness-native-2026-10-04.json) at source131b2e2b9, with no ignored tests and archived executable. Integration binaries, coordinator/fault scenarios and installed qualification remain separate.
 
 - Current fork rebind port: [compile failure at7b495b775](checkpoint-fork-port-compile-failure-2026-10-04.json). No tests executed. Missing foundational APIs/fields must be ported before rerunning library/coordinator/fault tests. Prior wrong test-target invocation is also retained.
+
+- Candidate integration audit: [open holds and exact candidate commits](checkpoint-integration-holds-2026-10-04.json). No candidate is counted as current Root or installed qualification. Communication ownership interleavings and public writeback recovery/conflicts remain explicit unmet gates.
