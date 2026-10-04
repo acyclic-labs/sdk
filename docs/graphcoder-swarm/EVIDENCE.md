@@ -349,4 +349,6 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Configured Harness cache and communication: [34/34 native focused cases](checkpoint-harness-refresh-communication-native-2026-10-04.json). Includes suffix refresh, bounded anchors, rollback/missing-history rejection, invalid cold/warm limits, external writes, and authenticated communication admission. Prior compilation failures and the malformed-payload fixture failure remain recorded. Production coordinator and installed qualification remain open.
 
 - Stronger cold recursive boundary: [2/3 native failure evidence](checkpoint-cold-prefix-exclusive-reopen-failure-2026-10-04.json). Canonical manifest validation retains rejection metadata, but fresh provider reopen is attempted while the parent retains the exclusive Stream root. Genuine cold reopen and production coordinator qualification remain open.
-`n- Bounded cached message paging: [34/34 native focused cases](checkpoint-bounded-messages-native-2026-10-04.json), source39707322e and archived executable. Production and installed qualification remain open.
+
+- Bounded cached message paging: [34/34 native focused cases](checkpoint-bounded-messages-native-2026-10-04.json), source39707322e and archived executable. Production and installed qualification remain open.
+
