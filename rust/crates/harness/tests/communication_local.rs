@@ -305,13 +305,16 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         })
         .await?;
     let before_reopen = communication.inbox(child, 0, 8).await?;
-    assert!(before_reopen.iter().all(|item| {
-        item.sender == parent && item.delivered_at_epoch_ms > 0
-    }));
+    assert!(
+        before_reopen
+            .iter()
+            .all(|item| { item.sender == parent && item.delivered_at_epoch_ms > 0 })
+    );
     // A low-level host caller still cannot bypass the direct parent/child
     // relationship enforced by the typed communication adapter.
     assert!(matches!(
-        host.send(child, sibling, request.message_id, body.clone()).await,
+        host.send(child, sibling, request.message_id, body.clone())
+            .await,
         Err(Error::Unauthorized(_))
     ));
     drop(communication);
@@ -323,7 +326,10 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         .inbox(child, 0, 8)
         .await?;
     assert_eq!(items.len(), 2);
-    assert_eq!(items, before_reopen, "reopen must preserve exact delivery metadata");
+    assert_eq!(
+        items, before_reopen,
+        "reopen must preserve exact delivery metadata"
+    );
     assert_eq!(items[0].sequence, 1);
     assert_eq!(items[1].sequence, 2);
     assert_eq!(items[0].message_id, request.message_id.to_string());
@@ -446,10 +452,7 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
         timeout_epoch_ms: None,
         cancellation_id: Some(OperationId::from_bytes([15; 16])),
     };
-    assert_eq!(
-        wait_store.open(pre_cancel_request.clone()).await?,
-        None
-    );
+    assert_eq!(wait_store.open(pre_cancel_request.clone()).await?, None);
     assert_eq!(
         DurableCommunication::new(host.clone())
             .with_wait_store(wait_store.clone())
