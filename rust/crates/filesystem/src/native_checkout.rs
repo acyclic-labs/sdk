@@ -23,7 +23,7 @@ use crate::{
     not(target_arch = "wasm32")
 ))]
 use crate::{
-    NativeWorkspacePublication, NativeWorkspacePublicationError,
+    NativeSourcePrecondition, NativeWorkspacePublication, NativeWorkspacePublicationError,
     publish_native_generation_transition,
 };
 use futures::future::BoxFuture;
@@ -417,6 +417,7 @@ impl HostCheckoutRootWritebackIntent {
         cancellation: &CancellationToken,
         verifier: &V,
         root_handle: Arc<HostRoot>,
+        source_precondition: Option<NativeSourcePrecondition>,
     ) -> Result<HostCheckoutRootWritebackResult, HostCheckoutRootWritebackError>
     where
         A: AsyncAuthorityStore,
@@ -509,6 +510,7 @@ impl HostCheckoutRootWritebackIntent {
             budget,
             cancellation,
             root_handle: Some(root_handle),
+            source_precondition,
         };
         let result = publish_native_generation_transition(
             from_generation,

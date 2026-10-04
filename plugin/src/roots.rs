@@ -12,6 +12,85 @@ pub(crate) type LocalLazyWorkspace =
 pub(crate) type LocalSingleMount =
     LazyMount<LocalAuthorityBackend, LocalObjectBackend, LocalLazySource, LocalCoreStateStore>;
 
+/// Builds the one source-generation precondition used by every physical
+/// writeback route. It captures the requested host paths into an ephemeral
+/// exact checkout, so a concurrent user edit is observed before publication
+/// and never silently replaced.
+pub(crate) fn native_source_precondition(
+    workspace: LocalWorkspace,
+    source_root: PathBuf,
+    expected_root_identity: acyclic_fs::NativeRootIdentity,
+    maximum_extent_spans: u32,
+) -> acyclic_fs::NativeSourcePrecondition {
+    Arc::new(move |generation, paths, budget, cancellation| {
+        let workspace = workspace.clone();
+        let source_root = source_root.clone();
+        Box::pin(async move {
+            if paths.is_empty() {
+                return Ok(());
+            }
+            let limits = workspace.limits();
+            let namespace_paths = paths
+                .iter()
+                .map(|path| {
+                    let text = format!("/{}", path.to_string_lossy().replace('\\', "/"));
+                    let portable =
+                        acyclic_fs::path::PortablePath::parse(&text, limits).map_err(|error| {
+                            acyclic_fs::NativeTreeMaterializationError::Source(error.to_string())
+                        })?;
+                    acyclic_fs::kernel::NamespacePath::from_portable_in_profile(
+                        &portable,
+                        workspace.profile(),
+                        limits,
+                    )
+                    .map_err(|error| {
+                        acyclic_fs::NativeTreeMaterializationError::Source(error.to_string())
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut checkout = workspace
+                .checkout(
+                    acyclic_fs::model::GenerationSelector::Exact(generation),
+                    acyclic_fs::model::CheckoutMode::tracking_transaction(),
+                )
+                .await
+                .map_err(|error| {
+                    acyclic_fs::NativeTreeMaterializationError::Source(error.to_string())
+                })?;
+            let receipt = acyclic_fs::capture_paths(
+                &mut checkout,
+                &namespace_paths,
+                &acyclic_fs::CaptureOptions {
+                    source_root,
+                    expected_root_identity,
+                    maximum_paths: u32::try_from(namespace_paths.len()).unwrap_or(u32::MAX),
+                    maximum_extent_spans,
+                },
+                budget,
+                &cancellation,
+            )
+            .await
+            .map_err(|failure| match failure.error {
+                acyclic_fs::CaptureError::RootChanged => {
+                    acyclic_fs::NativeTreeMaterializationError::ExternalMutation(
+                        "source root identity changed".to_owned(),
+                    )
+                }
+                error => acyclic_fs::NativeTreeMaterializationError::Source(error.to_string()),
+            })?;
+            if receipt.value.changed_paths == 0 {
+                Ok(())
+            } else {
+                Err(
+                    acyclic_fs::NativeTreeMaterializationError::ExternalMutation(
+                        "authenticated source generation changed".to_owned(),
+                    ),
+                )
+            }
+        })
+    })
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct SharedRootRegistry {
     pub(crate) roots: Arc<AsyncMutex<BTreeMap<PathBuf, Arc<AsyncMutex<SharedRootRegistration>>>>>,
@@ -456,6 +535,8 @@ pub(crate) struct PluginRootMaterializer {
     pub(crate) state: LocalCoreStateStore,
     pub(crate) physical_roots: BTreeMap<WorkspaceRootId, PhysicalRoot>,
     pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
+    pub(crate) root_writeback_budget: WorkBudget,
+    pub(crate) root_writeback_cancellation: CancellationToken,
 }
 
 /// Root writeback remains closed until the Harness composition supplies its
@@ -477,6 +558,35 @@ impl acyclic_fs::RootWritebackApprovalVerifier for DenyRootWriteback {
 pub(crate) fn default_root_writeback_verifier() -> Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>
 {
     Arc::new(DenyRootWriteback)
+}
+
+pub(crate) fn default_root_writeback_budget() -> WorkBudget {
+    let mut budget = WorkBudget::UNBOUNDED;
+    budget.authority_records_read = 1_000_000;
+    budget.authority_records_appended = 1_000_000;
+    budget.authority_bytes_read = 256 * 1024 * 1024;
+    budget.authority_bytes_written = 256 * 1024 * 1024;
+    budget.object_probes = 1_000_000;
+    budget.backend_read_operations = 1_000_000;
+    budget.backend_write_operations = 1_000_000;
+    budget.durability_operations = 1_000_000;
+    budget.page_reads = 1_000_000;
+    budget.page_writes = 1_000_000;
+    budget.object_bytes_read = 512 * 1024 * 1024;
+    budget.object_bytes_written = 512 * 1024 * 1024;
+    budget.bytes_hashed = 512 * 1024 * 1024;
+    budget.bytes_copied = 512 * 1024 * 1024;
+    budget.bytes_encoded = 512 * 1024 * 1024;
+    budget.source_bytes_read = 512 * 1024 * 1024;
+    budget.source_path_components = 2_000_000;
+    budget.source_entries_visited = 2_000_000;
+    budget.output_bytes = 512 * 1024 * 1024;
+    budget.items_examined = 2_000_000;
+    budget.items_returned = 2_000_000;
+    budget.allocation_operations = 1_000_000;
+    budget.peak_allocation_bytes = 512 * 1024 * 1024;
+    budget.materializations = 1_000_000;
+    budget
 }
 
 #[derive(Clone)]
@@ -527,7 +637,6 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
         };
-        let cancellation = CancellationToken::new();
         let from_generation = workspace
             .generation(from)
             .await
@@ -550,6 +659,12 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             .authorize_with(self.root_writeback_verifier.as_ref())
             .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let source_precondition = native_source_precondition(
+            workspace.clone(),
+            physical.path.clone(),
+            physical.root.identity(),
+            options.maximum_extent_spans,
+        );
         intent
             .publish_native(
                 &from_generation,
@@ -557,10 +672,11 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 &self.state,
                 &options,
                 &[".git"],
-                WorkBudget::UNBOUNDED,
-                &cancellation,
+                self.root_writeback_budget,
+                &self.root_writeback_cancellation,
                 self.root_writeback_verifier.as_ref(),
                 Arc::clone(&physical.root),
+                Some(source_precondition),
             )
             .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;

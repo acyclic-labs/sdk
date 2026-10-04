@@ -229,6 +229,8 @@ pub(crate) struct ControlPlane {
     pub(crate) roots: BTreeMap<String, LocalLazyWorkspace>,
     pub(crate) physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
     pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
+    pub(crate) root_writeback_budget: WorkBudget,
+    pub(crate) root_writeback_cancellation: CancellationToken,
     pub(crate) mounts: BTreeMap<String, LocalMount>,
     pub(crate) pending_mounts: BTreeMap<[u8; 16], LocalMount>,
     /// Detached mounts whose sources are still being torn down; see
@@ -316,6 +318,8 @@ impl ControlPlane {
             roots: BTreeMap::new(),
             physical_roots: BTreeMap::new(),
             root_writeback_verifier: default_root_writeback_verifier(),
+            root_writeback_budget: default_root_writeback_budget(),
+            root_writeback_cancellation: CancellationToken::new(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
             retiring: Vec::new(),
@@ -367,6 +371,18 @@ impl ControlPlane {
         verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
     ) {
         self.root_writeback_verifier = verifier;
+    }
+
+    /// Binds the session's finite work budget and cancellation source to
+    /// subsequent root publications.
+    #[allow(dead_code)]
+    pub(crate) fn set_root_writeback_runtime(
+        &mut self,
+        budget: WorkBudget,
+        cancellation: CancellationToken,
+    ) {
+        self.root_writeback_budget = budget;
+        self.root_writeback_cancellation = cancellation;
     }
 
     pub(crate) fn workspace_mount_root(&self) -> PathBuf {
@@ -461,6 +477,8 @@ impl ControlPlane {
                 state: self.store.clone(),
                 physical_roots,
                 root_writeback_verifier: Arc::clone(&self.root_writeback_verifier),
+                root_writeback_budget: self.root_writeback_budget,
+                root_writeback_cancellation: self.root_writeback_cancellation.clone(),
             },
         );
         for binding in self.state.roots.values() {
@@ -1814,12 +1832,12 @@ impl ControlPlane {
             .get(&root_key(root_id))
             .cloned()
             .ok_or_else(|| "root binding is unavailable".to_owned())?;
-        let root_handle = self
+        let physical = self
             .physical_roots
             .get(&root_key(root_id))
-            .ok_or_else(|| "physical root capability is unavailable".to_owned())?
-            .root
-            .clone();
+            .cloned()
+            .ok_or_else(|| "physical root capability is unavailable".to_owned())?;
+        let root_handle = Arc::clone(&physical.root);
         let workspace = lazy_workspace.workspace().clone();
         let before_tree = git_workspace_tree(&lazy_workspace, &argv, None).await?;
         let apply_patch = git_apply_patch(&lazy_workspace, &root_binding.path, &argv).await?;
@@ -1846,6 +1864,8 @@ impl ControlPlane {
             store: &self.store,
             root_handle,
             root_writeback_verifier: Arc::clone(&self.root_writeback_verifier),
+            root_writeback_budget: self.root_writeback_budget,
+            root_writeback_cancellation: self.root_writeback_cancellation.clone(),
         };
         let repository = self.distributed.git(repository_id);
         let output = run_git_command(

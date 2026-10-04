@@ -239,7 +239,9 @@ pub use materializer::{
     MemoryMaterializationJournalStoreError,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use materializer::{NativeTreeMaterializationBackend, NativeTreeMaterializationError};
+pub use materializer::{
+    NativeSourcePrecondition, NativeTreeMaterializationBackend, NativeTreeMaterializationError,
+};
 #[cfg(all(
     feature = "local",
     feature = "native-mount",

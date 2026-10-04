@@ -7,6 +7,7 @@
 //! operation, and complete or roll back deterministically after interruption.
 
 use crate::{GenerationId, OperationId};
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -49,6 +50,21 @@ pub enum MaterializationEdit {
         image: Vec<u8>,
     },
 }
+
+/// Harness/source precondition invoked against the edits that remain before
+/// each physical replacement. Implementations must reject concurrent host
+/// edits and preserve the caller's cancellation boundary.
+#[cfg(not(target_arch = "wasm32"))]
+pub type NativeSourcePrecondition = std::sync::Arc<
+    dyn Fn(
+            GenerationId,
+            Vec<std::path::PathBuf>,
+            crate::WorkBudget,
+            crate::CancellationToken,
+        ) -> BoxFuture<'static, Result<(), NativeTreeMaterializationError>>
+        + Send
+        + Sync,
+>;
 
 /// Immutable materialization plan bound to exact SDK generations.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -151,6 +167,7 @@ pub trait MaterializationBackend: Send + Sync {
     fn verify_source(
         &self,
         _from: GenerationId,
+        _remaining_edits: &[MaterializationEdit],
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         async { Ok(true) }
     }
@@ -283,6 +300,19 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .preimages
                 .get(index)
                 .ok_or(MaterializationError::IncompatibleJournal)?;
+            let remaining_edits = journal
+                .plan
+                .edits
+                .get(index..)
+                .ok_or(MaterializationError::IncompatibleJournal)?;
+            if !self
+                .backend
+                .verify_source(journal.plan.from, remaining_edits)
+                .await
+                .map_err(MaterializationError::Backend)?
+            {
+                return Err(MaterializationError::ExternalMutation);
+            }
             match self
                 .backend
                 .observe(edit, preimage)
@@ -336,7 +366,7 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
         validate_plan(&plan).map_err(|()| MaterializationError::IncompatibleJournal)?;
         if !self
             .backend
-            .verify_source(plan.from)
+            .verify_source(plan.from, &plan.edits)
             .await
             .map_err(MaterializationError::Backend)?
         {
@@ -398,6 +428,19 @@ impl<S: MaterializationJournalStore, B: MaterializationBackend> JournaledMateria
                 .preimages
                 .get(index)
                 .ok_or(MaterializationError::IncompatibleJournal)?;
+            let remaining_edits = journal
+                .plan
+                .edits
+                .get(index..)
+                .ok_or(MaterializationError::IncompatibleJournal)?;
+            if !self
+                .backend
+                .verify_source(journal.plan.from, remaining_edits)
+                .await
+                .map_err(MaterializationError::Backend)?
+            {
+                return Err(MaterializationError::ExternalMutation);
+            }
             match self
                 .backend
                 .observe(edit, preimage)
@@ -583,6 +626,9 @@ pub struct NativeTreeMaterializationBackend {
     /// authenticates the checkout identity for the operation's lifetime.
     root_handle: Option<std::sync::Arc<crate::native_host::HostRoot>>,
     operation_handle: std::sync::Arc<crate::native_host::HostRoot>,
+    source_precondition: Option<NativeSourcePrecondition>,
+    source_budget: crate::WorkBudget,
+    source_cancellation: crate::CancellationToken,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -632,7 +678,26 @@ impl NativeTreeMaterializationBackend {
             backup,
             root_handle,
             operation_handle,
+            source_precondition: None,
+            source_budget: crate::WorkBudget::UNBOUNDED,
+            source_cancellation: crate::CancellationToken::new(),
         })
+    }
+
+    /// Binds the authenticated source check used before every remaining
+    /// physical replacement. The callback receives the generation and the
+    /// remaining relative paths, so edits already published by this journal
+    /// are excluded from the source preimage check.
+    pub fn with_source_precondition(
+        mut self,
+        precondition: NativeSourcePrecondition,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+    ) -> Self {
+        self.source_precondition = Some(precondition);
+        self.source_budget = budget;
+        self.source_cancellation = cancellation.clone();
+        self
     }
 
     #[cfg(any(all(feature = "local", feature = "native-mount"), test))]
@@ -878,6 +943,28 @@ fn same_native_volume(_left: &Path, _right: &Path) -> Result<bool, std::io::Erro
 #[cfg(not(target_arch = "wasm32"))]
 impl MaterializationBackend for NativeTreeMaterializationBackend {
     type Error = NativeTreeMaterializationError;
+
+    async fn verify_source(
+        &self,
+        from: GenerationId,
+        remaining_edits: &[MaterializationEdit],
+    ) -> Result<bool, Self::Error> {
+        let Some(precondition) = &self.source_precondition else {
+            return Ok(true);
+        };
+        let paths = remaining_edits
+            .iter()
+            .map(|edit| PathBuf::from(edit_path(edit)))
+            .collect::<Vec<_>>();
+        precondition(
+            from,
+            paths,
+            self.source_budget,
+            self.source_cancellation.clone(),
+        )
+        .await
+        .map(|()| true)
+    }
 
     async fn capture(
         &self,
@@ -1648,6 +1735,9 @@ pub enum NativeTreeMaterializationError {
     /// The retained host checkout capability no longer identifies the path.
     #[error("native materialization root identity changed")]
     RootIdentityMismatch,
+    /// The authenticated source could not prove the expected preimage.
+    #[error("native materialization source precondition failed: {0}")]
+    Source(String),
 }
 
 /// Materializes and publishes one authenticated workspace generation to a
@@ -1679,6 +1769,8 @@ pub struct NativeWorkspacePublication<'a> {
     pub cancellation: &'a crate::CancellationToken,
     /// Retained host capability used to fence path based publication.
     pub root_handle: Option<std::sync::Arc<crate::native_host::HostRoot>>,
+    /// Authenticated source precondition used before each held replacement.
+    pub source_precondition: Option<NativeSourcePrecondition>,
 }
 
 #[cfg(all(
@@ -1734,6 +1826,7 @@ where
         budget,
         cancellation,
         root_handle,
+        source_precondition,
     } = publication;
     if from_generation.id() != from || to_generation.id() != to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -1750,8 +1843,22 @@ where
         if existing.plan.from != from || existing.plan.to != to {
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
+        let source_budget = budget;
+        let source_cancellation = cancellation.clone();
         let backend = acyclic_native_runtime::run_blocking_io(move || {
-            NativeTreeMaterializationBackend::new_with_root(root, operation_directory, root_handle)
+            let backend = NativeTreeMaterializationBackend::new_with_root(
+                root,
+                operation_directory,
+                root_handle,
+            )?;
+            Ok::<_, NativeTreeMaterializationError>(match source_precondition {
+                Some(precondition) => backend.with_source_precondition(
+                    precondition,
+                    source_budget,
+                    &source_cancellation,
+                ),
+                None => backend,
+            })
         })
         .await??;
         return JournaledMaterializer::new(state.clone(), backend)
@@ -1888,12 +1995,20 @@ where
             )
             .await?;
     }
+    let source_budget = budget;
+    let source_cancellation = cancellation.clone();
     let (backend, mut plan) = acyclic_native_runtime::run_blocking_io(move || {
         let backend = NativeTreeMaterializationBackend::new_with_root(
             root,
             operation_directory,
             root_handle,
         )?;
+        let backend = match source_precondition {
+            Some(precondition) => {
+                backend.with_source_precondition(precondition, source_budget, &source_cancellation)
+            }
+            None => backend,
+        };
         let plan = backend.plan_paths(
             operation_id,
             from,
@@ -2301,6 +2416,62 @@ mod tests {
             .expect("rollback");
         assert_eq!(std::fs::read(root.join("old.txt")).expect("old"), b"old");
         assert!(!root.join("new.txt").exists());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[tokio::test]
+    async fn native_tree_backend_checks_source_before_any_live_replacement() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let root = temporary.path().join("checkout");
+        let operation = temporary.path().join("operation");
+        let target = operation.join("target");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&target).expect("target");
+        std::fs::write(root.join("file.txt"), b"user edit").expect("user edit");
+        std::fs::write(target.join("file.txt"), b"agent result").expect("target");
+        let checks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let checks_for_callback = std::sync::Arc::clone(&checks);
+        let precondition: NativeSourcePrecondition =
+            std::sync::Arc::new(move |_from, paths, _budget, _cancellation| {
+                let checks = std::sync::Arc::clone(&checks_for_callback);
+                Box::pin(async move {
+                    checks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    assert_eq!(paths, vec![std::path::PathBuf::from("file.txt")]);
+                    Err(NativeTreeMaterializationError::ExternalMutation(
+                        "source generation changed".to_owned(),
+                    ))
+                })
+            });
+        let backend = NativeTreeMaterializationBackend::new(&root, &operation)
+            .expect("native backend")
+            .with_source_precondition(
+                precondition,
+                crate::WorkBudget::UNBOUNDED,
+                &crate::CancellationToken::new(),
+            );
+        let plan = backend
+            .plan_paths(
+                OperationId::new(),
+                GenerationId::new(Digest::from_bytes([1; 32])),
+                GenerationId::new(Digest::from_bytes([2; 32])),
+                ["file.txt".to_owned()],
+            )
+            .expect("plan");
+        let result =
+            JournaledMaterializer::new(MemoryMaterializationJournalStore::default(), backend)
+                .apply(plan)
+                .await;
+        assert!(matches!(
+            result,
+            Err(MaterializationError::Backend(
+                NativeTreeMaterializationError::ExternalMutation(_)
+            ))
+        ));
+        assert_eq!(checks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            std::fs::read(root.join("file.txt")).expect("user edit"),
+            b"user edit"
+        );
     }
 
     #[cfg(not(target_arch = "wasm32"))]

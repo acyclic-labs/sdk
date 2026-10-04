@@ -834,6 +834,8 @@ pub(crate) struct RootMaterializingGitExecutor<'a> {
     pub(crate) store: &'a LocalCoreStateStore,
     pub(crate) root_handle: Arc<acyclic_fs::native_host::HostRoot>,
     pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
+    pub(crate) root_writeback_budget: WorkBudget,
+    pub(crate) root_writeback_cancellation: CancellationToken,
 }
 
 impl RootMaterializingGitExecutor<'_> {
@@ -862,7 +864,7 @@ impl RootMaterializingGitExecutor<'_> {
             maximum_extent_spans: 65_536,
             transfer_bytes: 8 * 1024 * 1024,
         };
-        let cancellation = CancellationToken::new();
+        let cancellation = self.root_writeback_cancellation.clone();
         let to_generation = target.head().await.map_err(display)?;
         let request = acyclic_fs::HostCheckoutRootWritebackRequest::new_with_options(
             operation_id,
@@ -878,6 +880,12 @@ impl RootMaterializingGitExecutor<'_> {
             .authorize_with(self.root_writeback_verifier.as_ref())
             .await
             .map_err(display)?;
+        let source_precondition = super::roots::native_source_precondition(
+            target.clone(),
+            self.root.to_path_buf(),
+            self.root_handle.identity(),
+            65_536,
+        );
         intent
             .publish_native(
                 &from,
@@ -885,10 +893,11 @@ impl RootMaterializingGitExecutor<'_> {
                 self.store,
                 &options,
                 &[".git"],
-                WorkBudget::UNBOUNDED,
+                self.root_writeback_budget,
                 &cancellation,
                 self.root_writeback_verifier.as_ref(),
                 Arc::clone(&self.root_handle),
+                Some(source_precondition),
             )
             .await
             .map_err(display)?;

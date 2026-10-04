@@ -38,6 +38,8 @@ const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
 
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+mod root_writeback;
+pub use root_writeback::HarnessRootWritebackApprovalVerifier;
 mod fork_preparer;
 pub use fork_preparer::FilesystemForkPreparer;
 mod interaction_host;

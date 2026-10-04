@@ -9,6 +9,17 @@ use super::*;
 use acyclic_fs::GitCommand;
 use acyclic_fs::kernel::NameEncoding;
 
+struct AllowRootWriteback;
+
+impl acyclic_fs::RootWritebackApprovalVerifier for AllowRootWriteback {
+    fn verify<'a>(
+        &'a self,
+        _context: acyclic_fs::RootWritebackApprovalContext,
+    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
     control.state.roots[&root_key(WorkspaceRootId::from_bytes(control.state.root_id))]
         .repository_workspace_id
@@ -3132,6 +3143,7 @@ async fn root_git_case() {
     let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
         .await
         .expect("control plane");
+    control.set_root_writeback_verifier(Arc::new(AllowRootWriteback));
     control
         .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
         .await
