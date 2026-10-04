@@ -630,6 +630,15 @@ pub struct HostDirectory {
     directory: Dir,
 }
 
+/// A capability-rooted destination handle retained across authenticated host
+/// staging and publication. On Windows it intentionally omits
+/// `FILE_SHARE_WRITE`, so a later writer cannot open the destination while the
+/// restore owns its baseline; an already-open writer makes acquisition fail.
+pub(crate) struct HostRestoreGuard {
+    #[allow(dead_code)]
+    file: cap_std::fs::File,
+}
+
 #[cfg(unix)]
 fn held_parent_leaf(root: &Dir, path: &Path) -> io::Result<(Dir, std::ffi::CString)> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -1285,6 +1294,39 @@ impl HostRoot {
         self.open_file_for(path, FileReads::Cursor)
     }
 
+    /// Opens an existing restore destination through the held root. Windows
+    /// denies subsequent writer opens while this guard is retained; absence is
+    /// returned explicitly so publication can use create-only semantics.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) fn open_restore_guard(&self, path: &Path) -> io::Result<Option<HostRestoreGuard>> {
+        #[cfg(windows)]
+        {
+            use windows::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ};
+            let opened = match self.open_by_name_with_share(
+                path,
+                FILE_GENERIC_READ | DELETE,
+                windows::Win32::Storage::FileSystem::FILE_SHARE_READ
+                    | windows::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
+            ) {
+                Ok(opened) => opened,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            match opened {
+                Some(file) => return Ok(Some(HostRestoreGuard { file })),
+                None => return Ok(None),
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            match self.open_file(path) {
+                Ok(file) => Ok(Some(HostRestoreGuard { file })),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+    }
+
     /// Opens `path` for reading so that it gives way to whoever renames or
     /// deletes it: see [`YieldingFile`].
     #[cfg(windows)]
@@ -1402,15 +1444,35 @@ impl HostRoot {
         access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
         options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
     ) -> io::Result<Option<cap_std::fs::File>> {
+        use windows::Win32::Storage::FileSystem::{
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        };
+        self.open_by_name_with_share(
+            path,
+            access,
+            options,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        )
+    }
+
+    /// Opens one capability-rooted Windows leaf with an explicit sharing
+    /// contract. Restore guards use this to deny new writers while retaining
+    /// delete sharing for the held-directory publication rename.
+    #[cfg(windows)]
+    #[allow(unsafe_code)]
+    fn open_by_name_with_share(
+        &self,
+        path: &Path,
+        access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+        share: windows::Win32::Storage::FileSystem::FILE_SHARE_MODE,
+    ) -> io::Result<Option<cap_std::fs::File>> {
         use std::os::windows::io::{AsHandle as _, AsRawHandle as _, FromRawHandle as _};
         use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
         use windows::Wdk::Storage::FileSystem::{FILE_OPEN, NtCreateFile};
         use windows::Win32::Foundation::{
             HANDLE, NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, UNICODE_STRING,
         };
-        use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        };
+        use windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL;
         use windows::Win32::System::IO::IO_STATUS_BLOCK;
         const REPARSE_POINT_ENCOUNTERED: NTSTATUS = NTSTATUS(0xC000_050B_u32.cast_signed());
 
@@ -1442,7 +1504,7 @@ impl HostRoot {
                 &raw mut status_block,
                 None,
                 FILE_ATTRIBUTE_NORMAL,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                share,
                 FILE_OPEN,
                 options,
                 None,

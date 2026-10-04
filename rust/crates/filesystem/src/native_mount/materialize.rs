@@ -597,7 +597,7 @@ where
     }
     let destination_root = options.destination.clone();
     let relative = relative.to_path_buf();
-    let (destination, stage_root, _restore_lock) = tokio::task::spawn_blocking({
+    let (destination, stage_root, _restore_lock, restore_guard) = tokio::task::spawn_blocking({
         let destination_root = destination_root.clone();
         let relative = relative.clone();
         let host_root = Arc::clone(&host_root);
@@ -699,6 +699,7 @@ where
             &stage_root,
             replacement,
             &host_root,
+            restore_guard,
         )
     })
     .await
@@ -722,10 +723,21 @@ fn prepare_restore(
     relative: &Path,
     replacement: HostPathReplacement,
     host_root: &HostRoot,
-) -> Result<(PathBuf, PathBuf, File), MaterializeError> {
+) -> Result<
+    (
+        PathBuf,
+        PathBuf,
+        File,
+        Option<crate::native_host::HostRestoreGuard>,
+    ),
+    MaterializeError,
+> {
     let destination = destination_root.join(relative);
     let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let restore_guard = host_root
+        .open_restore_guard(relative)
+        .map_err(MaterializeError::Io)?;
     let restore_lock = acquire_restore_lock(relative, &destination, true)?;
     cleanup_removed_restore(&destination_parent, relative, &destination)?;
     match replacement {
@@ -754,6 +766,7 @@ fn prepare_restore(
         destination,
         create_restore_stage(&stage_parent)?,
         restore_lock,
+        restore_guard,
     ))
 }
 
@@ -765,6 +778,7 @@ fn publish_restore(
     stage_root: &Path,
     replacement: HostPathReplacement,
     host_root: &HostRoot,
+    _restore_guard: Option<crate::native_host::HostRestoreGuard>,
 ) -> Result<(), MaterializeError> {
     let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;
@@ -779,8 +793,15 @@ fn publish_restore(
                 Path::new(destination_name),
             )?,
             #[cfg(not(unix))]
-            HostPathReplacement::Atomic => crate::exchange_native_entries(destination, staged)
-                .map_err(|error| MaterializeError::Engine(error.to_string()))?,
+            HostPathReplacement::Atomic => replace_live_mount(
+                &stage_parent,
+                Path::new(staged_name),
+                &destination_parent,
+                Path::new(destination_name),
+                relative,
+                destination,
+                staged,
+            )?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,
                 Path::new(staged_name),
