@@ -108,6 +108,12 @@ PY
     test -n "$(find lib/generated -type f -name '*_grpc.ex' -print -quit)"
     test -n "$(rg -l 'stream' lib/generated --glob '*_grpc.ex' | head -n 1)"
     python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/lib/generated" "${contract_protos[@]}"
+    if [[ -n "${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}" ]]; then
+      python3 "$source_root/scripts/write-elixir-runtime-consumer.py" \
+        "$project/lib/generated" "${contract_protos[@]}" "$project/runtime_smoke.exs"
+      mix run --no-start runtime_smoke.exs "$ACYCLIC_FIXTURE_GRPC_ENDPOINT"
+      test -s "$project/runtime_smoke.exs"
+    fi
     module=$(sed -n 's/^defmodule \([^ ]*\).*/\1/p' lib/generated/*_pb.ex | head -n 1)
     test -n "$module"
     mix run --no-start -e "m = String.to_atom(\"Elixir.$module\"); value = struct(m); encoded = apply(m, :encode, [value]); decoded = apply(m, :decode, [encoded]); unless decoded == value, do: raise \"protobuf round trip failed\""
