@@ -90,6 +90,18 @@ int main() {
       live_engine, kPath, sizeof(kPath) - 1, 0, 0, 99);
   require(invalid.status == InvalidArgument && invalid.message.id != 0,
           "invalid mode did not produce an owned diagnostic");
+  AcyclicBuffer wrong_length = invalid.message;
+  ++wrong_length.len;
+  require(acyclic_buffer_release(wrong_length) == InvalidArgument,
+          "buffer release accepted a forged length");
+  AcyclicBuffer wrong_capacity = invalid.message;
+  ++wrong_capacity.capacity;
+  require(acyclic_buffer_release(wrong_capacity) == InvalidArgument,
+          "buffer release accepted a forged capacity");
+  AcyclicBuffer wrong_pointer = invalid.message;
+  wrong_pointer.ptr = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(1));
+  require(acyclic_buffer_release(wrong_pointer) == InvalidArgument,
+          "buffer release accepted a forged pointer");
   const AcyclicBuffer duplicate = invalid.message;
   require(acyclic_buffer_release(invalid.message) == Ok,
           "first owned-buffer release failed");

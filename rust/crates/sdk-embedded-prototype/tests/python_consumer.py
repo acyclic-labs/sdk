@@ -85,6 +85,15 @@ def bytes_arg(value: bytes):
     return storage, ctypes.cast(storage, ctypes.POINTER(ctypes.c_uint8)), len(value)
 
 
+def clone_buffer(source: Buffer) -> Buffer:
+    clone = Buffer()
+    clone.id = source.id
+    clone.ptr = source.ptr
+    clone.len = source.len
+    clone.capacity = source.capacity
+    return clone
+
+
 def main() -> None:
     assert_abi_layout()
     dll = ctypes.CDLL(sys.argv[1])
@@ -175,6 +184,20 @@ def main() -> None:
     dll.acyclic_embedded_reader_close(reader)
     dll.acyclic_embedded_reader_close(reader)
     assert dll.acyclic_embedded_reader_next(reader).status == INVALID
+    invalid = dll.acyclic_embedded_reader_open(engine, path_ptr, path_len, 0, 0, 99)
+    assert invalid.status == INVALID and invalid.message.id != 0
+    wrong_length = clone_buffer(invalid.message)
+    wrong_length.len += 1
+    assert dll.acyclic_buffer_release(wrong_length) == INVALID
+    wrong_capacity = clone_buffer(invalid.message)
+    wrong_capacity.capacity += 1
+    assert dll.acyclic_buffer_release(wrong_capacity) == INVALID
+    wrong_pointer = clone_buffer(invalid.message)
+    wrong_pointer.ptr = ctypes.cast(ctypes.c_void_p(1), ctypes.POINTER(ctypes.c_uint8))
+    assert dll.acyclic_buffer_release(wrong_pointer) == INVALID
+    assert dll.acyclic_buffer_release(invalid.message) == OK
+    assert dll.acyclic_buffer_release(invalid.message) == INVALID
+    dll.acyclic_open_result_release(invalid)
     dll.acyclic_open_result_release(opened)
     dll.acyclic_embedded_engine_close(engine)
     dll.acyclic_embedded_engine_close(engine)
