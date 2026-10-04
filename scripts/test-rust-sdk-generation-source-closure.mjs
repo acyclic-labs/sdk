@@ -35,11 +35,15 @@ test("source closure keeps Rust provenance and Seal/exclusion guards", () => {
     "source_git_sha",
     "source-authority.json",
     "sdk-typescript-rpc-contracts",
+    "ensure_source_identity_unchanged(",
+    "compare_fresh_artifacts(",
+    "artifact_digest(",
     "fn catalog_exclusion_allowed(",
     "fn exclusion_test_receipt(",
     "seal_is_a_distinct_manifest_operation",
     "exclusion_requires_a_run_bound_receipt",
     "exclusion_receipt_binds_scope_and_digest",
+    "source_digest_changes_for_untracked_author_input",
   ]) {
     assert.match(main, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), marker);
   }
