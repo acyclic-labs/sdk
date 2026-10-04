@@ -1,7 +1,7 @@
 # sdk-docs
 
-`sdk-docs` is an isolated prototype for building the Rust-owned input bundle
-used by SDK and website generators. It collects crate Markdown, Rust source,
+`sdk-docs` builds the Rust-owned input bundle used by SDK and website
+generators. It collects crate Markdown, Rust source,
 module docs, and examples, then attaches the resolved public graph from
 compiled rustdoc JSON when one is supplied.
 
