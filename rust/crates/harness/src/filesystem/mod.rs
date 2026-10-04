@@ -78,6 +78,8 @@ pub use local::{
     PersistentLocalHarness,
 };
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
+pub(crate) use local::ensure_session_signing_key;
+#[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod swarm_local;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use swarm_local::{

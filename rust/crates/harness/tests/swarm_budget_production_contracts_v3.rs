@@ -33,7 +33,9 @@ fn request(operation_id: OperationId, key: String) -> SwarmForkRequest {
 
 fn limits() -> SwarmBudgetLimits {
     SwarmBudgetLimits {
-        max_active_agents: 3,
+        // The root counts toward active capacity. The concurrency case below
+        // intentionally admits the root plus three live children.
+        max_active_agents: 4,
         max_total_agents: 4,
         max_recursion_depth: 1,
         max_model_steps: 8,
