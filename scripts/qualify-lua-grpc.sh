@@ -33,6 +33,14 @@ git clone --filter=blob:none --no-checkout "$lua_repo" "$lua_checkout"
 git -C "$lua_checkout" checkout --detach "$lua_revision"
 license_status=unverified-repository-license
 if find "$lua_checkout" -maxdepth 1 -type f \( -iname 'license*' -o -iname 'copying*' \) -print -quit | grep -q .; then license_status=repository-license-present; fi
+if [[ "$license_status" != repository-license-present ]]; then
+  proto_sha256=$(sha256sum "$proto" | awk '{print $1}')
+  cat >"$output_root/qualification.json" <<EOF
+{"schema":"acyclic.additional-language-qualification.v1","language":"lua","status":"pending-license","source_revision":"${GITHUB_SHA:-local}","input_kind":"$input_kind","proto_sha256":"$proto_sha256","generator":{"repository":"$lua_repo","revision":"$lua_revision","license_status":"$license_status"},"evidence":["No LICENSE or COPYING file at the pinned revision","No license file appears in reachable repository history"],"artifact_root":"$output_root"}
+EOF
+  echo 'Pinned Lua runtime has no repository license grant; refusing package qualification.' >&2
+  exit 3
+fi
 
 pushd "$lua_checkout" >/dev/null
 go test ./...

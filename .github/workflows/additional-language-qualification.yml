@@ -37,8 +37,6 @@ jobs:
             elixir_version: ''
           - language: common-lisp
             elixir_version: ''
-          - language: lua
-            elixir_version: ''
     runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
@@ -84,12 +82,6 @@ jobs:
           sudo apt-get install --yes sbcl ocicl
           ocicl setup
 
-      - name: Install Lua toolchain
-        if: matrix.language == 'lua'
-        run: |
-          sudo apt-get install --yes lua5.4 liblua5.4-dev luarocks golang
-          sudo update-alternatives --install /usr/bin/lua lua /usr/bin/lua5.4 10
-
       - name: Generate Rust-owned products
         run: |
           cargo run --locked --bin sdk-contract-wire -- generate-products \
@@ -97,13 +89,8 @@ jobs:
 
       - name: Build and consume generated package
         run: |
-          if [ '${{ matrix.language }}' = lua ]; then
-            bash scripts/qualify-lua-grpc.sh \
-              "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}" "$RUNNER_TEMP/rust-products"
-          else
-            bash scripts/qualify-additional-language.sh \
-              '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}"
-          fi
+          bash scripts/qualify-additional-language.sh \
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}"
 
       - name: Upload qualification receipt
         if: always()
