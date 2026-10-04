@@ -82,6 +82,26 @@ source_root = pathlib.Path(source_root)
 import subprocess
 source_revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=source_root, text=True).strip()
 runtime_package_path = pathlib.Path(runtime_path).relative_to(root).as_posix()
+source_inputs = [
+    "rust/crates/sdk-embedded-prototype/Cargo.toml",
+    "rust/crates/sdk-embedded-prototype/Cargo.lock",
+    "rust/crates/sdk-embedded-prototype/build.rs",
+    "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+    "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
+    "cpp/embedded-consumer/CMakeLists.txt",
+    "cpp/embedded-consumer/AcyclicEmbeddedConfig.cmake.in",
+    "cpp/embedded-consumer/include/acyclic/embedded.hpp",
+    "cpp/embedded-consumer/main.cpp",
+    "cpp/embedded-consumer/negative_lifetime_smoke.cpp",
+    "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp",
+]
+source_digest_lines = []
+for relative in source_inputs:
+    source_digest_lines.append(
+        f"{relative} {hashlib.sha256((source_root / relative).read_bytes()).hexdigest()}"
+    )
+source_digest = hashlib.sha256("\n".join(source_digest_lines).encode()).hexdigest()
 files = {}
 for path in sorted(p for p in root.rglob('*') if p.is_file()):
     files[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -90,7 +110,10 @@ json.dump({
     "status": "passed",
     "target": target,
     "source_revision": source_revision,
+    "source_digest": f"sha256:{source_digest}",
+    "source_inputs": source_inputs,
     "runtime": runtime,
+    "runtime_artifact": runtime_package_path,
     "package_root": "prefix",
     "artifacts": files,
     "consumers": {
