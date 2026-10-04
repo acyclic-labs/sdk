@@ -3132,17 +3132,26 @@ impl PersistentLocalSwarm {
             ));
         }
         let declared_suffix = declaration.as_ref().map(|value| value.suffix.clone());
+        let parent_declaration = self.declarations.lock().await.get(&request.parent).cloned();
         let (boundary, verified_parent) = match (publication, declaration) {
-            (Some(publication), Some(declaration)) => {
-                let inherited = declaration.context(self.config.limits)?;
-                let verified = parent_harness
-                    .storage()
-                    .verified_inherited_model_fork_boundary(
-                        &publication,
-                        self.config.limits,
-                        &inherited,
-                    )
-                    .await?;
+            (Some(publication), Some(_declaration)) => {
+                let verified = match parent_declaration {
+                    Some(parent_declaration) => {
+                        let inherited = parent_declaration.context(self.config.limits)?;
+                        parent_harness
+                            .storage()
+                            .verified_inherited_model_fork_boundary(
+                                &publication,
+                                self.config.limits,
+                                &inherited,
+                            )
+                            .await?
+                    }
+                    None => parent_harness
+                        .storage()
+                        .verified_model_fork_boundary(&publication, self.config.limits)
+                        .await?,
+                };
                 let (boundary, parent) = verified.into_parts();
                 (boundary, Some(parent))
             }

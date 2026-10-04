@@ -458,7 +458,19 @@ where
     fn authorize(&self, scope: Option<&RuntimeScope>, invocation: &ToolInvocation) -> Result<()> {
         let input: ReadFileInput = serde_json::from_value(invocation.arguments.clone())
             .map_err(|error| Error::Invalid(format!("read_file input is invalid: {error}")))?;
-        require_volume_grant(scope, input.file.volume(), VolumeOperation::Read)
+        let scope = scope
+            .ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
+        let file_capability = input.file.read_capability()?;
+        let volume_capability = input.file.volume().capability(VolumeOperation::Read)?;
+        if scope.grants().contains(&file_capability)
+            || scope.grants().contains(&volume_capability)
+        {
+            Ok(())
+        } else {
+            Err(Error::Unauthorized(format!(
+                "scope lacks {volume_capability}"
+            )))
+        }
     }
 
     fn execute<'a>(&'a self, invocation: ToolInvocation) -> BoxFuture<'a, Result<ToolResult>> {
@@ -844,6 +856,7 @@ where
         )
         .await?;
         child.bind_published_child(parent, seed, scope).await?;
+        let inherited_read_capabilities = seed.attached_read_capabilities(seed.child_agent)?;
         Self::from_providers_with_reads(
             seed.child_agent,
             maximum_file_bytes,
@@ -852,7 +865,7 @@ where
             volume,
             seed.child.clone(),
             issuer,
-            seed.reference_capabilities(seed.child_agent)?,
+            inherited_read_capabilities,
         )
         .await
     }

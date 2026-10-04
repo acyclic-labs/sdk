@@ -10,6 +10,50 @@ use crate::{
 };
 use crate::fork::InheritedConversationPrefix;
 
+fn collect_projected_file_refs(
+    value: &serde_json::Value,
+    files: &mut Vec<crate::conversation::FileRef>,
+) {
+    if let Ok(file) = serde_json::from_value::<crate::conversation::FileRef>(value.clone())
+        && file.validate().is_ok()
+    {
+        files.push(file);
+        return;
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_projected_file_refs(value, files);
+            }
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                collect_projected_file_refs(value, files);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
+}
+
+fn collect_tool_result_file_refs(
+    content: &crate::model::ModelContent,
+    files: &mut Vec<crate::conversation::FileRef>,
+) {
+    let parts = match content {
+        crate::model::ModelContent::Part(part) => std::slice::from_ref(part),
+        crate::model::ModelContent::Parts(parts) => parts.as_slice(),
+        crate::model::ModelContent::Text(_) => return,
+    };
+    for part in parts {
+        if let crate::model::ModelContentPart::ToolResult { value, .. } = part {
+            collect_projected_file_refs(value, files);
+        }
+    }
+}
+
 /// Exact completed model boundary and its authoritative parent conversation.
 /// Workspace preparation and publication remain owned by the existing typed
 /// fork APIs. The caller must persist its original `ForkRequest` before dispatch.
@@ -90,6 +134,14 @@ where
                 if unique.insert(file.read_capability()?) {
                     self.content_verifier.verify(file).await?;
                     files.push(file.clone());
+                }
+            }
+            let mut projected = Vec::new();
+            collect_tool_result_file_refs(&message.content, &mut projected);
+            for file in projected {
+                if unique.insert(file.read_capability()?) {
+                    self.content_verifier.verify(&file).await?;
+                    files.push(file);
                 }
             }
         }
