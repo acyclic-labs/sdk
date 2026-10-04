@@ -857,6 +857,22 @@ pub trait DurableTaskHost: Send + Sync {
         Box::pin(async { Err(Error::Unsupported("durable task inbox is not bound".into())) })
     }
 
+    /// Hydrates one retained message body after the host authenticates the
+    /// recipient, message identity, and exact FileRef. Implementations must
+    /// keep this separate from generic filesystem reads.
+    fn read_message_body<'a>(
+        &'a self,
+        _task_id: TaskId,
+        _message_id: OperationId,
+        _payload: &'a FileRef,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async {
+            Err(Error::Unsupported(
+                "durable message body reads are not bound".into(),
+            ))
+        })
+    }
+
     /// Registers or reconciles an absolute durable timer by operation identity.
     fn wait_until<'a>(
         &'a self,
