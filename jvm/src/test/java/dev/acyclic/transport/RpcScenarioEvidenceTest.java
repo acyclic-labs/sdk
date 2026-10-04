@@ -118,7 +118,8 @@ final class RpcScenarioEvidenceTest {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
         invoke(channel, method);
-        scenarios.add(new Scenario(revision, descriptor.getName(), method.getFullMethodName(),
+        String rpc = method.getFullMethodName();
+        scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
             shape(method.getType())));
       }
       return scenarios;
@@ -206,6 +207,16 @@ final class RpcScenarioEvidenceTest {
       case BIDI_STREAMING -> "bidi";
       default -> throw new IllegalArgumentException("unsupported gRPC method type: " + type);
     };
+  }
+
+  private static String familyForRpc(String rpc) {
+    int dot = rpc.indexOf('.');
+    if (dot < 0) throw new IllegalArgumentException("RPC has no package: " + rpc);
+    String packageName = rpc.substring(0, dot);
+    if (packageName.equals("inference")) return "inference";
+    int secondDot = rpc.indexOf('.', dot + 1);
+    if (secondDot < 0) throw new IllegalArgumentException("RPC has no version: " + rpc);
+    return rpc.substring(dot + 1, secondDot);
   }
 
   private record Scenario(String revision, String family, String rpc, String shape) {
