@@ -1025,6 +1025,7 @@ fn run_rust(
     fs::write(staging.join("Cargo.toml"), &consumer_manifest_bytes)
         .map_err(|error| format!("write archive consumer manifest: {error}"))?;
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let deterministic_rustflags = deterministic_rustflags();
     let lock = Command::new(&cargo)
         .args(["generate-lockfile", "--offline"])
         .env("CARGO_NET_OFFLINE", "true")
@@ -1104,6 +1105,7 @@ fn run_rust(
             "--quiet",
         ])
         .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTFLAGS", &deterministic_rustflags)
         .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
         .current_dir(&staging)
         .output();
@@ -1153,6 +1155,7 @@ fn run_rust(
             "--force",
         ])
         .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTFLAGS", &deterministic_rustflags)
         .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
         .current_dir(&staging)
         .output()
@@ -1219,6 +1222,7 @@ fn run_rust(
         .map_err(|error| format!("copy Rust consumer lock: {error}"))?;
     let compile_digest = hash(&normalized_bytes);
     let runtime_digest = hash(&normalized_bytes);
+    let invocation_digest = hash(&installed_bytes);
     let package_bytes = fs::read(&package_path).map_err(|error| error.to_string())?;
     let package_digest = hash(&package_bytes);
     let package_size = package_bytes.len();
@@ -1249,6 +1253,7 @@ fn run_rust(
         "invocation_artifact": {
             "path": portable_output_path(&invocation_path, &qualification),
             "bytes": installed_bytes.len(),
+            "sha256": invocation_digest,
             "normalized_sha256": hash(&normalized_bytes),
             "normalization": artifact_normalization,
         },
@@ -1273,6 +1278,7 @@ fn run_rust(
             "invocation_artifact": {
                 "path": portable_output_path(&invocation_path, &qualification),
                 "bytes": installed_bytes.len(),
+                "sha256": invocation_digest,
                 "normalized_sha256": hash(&normalized_bytes),
                 "normalization": artifact_normalization,
             },
@@ -2418,16 +2424,39 @@ fn normalize_invocation_artifact(bytes: &[u8]) -> (Vec<u8>, &'static str) {
     }
     let pe_offset =
         u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
-    let timestamp = pe_offset.saturating_add(8);
-    if pe_offset + 12 > bytes.len()
+    let Some(timestamp) = pe_offset.checked_add(8) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    let Some(pe_header_end) = pe_offset.checked_add(12) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    let Some(timestamp_end) = timestamp.checked_add(4) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    if pe_header_end > bytes.len()
         || &bytes[pe_offset..pe_offset + 4] != b"PE\0\0"
-        || timestamp + 4 > bytes.len()
+        || timestamp_end > bytes.len()
     {
         return (bytes.to_vec(), "identity-v1");
     }
     let mut normalized = bytes.to_vec();
     normalized[timestamp..timestamp + 4].fill(0);
     (normalized, "pe-coff-timestamp-zero-v1")
+}
+
+fn deterministic_rustflags() -> String {
+    let existing = env::var("RUSTFLAGS").unwrap_or_default();
+    if cfg!(windows) {
+        if existing.trim().is_empty() {
+            "/Brepro".to_owned()
+        } else if existing.split_whitespace().any(|flag| flag == "/Brepro") {
+            existing
+        } else {
+            format!("{existing} /Brepro")
+        }
+    } else {
+        existing
+    }
 }
 
 fn hash(bytes: &[u8]) -> String {
