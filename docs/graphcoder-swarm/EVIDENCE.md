@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Integrated live activation qualification](checkpoint-live-activation-integrated-native-2026-10-04.json) records 365/365 library, 3/3 recursive and 6/6 fault tests at clean Windows native source `c600e386f`, with no failures or ignored cases. The source-specific archive includes verified suite, log and executable digests. Full durable composition, native approvals, user-checkout writeback and installed acceptance remain outstanding.
+
 [Live cross-handle activation](checkpoint-live-activation-native-2026-10-04.json) records 3/3 recursive and 6/6 fault tests at Windows native candidate `c9d107c72`, with no failures or ignored cases. The blocked live child retains its original admission while a second handle is denied overlapping activation; cancellation then drops the original provider stream. Logs, suites and executable digests are archived. The full integrated library and installed matrix remain separate gates.
 
 [Integrated cancellation and recursive qualification](checkpoint-cancellation-integrated-native-2026-10-04.json) records 365/365 Harness library tests, 3/3 production recursive tests and 5/5 fault tests at clean Windows native source `9b9186826`, with no failures or ignored cases. Durable cancellation signals the live child across composition handles and awaits termination. Source files, logs and all three native executables have verified archive digests. This does not qualify the remaining live activation fence, default communication/budget/native/writeback composition or installed matrix.

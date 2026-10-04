@@ -48,7 +48,9 @@ At clean integrated source `9b9186826`, the full Windows native Harness library 
 
 At candidate source `c9d107c72`, all three recursive and six fault tests pass on Windows, including a second-handle retry while the first child provider is blocked. The live per-task guard is shared across handles of one composition root; a retry returns an explicit indeterminate outcome without opening another child writer or dispatching another request. Cancellation and guards share one weakly retained live-state cache. See [live activation evidence](checkpoint-live-activation-native-2026-10-04.json). The change is integrated at `9c6a899c5`; the full integrated library run remains required.
 
-1. Qualify the integrated live cross-handle activation guard with the full Harness library and recursive/fault suites.
+At clean integrated source `c600e386f`, all 365 Harness library tests, three production recursive tests and six fault tests pass on Windows with no failures or ignored cases. See [integrated live activation evidence](checkpoint-live-activation-integrated-native-2026-10-04.json). This qualifies the live activation guard checkpoint; it does not close the remaining composition or installed acceptance gates.
+
+1. Complete default durable local composition so model-selected messaging, waits and task completion share recoverable scoped authority and remain usable after all original handles are dropped. The earlier communication candidate is not qualified merely by constructing a coordinator host.
 2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
 3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
 4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
