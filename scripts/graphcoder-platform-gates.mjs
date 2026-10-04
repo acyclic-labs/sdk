@@ -140,7 +140,7 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   catch (error) { fail(`${lane.id} ${executionKind} receipt is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
   const suite = record?.suite;
   if (!suite || suite.status !== "passed") fail(`${lane.id} ${executionKind} receipt is not passed`);
-  if (suite.id !== record.suite?.id || suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
+  if (suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
   if (!Array.isArray(record.artifacts) || record.artifacts.length === 0) fail(`${lane.id} ${executionKind} receipt has no artifact evidence`);
   const descriptorPath = suite.descriptor_path;
   if (typeof descriptorPath !== "string" || !existsSync(descriptorPath)) fail(`${lane.id} ${executionKind} descriptor is missing`);
