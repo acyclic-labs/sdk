@@ -2,6 +2,75 @@
   "protocol": "acyclic.graphcoder.platform-gates.v1",
   "base_commit": "31b9ff52d63c91f2b9bf87e16b78ad682d26546f",
   "description": "Portable source and artifact gates for the local GraphCoder qualification. Each gate is executed with an argv vector and a filtered environment; platform execution evidence is supplied by the native lane.",
+  "qualification_lanes": [
+    {
+      "id": "installed-native-stage",
+      "execution_kinds": ["native"],
+      "platforms": ["windows", "linux", "macos"],
+      "driver": "scripts/graphcoder-native-stage-e2e.mjs",
+      "configurator": "scripts/graphcoder-native-stage-config.mjs",
+      "scenario": "docs/graphcoder-swarm/graphcoder-native-scenarios.json",
+      "runtime_artifact_by_platform": {"windows": "target/debug/graphcoder-runtime.exe", "linux": "target/debug/graphcoder-runtime", "macos": "target/debug/graphcoder-runtime"},
+      "requires_installed_package": true,
+      "allows_mock_fixture": false,
+      "requires_process_ownership": true,
+      "required_markers": ["dropped-response", "retry", "reopen", "activity", "installed-package-export"]
+    },
+    {
+      "id": "installed-headless",
+      "execution_kinds": ["native", "package"],
+      "platforms": ["windows", "linux", "macos"],
+      "driver": "scripts/graphcoder-production-entrypoint.mjs",
+      "scenario": "docs/graphcoder-swarm/graphcoder-real-backend-scenarios.json",
+      "capture": "scripts/graphcoder-qualification-suite.mjs",
+      "requires_installed_package": true,
+      "requires_process_ownership": true,
+      "requires_lazy_observation": true,
+      "allows_mock_fixture": false,
+      "required_markers": ["approval transitions to approved", "writeback applied only with matching operation and generation", "cancellation and resume state transitions"]
+    },
+    {
+      "id": "installed-pty",
+      "execution_kinds": ["pty"],
+      "platforms": ["windows"],
+      "driver": "scripts/graphcoder-production-pty.mjs",
+      "native_pty_driver": "scripts/graphcoder-production-pty-winpty.py",
+      "scenario": "docs/graphcoder-swarm/graphcoder-real-backend-scenarios.json",
+      "capture": "scripts/graphcoder-qualification-suite.mjs",
+      "requires_installed_package": true,
+      "requires_process_ownership": true,
+      "requires_lazy_observation": true,
+      "requires_approval_cancellation_writeback": true,
+      "allows_mock_fixture": false,
+      "negative_driver": "scripts/graphcoder-production-pty-winpty.test.py"
+    },
+    {
+      "id": "installed-transport-faults",
+      "execution_kinds": ["package"],
+      "platforms": ["windows", "linux", "macos"],
+      "driver": "scripts/graphcoder-installed-transport-faults.mjs",
+      "scenario": "docs/graphcoder-swarm/graphcoder-transport-fault-scenarios.json",
+      "requires_installed_package": true,
+      "requires_process_ownership": true,
+      "allows_mock_fixture": false
+    },
+    {
+      "id": "filesystem-plugin-ignored",
+      "execution_kinds": ["native"],
+      "platforms": ["windows", "linux", "macos"],
+      "gate_ids": ["filesystem-plugin-regressions", "filesystem-plugin-regressions-windows"],
+      "requires_ignored_tests": true,
+      "skip_patterns": ["support::"],
+      "allows_mock_fixture": false
+    },
+    {
+      "id": "generated-contracts",
+      "execution_kinds": ["compile"],
+      "platforms": ["windows", "linux", "macos"],
+      "gate_ids": ["generated-bindings", "typescript-contracts"],
+      "allows_mock_fixture": false
+    }
+  ],
   "gates": [
     {
       "id": "harness-rust-local",
