@@ -308,6 +308,7 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
             );
             let result = match spec.id {
                 "actors-create-roundtrip" => acyclic_sdk_examples::execute_actors_roundtrip()
+                    .map_err(|error| error.to_string())
                     .map(|()| json!({
                         "status": "passed",
                         "scope": "rust-wire-validation",
@@ -318,6 +319,7 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     })),
                 "stream-append-read" => runtime
                     .block_on(acyclic_sdk_examples::execute_stream_append_read())
+                    .map_err(|error| error.to_string())
                     .map(|records| json!({
                         "status": if records.len() == 2 { "passed" } else { "failed" },
                         "scope": "rust-memory-provider",
@@ -328,6 +330,7 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     })),
                 acyclic_sdk_examples::filesystem_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::filesystem_scenarios::execute_filesystem_scenario())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| {
                         json!({
                             "status": if receipt.checkpointed && receipt.mounted_bindings == 2 { "passed" } else { "failed" },
@@ -356,14 +359,18 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     }))
                 }
                 acyclic_sdk_examples::inference_scenarios::SCENARIO_ID => acyclic_sdk_examples::inference_scenarios::execute()
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"event_count": receipt.event_count, "terminal": receipt.terminal}})),
                 acyclic_sdk_examples::machines_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::machines_scenarios::execute())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"event_count": receipt.event_count, "checkpoint_children": receipt.checkpoint_children, "machine_state": format!("{:?}", receipt.machine_state)}})),
                 acyclic_sdk_examples::objects_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::objects_scenarios::execute())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"body_size": receipt.body_size}})),
                 acyclic_sdk_examples::workers_scenarios::SCENARIO_ID => acyclic_sdk_examples::workers_scenarios::execute()
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"module_sha256": hash(&receipt.module_sha256)}})),
                 other => return Err(format!("unregistered guide scenario {other}")),
             }
@@ -1530,7 +1537,7 @@ fn run_rust(
 
 fn guide_rust_cases() -> Vec<(&'static str, &'static str, String)> {
     let filesystem = format!(
-        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{}\", std::process::id()));
+        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{{}}\", std::process::id()));
 {}",
         filesystem_scenarios::QUICKSTART_SNIPPET
     );
@@ -1639,7 +1646,7 @@ fn run_guide_rust_consumers(
         }
         fs::create_dir_all(staging.join("src"))
             .map_err(|error| format!("create guide staging: {error}"))?;
-        let package_path_text = package_root.to_string_lossy().replace('\\', '/');
+        let package_path_text = package_root.to_string_lossy().replace('\\', "/");
         let manifest = format!(
             r#"[package]
 name = "guide-{scenario_id}"
@@ -3051,3 +3058,6 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
+
+
+
