@@ -1,0 +1,81 @@
+{
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "artifacts": [
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\mailbox-extraction-native.log",
+      "sha256": "d1896bc68f5beb900a6cd55def8a12929aa2fb677fc043305e20003cee0829b9"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\mailbox-extraction-compile-failure.log",
+      "sha256": "0bc9f9f9d7661e4bfa58a9442fd05a72810ee02f65413290fa4a43c4a02c133b"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\durable_host.rs",
+      "sha256": "4a07de7c189f4037ac9663bdcee60d7869137d297f53cc7eb93221c74f6adb95"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\durable_mail.rs",
+      "sha256": "a1dc68caf6b58cd10d457134a164d6221e58ba60c791831e4d54a29a9dcebf30"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\lib.rs",
+      "sha256": "fa041b95e46bae7fd9cb7dce5ef351ef4f176dce1fb2d4297731c933f27634c7"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\communication_local.rs",
+      "sha256": "c845ee21f43abe96c0aa0c9e48dbf8ea28cd7fa134ce94ca6d69409a273cd70d"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\local_model_swarm.rs",
+      "sha256": "62afbcfaa359e48e16eddf100271342a906719162e5a07d0c06f568336b41b2b"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\local_swarm_faults.rs",
+      "sha256": "a9f382ef1bdd286757e2b5b5ad448ef77bc4c4f6b317139bbc0db91474b73735"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\acyclic_harness-641f85f696abacc6.exe",
+      "sha256": "36c9cd4a328d938d59bae2a4869db3f8c7a685f15f2f142e724326969cf51d50"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\communication_local-d6ca4897ba985235.exe",
+      "sha256": "daf563e639be935fca0a328d0da2d56295ac122578b0d5591d36b9cd3fdc014b"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\local_model_swarm-b5d1df9216f26b8b.exe",
+      "sha256": "8e6dc44aa80de14587c67a55dd3cfcbb5f5e2133762846a20651c7887481ca62"
+    },
+    {
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\10ad465c3\\mailbox-extraction\\local_swarm_faults-cf47ef77f7bcbf61.exe",
+      "sha256": "80112673f56ddd291e31469e43404b42b106c622e3fe2c74cadaa63dc1a1e1ff"
+    }
+  ],
+  "suites": {
+    "recursive": {
+      "failed": 0,
+      "passed": 4,
+      "ignored": 0
+    },
+    "library": {
+      "failed": 0,
+      "passed": 368,
+      "ignored": 0
+    },
+    "communication": {
+      "failed": 0,
+      "passed": 4,
+      "ignored": 0
+    },
+    "faults": {
+      "failed": 0,
+      "passed": 6,
+      "ignored": 0
+    }
+  },
+  "source": "10ad465c31ccf3462704f8591766a305f32d32c2",
+  "exit_code": 0,
+  "preserved_failure": "Initial extraction omitted TryStreamExt still used by coordinator readers; restored before qualified source.",
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test communication_local --test local_model_swarm --test local_swarm_faults -- --nocapture",
+  "scope": "Shared private Harness mailbox and control publication extraction. Existing durable communication, recursive runtime and fault regressions pass. Default swarm messaging composition, installed qualification and full matrix remain unmet.",
+  "platform": "Windows native"
+}

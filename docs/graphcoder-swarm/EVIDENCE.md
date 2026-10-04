@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Shared Harness mailbox extraction](checkpoint-mailbox-extraction-native-2026-10-05.json) records 368 library, four communication, four recursive and six fault tests at Windows native source `10ad465c3`, with no failures or ignored cases. Twelve source, suite, log and executable artifacts have verified archive digests. The initial missing-import compilation failure is retained. Default swarm messaging and installed acceptance remain unqualified.
+
 [Single-open recursive composition](checkpoint-single-owner-composition-native-2026-10-04.json) records 365/365 library, 4/4 recursive and 6/6 fault tests at Windows native candidate `22b94ef5e`, with no failures or ignored cases. The default constructor exercises the real recursive provider boundary and cold completed-operation replay; root storage is retained during tool binding. Integrated source `5dd97f1a7` has an empty Rust diff against this candidate. Messaging/waits and installed artifacts remain unqualified.
 
 [Integrated live activation qualification](checkpoint-live-activation-integrated-native-2026-10-04.json) records 365/365 library, 3/3 recursive and 6/6 fault tests at clean Windows native source `c600e386f`, with no failures or ignored cases. The source-specific archive includes verified suite, log and executable digests. Full durable composition, native approvals, user-checkout writeback and installed acceptance remain outstanding.
