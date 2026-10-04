@@ -309,6 +309,16 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       // The helper reports an explicit typed outcome through the diagnostic
       // channel so hosts can retain ownership when cleanup is uncertain.
       this.#emitDiagnostic({ kind: "termination", outcome });
+      // A proven owner termination is a terminal observation even if the
+      // runtime has not delivered Node's final `close` event yet. This keeps
+      // waiters tied to the ownership boundary rather than event-loop timing.
+      if (outcome.kind === "terminated" && this.#exit === undefined) {
+        this.#recordExit({
+          kind: "closed",
+          code: this.#child.exitCode,
+          signal: this.#child.signalCode,
+        });
+      }
       this.#resolveExitWaiters();
     });
   }

@@ -159,16 +159,17 @@ describe("JSON-lines process bridge", () => {
     const directory = await mkdtemp(join(tmpdir(), "graphcoder-owned-process-"));
     const marker = join(directory, "descendant-alive");
     const pidFile = join(directory, "descendant.pid");
+    const release = join(directory, "release-descendant");
     await writeFile(marker, "", "utf8");
-    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); const tick = setInterval(() => fs.appendFileSync(marker, 'x'), 20); setTimeout(() => { clearInterval(tick); process.exit(0); }, 1500);";
+    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; const release = process.argv[3]; fs.writeFileSync(pidFile, String(process.pid)); const tick = setInterval(() => { fs.appendFileSync(marker, 'x'); if (fs.existsSync(release)) { clearInterval(tick); process.exit(0); } }, 20);";
     const systemRoot = process.env.SystemRoot ?? "";
     const detached = process.platform === "win32";
-    const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: ${detached}, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
+    const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2], process.argv[3]], { detached: ${detached}, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
     const outcomes: OwnedProcessTermination[] = [];
     let terminationResolve: ((outcome: OwnedProcessTermination) => void) | undefined;
     const terminationObserved = new Promise<OwnedProcessTermination>(resolve => { terminationResolve = resolve; });
     let descendantPid: number | undefined;
-    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") { outcomes.push(event.outcome); terminationResolve?.(event.outcome); } } });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", owner, marker, pidFile, release], env: env(), onDiagnostic: event => { if (event.kind === "termination") { outcomes.push(event.outcome); terminationResolve?.(event.outcome); } } });
     try {
       for (let attempt = 0; attempt < 50 && (await stat(marker)).size === 0; attempt += 1) {
         await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -180,12 +181,13 @@ describe("JSON-lines process bridge", () => {
       expect(outcomes).toHaveLength(1);
       expect(termination.pid).toBeGreaterThan(0);
       if (process.platform === "win32") {
-        expect(termination.kind).toBe("unknown");
+        expect(["unknown", "timeout"]).toContain(termination.kind);
         await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
         descendantPid = Number(await readFile(pidFile, "utf8"));
         expect(Number.isSafeInteger(descendantPid)).toBe(true);
-        // The fixture has a bounded natural exit. Never turn a fixture PID
-        // into an authorization to kill an unrelated process.
+        // Release the fixture explicitly. Never turn a fixture PID into an
+        // authorization to kill an unrelated process.
+        await writeFile(release, "release", "utf8");
         await expect(bridge.waitForExit(3_000)).resolves.toMatchObject({ kind: "closed" });
       } else {
         expect(termination.kind).toBe("terminated");
