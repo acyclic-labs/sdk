@@ -588,8 +588,39 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 .get(&child_task)
                 .cloned();
             if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
-                report.validate()?;
-                let seed = report.clone().into_seed()?;
+                let source_project = report
+                    .request
+                    .selections
+                    .iter()
+                    .find_map(|selection| match &selection.revision {
+                        ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| Error::Invalid("fork report has no project selection".into()))?;
+                let parent_reader = Arc::new(FilesystemContentVerifier::new(
+                    self.host.clone(),
+                    storage.verifier(),
+                    storage.owner_scope().clone(),
+                    swarm.config.limits.file_bytes,
+                )?);
+                let preparer = FilesystemForkPreparer::new(
+                    self.host.clone(),
+                    parent.reducer().clone(),
+                    storage.verifier(),
+                    storage.owner_scope().clone(),
+                    source_project,
+                    self.stream_provider.clone(),
+                    parent_reader,
+                )?;
+                let mut original_request = report.request.clone();
+                original_request.parent_revision = report.captured_history_revision()?;
+                let rebind_proof = preparer
+                    .authenticate_rebind_records(&original_request)
+                    .await?;
+                report.validate_with_rebind_proof(&rebind_proof)?;
+                let seed = report
+                    .clone()
+                    .into_seed_with_rebind_proof(&rebind_proof)?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
                     || seed.child != Self::child_authority(&intent)
@@ -618,7 +649,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     publication_operation: publication.operation_id,
                     request,
                     report,
-                    rebind_proof: None,
+                    rebind_proof: Some(rebind_proof),
                     declaration,
                     host: self.host.clone(),
                     stream: self.stream.clone(),
@@ -4378,6 +4409,11 @@ fn apply_record(
             rebind_proof,
             ..
         } => {
+            if rebind_proof.is_some() && (seed.is_none() || report.is_none()) {
+                return Err(Error::Conflict(
+                    "persisted fork rebound proof has no report and seed".into(),
+                ));
+            }
             if seed.is_some() != report.is_some() {
                 return Err(Error::Conflict(
                     "persisted fork seed and report must be restored together".into(),

@@ -1298,10 +1298,16 @@ impl ForkRebindProof {
         let captured = report.captured_history_revision()?;
         let mut original = report.request.clone();
         original.parent_revision = captured;
-        if crate::contract::canonical_json_digest(&original)? != self.original_request_digest {
+        let normalized_request_digest = crate::contract::canonical_json_digest(&original)?;
+        let preparation_bytes =
+            serde_json::to_vec(&original).map_err(|error| Error::Invalid(error.to_string()))?;
+        let preparation_digest = *blake3::hash(&preparation_bytes).as_bytes();
+        if normalized_request_digest != self.original_request_digest
+            || preparation_digest != self.preparation_digest
+        {
             return Err(Error::Conflict("fork rebound proof original request changed".into()));
         }
-        if self.preparation_digest == [0; 32] || self.prepared_report_digest == [0; 32] {
+        if self.prepared_report_digest == [0; 32] {
             return Err(Error::Invalid("fork preparation proof is empty".into()));
         }
         // The durable report is the authority for every field except the
@@ -1356,7 +1362,7 @@ impl ForkReport {
         self.validate_body()
     }
 
-    fn captured_history_revision(&self) -> Result<u64> {
+    pub(crate) fn captured_history_revision(&self) -> Result<u64> {
         let mut captured = None;
         for capture in &self.captures {
             let Capture::Captured(resource) = capture else {
@@ -2144,11 +2150,15 @@ mod tests {
         };
         report.validate()?;
         let original_request_digest = crate::contract::canonical_json_digest(&request)?;
+        let preparation_digest = *blake3::hash(
+            &serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?,
+        )
+        .as_bytes();
         let prepared_report_digest = crate::contract::canonical_json_digest(&report)?;
         let proof = ForkRebindProof::from_preparation(
             request.operation_id,
             original_request_digest,
-            [7; 32],
+            preparation_digest,
             prepared_report_digest,
         );
 
