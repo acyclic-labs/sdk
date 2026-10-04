@@ -1,0 +1,580 @@
+{
+  "schema": "acyclic.sdk.rust-fixture.runtime.v1",
+  "endpoint": "http://127.0.0.1:50080",
+  "services": [
+    {
+      "name": "actors",
+      "methods": 8
+    },
+    {
+      "name": "workers",
+      "methods": 7
+    },
+    {
+      "name": "objects.buckets",
+      "methods": 3
+    },
+    {
+      "name": "objects",
+      "methods": 5
+    },
+    {
+      "name": "objects.multipart",
+      "methods": 5
+    },
+    {
+      "name": "stream",
+      "methods": 10
+    },
+    {
+      "name": "filesystem",
+      "methods": 30
+    },
+    {
+      "name": "harness",
+      "methods": 5
+    }
+  ],
+  "passed": 73,
+  "failed": 0,
+  "results": [
+    {
+      "family": "actors",
+      "method": "CreateActor",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "UpdateActor",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "InspectActor",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "AddSubscription",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "RemoveSubscription",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "ResumeSubscription",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "CheckpointActor",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "actors",
+      "method": "InvokeActor",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "PublishVersion",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "SelectDeployment",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "SubmitJob",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InspectJob",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "CancelJob",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InvokeVersion",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "workers",
+      "method": "InvokeDeployment",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "CreateBucket",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "HeadBucket",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.buckets",
+      "method": "DeleteBucket",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "PutObject",
+      "kind": "client_streaming",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "GetObject",
+      "kind": "server_streaming",
+      "frames": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "HeadObject",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "DeleteObject",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects",
+      "method": "ListObjects",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "CreateMultipart",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "UploadPart",
+      "kind": "client_streaming",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "ListParts",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "CompleteMultipart",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "objects.multipart",
+      "method": "AbortMultipart",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "InspectIdempotency",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Append",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Tail",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Fork",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Read",
+      "kind": "server_streaming",
+      "frames": 1,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Follow",
+      "kind": "server_streaming",
+      "code": 1,
+      "message": "[canceled] This operation was aborted",
+      "status": "passed",
+      "cancelled": true
+    },
+    {
+      "family": "stream",
+      "method": "Children",
+      "kind": "server_streaming",
+      "frames": 1,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "ChildrenPage",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Commit",
+      "kind": "unary",
+      "serialized": true,
+      "commitRoundTrip": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "ReadCommit",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Handshake",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "CreateWorkspace",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "OpenWorkspace",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "DeleteWorkspace",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetHead",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetGeneration",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Read",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Stat",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ListDirectory",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ReadLink",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "PlanExtents",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ApplyTransaction",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "RebaseTransaction",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ForkWorkspace",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Diff",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Rebase",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "PlanJoin",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ApplyJoin",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Checkpoint",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Pin",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Export",
+      "kind": "server_streaming",
+      "frames": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Import",
+      "kind": "client_streaming",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "IssueMountCredential",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "IssueS3Credential",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "GetSourceState",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "ReconcileSource",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "RescanSource",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "SealSource",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Observe",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "filesystem",
+      "method": "Cancel",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Handshake",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Submit",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Replay",
+      "kind": "server_streaming",
+      "frames": 0,
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Observe",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "harness",
+      "method": "Cancel",
+      "kind": "unary",
+      "serialized": true,
+      "status": "passed"
+    },
+    {
+      "family": "stream",
+      "method": "Append.idempotencyReplay",
+      "status": "passed",
+      "equal": true
+    },
+    {
+      "family": "stream",
+      "method": "Follow.cancellation",
+      "status": "passed",
+      "code": 1
+    }
+  ],
+  "captured_at": "2026-10-04",
+  "fixture_commit": "71531baac1a03e046a961e299a81931baa1bfb0c",
+  "fixture_source_sha256": "4eb3a95ffa0ef1c2ee57a5f3f492914925b730d15793d6fa2a131b67ecaf24ea",
+  "fixture_binary_sha256": "3ec54a77ab396f8950fec45dff56fca331b35627c6e118ce9825cbbcdd33efa5",
+  "client_runtime": "Node.js 24.4.1",
+  "client_probe": "typescript/packages/actors/test/rust-authority-fixture.mjs",
+  "transport": "ConnectRPC generated TypeScript clients over tonic gRPC h2 plaintext loopback"
+}
