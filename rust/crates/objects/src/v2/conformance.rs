@@ -120,7 +120,7 @@ pub async fn verify<P: ObjectsProvider + ?Sized>(
         "bucket retry identity was rebound",
     )?;
 
-    let body = Bytes::from(vec![b'x'; 2 * 65_536 + 17]);
+    let body = Bytes::from(vec![b'x'; 2 * super::HTTP_BODY_FRAME_BYTES + 17]);
     let mut first_request = put(&bucket, "dir/value");
     first_request.preconditions = Some(wire::Preconditions {
         condition: Some(wire::preconditions::Condition::IfAbsent(true)),

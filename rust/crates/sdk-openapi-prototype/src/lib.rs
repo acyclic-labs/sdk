@@ -1780,11 +1780,12 @@ mod tests {
         assert_eq!(put["x-acyclic-objects-streaming"]["accepts_crlf"], true);
         assert_eq!(
             put["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
-            131072
+            OBJECTS_HTTP_JSON_FRAME_BYTES
         );
         assert_eq!(
             put["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
-            65536
+            object_limit(&OBJECTS_V2, "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES")
+                .expect("body frame limit")
         );
         assert_eq!(
             put["x-acyclic-objects-streaming"]["request_sequence"][0],
@@ -1837,11 +1838,12 @@ mod tests {
         );
         assert_eq!(
             get["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
-            131072
+            OBJECTS_HTTP_JSON_FRAME_BYTES
         );
         assert_eq!(
             get["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
-            65536
+            object_limit(&OBJECTS_V2, "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES")
+                .expect("body frame limit")
         );
         assert_eq!(
             get["x-acyclic-objects-streaming"]["response_sequence"][0],
@@ -1894,11 +1896,12 @@ mod tests {
         );
         assert_eq!(
             upload_part["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
-            131072
+            OBJECTS_HTTP_JSON_FRAME_BYTES
         );
         assert_eq!(
             upload_part["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
-            65536
+            object_limit(&OBJECTS_V2, "OBJECTS_LIMIT_MAX_BODY_FRAME_BYTES")
+                .expect("body frame limit")
         );
         assert_eq!(
             upload_part["x-acyclic-objects-streaming"]["completion"]["field"],

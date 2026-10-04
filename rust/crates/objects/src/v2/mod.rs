@@ -95,6 +95,13 @@ pub mod wire {
     include!("../generated/acyclic.objects.v2.rs");
 }
 
+/// Maximum encoded JSON/NDJSON record size accepted by Objects HTTP framing,
+/// including its line terminator.
+pub const HTTP_JSON_FRAME_BYTES: usize = 128 * 1024;
+
+/// Maximum decoded body bytes carried by one streaming frame.
+pub const HTTP_BODY_FRAME_BYTES: usize = wire::ObjectsLimit::MaxBodyFrameBytes as usize;
+
 /// Canonical Objects v2 descriptor, including streaming service definitions.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../generated/acyclic-objects-v2.bin");
 

@@ -45,7 +45,7 @@ pub fn validate_binary(
                     get_header(&header, &query.range, body_length)?;
                 }
                 wire::get_object_response::Frame::Body(body) => {
-                    if body.len() > 65_536 {
+                    if body.len() > super::HTTP_BODY_FRAME_BYTES {
                         return Err(invalid());
                     }
                 }
@@ -114,7 +114,7 @@ pub fn validate_get_header(query: &[u8], bytes: &[u8], maximum: u64) -> Result<u
 /// Native and WASM transports use this same state transition so frame-size and
 /// selected-range accounting cannot drift between adapters.
 pub fn validate_get_body(body_length: u64, remaining: u64) -> Result<u64, Error> {
-    if body_length > 65_536 || body_length > remaining {
+    if body_length > super::HTTP_BODY_FRAME_BYTES as u64 || body_length > remaining {
         return Err(invalid());
     }
     Ok(remaining - body_length)
@@ -250,7 +250,10 @@ mod tests {
 
     #[test]
     fn download_body_accounting_is_bounded_and_request_relative() {
-        assert_eq!(validate_get_body(65_536, 100_000).unwrap(), 34_464);
+        assert_eq!(
+            validate_get_body(super::super::HTTP_BODY_FRAME_BYTES as u64, 100_000).unwrap(),
+            34_464
+        );
         assert!(validate_get_body(65_537, 100_000).is_err());
         assert!(validate_get_body(2, 1).is_err());
     }

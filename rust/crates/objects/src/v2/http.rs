@@ -1,7 +1,7 @@
 //! Authenticated logical Objects HTTP gateway with bounded Protobuf JSON/NDJSON.
 use super::{
-    Download, Error, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json, request, response,
-    upload, wire,
+    Download, Error, HTTP_JSON_FRAME_BYTES, HTTP_ROUTES, Object, ObjectsProvider, UploadBody, json,
+    request, response, upload, wire,
 };
 use bytes::Bytes;
 use futures::{StreamExt, stream};
@@ -11,7 +11,6 @@ use reqwest::{
     header::{AUTHORIZATION, HeaderValue},
 };
 
-const JSON_FRAME_BYTES: usize = 128 * 1024;
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 /// Authenticated native HTTP client for the logical Objects v2 gateway.
@@ -336,7 +335,7 @@ fn media_type(response: &Response, expected: &str) -> Result<(), Error> {
 fn line(name: &str, frame: &impl Message) -> Result<Bytes, Error> {
     let mut bytes = json::encode(name, frame)?;
     bytes.push(b'\n');
-    if bytes.len() > JSON_FRAME_BYTES {
+    if bytes.len() > HTTP_JSON_FRAME_BYTES {
         return Err(wire::ErrorCode::QuotaExceeded.into());
     }
     Ok(bytes.into())
@@ -367,14 +366,14 @@ impl Frames {
             }
             let newline = self.chunk.iter().position(|byte| *byte == b'\n');
             let size = newline.map_or(self.chunk.len(), |index| index + 1);
-            if size > JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
+            if size > HTTP_JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
                 return Err(response::invalid());
             }
             self.pending.extend_from_slice(&self.chunk.split_to(size));
             if newline.is_some() {
                 self.pending.pop();
                 let bytes = self.pending.strip_suffix(b"\r").unwrap_or(&self.pending);
-                let frame = json::decode("GetObjectResponse", bytes, JSON_FRAME_BYTES)
+                let frame = json::decode("GetObjectResponse", bytes, HTTP_JSON_FRAME_BYTES)
                     .map_err(|_| response::invalid())?;
                 self.pending.clear();
                 return Ok(Some(frame));

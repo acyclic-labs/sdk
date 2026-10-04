@@ -45,6 +45,19 @@ pub fn decode_objects_v2_json(
 ) -> Result<Vec<u8>, JsValue> {
     json::decode_binary(name, bytes, maximum).map_err(error)
 }
+
+/// Returns the canonical encoded JSON/NDJSON record limit used by Objects
+/// native HTTP and browser framing.
+#[wasm_bindgen]
+pub fn objects_v2_http_json_frame_bytes() -> u32 {
+    acyclic_objects::v2::HTTP_JSON_FRAME_BYTES as u32
+}
+
+/// Returns the canonical decoded body bytes carried by one streaming frame.
+#[wasm_bindgen]
+pub fn objects_v2_http_body_frame_bytes() -> u32 {
+    acyclic_objects::v2::HTTP_BODY_FRAME_BYTES as u32
+}
 #[wasm_bindgen]
 pub fn objects_v2_http_type(route: &str, output: bool) -> Result<String, JsValue> {
     let (_, input, response) = acyclic_objects::v2::HTTP_ROUTES
@@ -163,7 +176,10 @@ impl ObjectsV2Memory {
                 let result = frames(&wire::GetObjectResponse {
                     frame: Some(wire::get_object_response::Frame::Header(object.header)),
                 });
-                for chunk in object.body.chunks(65_536) {
+                for chunk in object
+                    .body
+                    .chunks(acyclic_objects::v2::HTTP_BODY_FRAME_BYTES)
+                {
                     let value = wire::GetObjectResponse {
                         frame: Some(wire::get_object_response::Frame::Body(chunk.to_vec())),
                     };

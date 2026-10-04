@@ -2540,6 +2540,11 @@ fn parse_producer_recipe(target: &Value, id: &str) -> Result<Option<ProducerReci
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if args.is_empty() {
+        return Err(CliError::new(format!(
+            "language target {id} producer args must not be empty"
+        )));
+    }
     let output = object
         .get("output")
         .and_then(Value::as_str)

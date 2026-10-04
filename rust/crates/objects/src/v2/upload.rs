@@ -71,7 +71,7 @@ pub(super) fn chunks(body: UploadBody) -> (UploadBody, Arc<State>, oneshot::Rece
                     }
                 }
             }
-            let chunk = pending.split_to(pending.len().min(65_536));
+            let chunk = pending.split_to(pending.len().min(super::HTTP_BODY_FRAME_BYTES));
             Ok(Some((chunk, (body, pending, length, state, error))))
         },
     )

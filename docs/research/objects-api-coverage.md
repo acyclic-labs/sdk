@@ -85,6 +85,28 @@ changes the modeled frame field and limit and verifies that the envelope
 metadata disappears or changes accordingly; this prevents the projection from
 silently preserving stale hand-authored transport facts.
 
+The product-side Rust HTTP gateway now exposes the same two limits from
+`acyclic_objects::v2`: `HTTP_JSON_FRAME_BYTES` is the encoded JSON/NDJSON
+record ceiling and `HTTP_BODY_FRAME_BYTES` is the decoded body-frame ceiling
+derived from `ObjectsLimit::MaxBodyFrameBytes`. Native HTTP framing, upload
+chunking, response validation, the conformance fixture, and the WASM adapter
+all consume these product constants. The WASM boundary exposes
+`objects_v2_http_json_frame_bytes()` and
+`objects_v2_http_body_frame_bytes()` so a browser package can consume the
+compiled Rust values instead of reproducing them in TypeScript. The standalone
+contract-wire/OpenAPI prototype retains its model-side
+`OBJECTS_HTTP_JSON_FRAME_BYTES` because it cannot depend on the publishable
+Objects crate; the OpenAPI metadata test and product Rust tests keep the two
+contract boundaries reviewable.
+
+The Rust JSON encoder has golden vectors for the actual streaming messages:
+`PutObjectRequest.body` serializes bytes `[0, 255]` as `{"body":"AP8="}`,
+`PutObjectRequest.complete` serializes as `{"complete":true}`, and a
+`GetObjectResponse.error` record preserves the request id while emitting the
+enum error code as a JSON string. These vectors are checked against the same
+descriptor-driven encoder used by the HTTP gateway, not a hand-written OpenAPI
+fixture.
+
 The focused regression
 `objects_export_preserves_all_routes_external_timestamp_and_stream_direction`
 asserts all three streaming directions and a unary bucket route. A disposable
