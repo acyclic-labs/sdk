@@ -28,6 +28,12 @@
     "path": "docs/graphcoder-swarm/graphcoder-native-scenarios.json",
     "sha256_at_attempt": "6b9ea6f7e665877addef60f0d591e84e92876dc2d24b1d1904e6fc041b30ca92"
   },
+  "runner_repair": {
+    "path": "scripts/graphcoder-native-stage-e2e.mjs",
+    "sha256_after_repair": "4aa6463126850140bdd3aff8389b13e8735cd516e11f981abc102e5dbba6394f",
+    "change": "preflight responses are correlated by unique request_id, with duplicate, unknown, and missing identities rejected",
+    "focused_validation": "the previously observed reversed response order now reaches lazy-observation validation"
+  },
   "lanes": [
     {
       "id": "installed-native-stage",
@@ -39,6 +45,17 @@
       "transcript_path": "target/qualification-installed-20261004/native-stage-attempt.log",
       "transcript_sha256": "c69faf8001d0e484d50879dabf45a763786b291f6e2200c03bc4fa92bfc7617c",
       "interpretation": "The runtime emitted the two independent preflight responses in reverse order under piped spawnSync input. The runner correctly rejected the mismatched request identity; no installed native stage pass is claimed."
+    },
+    {
+      "id": "installed-native-stage-rerun-after-correlation-repair",
+      "execution_kind": "native",
+      "command": "node scripts/graphcoder-native-stage-e2e.mjs",
+      "status": "failed",
+      "exit_code": 1,
+      "observed_error": "lazy observation must be a regular file",
+      "transcript_path": "target/qualification-installed-20261004/native-stage-rerun.log",
+      "transcript_sha256": "977eb02c69134c7bbb8fe7ffeaa8adcdc258e6417f79acf006f4cd22133d2c0d",
+      "interpretation": "Request identity correlation passed, then the runtime produced no GRAPHCODER_LAZY_OBSERVATION_PATH receipt. The runner correctly refused to infer lazy behavior from protocol responses."
     },
     {
       "id": "installed-windows-pty",
@@ -57,7 +74,7 @@
     "sha256": "1aeb82d31821c1c963a1bfec447e1f4fcf046f165438ba4f468074db2a301096"
   },
   "required_gaps": [
-    "native stage response ordering must be repaired or the runtime must provide ordered request/result delivery",
+    "runtime must emit the required real-host lazy observation receipt",
     "native cancellation fixture remains unavailable",
     "root writeback remains unsupported",
     "PTY prompt and full interactive scenario remain unqualified"

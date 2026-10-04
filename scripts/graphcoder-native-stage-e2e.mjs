@@ -101,9 +101,23 @@ function runPreflight(runtime, root) {
   if (result.status !== 0) fail(`native preflight exited ${result.status}: ${result.stderr}`);
   const lines = result.stdout.trim().split(/\r?\n/u).filter(Boolean);
   if (lines.length !== 2) fail(`native preflight returned ${lines.length} responses`);
-  const listed = parseLine(lines[0], "list_sessions", "list-1");
+  // The runtime may complete independent requests concurrently. Correlate by
+  // the durable request identity instead of assuming response order, while
+  // rejecting duplicate, unknown, or missing responses.
+  const responses = new Map();
+  for (const line of lines) {
+    let value;
+    try { value = JSON.parse(line); }
+    catch (error) { fail(`native preflight returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+    if (!value || typeof value.request_id !== "string") fail("native preflight returned a response without request_id");
+    if (!["list-1", "invalid-fixture"].includes(value.request_id)) fail(`native preflight returned an unknown request_id ${JSON.stringify(value.request_id)}`);
+    if (responses.has(value.request_id)) fail(`native preflight returned duplicate request_id ${JSON.stringify(value.request_id)}`);
+    responses.set(value.request_id, value);
+  }
+  if (responses.size !== 2 || !responses.has("list-1") || !responses.has("invalid-fixture")) fail("native preflight omitted a requested response");
+  const listed = parseLine(JSON.stringify(responses.get("list-1")), "list_sessions", "list-1");
   if (listed.ok !== true || !Array.isArray(listed.result?.items)) fail(`list_sessions response was invalid: ${JSON.stringify(listed)}`);
-  const invalid = parseLine(lines[1], "invalid fixture", "invalid-fixture");
+  const invalid = parseLine(JSON.stringify(responses.get("invalid-fixture")), "invalid fixture", "invalid-fixture");
   if (invalid.ok !== false || invalid.error?.code !== "invalid_input") fail(`invalid fixture was not rejected as invalid_input: ${JSON.stringify(invalid)}`);
   const lazy = assertLazyCounters(observationPath, {
     require: process.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS === "1",
