@@ -1,6 +1,6 @@
 # Local swarm implementation status
 
-Latest production swarm qualification at `7ea55504f` still fails: recursive model swarm 0/1, local recovery faults 1/5. Direct-parent declaration selection and guarded model-reference attachment did not clear fork admission. Both attempts and immutable artifact copies are recorded in [current fork admission evidence](checkpoint-current-fork-admission-2026-10-04.json). Precise validation diagnostics are being verified separately; no required gate has been waived.
+Latest production swarm qualification at `c6ab87bbb` still fails: recursive model swarm 0/1, local recovery faults 1/5. Precise diagnostics identify the admission failure as `inherited conversation differs from authoritative parent history`; direct-parent declaration selection and guarded model-reference attachment did not clear it. All attempts and source-scoped artifacts are recorded in [current fork admission evidence](checkpoint-current-fork-admission-2026-10-04.json). Immutable boundary versus publication revision binding is under repair; no required gate has been waived.
 
 Latest integrated Windows request conformance passes 6/6 at Rust tree `1e4c159922fed8e88c35c4bdf42dc6af33856c2f`, using fresh exclusive Q-drive artifacts. This captures actual serialized provider requests and tests physical stored-content corruption/deletion after restart; it does not exercise production swarm activation. See [source-bound results](checkpoint-integrated-request-conformance-2026-10-04.json). The earlier disk-full failure remains recorded separately.
 

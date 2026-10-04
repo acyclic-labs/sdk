@@ -47,6 +47,26 @@
       "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/verified-reference-swarm.exit"
     }
   ],
+  "diagnostic_attempt": {
+    "source_commit": "c6ab87bbb7f0b56e1313ad3d7352e1dd1892386a",
+    "rust_tree_before_and_after": "5c13f3a705b4c51bcc1b4f6909643b4241c4d71a",
+    "change": "Preserve underlying seed/reference validation errors without changing admission requirements",
+    "process_session": 18494,
+    "exit_code": 101,
+    "build_duration_seconds": 176,
+    "suites": [
+      {"name": "local_model_swarm", "passed": 0, "failed": 1, "ignored": 0, "duration_seconds": 4.18},
+      {"name": "local_swarm_faults", "passed": 1, "failed": 4, "ignored": 0, "duration_seconds": 16.55}
+    ],
+    "exact_publication_failure": "inherited conversation differs from authoritative parent history",
+    "artifacts": [
+      {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/local_model_swarm-8226fd0e132f17af.exe", "sha256": "a975637f16b0696970b6b93ef145e60a73c4bfa3bacec3b9f517c3672ea47b95"},
+      {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/local_swarm_faults-f2d7eec488ced354.exe", "sha256": "5e1941efa62ad7d4cfa78083e7101694bc46036add8ad201a34cb6439c80a2c0"}
+    ],
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/precise-fork-validation.log", "sha256": "97fe8877f43e430e53e9758819497ce0fff767787c38da00b9bc6bcb03fe50dd"},
+    "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/precise-fork-validation.exit",
+    "next_action": "Repair immutable inherited boundary versus sequential publication revision binding without weakening prefix equality"
+  },
   "failures": [
     "Recursive model swarm: fork manifest command/parent revision binding",
     "Cancelled child: child did not reach provider",
