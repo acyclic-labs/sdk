@@ -1,0 +1,16 @@
+{
+  "qualification": "incomplete",
+  "source": "454797822",
+  "platform": "Windows, Bun with existing Harness WASM",
+  "handle": 90145,
+  "exit_code": 0,
+  "passed": 1,
+  "failed": 0,
+  "assertions": 30,
+  "vector_sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaef22b8fcc7c1d620148c0a",
+  "packaged_vector_sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaef22b8fcc7c1d620148c0a",
+  "native_suite_sha256": "2baf76eb61f4ecc312c8ef98ab35ca3580c2280dad99f1902d0fb2e9dce86b5d",
+  "typescript_suite_sha256": "fac0d5b309f4c1b462f86e9608b37d91ba9c5dc5a33d6f21be8af616b37d6313",
+  "wasm_sha256": "568B87CB08BFF9F5FF3B8A0FEA8676F30EF9921C5FF53600C4AD021A195E5900",
+  "scope": "WASM admission agrees with independently frozen root, two sibling, and grandchild request/manifest/digest expectations. Native comparison and fresh final WASM are pending; this is not native/WASM equivalence qualification. Unrelated package-qualification files were modified in the working tree; executed vector, suites, and existing WASM are identified above."
+}
