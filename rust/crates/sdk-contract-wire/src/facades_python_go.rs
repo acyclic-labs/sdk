@@ -6,7 +6,11 @@
 //! feature flag or instantiate a generated channel themselves.
 
 use super::{FACADE_SELECTION_POLICY, facade_operations};
-use crate::{family_registry::FAMILY_VIEWS, transport::TransportKind};
+use crate::{
+    family_registry::FAMILY_VIEWS,
+    transport::TransportKind,
+    type_policy::{SemanticRule, FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, WireValueKind},
+};
 
 pub(super) fn render_python(binding: &str) -> String {
     let mut output = format!(
@@ -16,6 +20,7 @@ pub(super) fn render_python(binding: &str) -> String {
         r###"from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Annotated, NewType, TypeAlias
 from urllib.parse import urlsplit
 
 import grpc
@@ -28,6 +33,8 @@ from .generated.machines.v1 import machines_pb2_grpc
 from .generated.objects.v2 import objects_pb2_grpc
 from .generated.stream.v2 import stream_pb2_grpc
 from .generated.workers.v1 import workers_pb2_grpc
+
+#TYPES#
 
 
 SOURCE_BINDING = "#BINDING#"
@@ -180,6 +187,7 @@ TRANSPORTS_BY_RUNTIME = {
 "###,
     );
     output = output.replace("#BINDING#", binding);
+    output = output.replace("#TYPES#", &python_type_projection());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -219,7 +227,10 @@ import (
     "google.golang.org/grpc/credentials"
     "google.golang.org/grpc/credentials/insecure"
     "google.golang.org/grpc/metadata"
+    "unicode/utf8"
 )
+
+#TYPES#
 
 const SourceBinding = "#BINDING#"
 const BestTransport = "grpc+tls"
@@ -363,6 +374,7 @@ var TransportsByRuntime = map[string]map[string][]string{
 "###,
     );
     output = output.replace("#BINDING#", binding);
+    output = output.replace("#TYPES#", &go_type_projection());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -396,6 +408,396 @@ fn python_operations() -> String {
     }
     output
 }
+
+fn python_type_projection() -> String {
+    let mut output = String::from(
+        "# Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
+    );
+    output.push_str(
+        "@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n"
+    );
+    output.push_str(
+        "@dataclass(frozen=True)\nclass UnknownOneof:\n    raw_payload: bytes\n\n\n"
+    );
+    output.push_str("SEMANTIC_TYPE_RULES: dict[str, tuple[str, ...]] = {\n");
+    for item in SEMANTIC_TYPES {
+        output.push_str(&format!(
+            "    {:?}: {},\n",
+            item.id,
+            python_rules_literal(item.rules)
+        ));
+    }
+    output.push_str("}\n\n");
+    output.push_str("FIELD_SEMANTIC_TYPES: dict[tuple[str, str], str] = {\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        output.push_str(&format!(
+            "    ({:?}, {:?}): {:?},\n",
+            mapping.family, mapping.field, mapping.semantic_type
+        ));
+    }
+    output.push_str("}\n\n");
+    let mut emitted_python_types = Vec::new();
+    for item in SEMANTIC_TYPES {
+        if item.wire_kind == WireValueKind::Oneof {
+            output.push_str("WireChoice: TypeAlias = UnknownOneof\n\n");
+            continue;
+        }
+        if emitted_python_types.contains(&item.rust_name) {
+            continue;
+        }
+        emitted_python_types.push(item.rust_name);
+        let annotation = python_annotation(item);
+        output.push_str(&format!(
+            "{}Value: TypeAlias = {}\n{} = NewType({:?}, {}Value)\n\n",
+            item.rust_name, annotation, item.rust_name, item.rust_name, item.rust_name
+        ));
+    }
+    output.push_str(
+        r#"def _require_text(value: object, name: str) -> str:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError(f"{name} must be valid UTF-8") from error
+    return value
+
+
+def _require_bytes(value: object, name: str, length: int | None = None) -> bytes:
+    if not isinstance(value, bytes):
+        raise TypeError(f"{name} must be bytes")
+    if not value:
+        raise ValueError(f"{name} must not be empty")
+    if length is not None and len(value) != length:
+        raise ValueError(f"{name} must contain exactly {length} bytes")
+    return value
+
+
+def _require_integer(value: object, name: str, minimum: int | None = None, maximum: int | None = None) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if minimum is not None and value < minimum:
+        raise ValueError(f"{name} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise ValueError(f"{name} must be at most {maximum}")
+    return value
+
+
+"#,
+    );
+    for item in SEMANTIC_TYPES {
+        let function = snake_case(item.id);
+        let validation = match item.wire_kind {
+            WireValueKind::String => format!("_require_text(value, {:?})", item.id),
+            WireValueKind::Bytes => {
+                let length = item.rules.iter().find_map(|rule| match rule {
+                    SemanticRule::FixedLength(length) => Some(*length),
+                    _ => None,
+                });
+                match length {
+                    Some(length) => format!("_require_bytes(value, {:?}, {})", item.id, length),
+                    None => format!("_require_bytes(value, {:?})", item.id),
+                }
+            }
+            WireValueKind::UnsignedInteger | WireValueKind::SignedInteger => {
+                let minimum = if item.rules.iter().any(|rule| {
+                    matches!(rule, SemanticRule::StrictlyPositive)
+                }) {
+                    "1"
+                } else if item.rules.iter().any(|rule| {
+                    matches!(rule, SemanticRule::NonNegative)
+                }) {
+                    "0"
+                } else {
+                    "None"
+                };
+                let maximum = item.rules.iter().find_map(|rule| match rule {
+                    SemanticRule::MaxItems(value) => Some(value.to_string()),
+                    SemanticRule::BoundedInteger { max, .. } => Some(max.to_string()),
+                    _ => None,
+                });
+                format!(
+                    "_require_integer(value, {:?}, {}, {})",
+                    item.id,
+                    minimum,
+                    maximum.as_deref().unwrap_or("None")
+                )
+            }
+            WireValueKind::Enum => format!("_require_integer(value, {:?})", item.id),
+            WireValueKind::Boolean | WireValueKind::Timestamp | WireValueKind::Message => {
+                "value".to_owned()
+            }
+            WireValueKind::Oneof => format!(
+                "value if isinstance(value, UnknownOneof) else (_ for _ in ()).throw(TypeError({:?}))",
+                format!("{} must be UnknownOneof", item.id)
+            ),
+        };
+        if item.wire_kind == WireValueKind::Oneof {
+            output.push_str(&format!(
+                "def {}(value: object) -> {}:\n    checked = {}\n    return checked\n\n",
+                function, item.rust_name, validation
+            ));
+        } else {
+            output.push_str(&format!(
+                "def {}(value: {}) -> {}:\n    checked = {}\n    return {}(checked)\n\n",
+                function,
+                python_wire_base(item.wire_kind),
+                item.rust_name,
+                validation,
+                item.rust_name
+            ));
+        }
+    }
+    output
+}
+
+fn go_type_projection() -> String {
+    let mut output = String::from(
+        "// Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
+    );
+    output.push_str("var SemanticTypeRules = map[string][]string{\n");
+    for item in SEMANTIC_TYPES {
+        output.push_str(&format!(
+            "\t{:?}: {{{}}},\n",
+            item.id,
+            item.rules
+                .iter()
+                .map(|rule| format!("{:?}", go_rule_name(*rule)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    output.push_str("}\n\n");
+    output.push_str("var FieldSemanticTypes = map[string]string{\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        output.push_str(&format!(
+            "\t{:?}: {:?},\n",
+            format!("{}.{}", mapping.family, mapping.field),
+            mapping.semantic_type
+        ));
+    }
+    output.push_str("}\n\n");
+    output.push_str(
+        "type UnknownEnumValue struct { RawValue int32 }\n\ntype WireChoice interface { isWireChoice() }\n\ntype UnknownOneof struct { RawPayload []byte }\n\nfunc (UnknownOneof) isWireChoice() {}\n\n"
+    );
+    let mut emitted_go_types = Vec::new();
+    for item in SEMANTIC_TYPES {
+        if item.wire_kind == WireValueKind::Oneof {
+            continue;
+        }
+        let name = go_type_name(item.rust_name);
+        if emitted_go_types.contains(&name) {
+            continue;
+        }
+        emitted_go_types.push(name.clone());
+        output.push_str(&format!("type {} {}\n\n", name, go_wire_base(item)));
+    }
+    output.push_str(
+        r#"func requireGoText(value, name string) error {
+    if value == "" { return fmt.Errorf("%s must not be empty", name) }
+    if !utf8.ValidString(value) { return fmt.Errorf("%s must be valid UTF-8", name) }
+    return nil
+}
+
+func requireGoBytes(value []byte, name string, length int) error {
+    if len(value) == 0 { return fmt.Errorf("%s must not be empty", name) }
+    if length >= 0 && len(value) != length { return fmt.Errorf("%s must contain exactly %d bytes", name, length) }
+    return nil
+}
+
+func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
+    if value < minimum { return fmt.Errorf("%s must be at least %d", name, minimum) }
+    if maximum != 0 && value > maximum { return fmt.Errorf("%s must be at most %d", name, maximum) }
+    return nil
+}
+
+"#,
+    );
+    for item in SEMANTIC_TYPES {
+        let name = go_type_name(item.rust_name);
+        let function = format!("New{}", go_constructor_name(item));
+        let body = match item.wire_kind {
+            WireValueKind::String => format!(
+                "if err := requireGoText(value, {:?}); err != nil {{ return \"\", err }}\n\treturn {}(value), nil",
+                item.id, name
+            ),
+            WireValueKind::Bytes => {
+                let length = item.rules.iter().find_map(|rule| match rule {
+                    SemanticRule::FixedLength(length) => Some(*length),
+                    _ => None,
+                });
+                let required_length = length.map(|length| length.to_string()).unwrap_or_else(|| "-1".to_owned());
+                if let Some(length) = length {
+                    format!(
+                        "if err := requireGoBytes(value, {:?}, {}); err != nil {{ return {}, err }}\n\tvar result {}\n\tcopy(result[:], value)\n\treturn result, nil",
+                        item.id, length, go_zero_value(item), name
+                    )
+                } else {
+                    let _ = required_length;
+                    format!(
+                        "if err := requireGoBytes(value, {:?}, -1); err != nil {{ return nil, err }}\n\treturn {}(append([]byte(nil), value...)), nil",
+                        item.id, name
+                    )
+                }
+            }
+            WireValueKind::UnsignedInteger => {
+                let minimum = if item.rules.iter().any(|rule| matches!(rule, SemanticRule::StrictlyPositive)) { "1" } else { "0" };
+                let maximum = item.rules.iter().find_map(|rule| match rule {
+                    SemanticRule::MaxItems(value) => Some(value.to_string()),
+                    SemanticRule::BoundedInteger { max, .. } => Some(max.to_string()),
+                    _ => None,
+                }).unwrap_or_else(|| "0".to_owned());
+                format!(
+                    "if err := requireGoUint(value, {:?}, {}, {}); err != nil {{ return 0, err }}\n\treturn {}(value), nil",
+                    item.id, minimum, maximum, name
+                )
+            }
+            WireValueKind::SignedInteger => format!("return {}(value), nil", name),
+            WireValueKind::Enum => format!("return {}(value), nil", name),
+            WireValueKind::Boolean | WireValueKind::Timestamp | WireValueKind::Message => {
+                format!("return {}(value), nil", name)
+            }
+            WireValueKind::Oneof => "if value == nil { return nil, fmt.Errorf(\"wire_choice must be present\") }\n\treturn value, nil".to_owned(),
+        };
+        let input = go_constructor_input(item);
+        let result = go_constructor_result(item);
+        output.push_str(&format!("func {}({}) ({}, error) {{\n\t{}\n}}\n\n", function, input, result, body));
+    }
+    output
+}
+
+fn python_wire_base(kind: WireValueKind) -> &'static str {
+    match kind {
+        WireValueKind::String => "str",
+        WireValueKind::Bytes => "bytes",
+        WireValueKind::SignedInteger | WireValueKind::UnsignedInteger | WireValueKind::Enum => "int",
+        WireValueKind::Boolean => "bool",
+        WireValueKind::Timestamp | WireValueKind::Message | WireValueKind::Oneof => "object",
+    }
+}
+
+fn python_annotation(item: &crate::type_policy::SemanticType) -> String {
+    let base = python_wire_base(item.wire_kind);
+    if item.rules.is_empty() {
+        base.to_owned()
+    } else {
+        format!(
+            "Annotated[{}, {}]",
+            base,
+            item.rules
+                .iter()
+                .map(|rule| format!("{:?}", python_rule_name(*rule)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn python_rules_literal(rules: &[SemanticRule]) -> String {
+    if rules.is_empty() {
+        "()".to_owned()
+    } else {
+        format!(
+            "({},)",
+            rules
+                .iter()
+                .map(|rule| format!("{:?}", python_rule_name(*rule)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn go_wire_base(item: &crate::type_policy::SemanticType) -> String {
+    match item.wire_kind {
+        WireValueKind::String => "string".to_owned(),
+        WireValueKind::Bytes => item
+            .rules
+            .iter()
+            .find_map(|rule| match rule {
+                SemanticRule::FixedLength(length) => Some(format!("[{}]byte", length)),
+                _ => None,
+            })
+            .unwrap_or_else(|| "[]byte".to_owned()),
+        WireValueKind::SignedInteger => "int64".to_owned(),
+        WireValueKind::UnsignedInteger => "uint64".to_owned(),
+        WireValueKind::Enum => "int32".to_owned(),
+        WireValueKind::Boolean => "bool".to_owned(),
+        WireValueKind::Timestamp | WireValueKind::Message | WireValueKind::Oneof => "any".to_owned(),
+    }
+}
+
+fn go_constructor_input(item: &crate::type_policy::SemanticType) -> String {
+    match item.wire_kind {
+        WireValueKind::String => "value string".to_owned(),
+        WireValueKind::Bytes => "value []byte".to_owned(),
+        WireValueKind::SignedInteger => "value int64".to_owned(),
+        WireValueKind::UnsignedInteger => "value uint64".to_owned(),
+        WireValueKind::Enum => "value int32".to_owned(),
+        WireValueKind::Boolean => "value bool".to_owned(),
+        WireValueKind::Timestamp | WireValueKind::Message => "value any".to_owned(),
+        WireValueKind::Oneof => "value WireChoice".to_owned(),
+    }
+}
+
+fn go_constructor_result(item: &crate::type_policy::SemanticType) -> String {
+    if item.wire_kind == WireValueKind::Oneof { "WireChoice".to_owned() } else { go_type_name(item.rust_name).to_owned() }
+}
+
+fn go_zero_value(item: &crate::type_policy::SemanticType) -> String {
+    if item.wire_kind == WireValueKind::Bytes {
+        if let Some(length) = item.rules.iter().find_map(|rule| match rule {
+            SemanticRule::FixedLength(length) => Some(length),
+            _ => None,
+        }) {
+            return format!("[{}]byte{{}}", length);
+        }
+    }
+    "nil".to_owned()
+}
+
+fn go_type_name(name: &str) -> String {
+    if let Some(prefix) = name.strip_suffix("Id") { format!("{}ID", prefix) } else { name.to_owned() }
+}
+
+fn go_constructor_name(item: &crate::type_policy::SemanticType) -> String {
+    let mut result = String::new();
+    for part in item.id.split('_') {
+        if part.is_empty() {
+            continue;
+        }
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            result.push(first.to_ascii_uppercase());
+            result.extend(chars);
+        }
+    }
+    if result.ends_with("Id") {
+        result.truncate(result.len() - 2);
+        result.push_str("ID");
+    }
+    result
+}
+
+fn snake_case(value: &str) -> String { value.to_owned() }
+
+fn python_rule_name(rule: SemanticRule) -> String {
+    match rule {
+        SemanticRule::NonEmpty => "non_empty".to_owned(), SemanticRule::Utf8 => "utf8".to_owned(),
+        SemanticRule::NonNegative => "non_negative".to_owned(), SemanticRule::StrictlyPositive => "strictly_positive".to_owned(),
+        SemanticRule::FixedLength(value) => format!("fixed_length:{}", value), SemanticRule::MaxBytes(value) => format!("max_bytes:{}", value),
+        SemanticRule::MaxItems(value) => format!("max_items:{}", value), SemanticRule::BoundedInteger { min, max } => format!("bounded_integer:{}..{}", min, max),
+        SemanticRule::Sha256Digest => "sha256_digest".to_owned(), SemanticRule::Immutable => "immutable".to_owned(),
+        SemanticRule::Monotonic => "monotonic".to_owned(), SemanticRule::CanonicalResourceName => "canonical_resource_name".to_owned(),
+        SemanticRule::ExactOneof => "exact_oneof".to_owned(), SemanticRule::ExplicitPresence => "explicit_presence".to_owned(),
+        SemanticRule::PreserveUnknownEnum => "preserve_unknown_enum".to_owned(), SemanticRule::PreserveUnknownOneof => "preserve_unknown_oneof".to_owned(),
+    }
+}
+
+fn go_rule_name(rule: SemanticRule) -> String { python_rule_name(rule) }
+
 
 fn go_operations() -> String {
     let mut output = String::new();

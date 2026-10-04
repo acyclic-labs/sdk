@@ -57,9 +57,9 @@ pub use machines::{MACHINES, machines_descriptor, machines_proto};
 pub use objects::{OBJECTS_V2, objects_descriptor, objects_proto};
 pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, stream_proto};
 pub use type_policy::{
-    SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES, SemanticRule, SemanticType,
-    TypePolicyLanguage, TypeProjectionProfile, WireValueKind, semantic_type,
-    type_projection_profile,
+    FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES, FieldSemanticType,
+    SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
+    WireValueKind, field_semantic_type, semantic_type, type_projection_profile,
 };
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,

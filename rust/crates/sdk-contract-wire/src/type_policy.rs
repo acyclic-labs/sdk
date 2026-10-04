@@ -160,11 +160,27 @@ pub struct SemanticType {
     pub rules: &'static [SemanticRule],
 }
 
+/// Explicit link from a Rust model field name to its semantic type.
+///
+/// The protobuf field keeps its original wire name and number; this table adds
+/// the source-owned meaning that generated targets use for nominal wrappers,
+/// refinement constructors, and exhaustive/open union views.  A family scope
+/// prevents an incidental field name such as `name` or `key` from acquiring a
+/// meaning from another contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FieldSemanticType {
+    pub family: &'static str,
+    pub field: &'static str,
+    pub semantic_type: &'static str,
+}
+
 const NON_EMPTY_UTF8: &[SemanticRule] = &[SemanticRule::NonEmpty, SemanticRule::Utf8];
 const NON_EMPTY_BYTES: &[SemanticRule] = &[SemanticRule::NonEmpty];
 const DIGEST: &[SemanticRule] = &[SemanticRule::FixedLength(32), SemanticRule::Sha256Digest];
+const FIXED_32_BYTES: &[SemanticRule] = &[SemanticRule::FixedLength(32)];
 const NON_NEGATIVE: &[SemanticRule] = &[SemanticRule::NonNegative];
 const PRESENT_ONEOF: &[SemanticRule] = &[SemanticRule::ExactOneof, SemanticRule::PreserveUnknownOneof];
+const IMMUTABLE_MESSAGE: &[SemanticRule] = &[SemanticRule::Immutable];
 
 /// Shared semantic vocabulary used by all families.  Family models refer to
 /// these names from their Rust validation metadata instead of introducing a
@@ -182,8 +198,15 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
     SemanticType { id: "machine_id", rust_name: "MachineId", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
     SemanticType { id: "operation_id", rust_name: "OperationId", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
     SemanticType { id: "checkpoint_id", rust_name: "CheckpointId", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
-    SemanticType { id: "idempotency_key", rust_name: "IdempotencyKey", wire_kind: WireValueKind::Bytes, rules: NON_EMPTY_BYTES },
+    SemanticType { id: "idempotency_key_bytes", rust_name: "IdempotencyKeyBytes", wire_kind: WireValueKind::Bytes, rules: NON_EMPTY_BYTES },
+    SemanticType { id: "idempotency_key_text", rust_name: "IdempotencyKeyText", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
+    SemanticType { id: "idempotency_key_message", rust_name: "IdempotencyKey", wire_kind: WireValueKind::Message, rules: &[] },
+    SemanticType { id: "opaque_text", rust_name: "OpaqueText", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
+    SemanticType { id: "upload_id", rust_name: "UploadId", wire_kind: WireValueKind::String, rules: NON_EMPTY_UTF8 },
     SemanticType { id: "version_sha256", rust_name: "Sha256Digest", wire_kind: WireValueKind::Bytes, rules: DIGEST },
+    SemanticType { id: "sha256_digest", rust_name: "Sha256Digest", wire_kind: WireValueKind::Bytes, rules: DIGEST },
+    SemanticType { id: "revision_digest", rust_name: "RevisionDigest", wire_kind: WireValueKind::Bytes, rules: FIXED_32_BYTES },
+    SemanticType { id: "immutable_image", rust_name: "Image", wire_kind: WireValueKind::Message, rules: IMMUTABLE_MESSAGE },
     SemanticType { id: "revision", rust_name: "Revision", wire_kind: WireValueKind::UnsignedInteger, rules: NON_NEGATIVE },
     SemanticType { id: "run_id", rust_name: "RunId", wire_kind: WireValueKind::Bytes, rules: &[SemanticRule::FixedLength(16)] },
     SemanticType { id: "evaluation_id", rust_name: "EvaluationId", wire_kind: WireValueKind::Bytes, rules: &[SemanticRule::FixedLength(16)] },
@@ -191,6 +214,45 @@ pub const SEMANTIC_TYPES: &[SemanticType] = &[
     SemanticType { id: "commit_id", rust_name: "CommitId", wire_kind: WireValueKind::Bytes, rules: &[SemanticRule::NonEmpty] },
     SemanticType { id: "enum_value", rust_name: "OpenEnumValue", wire_kind: WireValueKind::Enum, rules: &[SemanticRule::PreserveUnknownEnum] },
     SemanticType { id: "oneof_arm", rust_name: "WireChoice", wire_kind: WireValueKind::Oneof, rules: PRESENT_ONEOF },
+];
+
+/// Rust-owned field mappings consumed by every target generator.
+///
+/// Fields absent from this table are ordinary wire values.  A generator must
+/// fail closed if it sees a constrained validation rule without a mapping;
+/// it may never silently project a constrained field as an unbranded scalar.
+pub const FIELD_SEMANTIC_TYPES: &[FieldSemanticType] = &[
+    FieldSemanticType { family: "actors", field: "actor_id", semantic_type: "actor_id" },
+    FieldSemanticType { family: "actors", field: "method", semantic_type: "method" },
+    FieldSemanticType { family: "workers", field: "alias", semantic_type: "alias" },
+    FieldSemanticType { family: "workers", field: "version_sha256", semantic_type: "version_sha256" },
+    FieldSemanticType { family: "workers", field: "idempotency_key", semantic_type: "idempotency_key_text" },
+    FieldSemanticType { family: "workers", field: "job_id", semantic_type: "job_id" },
+    FieldSemanticType { family: "workers", field: "method", semantic_type: "method" },
+    FieldSemanticType { family: "stream", field: "idempotency_key", semantic_type: "idempotency_key_bytes" },
+    FieldSemanticType { family: "stream", field: "path", semantic_type: "path" },
+    FieldSemanticType { family: "stream", field: "source", semantic_type: "source" },
+    FieldSemanticType { family: "stream", field: "destination", semantic_type: "destination" },
+    FieldSemanticType { family: "stream", field: "limit", semantic_type: "page_limit" },
+    FieldSemanticType { family: "stream", field: "commit_id", semantic_type: "commit_id" },
+    FieldSemanticType { family: "objects", field: "key", semantic_type: "object_key" },
+    FieldSemanticType { family: "objects", field: "etag", semantic_type: "opaque_text" },
+    FieldSemanticType { family: "objects", field: "idempotency_key", semantic_type: "idempotency_key_text" },
+    FieldSemanticType { family: "objects", field: "upload_id", semantic_type: "upload_id" },
+    FieldSemanticType { family: "objects", field: "page_size", semantic_type: "page_limit" },
+    FieldSemanticType { family: "inference", field: "run_id", semantic_type: "run_id" },
+    FieldSemanticType { family: "inference", field: "revision", semantic_type: "revision_digest" },
+    FieldSemanticType { family: "inference", field: "commitment", semantic_type: "sha256_digest" },
+    FieldSemanticType { family: "inference", field: "evaluation_id", semantic_type: "evaluation_id" },
+    FieldSemanticType { family: "inference", field: "spec_digest", semantic_type: "sha256_digest" },
+    FieldSemanticType { family: "machines", field: "image", semantic_type: "immutable_image" },
+    FieldSemanticType { family: "machines", field: "idempotency_key", semantic_type: "idempotency_key_message" },
+    FieldSemanticType { family: "machines", field: "machine_id", semantic_type: "machine_id" },
+    FieldSemanticType { family: "machines", field: "checkpoint_id", semantic_type: "checkpoint_id" },
+    FieldSemanticType { family: "machines", field: "operation_id", semantic_type: "operation_id" },
+    FieldSemanticType { family: "machines", field: "page_limit", semantic_type: "page_limit" },
+    FieldSemanticType { family: "filesystem", field: "path", semantic_type: "path" },
+    FieldSemanticType { family: "harness", field: "path", semantic_type: "path" },
 ];
 
 /// How a target should expose optional fields, unions and open enums.
@@ -268,6 +330,14 @@ pub fn semantic_type(id: &str) -> Option<&'static SemanticType> {
     SEMANTIC_TYPES.iter().find(|item| item.id == id)
 }
 
+/// Resolve a Rust model field's semantic type for a contract family.
+pub fn field_semantic_type(family: &str, field: &str) -> Option<&'static SemanticType> {
+    FIELD_SEMANTIC_TYPES
+        .iter()
+        .find(|mapping| mapping.family == family && mapping.field == field)
+        .and_then(|mapping| semantic_type(mapping.semantic_type))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +372,43 @@ mod tests {
         assert!(semantic_type("version_sha256").expect("digest").rules.contains(&SemanticRule::FixedLength(32)));
         assert!(semantic_type("page_limit").expect("page limit").rules.contains(&SemanticRule::MaxItems(1000)));
         assert!(semantic_type("oneof_arm").expect("oneof").rules.contains(&SemanticRule::ExactOneof));
+    }
+
+    #[test]
+    fn every_field_mapping_resolves_to_a_rust_semantic_type() {
+        for mapping in FIELD_SEMANTIC_TYPES {
+            assert!(
+                semantic_type(mapping.semantic_type).is_some(),
+                "{} {} maps to missing semantic type {}",
+                mapping.family,
+                mapping.field,
+                mapping.semantic_type
+            );
+            assert!(field_semantic_type(mapping.family, mapping.field).is_some());
+        }
+    }
+
+    #[test]
+    fn field_mappings_retain_each_wire_kind_before_projection() {
+        assert_eq!(
+            field_semantic_type("workers", "idempotency_key").unwrap().wire_kind,
+            WireValueKind::String
+        );
+        assert_eq!(
+            field_semantic_type("stream", "idempotency_key").unwrap().wire_kind,
+            WireValueKind::Bytes
+        );
+        assert_eq!(
+            field_semantic_type("machines", "idempotency_key").unwrap().wire_kind,
+            WireValueKind::Message
+        );
+        assert_eq!(
+            field_semantic_type("machines", "image").unwrap().wire_kind,
+            WireValueKind::Message
+        );
+        assert_eq!(
+            field_semantic_type("inference", "revision").unwrap().wire_kind,
+            WireValueKind::Bytes
+        );
     }
 }

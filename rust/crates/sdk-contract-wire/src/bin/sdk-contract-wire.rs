@@ -19,7 +19,10 @@ use acyclic_sdk_contract_wire::{
     semantic_oracle,
     stream::{stream_descriptor, stream_proto},
     transport_control::{control_descriptor, control_proto},
-    type_policy::{SemanticRule, TypePolicyLanguage, WireValueKind, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES},
+    type_policy::{
+        FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, SemanticRule, TYPE_PROJECTION_PROFILES,
+        TypePolicyLanguage, WireValueKind,
+    },
     workers::{workers_descriptor, workers_proto},
 };
 use base64::Engine;
@@ -130,19 +133,37 @@ fn type_policy_json() -> Vec<u8> {
                     SemanticRule::NonEmpty => serde_json::json!({ "kind": "non_empty" }),
                     SemanticRule::Utf8 => serde_json::json!({ "kind": "utf8" }),
                     SemanticRule::NonNegative => serde_json::json!({ "kind": "non_negative" }),
-                    SemanticRule::StrictlyPositive => serde_json::json!({ "kind": "strictly_positive" }),
-                    SemanticRule::FixedLength(length) => serde_json::json!({ "kind": "fixed_length", "length": length }),
-                    SemanticRule::MaxBytes(max) => serde_json::json!({ "kind": "max_bytes", "max": max }),
-                    SemanticRule::MaxItems(max) => serde_json::json!({ "kind": "max_items", "max": max }),
-                    SemanticRule::BoundedInteger { min, max } => serde_json::json!({ "kind": "bounded_integer", "min": min, "max": max }),
+                    SemanticRule::StrictlyPositive => {
+                        serde_json::json!({ "kind": "strictly_positive" })
+                    }
+                    SemanticRule::FixedLength(length) => {
+                        serde_json::json!({ "kind": "fixed_length", "length": length })
+                    }
+                    SemanticRule::MaxBytes(max) => {
+                        serde_json::json!({ "kind": "max_bytes", "max": max })
+                    }
+                    SemanticRule::MaxItems(max) => {
+                        serde_json::json!({ "kind": "max_items", "max": max })
+                    }
+                    SemanticRule::BoundedInteger { min, max } => {
+                        serde_json::json!({ "kind": "bounded_integer", "min": min, "max": max })
+                    }
                     SemanticRule::Sha256Digest => serde_json::json!({ "kind": "sha256_digest" }),
                     SemanticRule::Immutable => serde_json::json!({ "kind": "immutable" }),
                     SemanticRule::Monotonic => serde_json::json!({ "kind": "monotonic" }),
-                    SemanticRule::CanonicalResourceName => serde_json::json!({ "kind": "canonical_resource_name" }),
+                    SemanticRule::CanonicalResourceName => {
+                        serde_json::json!({ "kind": "canonical_resource_name" })
+                    }
                     SemanticRule::ExactOneof => serde_json::json!({ "kind": "exact_oneof" }),
-                    SemanticRule::ExplicitPresence => serde_json::json!({ "kind": "explicit_presence" }),
-                    SemanticRule::PreserveUnknownEnum => serde_json::json!({ "kind": "preserve_unknown_enum" }),
-                    SemanticRule::PreserveUnknownOneof => serde_json::json!({ "kind": "preserve_unknown_oneof" }),
+                    SemanticRule::ExplicitPresence => {
+                        serde_json::json!({ "kind": "explicit_presence" })
+                    }
+                    SemanticRule::PreserveUnknownEnum => {
+                        serde_json::json!({ "kind": "preserve_unknown_enum" })
+                    }
+                    SemanticRule::PreserveUnknownOneof => {
+                        serde_json::json!({ "kind": "preserve_unknown_oneof" })
+                    }
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({
@@ -153,11 +174,22 @@ fn type_policy_json() -> Vec<u8> {
             })
         })
         .collect::<Vec<_>>();
+    let field_mappings = FIELD_SEMANTIC_TYPES
+        .iter()
+        .map(|mapping| {
+            serde_json::json!({
+                "family": mapping.family,
+                "field": mapping.field,
+                "semantic_type": mapping.semantic_type,
+            })
+        })
+        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "schema": "acyclic.sdk.type-policy.v1",
         "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
         "languages": language_profiles,
         "semantic_types": semantic_types,
+        "field_mappings": field_mappings,
     });
     serde_json::to_vec_pretty(&document).expect("type policy JSON is serializable")
 }
@@ -315,7 +347,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Error>> {
     let mut artifacts = vec![
-        ("generated/sdk/type-policy.json".to_owned(), type_policy_json()),
+        (
+            "generated/sdk/type-policy.json".to_owned(),
+            type_policy_json(),
+        ),
+        (
+            "python/src/acyclic_sdk/py.typed".to_owned(),
+            b"Rust-generated semantic type projections.\n".to_vec(),
+        ),
         (
             FILESYSTEM_PRODUCT_DESCRIPTOR.to_owned(),
             filesystem_descriptor(),
@@ -398,6 +437,12 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
         let package_tonic = package.trim_end_matches(".rs").to_owned() + ".tonic.rs";
         artifacts.push((package_tonic, tonic_source));
         if matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+            for control_file in ["acyclic.protocol.v1.rs", "acyclic.transport.v1.rs"] {
+                artifacts.push((
+                    format!("rust/crates/{}/src/generated/{control_file}", family.name()),
+                    fs::read(family_root.join(control_file))?,
+                ));
+            }
             artifacts.push((
                 format!(
                     "rust/crates/{}/src/generated/platform-client-methods.rs",
@@ -621,7 +666,10 @@ fn check(
     )?;
     reject_extra_artifacts(out)?;
     let type_policy = fs::read(out.join(TYPE_POLICY_PATH)).map_err(|error| {
-        format!("cannot read {}: {error}", out.join(TYPE_POLICY_PATH).display())
+        format!(
+            "cannot read {}: {error}",
+            out.join(TYPE_POLICY_PATH).display()
+        )
     })?;
     if type_policy != type_policy_json() {
         return Err(format!(
