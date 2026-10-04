@@ -1471,6 +1471,10 @@ mod tests {
         };
         struct Capture(AtomicUsize);
         impl ModelProvider for Capture {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(&'a self, _: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0.fetch_add(1, Ordering::SeqCst);
                 Box::pin(futures::stream::empty())
@@ -1552,6 +1556,10 @@ mod tests {
             calls: AtomicUsize,
         }
         impl ModelProvider for PolicyProvider {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
                 Some(&self.policy)
             }
@@ -1627,6 +1635,10 @@ mod tests {
             seen: Mutex<Vec<(Vec<u8>, ModelInputManifest)>>,
         }
         impl ModelProvider for ReconciliationCapture {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
                 Some(&self.policy)
             }
@@ -1733,6 +1745,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Script(Mutex<Vec<ModelRequest>>);
         impl ModelProvider for Script {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 let request = prepared.request().clone();
                 let mut requests = self.0.lock().unwrap();
@@ -1847,6 +1863,10 @@ mod tests {
         use std::sync::{Arc, Mutex};
         struct Capture(Mutex<Vec<(ModelRequest, Vec<u8>, [u8; 32])>>);
         impl ModelProvider for Capture {
+            fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+                u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+            }
+
             fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
                 self.0
                     .lock()

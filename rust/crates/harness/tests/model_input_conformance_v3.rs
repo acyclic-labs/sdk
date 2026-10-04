@@ -200,6 +200,10 @@ struct CapturingProvider {
 }
 
 impl ModelProvider for CapturingProvider {
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+    }
+
     fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
         Some(&self.policy)
     }

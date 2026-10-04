@@ -2851,7 +2851,7 @@ impl SwarmBudget {
         update_root_usage(&mut state, owner, usage, None, None)
     }
 
-    fn report_usage_event(
+    pub(crate) fn report_usage_event(
         &self,
         operation_id: OperationId,
         owner: &SwarmOwnerFence,
@@ -2863,7 +2863,7 @@ impl SwarmBudget {
         update_usage(&mut state, operation_id, owner, usage, false, receipt)
     }
 
-    fn complete_event(
+    pub(crate) fn complete_event(
         &self,
         operation_id: OperationId,
         owner: &SwarmOwnerFence,

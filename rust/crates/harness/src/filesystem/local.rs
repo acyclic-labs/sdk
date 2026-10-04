@@ -1806,6 +1806,10 @@ mod tests {
     use std::sync::{Arc, Mutex, atomic::{AtomicUsize, Ordering}};
     struct Mock(AtomicUsize);
     impl ModelProvider for Mock {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Box::pin(futures::stream::iter([
@@ -1832,6 +1836,10 @@ mod tests {
     }
 
     impl ModelProvider for RecordingMock {
+        fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+            u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+        }
+
         fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
             Some(&self.policy)
         }

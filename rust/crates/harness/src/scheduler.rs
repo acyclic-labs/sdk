@@ -1440,7 +1440,7 @@ impl Scheduler {
             Error::Unauthorized("provider usage receipt required for swarm usage".into())
         })?;
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
-        budget.report_usage(operation_id, &owner, usage)?;
+        budget.report_usage_event(operation_id, &owner, usage, Some(receipt))?;
         self.swarm_events.push(SwarmBudgetEvent::UsageReported {
             operation_id,
             owner,
@@ -1549,7 +1549,7 @@ impl Scheduler {
         })?;
         let budget = SwarmBudget::replay(self.swarm_events.clone())?;
         if matches!(outcome, Outcome::Indeterminate { .. }) {
-            budget.report_usage(operation_id, &owner, usage)?;
+            budget.report_usage_event(operation_id, &owner, usage, Some(receipt))?;
             self.swarm_events.push(SwarmBudgetEvent::UsageReported {
                 operation_id,
                 owner,
@@ -1558,7 +1558,7 @@ impl Scheduler {
             });
         } else {
             let mut budget = budget;
-            budget.complete(operation_id, &owner, usage)?;
+            budget.complete_event(operation_id, &owner, usage, Some(receipt))?;
             self.swarm_events.push(SwarmBudgetEvent::ChildCompleted {
                 operation_id,
                 owner: owner.clone(),

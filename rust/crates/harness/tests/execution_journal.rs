@@ -210,6 +210,10 @@ impl ToolProjection for NoopTool {
 struct CapturingModel(Mutex<Vec<ModelRequest>>);
 
 impl ModelProvider for CapturingModel {
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+    }
+
     fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         self.0
@@ -227,6 +231,10 @@ impl ModelProvider for CapturingModel {
 }
 
 impl ModelProvider for TextModel {
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        u32::try_from(max_output_bytes).ok().filter(|bound| *bound > 0)
+    }
+
     fn generate<'a>(&'a self, _: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::iter(vec![
