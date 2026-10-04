@@ -348,9 +348,15 @@ impl ForkAtBatch {
         let seed = report.clone().into_seed()?;
         self.assert_child_unbound(&seed, issuer).await?;
         let mut foreign = seed.clone();
+        let protected_file = seed
+            .model_boundary
+            .as_ref()
+            .and_then(|boundary| boundary.files.first())
+            .ok_or_else(|| Error::Storage("fixture model-bound reference missing".into()))?;
         let grant = foreign
             .reference_grants
-            .first_mut()
+            .iter_mut()
+            .find(|grant| &grant.file == protected_file)
             .ok_or_else(|| Error::Storage("fixture reference grant missing".into()))?;
         let volume = VolumeRef::new(
             ProviderRef::new("foreign-filesystem", "filesystem", "2")?,
