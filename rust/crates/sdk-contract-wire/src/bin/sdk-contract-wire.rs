@@ -22,6 +22,7 @@ use acyclic_sdk_contract_wire::{
     transport_control::{control_descriptor, control_proto},
     type_policy::{
         FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, SemanticRule, TYPE_PROJECTION_PROFILES,
+        WIRE_UNION_VARIANTS,
         TypePolicyLanguage, WireValueKind,
     },
     workers::{workers_descriptor, workers_proto},
@@ -185,12 +186,35 @@ fn type_policy_json() -> Vec<u8> {
             })
         })
         .collect::<Vec<_>>();
+    let union_variants = WIRE_UNION_VARIANTS
+        .iter()
+        .map(|variant| {
+            let payload_wire_kind = match variant.payload_wire_kind {
+                WireValueKind::String => "string",
+                WireValueKind::Bytes => "bytes",
+                WireValueKind::SignedInteger => "signed_integer",
+                WireValueKind::UnsignedInteger => "unsigned_integer",
+                WireValueKind::Boolean => "boolean",
+                WireValueKind::Timestamp => "timestamp",
+                WireValueKind::Enum => "enum",
+                WireValueKind::Message => "message",
+                WireValueKind::Oneof => "oneof",
+            };
+            serde_json::json!({
+                "union": variant.union,
+                "variant": variant.variant,
+                "tag": variant.tag,
+                "payload_wire_kind": payload_wire_kind,
+            })
+        })
+        .collect::<Vec<_>>();
     let document = serde_json::json!({
         "schema": "acyclic.sdk.type-policy.v1",
         "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
         "languages": language_profiles,
         "semantic_types": semantic_types,
         "field_mappings": field_mappings,
+        "union_variants": union_variants,
     });
     serde_json::to_vec_pretty(&document).expect("type policy JSON is serializable")
 }

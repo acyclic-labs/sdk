@@ -9,7 +9,9 @@ use super::{FACADE_SELECTION_POLICY, facade_operations};
 use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
-    type_policy::{SemanticRule, FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, WireValueKind},
+    type_policy::{
+        SemanticRule, FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS, WireValueKind,
+    },
 };
 
 pub(super) fn render_python(binding: &str) -> String {
@@ -20,12 +22,12 @@ pub(super) fn render_python(binding: &str) -> String {
         r###"from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, NewType, TypeAlias
+from typing import Annotated, Literal, NewType, TypeAlias
 from urllib.parse import urlsplit
 
 import grpc
 
-from .generated.actors.v1 import actors_pb2_grpc
+from .generated.actors.v1 import actors_pb2, actors_pb2_grpc
 from .generated.filesystem.v2 import filesystem_pb2_grpc
 from .generated.harness.v2 import harness_pb2_grpc
 from .generated.inference.v1 import inference_pb2_grpc
@@ -85,6 +87,39 @@ class InferenceServices:
     warm_contexts: inference_pb2_grpc.WarmContextsServiceStub
     runs: inference_pb2_grpc.RunsServiceStub
     evaluations: inference_pb2_grpc.EvaluationsServiceStub
+
+
+@dataclass(frozen=True)
+class ActorInvokeRequest:
+    """Strongly typed public request bridge for the Actors invoke RPC."""
+
+    actor_id: ActorIdValue
+    method: MethodNameValue
+    url: str = ""
+    body: bytes = b""
+    headers: tuple[object, ...] = ()
+
+    def to_wire(self) -> actors_pb2.InvokeActorRequest:
+        return actors_pb2.InvokeActorRequest(
+            actor_id=str(actor_id(self.actor_id)),
+            method=str(method(self.method)),
+            url=self.url,
+            body=self.body,
+            headers=list(self.headers),
+        )
+
+
+@dataclass(frozen=True)
+class ActorInvokeResponse:
+    """Decoded response returned by the typed Actors invoke bridge."""
+
+    status: int
+    body: bytes
+    headers: tuple[object, ...]
+
+    @classmethod
+    def from_wire(cls, response: actors_pb2.InvokeActorResponse) -> "ActorInvokeResponse":
+        return cls(status=response.status, body=bytes(response.body), headers=tuple(response.headers))
 
 
 def _target(endpoint: str) -> tuple[str, bool]:
@@ -158,6 +193,14 @@ class Client:
     async def close(self) -> None:
         await self._channel.close()
 
+    async def invoke_actor(
+        self,
+        request: ActorInvokeRequest,
+        timeout: float | None = None,
+    ) -> ActorInvokeResponse:
+        response = await self.actors.InvokeActor(request.to_wire(), timeout=timeout)
+        return ActorInvokeResponse.from_wire(response)
+
     async def __aenter__(self) -> "Client":
         return self
 
@@ -165,7 +208,7 @@ class Client:
         await self.close()
 
 
-__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "InferenceServices", "OPERATIONS", "POST_FAILURE_FALLBACK", "REPLAY", "SELECTION_PROBE", "SOURCE_BINDING", "TRANSPORTS_BY_RUNTIME"]
+__all__ = ["ActorInvokeRequest", "ActorInvokeResponse", "BEST_TRANSPORT", "Client", "Credentials", "InferenceServices", "OPERATIONS", "POST_FAILURE_FALLBACK", "REPLAY", "SELECTION_PROBE", "SOURCE_BINDING", "TRANSPORTS_BY_RUNTIME", #PUBLIC_TYPE_EXPORTS#]
 
 
 OPERATIONS = {
@@ -188,6 +231,7 @@ TRANSPORTS_BY_RUNTIME = {
     );
     output = output.replace("#BINDING#", binding);
     output = output.replace("#TYPES#", &python_type_projection());
+    output = output.replace("#PUBLIC_TYPE_EXPORTS#", &python_public_type_exports());
     output = output.replace("#SELECTION_PROBE#", FACADE_SELECTION_POLICY.probe);
     output = output.replace(
         "#POST_FAILURE_FALLBACK#",
@@ -198,6 +242,25 @@ TRANSPORTS_BY_RUNTIME = {
     output = output.replace("#TRANSPORTS#", &python_transports());
     output = output.replace("#BROWSER_TRANSPORTS#", &python_browser_transports());
     output
+}
+
+fn python_public_type_exports() -> String {
+    let mut names = vec![
+        "KnownOneof".to_owned(),
+        "UnknownOneof".to_owned(),
+        "WireChoice".to_owned(),
+        "decode_wire_choice".to_owned(),
+        "encode_wire_choice".to_owned(),
+        "known_oneof".to_owned(),
+    ];
+    for item in SEMANTIC_TYPES {
+        names.push(item.rust_name.to_owned());
+        names.push(format!("{}Value", item.rust_name));
+        names.push(snake_case(item.id));
+    }
+    names.sort();
+    names.dedup();
+    names.iter().map(|name| format!("\"{}\"", name)).collect::<Vec<_>>().join(", ")
 }
 
 pub(super) fn render_go(binding: &str) -> String {
@@ -256,6 +319,41 @@ type InferenceServices struct {
     Evaluations inferencev1.EvaluationsServiceClient
 }
 
+// ActorInvokeRequest is the public semantic bridge for the Actors invoke RPC.
+// The protobuf request remains an implementation detail of the generated
+// client and is built only after Rust-owned refinements have been checked.
+type ActorInvokeRequest struct {
+    ActorID ActorID
+    Method MethodName
+    URL string
+    Body []byte
+    Headers []*actorsv1.Header
+}
+
+func (request ActorInvokeRequest) toWire() (*actorsv1.InvokeActorRequest, error) {
+    actorID, err := NewActorID(string(request.ActorID))
+    if err != nil { return nil, err }
+    method, err := NewMethodName(string(request.Method))
+    if err != nil { return nil, err }
+    return &actorsv1.InvokeActorRequest{
+        ActorId: string(actorID),
+        Method: string(method),
+        Url: request.URL,
+        Body: append([]byte(nil), request.Body...),
+        Headers: request.Headers,
+    }, nil
+}
+
+type ActorInvokeResponse struct {
+    Status uint32
+    Body []byte
+    Headers []*actorsv1.Header
+}
+
+func actorInvokeResponseFromWire(response *actorsv1.InvokeActorResponse) ActorInvokeResponse {
+    return ActorInvokeResponse{Status: response.Status, Body: append([]byte(nil), response.Body...), Headers: response.Headers}
+}
+
 type Client struct {
     conn *grpc.ClientConn
     Actors actorsv1.ActorsServiceClient
@@ -268,6 +366,14 @@ type Client struct {
     Harness harnessv2.HarnessServiceClient
     Inference InferenceServices
     Machines machinesv1.MachinesServiceClient
+}
+
+func (client *Client) InvokeActor(ctx context.Context, request ActorInvokeRequest, opts ...grpc.CallOption) (ActorInvokeResponse, error) {
+    wireRequest, err := request.toWire()
+    if err != nil { return ActorInvokeResponse{}, err }
+    response, err := client.Actors.InvokeActor(ctx, wireRequest, opts...)
+    if err != nil { return ActorInvokeResponse{}, err }
+    return actorInvokeResponseFromWire(response), nil
 }
 
 func normalizeEndpoint(endpoint string) (string, bool, error) {
@@ -413,12 +519,31 @@ fn python_type_projection() -> String {
     let mut output = String::from(
         "# Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
     );
+    let known_tag = WIRE_UNION_VARIANTS
+        .iter()
+        .find(|variant| variant.variant == "KnownOneof")
+        .expect("Rust policy must define KnownOneof")
+        .tag;
+    let unknown_tag = WIRE_UNION_VARIANTS
+        .iter()
+        .find(|variant| variant.variant == "UnknownOneof")
+        .expect("Rust policy must define UnknownOneof")
+        .tag;
     output.push_str(
         "@dataclass(frozen=True)\nclass UnknownEnumValue:\n    raw_value: int\n\n\n"
     );
+    output.push_str(&format!(
+        "@dataclass(frozen=True)\nclass KnownOneof:\n    tag: Literal[{known_tag:?}]\n    payload: object\n\n\n"
+    ));
+    output.push_str(&format!(
+        "@dataclass(frozen=True)\nclass UnknownOneof:\n    raw_payload: bytes\n    tag: Literal[{unknown_tag:?}] = {unknown_tag:?}\n\n\n"
+    ));
     output.push_str(
-        "@dataclass(frozen=True)\nclass UnknownOneof:\n    raw_payload: bytes\n\n\n"
+        &format!("def known_oneof(payload: object) -> KnownOneof:\n    return KnownOneof(tag={known_tag:?}, payload=payload)\n\n\n")
     );
+    output.push_str(&format!(
+        "def encode_wire_choice(value: WireChoice) -> dict[str, object]:\n    checked = oneof_arm(value)\n    if isinstance(checked, KnownOneof):\n        return {{\"tag\": {known_tag:?}, \"payload\": checked.payload}}\n    return {{\"tag\": {unknown_tag:?}, \"raw_payload\": checked.raw_payload}}\n\n\ndef decode_wire_choice(value: object) -> WireChoice:\n    if not isinstance(value, dict):\n        raise TypeError(\"wire_choice must decode from an object\")\n    tag = value.get(\"tag\")\n    if tag == {known_tag:?}:\n        return KnownOneof(tag={known_tag:?}, payload=value.get(\"payload\"))\n    if tag == {unknown_tag:?}:\n        raw_payload = value.get(\"raw_payload\")\n        if not isinstance(raw_payload, bytes):\n            raise TypeError(\"unknown oneof payload must be bytes\")\n        return UnknownOneof(raw_payload=raw_payload)\n    raise ValueError(\"wire_choice has an unknown discriminant\")\n\n\n"
+    ));
     output.push_str("SEMANTIC_TYPE_RULES: dict[str, tuple[str, ...]] = {\n");
     for item in SEMANTIC_TYPES {
         output.push_str(&format!(
@@ -439,7 +564,7 @@ fn python_type_projection() -> String {
     let mut emitted_python_types = Vec::new();
     for item in SEMANTIC_TYPES {
         if item.wire_kind == WireValueKind::Oneof {
-            output.push_str("WireChoice: TypeAlias = UnknownOneof\n\n");
+            output.push_str("WireChoice: TypeAlias = KnownOneof | UnknownOneof\n\n");
             continue;
         }
         if emitted_python_types.contains(&item.rust_name) {
@@ -530,8 +655,8 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
                 "value".to_owned()
             }
             WireValueKind::Oneof => format!(
-                "value if isinstance(value, UnknownOneof) else (_ for _ in ()).throw(TypeError({:?}))",
-                format!("{} must be UnknownOneof", item.id)
+                "value if isinstance(value, (KnownOneof, UnknownOneof)) and ((isinstance(value, KnownOneof) and value.tag == {known_tag:?}) or (isinstance(value, UnknownOneof) and value.tag == {unknown_tag:?})) else (_ for _ in ()).throw(TypeError({:?}))",
+                format!("{} must be a known or unknown discriminated oneof", item.id)
             ),
         };
         if item.wire_kind == WireValueKind::Oneof {
@@ -556,8 +681,17 @@ def _require_integer(value: object, name: str, minimum: int | None = None, maxim
 pub(super) fn render_python_type_policy_test() -> String {
     r#"# Generated by acyclic-sdk-contract-wire; do not edit.
 from acyclic_sdk.remote import (
+    ActorInvokeRequest,
+    ActorInvokeResponse,
+    KnownOneof,
+    UnknownOneof,
     actor_id,
+    decode_wire_choice,
+    encode_wire_choice,
     idempotency_key_bytes,
+    known_oneof,
+    method,
+    oneof_arm,
     page_limit,
     revision_digest,
     sha256_digest,
@@ -570,6 +704,11 @@ def test_rust_owned_refinements_accept_valid_values():
     assert page_limit(1) == 1
     assert revision_digest(b"r" * 32) == b"r" * 32
     assert sha256_digest(b"d" * 32) == b"d" * 32
+    assert oneof_arm(known_oneof({"payload": 1})).tag == "known"
+    assert oneof_arm(UnknownOneof(raw_payload=b"future")).tag == "unknown"
+    assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
+    request = ActorInvokeRequest(actor_id=actor_id("actor"), method=method("run"))
+    assert request.to_wire().actor_id == "actor"
 
 
 def test_rust_owned_refinements_reject_invalid_values():
@@ -580,6 +719,8 @@ def test_rust_owned_refinements_reject_invalid_values():
         (page_limit, 1001),
         (revision_digest, b"short"),
         (sha256_digest, b"short"),
+        (oneof_arm, object()),
+        (decode_wire_choice, {"tag": "future"}),
     ):
         try:
             constructor(value)
@@ -594,6 +735,16 @@ fn go_type_projection() -> String {
     let mut output = String::from(
         "// Rust-owned semantic type projection; generated from type_policy.rs.\n\n"
     );
+    let known_tag = WIRE_UNION_VARIANTS
+        .iter()
+        .find(|variant| variant.variant == "KnownOneof")
+        .expect("Rust policy must define KnownOneof")
+        .tag;
+    let unknown_tag = WIRE_UNION_VARIANTS
+        .iter()
+        .find(|variant| variant.variant == "UnknownOneof")
+        .expect("Rust policy must define UnknownOneof")
+        .tag;
     output.push_str("var SemanticTypeRules = map[string][]string{\n");
     for item in SEMANTIC_TYPES {
         output.push_str(&format!(
@@ -616,9 +767,9 @@ fn go_type_projection() -> String {
         ));
     }
     output.push_str("}\n\n");
-    output.push_str(
-        "type UnknownEnumValue struct { RawValue int32 }\n\ntype WireChoice interface { isWireChoice() }\n\ntype UnknownOneof struct { RawPayload []byte }\n\nfunc (UnknownOneof) isWireChoice() {}\n\n"
-    );
+    output.push_str(&format!(
+        "type UnknownEnumValue struct {{ RawValue int32 }}\n\ntype WireChoice interface {{ isWireChoice() }}\n\ntype KnownOneof struct {{ Tag string; Payload any }}\n\nfunc (KnownOneof) isWireChoice() {{}}\n\ntype UnknownOneof struct {{ Tag string; RawPayload []byte }}\n\nfunc (UnknownOneof) isWireChoice() {{}}\n\nfunc NewKnownOneof(payload any) KnownOneof {{ return KnownOneof{{Tag: {known_tag:?}, Payload: payload}} }}\n\nfunc NewUnknownOneof(rawPayload []byte) UnknownOneof {{ return UnknownOneof{{Tag: {unknown_tag:?}, RawPayload: append([]byte(nil), rawPayload...)}} }}\n\n"
+    ));
     let mut emitted_go_types = Vec::new();
     for item in SEMANTIC_TYPES {
         if item.wire_kind == WireValueKind::Oneof {
@@ -696,7 +847,7 @@ func requireGoUint(value uint64, name string, minimum, maximum uint64) error {
             WireValueKind::Boolean | WireValueKind::Timestamp | WireValueKind::Message => {
                 format!("return {}(value), nil", name)
             }
-            WireValueKind::Oneof => "if value == nil { return nil, fmt.Errorf(\"wire_choice must be present\") }\n\treturn value, nil".to_owned(),
+            WireValueKind::Oneof => format!("if value == nil {{ return nil, fmt.Errorf(\"wire_choice must be present\") }}\n\tswitch choice := value.(type) {{\n\tcase KnownOneof:\n\t\tif choice.Tag != {known_tag:?} {{ return nil, fmt.Errorf(\"known oneof has invalid tag\") }}\n\tcase UnknownOneof:\n\t\tif choice.Tag != {unknown_tag:?} {{ return nil, fmt.Errorf(\"unknown oneof has invalid tag\") }}\n\tdefault:\n\t\treturn nil, fmt.Errorf(\"wire_choice has an unsupported variant\")\n\t}}\n\treturn value, nil"),
         };
         let input = go_constructor_input(item);
         let result = go_constructor_result(item);
@@ -711,12 +862,20 @@ package acyclicsdk
 
 import "testing"
 
+import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
+
 func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewActorID("actor"); err != nil { t.Fatal(err) }
 	if _, err := NewIdempotencyKeyBytes([]byte("request")); err != nil { t.Fatal(err) }
 	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
+	if _, err := NewOneofArm(NewKnownOneof(map[string]any{"payload": 1})); err != nil { t.Fatal(err) }
+	if _, err := NewOneofArm(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
+	request, err := (ActorInvokeRequest{ActorID: ActorID("actor"), Method: MethodName("run")}).toWire()
+	if err != nil || request.GetActorId() != "actor" { t.Fatalf("typed request bridge failed: %v", err) }
+	response := actorInvokeResponseFromWire(&actorsv1.InvokeActorResponse{Status: 200, Body: []byte("ok")})
+	if response.Status != 200 || string(response.Body) != "ok" { t.Fatal("typed response bridge failed") }
 }
 
 func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
@@ -726,6 +885,8 @@ func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
 	if _, err := NewPageLimit(1001); err == nil { t.Fatal("oversized page limit accepted") }
 	if _, err := NewRevisionDigest([]byte("short")); err == nil { t.Fatal("short revision digest accepted") }
 	if _, err := NewSha256Digest([]byte("short")); err == nil { t.Fatal("short digest accepted") }
+	if _, err := NewOneofArm(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
+	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
 }
 "#
     .to_owned()

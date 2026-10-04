@@ -174,6 +174,19 @@ pub struct FieldSemanticType {
     pub semantic_type: &'static str,
 }
 
+/// A Rust-owned discriminated union projection.  The open `unknown` arm is
+/// part of the wire contract, while the `known` arm gives every target a
+/// statically visible payload-bearing variant for values understood by the
+/// current SDK revision.  Targets may add family-specific known arms later,
+/// but they must preserve this open pair when decoding newer senders.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WireUnionVariant {
+    pub union: &'static str,
+    pub variant: &'static str,
+    pub tag: &'static str,
+    pub payload_wire_kind: WireValueKind,
+}
+
 const NON_EMPTY_UTF8: &[SemanticRule] = &[SemanticRule::NonEmpty, SemanticRule::Utf8];
 const NON_EMPTY_BYTES: &[SemanticRule] = &[SemanticRule::NonEmpty];
 const DIGEST: &[SemanticRule] = &[SemanticRule::FixedLength(32), SemanticRule::Sha256Digest];
@@ -253,6 +266,24 @@ pub const FIELD_SEMANTIC_TYPES: &[FieldSemanticType] = &[
     FieldSemanticType { family: "machines", field: "page_limit", semantic_type: "page_limit" },
     FieldSemanticType { family: "filesystem", field: "path", semantic_type: "path" },
     FieldSemanticType { family: "harness", field: "path", semantic_type: "path" },
+];
+
+/// Discriminants and payload kinds for every open union emitted by the type
+/// policy.  This is deliberately authored beside the Rust semantic model so
+/// target generators cannot silently collapse a oneof into `any`/`object`.
+pub const WIRE_UNION_VARIANTS: &[WireUnionVariant] = &[
+    WireUnionVariant {
+        union: "wire_choice",
+        variant: "KnownOneof",
+        tag: "known",
+        payload_wire_kind: WireValueKind::Message,
+    },
+    WireUnionVariant {
+        union: "wire_choice",
+        variant: "UnknownOneof",
+        tag: "unknown",
+        payload_wire_kind: WireValueKind::Bytes,
+    },
 ];
 
 /// How a target should expose optional fields, unions and open enums.
@@ -410,5 +441,17 @@ mod tests {
             field_semantic_type("inference", "revision").unwrap().wire_kind,
             WireValueKind::Bytes
         );
+    }
+
+    #[test]
+    fn open_union_projection_has_explicit_known_and_unknown_discriminants() {
+        let variants = WIRE_UNION_VARIANTS
+            .iter()
+            .filter(|variant| variant.union == "wire_choice")
+            .collect::<Vec<_>>();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0].tag, "known");
+        assert_eq!(variants[1].tag, "unknown");
+        assert_eq!(variants[1].payload_wire_kind, WireValueKind::Bytes);
     }
 }

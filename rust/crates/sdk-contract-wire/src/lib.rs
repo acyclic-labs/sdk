@@ -59,7 +59,8 @@ pub use stream::{STREAM, STREAM_ROUTES, STREAM_SERVICE, stream_descriptor, strea
 pub use type_policy::{
     FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, TYPE_PROJECTION_PROFILES, FieldSemanticType,
     SemanticRule, SemanticType, TypePolicyLanguage, TypeProjectionProfile,
-    WireValueKind, field_semantic_type, semantic_type, type_projection_profile,
+    WIRE_UNION_VARIANTS, WireUnionVariant, WireValueKind, field_semantic_type, semantic_type,
+    type_projection_profile,
 };
 pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
