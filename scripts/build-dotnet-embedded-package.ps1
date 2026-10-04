@@ -129,6 +129,8 @@ function Invoke-EmbeddedRustBuild {
   $savedRustFlags = $env:RUSTFLAGS
   $savedLinker = [Environment]::GetEnvironmentVariable($linkerVariable, "Process")
   $changedMuslEnvironment = $false
+  $savedLibraryPath = $env:LIBRARY_PATH
+  $changedLibraryEnvironment = $false
   try {
     if ($TargetName -like "*-unknown-linux-musl") {
       $compilerNames = if ($TargetName.StartsWith("aarch64-")) {
@@ -144,9 +146,22 @@ function Invoke-EmbeddedRustBuild {
       if (-not $compiler) {
         throw "No pinned/native musl linker is available for $TargetName. Use the pinned Alpine producer lane."
       }
-      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static").Trim())
+      $libgcc = $null
+      $gcc = Get-Command gcc -ErrorAction SilentlyContinue
+      if ($gcc) {
+        $candidate = (& $gcc.Source -print-file-name=libgcc_s.so.1 2>$null).Trim()
+        if ($candidate -and $candidate -ne 'libgcc_s.so.1' -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+          $libgcc = Split-Path -Parent $candidate
+        }
+      }
+      if (-not $libgcc) {
+        throw "The musl linker cannot locate libgcc_s.so.1 for $TargetName."
+      }
+      $env:RUSTFLAGS = (($savedRustFlags + " -C target-feature=-crt-static -C link-arg=-L$libgcc").Trim())
       [Environment]::SetEnvironmentVariable($linkerVariable, $compiler, "Process")
+      $env:LIBRARY_PATH = if ($savedLibraryPath) { "$libgcc$([IO.Path]::PathSeparator)$savedLibraryPath" } else { $libgcc }
       $changedMuslEnvironment = $true
+      $changedLibraryEnvironment = $true
     }
     & cargo build --locked --release --manifest-path $Manifest --target $TargetName --target-dir $TargetDirectory
     if ($LASTEXITCODE -ne 0) { throw "Rust embedded ABI build failed for $TargetName : $LASTEXITCODE" }
@@ -154,6 +169,7 @@ function Invoke-EmbeddedRustBuild {
     if ($changedMuslEnvironment) {
       $env:RUSTFLAGS = $savedRustFlags
       [Environment]::SetEnvironmentVariable($linkerVariable, $savedLinker, "Process")
+      if ($changedLibraryEnvironment) { $env:LIBRARY_PATH = $savedLibraryPath }
     }
   }
 }
