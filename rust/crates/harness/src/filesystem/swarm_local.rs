@@ -203,15 +203,26 @@ impl LocalCommunicationAdmitter for LocalCommunicationComposition {
                 extensions: None,
                 execution: None,
             };
-            match self.host.admit(admission).await? {
-                crate::Admission::Accepted(_) => Ok(()),
-                crate::Admission::Indeterminate { operation_id } => {
+            let result = self.host.admit(admission).await;
+            match result {
+                Ok(crate::Admission::Accepted(_)) => Ok(()),
+                Ok(crate::Admission::Indeterminate { operation_id }) => {
                     match self.host.reconcile_admission(operation_id).await? {
                         Some((_, _)) => Ok(()),
-                        None => Err(Error::Indeterminate(operation_id)),
+                        None => {
+                            self.cancellation.remove(task)?;
+                            Err(Error::Indeterminate(operation_id))
+                        }
                     }
                 }
-                crate::Admission::Rejected { reason } => Err(Error::Unauthorized(reason)),
+                Ok(crate::Admission::Rejected { reason }) => {
+                    self.cancellation.remove(task)?;
+                    Err(Error::Unauthorized(reason))
+                }
+                Err(error) => {
+                    self.cancellation.remove(task)?;
+                    Err(error)
+                }
             }
         })
     }
