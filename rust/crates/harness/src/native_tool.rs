@@ -153,19 +153,33 @@ pub fn native_command_definition() -> ToolDefinition {
             "type": "object",
             "properties": {
                 "executable": {"type": "string", "minLength": 1},
-                "arguments": {"type": "array", "items": {"type": "string"}},
+                "arguments": {"type": "array", "items": {"type": "string"}, "maxItems": 1024},
                 "working_directory": {"type": "string", "minLength": 1},
                 "environment": {
-                    "type": "object",
-                    "properties": {
-                        "kind": {"enum": ["clear", "explicit"]},
-                        "variables": {"type": "object", "additionalProperties": {"type": "string"}}
-                    },
-                    "required": ["kind"],
-                    "additionalProperties": false
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {"kind": {"const": "clear"}},
+                            "required": ["kind"],
+                            "additionalProperties": false
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"const": "explicit"},
+                                "variables": {
+                                    "type": "object",
+                                    "maxProperties": 256,
+                                    "additionalProperties": {"type": "string"}
+                                }
+                            },
+                            "required": ["kind", "variables"],
+                            "additionalProperties": false
+                        }
+                    ]
                 },
-                "timeout_ms": {"type": ["integer", "null"]},
-                "max_output_bytes": {"type": "integer", "minimum": 1}
+                "timeout_ms": {"type": ["integer", "null"], "minimum": 1, "maximum": i64::MAX},
+                "max_output_bytes": {"type": "integer", "minimum": 1, "maximum": 4194304}
             },
             "required": ["executable", "arguments", "working_directory", "environment", "max_output_bytes"],
             "additionalProperties": false
@@ -277,6 +291,45 @@ mod tests {
         assert_eq!(
             definition.input_schema["additionalProperties"],
             Value::Bool(false)
+        );
+        let mut clear_with_variables = request();
+        clear_with_variables["environment"]["variables"] = json!({"SAFE": "1"});
+        assert!(
+            crate::tool::validate_value(&definition.input_schema, &clear_with_variables, "input")
+                .is_err()
+        );
+        let mut explicit_without_variables = request();
+        explicit_without_variables["environment"] = json!({"kind": "explicit"});
+        assert!(
+            crate::tool::validate_value(
+                &definition.input_schema,
+                &explicit_without_variables,
+                "input"
+            )
+            .is_err()
+        );
+        let mut explicit = request();
+        explicit["environment"] = json!({
+            "kind": "explicit",
+            "variables": {"SAFE": "1"}
+        });
+        crate::tool::validate_value(&definition.input_schema, &explicit, "input")?;
+        let mut zero_timeout = request();
+        zero_timeout["timeout_ms"] = json!(0);
+        assert!(
+            crate::tool::validate_value(&definition.input_schema, &zero_timeout, "input").is_err()
+        );
+        let mut negative_timeout = request();
+        negative_timeout["timeout_ms"] = json!(-1);
+        assert!(
+            crate::tool::validate_value(&definition.input_schema, &negative_timeout, "input")
+                .is_err()
+        );
+        let mut excessive_output = request();
+        excessive_output["max_output_bytes"] = json!(4_194_305);
+        assert!(
+            crate::tool::validate_value(&definition.input_schema, &excessive_output, "input")
+                .is_err()
         );
         Ok(())
     }
