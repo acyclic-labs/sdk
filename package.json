@@ -4,6 +4,11 @@
   "version": "0.0.0",
   "workspaces": ["typescript/packages/*"],
   "scripts": {
+    "generate:sdk": "node scripts/rust-sdk-generation.mjs generate",
+    "check:sdk": "node scripts/rust-sdk-generation.mjs check",
+    "drift:sdk": "node scripts/rust-sdk-generation.mjs drift",
+    "inventory:sdk": "node scripts/rust-sdk-generation.mjs inventory",
+    "qualify:sdk": "node scripts/rust-sdk-generation.mjs qualify",
     "build:wasm": "bun scripts/build-wasm.mjs",
     "build": "bun run build:wasm && tsc -b --force",
     "check": "bun run build:wasm && tsc -b --force --pretty false",
