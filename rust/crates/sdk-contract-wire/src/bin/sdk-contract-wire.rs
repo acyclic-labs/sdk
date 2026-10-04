@@ -8,6 +8,7 @@ use std::process::Command;
 use acyclic_sdk_contract_options::options_proto;
 use acyclic_sdk_contract_wire::{
     actors_descriptor, actors_proto, descriptor_set_with_docs,
+    family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_product_bindings, generate_remote_facades,
     harness::{harness_descriptor, harness_proto},
@@ -664,7 +665,7 @@ fn authority_manifest(out: &Path, source_root: Option<&Path>) -> Result<String, 
         "{{\n  \"schema\": \"acyclic.sdk.rust-authority.v1\",\n  \"authority\": \"rust\",\n  \"schema_root\": \"rust/crates/sdk-contract-wire\",\n  \"source_git_sha\": \"{source_git_sha}\",\n  \"source_git_sha_kind\": \"git-revision\",\n  \"source_revision\": \"{source_revision}\",\n  \"source_revision_kind\": \"rust-model-sha256\",\n  \"source_files\": {source_files},\n  \"source_file_hashes\": {source_file_hashes},\n  \"exporter\": \"acyclic-sdk-contract-wire@{version}\",\n  \"families\": [\n{entries}\n  ]\n}}\n",
         source_files = model_source_files_json(),
         source_file_hashes = model_source_hashes_json(),
-        source_git_sha,
+        source_git_sha = source_git_sha,
         version = env!("CARGO_PKG_VERSION")
     ))
 }
@@ -699,12 +700,12 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
     let descriptor = FileDescriptorSet::decode(descriptor_bytes)?;
     let mut shapes = BTreeSet::new();
     let mut methods = Vec::new();
-    for file in descriptor.file {
-        let package = file.package.unwrap_or_default();
-        for service in file.service {
-            let service_name = service.name.unwrap_or_default();
-            for method in service.method {
-                let method_name = method.name.unwrap_or_default();
+    for file in &descriptor.file {
+        let package = file.package.as_deref().unwrap_or_default();
+        for service in &file.service {
+            let service_name = service.name.as_deref().unwrap_or_default();
+            for method in &service.method {
+                let method_name = method.name.as_deref().unwrap_or_default();
                 let shape = match (
                     method.client_streaming.unwrap_or(false),
                     method.server_streaming.unwrap_or(false),
@@ -715,8 +716,52 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
                     (true, true) => "bidi",
                 };
                 shapes.insert(shape);
+                let rpc = format!("{package}.{service_name}/{method_name}");
+                let response = method
+                    .output_type
+                    .clone()
+                    .unwrap_or_else(|| "<missing>".to_owned())
+                    .trim_start_matches('.')
+                    .to_owned();
+                let request = method
+                    .input_type
+                    .clone()
+                    .unwrap_or_else(|| "<missing>".to_owned())
+                    .trim_start_matches('.')
+                    .to_owned();
+                let response_fields = message_fields(&descriptor, &response);
+                let validations = family_for_package(&package)
+                    .and_then(family_view)
+                    .and_then(|family| family.operation_policies.iter().find(|policy| policy.rpc == rpc))
+                    .map(|policy| policy.validations.to_vec())
+                    .unwrap_or_default();
+                let response_rules = validations
+                    .iter()
+                    .filter(|validation| {
+                        validation.contains("response")
+                            || validation.contains("identity")
+                            || validation.contains("status")
+                            || validation.contains("terminal")
+                            || validation.contains("cursor")
+                            || validation.contains("delivery")
+                            || validation.contains("outcome")
+                    })
+                    .map(|validation| format!("\"{validation}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let fields = response_fields
+                    .iter()
+                    .map(|field| format!("\"{field}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let all_validations = validations
+                    .iter()
+                    .map(|validation| format!("\"{validation}\""))
+                    .collect::<Vec<_>>()
+                    .join(",");
                 methods.push(format!(
-                    "{{\"rpc\":\"{package}.{service_name}/{method_name}\",\"shape\":\"{shape}\"}}"
+                    "{{\"rpc\":\"{rpc}\",\"shape\":\"{shape}\",\"request\":\"{request}\",\"response\":\"{response}\",\"response_fields\":[{fields}],\"allow_empty_response\":{},\"validations\":[{all_validations}],\"response_rules\":[{response_rules}]}}",
+                    response_fields.is_empty()
                 ));
             }
         }
@@ -732,6 +777,61 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
         ),
         format!("[{}]", methods.join(",")),
     ))
+}
+
+fn family_for_package(package: &str) -> Option<&'static str> {
+    match package {
+        "acyclic.actors.v1" => Some("actors"),
+        "acyclic.workers.v1" => Some("workers"),
+        "acyclic.objects.v1" | "acyclic.objects.v2" => Some("objects"),
+        "acyclic.stream.v2" => Some("stream"),
+        "acyclic.filesystem.v2" => Some("filesystem"),
+        "acyclic.harness.v2" => Some("harness"),
+        "inference.customer.v1" => Some("inference"),
+        "acyclic.machines.v1" => Some("machines"),
+        _ => None,
+    }
+}
+
+fn message_fields(descriptor: &FileDescriptorSet, type_name: &str) -> Vec<String> {
+    for file in &descriptor.file {
+        let package = file.package.as_deref().unwrap_or_default();
+        if let Some(message) = find_message(&file.message_type, package, type_name) {
+            return message
+                .field
+                .iter()
+                .filter_map(|field| {
+                    field
+                        .json_name
+                        .clone()
+                        .or_else(|| field.name.clone())
+                })
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+fn find_message<'a>(
+    messages: &'a [prost_types::DescriptorProto],
+    prefix: &str,
+    type_name: &str,
+) -> Option<&'a prost_types::DescriptorProto> {
+    for message in messages {
+        let name = message.name.as_deref().unwrap_or_default();
+        let qualified = if prefix.is_empty() {
+            name.to_owned()
+        } else {
+            format!("{prefix}.{name}")
+        };
+        if qualified == type_name {
+            return Some(message);
+        }
+        if let Some(found) = find_message(&message.nested_type, &qualified, type_name) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 fn model_source_revision() -> String {
