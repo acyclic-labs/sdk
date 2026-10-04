@@ -1,0 +1,61 @@
+{
+  "schema": "acyclic.sdk.embedded.real-package-qualification.v1",
+  "status": "passed",
+  "source": {
+    "revision": "f599f380bf26a2210993cd6d548ed480715ab5ee",
+    "digest": "sha256:36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555",
+    "checkout": "Q:/sdk/.abi-positive-source-20261004",
+    "clean": true
+  },
+  "producer": {
+    "recipe": "cpp/embedded-consumer/portable-package-test.ps1",
+    "first_output": "Q:/sdk/.abi-positive-output-20261004",
+    "second_output": "Q:/sdk/.abi-positive-output-20261004b",
+    "independent_clean_builds": 2,
+    "source_digests_equal": true,
+    "artifact_hashes_equal": true,
+    "ctest": "3/3 passed",
+    "clean_prefix_consumer": "passed"
+  },
+  "package": {
+    "root": "Q:/sdk/.abi-positive-output-20261004/prefix",
+    "runtime_artifact": "bin/acyclic_sdk_embedded_prototype.dll",
+    "runtime_sha256": "44c7e2c07d693b93b6209ae4b9462ee1a4755db4f6596923cabc683da93e17bf",
+    "artifacts": {
+      "bin/acyclic_sdk_embedded_prototype.dll": "44c7e2c07d693b93b6209ae4b9462ee1a4755db4f6596923cabc683da93e17bf",
+      "include/acyclic/embedded.hpp": "49e06d55fe822c65604eb5699b1672fa8262ee9feb5a58019aa77d85b3f12572",
+      "include/acyclic_embedded_prototype.h": "64837e5a4e468e9748969025d3631e39b69e9de7f77d66d26e7876247b90c109",
+      "lib/acyclic_sdk_embedded_prototype.dll.lib": "67ae3ed7a570c2bf1961c234b21ef1af15204cd84c5ecab9b499fe73c9b7eefc",
+      "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake": "0836e861a779ceede1c0624507125c50ead8182ae99e00b716415fd3d5e1f066",
+      "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake": "c626df80d51f26a450ee36ae47e466121b32f0a9a98894687c0b7edc332170c4"
+    }
+  },
+  "central_gate": {
+    "command": "sdk-generation qualify-embedded --source-root <clean-source> --output <report> --receipt <release-abi-positive.json> --evidence <release-abi-generation-evidence-positive.json> --package-root <prefix>",
+    "positive": {
+      "exit_code": 0,
+      "report": "central-report/embedded-qualification.json",
+      "artifact_digest": "sha256:59e1ee09ad78aa07dd1b363ef351833890598a226f6d66aceb882f0f5bf1dfd1",
+      "consumers": ["c", "python-ctypes", "cpp"]
+    },
+    "tamper_negative": {
+      "mutation": "one byte changed in installed bin/acyclic_sdk_embedded_prototype.dll",
+      "exit_code": 1,
+      "rejection": "embedded consumer artifact hash mismatch: c"
+    }
+  },
+  "platform_receipt_gate": {
+    "schema": "acyclic.sdk.embedded.platform-package.v1",
+    "positive": {
+      "receipt": "platform-package-positive.json",
+      "exit_code": 0,
+      "runtime_artifact": "bin/acyclic_sdk_embedded_prototype.dll"
+    },
+    "tamper_negative": {
+      "mutation": "runtime_artifact changed to bin/not-the-installed-runtime.dll",
+      "exit_code": 1,
+      "rejection": "embedded platform runtime artifact is missing"
+    }
+  },
+  "publication": { "registry_published": false, "production_deployed": false }
+}
