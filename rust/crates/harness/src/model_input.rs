@@ -723,9 +723,38 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
             self.limits,
             self.option_policy.as_ref(),
         )?;
-        self.prefix.verify(&input)?;
-        input.validate_complete_exchange()?;
-        self.provider.admit(request)
+        self.admit_prepared(&input)
+    }
+
+    fn prepare_model_dispatch<'a>(
+        &'a self,
+        operation_id: crate::OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::model::ModelDispatchPermit>>> {
+        self.provider
+            .prepare_model_dispatch(operation_id, step, request_digest)
+    }
+
+    fn before_model_prepare<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        self.provider.before_model_prepare()
+    }
+
+    fn before_model_dispatch<'a>(
+        &'a self,
+        operation_id: crate::OperationId,
+        step: u32,
+    ) -> futures::future::BoxFuture<'a, Result<()>> {
+        self.provider.before_model_dispatch(operation_id, step)
+    }
+
+    fn before_model_reconcile<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        self.provider.before_model_reconcile()
+    }
+
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        self.provider
+            .output_token_limit_for_bytes(max_output_bytes)
     }
     fn generate<'a>(
         &'a self,
@@ -760,6 +789,14 @@ impl crate::model::ModelProvider for PrefixBoundModelProvider {
                 "prefix recovery requires the verified original request".into(),
             ))
         })
+    }
+}
+
+impl PrefixBoundModelProvider {
+    fn admit_prepared(&self, input: &PreparedModelInput) -> Result<()> {
+        self.prefix.verify(input)?;
+        input.validate_complete_exchange()?;
+        self.provider.admit(input.request())
     }
 }
 

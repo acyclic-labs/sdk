@@ -11,7 +11,7 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result, contract::canonical_json_bytes,
     runtime::TaskAdmissionRecord,
 };
-use futures::{Stream, StreamExt as _};
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -21,6 +21,19 @@ use std::{
     task::{Context, Poll},
     time::Instant,
 };
+
+/// Refreshes a root provider's remaining ceiling from its durable budget
+/// projection immediately before a model request.
+pub type RootBudgetRefresh = Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SwarmResourceRequest>> + Send + Sync>;
+
+/// Claims a root model step in the durable budget before provider work starts.
+pub type RootBudgetClaim = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
+/// Confirms a child dispatch after its model request has been prepared.
+pub type DispatchConfirmation = Arc<dyn Fn(OperationId, IdempotencyKey, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
+/// Produces the opaque cross-stream mutation committed with `ModelStarted`.
+pub type DispatchPermitFactory = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<crate::model::ModelDispatchPermit>> + Send + Sync>;
 
 /// Maximum number of agents one budget projection may retain.
 pub const MAX_SWARM_AGENTS: u64 = 1_000_000;
@@ -752,13 +765,11 @@ pub struct SwarmRootDispatchContext<S> {
     limiter: SwarmUsageLimiter,
     issuer: SwarmUsageReceiptIssuer<S>,
     dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
-    dynamic_base: SwarmUsage,
 }
 
 impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     fn new(limiter: SwarmUsageLimiter, issuer: SwarmUsageReceiptIssuer<S>) -> Self {
         Self {
-            dynamic_base: limiter.usage(),
             limiter,
             issuer,
             dynamic_limits: None,
@@ -771,7 +782,6 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
     ) -> Self {
         Self {
-            dynamic_base: limiter.usage(),
             limiter,
             issuer,
             dynamic_limits: Some(dynamic_limits),
@@ -785,10 +795,9 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         let limits = *dynamic_limits
             .lock()
             .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))?;
-        let delta = next.checked_delta(self.dynamic_base)?;
-        if delta.model_steps > limits.model_steps
-            || delta.output_bytes > limits.output_bytes
-            || delta.execution_time_ms > limits.execution_time_ms
+        if next.model_steps > limits.model_steps
+            || next.output_bytes > limits.output_bytes
+            || next.execution_time_ms > limits.execution_time_ms
         {
             return Err(Error::Conflict(
                 "root provider exceeds remaining swarm budget".into(),
@@ -1022,9 +1031,15 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 pub struct MeteredModelProvider<P: ?Sized, S> {
     provider: Arc<P>,
     meter: SwarmProviderMeter<S>,
+    root_refresh: Option<RootBudgetRefresh>,
+    root_dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
+    root_claim: Option<RootBudgetClaim>,
+    dispatch_confirmation: Option<DispatchConfirmation>,
+    dispatch_permit: Option<DispatchPermitFactory>,
+    bound_dispatch_id: Option<IdempotencyKey>,
 }
 
-struct MeteredStream<'a, S> {
+struct MeteredStream<'a, S: SwarmUsageSource> {
     inner: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
     meter: SwarmProviderMeter<S>,
     started: Instant,
@@ -1107,12 +1122,19 @@ where
         provider: Arc<P>,
         context: SwarmDispatchContext<S>,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let bound_dispatch_id = context.token().dispatch_id().cloned();
         let meter = SwarmProviderMeter {
             context: Arc::new(Mutex::new(SwarmProviderBoundary::Child(context))),
         };
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id,
         });
         (wrapped, meter)
     }
@@ -1128,6 +1150,12 @@ where
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id: None,
         });
         (wrapped, meter)
     }
@@ -1151,7 +1179,100 @@ where
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id: None,
         });
+        (wrapped, meter)
+    }
+
+    /// Wraps root work with a callback that refreshes its cumulative ceiling
+    /// before each request. The callback is evaluated by the provider wrapper,
+    /// while the context performs the final check immediately before the
+    /// model stream is entered.
+    pub fn new_root_with_refresh(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, None)
+    }
+
+    /// Wraps root work with refresh and a durable per-step claim callback.
+    pub fn new_root_with_refresh_and_claim(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+        claim: RootBudgetClaim,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), Some(claim), None)
+    }
+
+    /// Wraps root work with refresh and an opaque permit factory. The permit
+    /// is committed atomically with the execution journal's model start.
+    pub fn new_root_with_refresh_and_permit(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+        permit: DispatchPermitFactory,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, Some(permit))
+    }
+
+    fn new_root_with_refresh_and_options(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: Option<RootBudgetRefresh>,
+        claim: Option<RootBudgetClaim>,
+        permit: Option<DispatchPermitFactory>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let dynamic_limits = Arc::new(Mutex::new(context.limiter.limits()));
+        let root_context = SwarmRootDispatchContext::new_with_dynamic(
+            context.limiter,
+            context.issuer,
+            dynamic_limits.clone(),
+        );
+        let meter = SwarmProviderMeter {
+            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(root_context))),
+        };
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+            root_refresh: refresh,
+            root_dynamic_limits: Some(dynamic_limits),
+            root_claim: claim,
+            dispatch_confirmation: None,
+            dispatch_permit: permit,
+            bound_dispatch_id: None,
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps child work with a callback that confirms its prepared dispatch
+    /// immediately before the provider stream is entered.
+    pub fn new_with_dispatch_confirmation(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+        confirmation: DispatchConfirmation,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let (mut wrapped, meter) = Self::new(provider, context);
+        let inner = Arc::get_mut(&mut wrapped).expect("new wrapper is unique");
+        inner.dispatch_confirmation = Some(confirmation);
+        (wrapped, meter)
+    }
+
+    /// Wraps child work with an opaque per-step permit factory.
+    pub fn new_with_dispatch_permit(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+        permit: DispatchPermitFactory,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let (mut wrapped, meter) = Self::new(provider, context);
+        let inner = Arc::get_mut(&mut wrapped).expect("new wrapper is unique");
+        inner.dispatch_permit = Some(permit);
         (wrapped, meter)
     }
 
@@ -1190,6 +1311,20 @@ where
             finished: false,
         })
     }
+
+    async fn refresh_root_ceiling(&self) -> Result<()> {
+        let (Some(refresh), Some(dynamic_limits)) =
+            (self.root_refresh.as_ref(), self.root_dynamic_limits.as_ref())
+        else {
+            return Ok(());
+        };
+        let limits = refresh().await?;
+        *dynamic_limits
+            .lock()
+            .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))? =
+            limits;
+        Ok(())
+    }
 }
 
 impl<P, S> crate::model::ModelProvider for MeteredModelProvider<P, S>
@@ -1203,6 +1338,66 @@ where
 
     fn admit(&self, request: &crate::model::ModelRequest) -> Result<()> {
         self.provider.admit(request)
+    }
+
+    fn before_model_prepare<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.provider.before_model_prepare().await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn before_model_dispatch(
+        &self,
+        operation_id: OperationId,
+        step: u32,
+    ) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.provider
+                .before_model_dispatch(operation_id, step)
+                .await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn prepare_model_dispatch<'a>(
+        &'a self,
+        operation_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::model::ModelDispatchPermit>>> {
+        if let Some(factory) = self.dispatch_permit.clone() {
+            return Box::pin(async move { factory(operation_id, step, request_digest).await.map(Some) });
+        }
+        if let Some(claim) = self.root_claim.clone() {
+            return Box::pin(async move {
+                claim(operation_id, step, request_digest).await?;
+                Ok(None)
+            });
+        }
+        if let Some(confirmation) = self.dispatch_confirmation.clone() {
+            let dispatch_id = self.bound_dispatch_id.clone();
+            return Box::pin(async move {
+                let dispatch_id = dispatch_id.ok_or_else(|| {
+                    Error::Unauthorized("child dispatch confirmation identity is missing".into())
+                })?;
+                confirmation(operation_id, dispatch_id, request_digest).await?;
+                Ok(None)
+            });
+        }
+        self.provider
+            .prepare_model_dispatch(operation_id, step, request_digest)
+    }
+
+    fn before_model_reconcile<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.provider.before_model_reconcile().await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        self.provider.output_token_limit_for_bytes(max_output_bytes)
     }
 
     fn generate<'a>(
@@ -1223,7 +1418,6 @@ where
         let provider = self.provider.clone();
         let meter = self.meter.clone();
         Box::pin(async move {
-            meter.admit_model_step()?;
             let remaining_ms = meter.remaining_execution_time_ms()?;
             if remaining_ms == 0 {
                 return Err(Error::Conflict(
@@ -1252,6 +1446,17 @@ where
                 }
             }
             Ok(events)
+        })
+    }
+
+    fn reconcile_admitted<'a>(
+        &'a self,
+        request: crate::model::ModelRequest,
+        attempt: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        Box::pin(async move {
+            self.admit(&request)?;
+            self.provider.reconcile_admitted(request, attempt).await
         })
     }
 }
@@ -1458,6 +1663,11 @@ pub struct SwarmForkReservation {
     /// Provider dispatch identity recorded when publication is activated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_id: Option<IdempotencyKey>,
+    /// Per-step dispatch identities durably confirmed after the child lease
+    /// became eligible to run.  A confirmed step keeps its reservation held
+    /// until the provider reaches a durable terminal outcome.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub confirmed_dispatches: BTreeMap<u32, ([u8; 32], IdempotencyKey)>,
     /// Current reservation lifecycle.
     pub state: SwarmReservationState,
     /// Publication evidence, present before activation.
@@ -1526,6 +1736,32 @@ pub enum SwarmBudgetEvent {
         /// Provider dispatch identity, when activation crossed a provider
         /// dispatch boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        dispatch_id: Option<IdempotencyKey>,
+    },
+    /// Confirms that one prepared child model request won the dispatch CAS.
+    ChildDispatchConfirmed {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for confirmation.
+        owner: SwarmOwnerFence,
+        /// Per-step provider dispatch identity.
+        dispatch_id: IdempotencyKey,
+        /// Executor model step.
+        step: u32,
+        /// Digest of the exact prepared model request.
+        request_digest: [u8; 32],
+    },
+    /// Claims one root model step before provider work starts.
+    RootModelStepClaimed {
+        /// Exact owner fence used for the claim.
+        owner: SwarmOwnerFence,
+        /// Root operation identity.
+        operation_id: OperationId,
+        /// Executor model step.
+        step: u32,
+        /// Digest of the exact prepared model request.
+        request_digest: [u8; 32],
+        /// Stable root provider dispatch identity.
         dispatch_id: Option<IdempotencyKey>,
     },
     /// Adds cumulative measured usage to a live child.
@@ -1726,6 +1962,9 @@ struct SwarmBudgetState {
     root_usage: SwarmUsage,
     root_usage_sequence: u64,
     root_dispatch_id: Option<IdempotencyKey>,
+    /// Durable root step claims that have not yet been reflected in a
+    /// cumulative provider usage receipt.
+    root_claims: BTreeMap<(OperationId, u32), ([u8; 32], IdempotencyKey, SwarmUsage)>,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
 }
@@ -1782,6 +2021,7 @@ impl SwarmBudget {
                 root_usage: SwarmUsage::default(),
                 root_usage_sequence: 0,
                 root_dispatch_id,
+                root_claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -2074,6 +2314,7 @@ impl SwarmBudget {
             usage: SwarmUsage::default(),
             usage_sequence: 0,
             dispatch_id: None,
+            confirmed_dispatches: BTreeMap::new(),
             state: SwarmReservationState::Reserved,
             publication: None,
             request_digest: digest,
@@ -2202,6 +2443,198 @@ impl SwarmBudget {
         })
     }
 
+    /// Reconstructs an active child that has not yet won the provider
+    /// confirmation CAS.  Recovery may use this token to retry confirmation;
+    /// it must not start provider work until confirmation is durable.
+    pub(crate) fn resume_active_unconfirmed_with_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let state = self.lock()?;
+        require_owner(&state, &owner)?;
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        if !reservation.confirmed_dispatches.is_empty() {
+            return Err(Error::Conflict("swarm dispatch is already confirmed".into()));
+        }
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        let dispatch_id = reservation.dispatch_id.clone().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no provider dispatch identity".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: Some(dispatch_id),
+            resources: reservation.resources,
+        })
+    }
+
+    /// Confirms one child dispatch in the in-memory projection.  The durable
+    /// journal persists the corresponding event before invoking the provider.
+    pub(crate) fn confirm_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+    ) -> Result<SwarmDispatchToken> {
+        let request_digest = *blake3::hash(dispatch_id.0.as_bytes()).as_bytes();
+        self.confirm_dispatch_step(operation_id, owner, dispatch_id, 0, request_digest)
+    }
+
+    fn confirm_dispatch_step(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<SwarmDispatchToken> {
+        if request_digest == [0; 32] {
+            return Err(Error::Invalid(
+                "swarm dispatch confirmation requires a request digest".into(),
+            ));
+        }
+        IdempotencyKey::new(dispatch_id.0.clone())?;
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let mut reservation = state
+            .reservations
+            .get(&operation_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != *owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        let activation_id = reservation
+            .dispatch_id
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("swarm dispatch identity is missing".into()))?;
+        if step == 0 {
+            if activation_id != &dispatch_id {
+                return Err(Error::Conflict("swarm dispatch identity differs".into()));
+            }
+        } else {
+            let expected = format!(
+                "{}:model:{}:{}",
+                activation_id.0,
+                step,
+                blake3::hash(&request_digest).to_hex(),
+            );
+            if dispatch_id.0 != expected {
+                return Err(Error::Conflict(
+                    "swarm dispatch identity is not bound to the admitted lease".into(),
+                ));
+            }
+        }
+        if let Some((existing_digest, existing_id)) =
+            reservation.confirmed_dispatches.get(&step)
+        {
+            if *existing_digest != request_digest || existing_id != &dispatch_id {
+                return Err(Error::Conflict("swarm dispatch retry differs".into()));
+            }
+            return self.token_from_reservation(reservation, owner.clone());
+        }
+        reservation
+            .confirmed_dispatches
+            .insert(step, (request_digest, dispatch_id));
+        let token = self.token_from_reservation(reservation.clone(), owner.clone())?;
+        state.reservations.insert(operation_id, reservation);
+        Ok(token)
+    }
+
+    fn token_from_reservation(
+        &self,
+        reservation: SwarmForkReservation,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id: reservation.operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: reservation.dispatch_id,
+            resources: reservation.resources,
+        })
+    }
+
+    /// Claims one root model step against the current remaining session
+    /// ceiling. The claim is durable and remains held until a cumulative root
+    /// usage receipt accounts for it.
+    pub(crate) fn claim_root_model_step(
+        &self,
+        owner: &SwarmOwnerFence,
+        operation_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        dispatch_id: IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        if request_digest == [0; 32] {
+            return Err(Error::Invalid("root model request digest is empty".into()));
+        }
+        IdempotencyKey::new(dispatch_id.0.clone())?;
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let key = (operation_id, step);
+        if let Some((existing_digest, existing_id, _)) = state.root_claims.get(&key) {
+            if *existing_digest == request_digest && existing_id == &dispatch_id {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            return Err(Error::Conflict("root model claim identity differs".into()));
+        }
+        let remaining = root_resource_limits(&state)?;
+        if remaining.model_steps == 0 {
+            return Err(Error::Conflict("root model step budget exhausted".into()));
+        }
+        if operation_id != state.session_id {
+            return Err(Error::Unauthorized("root model claim must use the session identity".into()));
+        }
+        // Reserve the complete remaining root ceiling for the in-flight
+        // dispatch.  The provider reports the actual output and elapsed time
+        // in its cumulative receipt; releasing this reservation only after
+        // that receipt prevents two root dispatches from oversubscribing
+        // output or execution time while both are in flight.
+        let claim = SwarmUsage {
+            model_steps: remaining
+                .model_steps
+                .checked_sub(state.root_usage.model_steps)
+                .ok_or_else(|| Error::Storage("root model claim ceiling regressed".into()))?,
+            output_bytes: remaining
+                .output_bytes
+                .checked_sub(state.root_usage.output_bytes)
+                .ok_or_else(|| Error::Storage("root output claim ceiling regressed".into()))?,
+            execution_time_ms: remaining
+                .execution_time_ms
+                .checked_sub(state.root_usage.execution_time_ms)
+                .ok_or_else(|| Error::Storage("root execution-time claim ceiling regressed".into()))?,
+        };
+        if claim.model_steps == 0 || claim.output_bytes == 0 || claim.execution_time_ms == 0 {
+            return Err(Error::Conflict("root model step budget exhausted".into()));
+        }
+        state.root_claims.insert(key, (request_digest, dispatch_id, claim));
+        Ok(state.root_usage)
+    }
+
     /// Reports cumulative usage and retains the unconsumed remainder.
     pub(crate) fn report_usage(
         &self,
@@ -2295,6 +2728,9 @@ impl SwarmBudget {
                 "completed swarm child cannot be cancelled".into(),
             ));
         }
+        if !reservation.confirmed_dispatches.is_empty() {
+            return Err(Error::Indeterminate(operation_id));
+        }
         if state.reservations.values().any(|descendant| {
             descendant.parent_operation_id == Some(operation_id)
                 && matches!(
@@ -2373,6 +2809,38 @@ impl SwarmBudget {
                 dispatch_id,
             } => self
                 .activate_with_dispatch(operation_id, owner, publication, dispatch_id)
+                .map(|_| ()),
+            SwarmBudgetEvent::ChildDispatchConfirmed {
+                operation_id,
+                owner,
+                dispatch_id,
+                step,
+                request_digest,
+            } => self
+                .confirm_dispatch_step(
+                    operation_id,
+                    &owner,
+                    dispatch_id,
+                    step,
+                    request_digest,
+                )
+                .map(|_| ()),
+            SwarmBudgetEvent::RootModelStepClaimed {
+                owner,
+                operation_id,
+                step,
+                request_digest,
+                dispatch_id,
+            } => self
+                .claim_root_model_step(
+                    &owner,
+                    operation_id,
+                    step,
+                    request_digest,
+                    dispatch_id.ok_or_else(|| {
+                        Error::Invalid("root model claim has no dispatch identity".into())
+                    })?,
+                )
                 .map(|_| ()),
             SwarmBudgetEvent::UsageReported {
                 operation_id,
@@ -2503,6 +2971,10 @@ fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
 }
 
 fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest> {
+    let root_claimed = state.root_claims.values().try_fold(
+        SwarmUsage::default(),
+        |total, (_, _, claim)| add_usage(total, *claim),
+    )?;
     let ceiling = |limit: u64, consumed: u64, root: u64, reserved: u64| {
         limit
             .checked_sub(consumed)
@@ -2515,19 +2987,22 @@ fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest
             state.limits.max_model_steps,
             state.usage.consumed.model_steps,
             state.root_usage.model_steps,
-            state.usage.reserved.model_steps,
+            state.usage.reserved.model_steps.checked_add(root_claimed.model_steps)
+                .ok_or_else(|| Error::Storage("root model claim projection overflow".into()))?,
         )?,
         output_bytes: ceiling(
             state.limits.max_output_bytes,
             state.usage.consumed.output_bytes,
             state.root_usage.output_bytes,
-            state.usage.reserved.output_bytes,
+            state.usage.reserved.output_bytes.checked_add(root_claimed.output_bytes)
+                .ok_or_else(|| Error::Storage("root output claim projection overflow".into()))?,
         )?,
         execution_time_ms: ceiling(
             state.limits.max_execution_time_ms,
             state.usage.consumed.execution_time_ms,
             state.root_usage.execution_time_ms,
-            state.usage.reserved.execution_time_ms,
+            state.usage.reserved.execution_time_ms.checked_add(root_claimed.execution_time_ms)
+                .ok_or_else(|| Error::Storage("root execution-time claim projection overflow".into()))?,
         )?,
     };
     if limits.model_steps == 0 || limits.output_bytes == 0 || limits.execution_time_ms == 0 {
@@ -2902,6 +3377,14 @@ fn update_root_usage(
     }
     state.root_usage = usage;
     state.usage.consumed = next;
+    let mut remaining_claims = delta.model_steps;
+    while remaining_claims != 0 {
+        let Some(key) = state.root_claims.keys().next().copied() else {
+            break;
+        };
+        state.root_claims.remove(&key);
+        remaining_claims = remaining_claims.saturating_sub(1);
+    }
     if let Some(receipt) = receipt {
         state.root_usage_sequence = receipt.sequence;
     }

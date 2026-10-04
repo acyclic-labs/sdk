@@ -18,7 +18,8 @@ use crate::{
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    AppendOutcome, CommitCondition, CommitMutation, CommitOutcome, CommitRequest,
+    IdempotencyKey as StreamKey, StreamClient, StreamError, StreamPath, StreamProvider,
 };
 use bytes::Bytes;
 use futures::future::BoxFuture;
@@ -617,6 +618,83 @@ where
                         Err(Error::Indeterminate(operation_id))
                     }
                 }
+            }
+        })
+    }
+
+    fn append_model_started_with_permit<'a>(
+        &'a self,
+        operation_id: OperationId,
+        expected_tail: u64,
+        claim_id: String,
+        event: ExecutionEvent,
+        permit: Option<crate::model::ModelDispatchPermit>,
+    ) -> BoxFuture<'a, Result<bool>> {
+        let Some(permit) = permit else {
+            return self.append_if_tail(operation_id, expected_tail, claim_id, event);
+        };
+        Box::pin(async move {
+            if claim_id.is_empty() || claim_id.len() > 256 || expected_tail >= MAX_RECORDS {
+                return Err(Error::Invalid(
+                    "execution journal compare-and-append is invalid".into(),
+                ));
+            }
+            event.validate_schema_version()?;
+            self.verify_event_refs(operation_id, &event).await?;
+            let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
+            let retry_digest = digest.to_hex().to_string();
+            let bytes = serde_json::to_vec(&Observation {
+                operation_id,
+                retry_digest,
+                event,
+            })
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+            if bytes.len() > acyclic_stream::MAX_RECORD_BYTES {
+                return Err(Error::Invalid(
+                    "execution journal observation exceeds Stream limit".into(),
+                ));
+            }
+            let budget_path = StreamPath::new(&permit.budget_path)
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let execution_path = self.path(operation_id)?;
+            let idempotency_key = StreamKey::new(Bytes::from(permit.idempotency_key))
+                .map_err(|error| Error::Invalid(error.to_string()))?;
+            let outcome = self
+                .stream
+                .commit(CommitRequest {
+                    conditions: vec![
+                        CommitCondition::Tail {
+                            path: budget_path,
+                            expected: permit.budget_tail,
+                        },
+                        CommitCondition::Tail {
+                            path: execution_path.clone(),
+                            expected: expected_tail,
+                        },
+                    ],
+                    mutations: vec![
+                        CommitMutation::Append {
+                            path: StreamPath::new(&permit.budget_path)
+                                .map_err(|error| Error::Invalid(error.to_string()))?,
+                            records: vec![Bytes::from(permit.budget_record)],
+                        },
+                        CommitMutation::Append {
+                            path: execution_path,
+                            records: vec![Bytes::from(bytes)],
+                        },
+                    ],
+                    idempotency_key,
+                })
+                .await
+                .map_err(|error| match error {
+                    StreamError::Unavailable | StreamError::DeadlineElapsed => {
+                        Error::Indeterminate(operation_id)
+                    }
+                    other => Error::Storage(other.to_string()),
+                })?;
+            match outcome {
+                CommitOutcome::Committed(_) => Ok(true),
+                CommitOutcome::Conflict(_) => Ok(false),
             }
         })
     }

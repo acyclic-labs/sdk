@@ -8,7 +8,7 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost, InteractionOperatorAuthorizer,
-    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
+    LocalHarnessTools, PersistentLocalHarness, ensure_session_signing_key, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result, TaskId,
@@ -29,7 +29,7 @@ use crate::{
     runtime::TaskRunLimits,
     store::StreamAggregate,
     swarm_budget::{
-        ForkPublication, SwarmBudgetLimits, SwarmBudgetUsage, SwarmDispatchToken,
+        DispatchPermitFactory, ForkPublication, SwarmBudgetLimits, SwarmBudgetUsage, SwarmDispatchToken,
         SwarmForkRequest, SwarmOwnerFence, SwarmProviderMeter, SwarmResourceRequest, SwarmUsage,
         SwarmUsageSource,
         VerifiedForkPublication,
@@ -111,7 +111,12 @@ impl SwarmUsageSource for LocalSwarmUsageSource {
         usage: SwarmUsage,
     ) {
         if let Ok(mut counters) = self.usage.lock() {
-            counters.insert(Self::key(operation_id, dispatch_id), usage);
+            let entry = counters.entry(Self::key(operation_id, dispatch_id)).or_default();
+            *entry = SwarmUsage {
+                model_steps: entry.model_steps.max(usage.model_steps),
+                output_bytes: entry.output_bytes.max(usage.output_bytes),
+                execution_time_ms: entry.execution_time_ms.max(usage.execution_time_ms),
+            };
         }
     }
 
@@ -241,11 +246,8 @@ impl Default for LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
-            swarm_owner: Some(
-                SwarmOwnerFence::new(format!("local-swarm-{}", std::process::id()), 0)
-                    .expect("local swarm owner fence is valid"),
-            ),
-            swarm_usage_source: Some(Arc::new(LocalSwarmUsageSource::default())),
+            swarm_owner: None,
+            swarm_usage_source: None,
         }
     }
 }
@@ -1878,6 +1880,13 @@ struct StoredCompletionRef {
     digest: [u8; 32],
 }
 
+#[derive(Clone, Debug)]
+struct RecoveredCompletion {
+    output: TurnOutput,
+    output_ref: Option<FileRef>,
+    output_digest: [u8; 32],
+}
+
 /// Persisted declaration of the exact inherited model prefix and child suffix.
 /// The declaration is reconstructed as an `InheritedModelContext` only after
 /// the parent publication and child seed have been recovered.
@@ -1999,6 +2008,19 @@ enum StoredEvent {
         #[serde(default)]
         declaration: Option<LocalInheritedModelDeclaration>,
     },
+    /// Retains the exact child output before the budget ledger settles the
+    /// provider dispatch. A later registry projection can replay this marker
+    /// after a process dies between ledger settlement and ForkCompleted.
+    ForkOutputPrepared {
+        child: TaskId,
+        operation: OperationId,
+        #[serde(default)]
+        output: Option<TurnOutput>,
+        #[serde(default)]
+        output_ref: Option<FileRef>,
+        #[serde(default)]
+        output_digest: Option<[u8; 32]>,
+    },
     ForkCompleted {
         child: TaskId,
         operation: OperationId,
@@ -2095,7 +2117,6 @@ pub struct PersistentLocalSwarm {
     budget_journal: Option<Arc<Mutex<SwarmBudgetJournal<LocalStream>>>>,
     /// Root provider meter retained until its receipt is durably reported.
     root_budget_meter: Option<SwarmProviderMeter<Arc<dyn SwarmUsageSource + Send + Sync>>>,
-    root_dynamic_limits: Option<Arc<StdMutex<SwarmResourceRequest>>>,
     budget_owner: Option<SwarmOwnerFence>,
     budget_usage_source: Option<Arc<dyn SwarmUsageSource + Send + Sync>>,
     /// Per-task live terminal fences. The registry remains the cross-process
@@ -2105,13 +2126,21 @@ pub struct PersistentLocalSwarm {
 }
 
 impl PersistentLocalSwarm {
+    async fn task_gate(&self, task: TaskId) -> Arc<Mutex<()>> {
+        let mut gates = self.task_gates.lock().await;
+        gates
+            .entry(task)
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
     /// caller explicitly activates or resumes one.
     pub async fn open(
         root: impl AsRef<Path>,
         config: LocalSwarmConfig,
         provider: Arc<dyn ModelProvider>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         Self::open_with_bindings(root, config, provider, LocalSwarmBindings::default()).await
     }
 
@@ -2123,9 +2152,41 @@ impl PersistentLocalSwarm {
         mut config: LocalSwarmConfig,
         provider: Arc<dyn ModelProvider>,
         mut bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
+        let bindings = if let Some(plans) = bindings.model_fork_plans.clone() {
+            bindings.with_model_fork_plans(plans)
+        } else if let Some(resolver) = bindings.filesystem_fork_resolver.clone() {
+            bindings.with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
+        } else {
+            bindings
+        };
+        let swarm = Arc::new(
+            Self::open_with_bindings_unbound(root, config, provider, bindings).await?,
+        );
+        if let Some(plans) = swarm.bindings.model_fork_plans.as_ref() {
+            plans.bind_swarm(Arc::downgrade(&swarm))?;
+        }
+        if let Some(publisher) = &swarm.model_fork_publisher {
+            publisher.bind(Arc::downgrade(&swarm))?;
+        }
+        Ok(swarm)
+    }
+
+    async fn open_with_bindings_unbound(
+        root: impl AsRef<Path>,
+        mut config: LocalSwarmConfig,
+        provider: Arc<dyn ModelProvider>,
+        mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
         let root = root.as_ref().to_path_buf();
+        if bindings.swarm_usage_source.is_none() {
+            // Runtime counters belong to this opened provider context. The
+            // durable budget journal is the cross-handle authority; sharing a
+            // process cache here would merge independent dispatches by
+            // observation order and could hide a restart gap.
+            bindings.swarm_usage_source = Some(Arc::new(LocalSwarmUsageSource::default()));
+        }
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
                 Error::Invalid(
@@ -2169,6 +2230,15 @@ impl PersistentLocalSwarm {
             };
             filesystem_host.create_volume(&project).await?;
             config.project = Some(project.clone());
+            let signing_key = ensure_session_signing_key(
+                &root,
+                &config.model,
+                config.limits,
+                config.project.as_ref(),
+                &filesystem_host,
+                &conversation_stream,
+            )
+            .await?;
             bindings.filesystem_fork_resolver = Some(Arc::new(
                 LocalFilesystemForkResolver::new(
                     filesystem_host.clone(),
@@ -2176,8 +2246,24 @@ impl PersistentLocalSwarm {
                     stream_provider.clone(),
                     project,
                 )?
-                .with_host_secret([0x4C; 32])?,
+                .with_host_secret(signing_key)?,
             ));
+        }
+        if bindings.swarm_owner.is_none() {
+            let signing_key = ensure_session_signing_key(
+                &root,
+                &config.model,
+                config.limits,
+                config.project.as_ref(),
+                &filesystem_host,
+                &conversation_stream,
+            )
+            .await?;
+            let owner_digest = blake3::hash(&signing_key).to_hex();
+            bindings.swarm_owner = Some(SwarmOwnerFence::new(
+                format!("local-host-{owner_digest}"),
+                0,
+            )?);
         }
         if bindings.model_fork_plans.is_none() {
             if let Some(resolver) = bindings.filesystem_fork_resolver.clone() {
@@ -2249,7 +2335,7 @@ impl PersistentLocalSwarm {
         let root_session = open_session_path(&root, root_task);
         let swarm_limits = config.swarm_budget.unwrap_or_default();
         config.swarm_budget = Some(swarm_limits);
-        let (provider_for_root, budget_journal, root_budget_meter, budget_owner, root_dynamic_limits) =
+        let (provider_for_root, budget_journal, root_budget_meter, budget_owner) =
             match (
                 Some(swarm_limits),
                 bindings.swarm_owner.clone(),
@@ -2263,26 +2349,74 @@ impl PersistentLocalSwarm {
                         session_id,
                         owner.clone(),
                         limits,
-                        dispatch_id,
+                        dispatch_id.clone(),
                     )
                     .await?;
-                    let dynamic_limits = Arc::new(StdMutex::new(journal.root_resource_limits()?));
+                    let (_, owner, _) = journal.descriptor()?;
+                    let journal = Arc::new(Mutex::new(journal));
+                    let refresh_journal = journal.clone();
+                    let refresh_source = source.clone();
+                    let refresh_session = session_id;
+                    let refresh_dispatch = dispatch_id.clone();
+                    let refresh_owner = owner.clone();
+                    let refresh: crate::swarm_budget::RootBudgetRefresh = Arc::new(move || {
+                        let refresh_journal = refresh_journal.clone();
+                        let refresh_source = refresh_source.clone();
+                        let refresh_owner = refresh_owner.clone();
+                        let refresh_dispatch = refresh_dispatch.clone();
+                        Box::pin(async move {
+                            let mut journal = refresh_journal.lock().await;
+                            journal.refresh().await?;
+                            let cursor = journal.root_usage_cursor()?;
+                            let measured = refresh_source
+                                .cumulative_usage(refresh_session, &refresh_dispatch)?;
+                            if cursor.usage != Some(measured) {
+                                let mut issuer =
+                                    journal.root_usage_receipt_issuer(refresh_source.clone())?;
+                                let receipt = issuer.issue_at_least(measured)?;
+                                journal
+                                    .report_root_usage_with_receipt(&refresh_owner, receipt)
+                                    .await?;
+                            }
+                            journal.refresh().await?;
+                            journal.root_resource_limits()
+                        })
+                    });
+                    let permit_journal = journal.clone();
+                    let permit_owner = owner.clone();
+                    let permit: crate::swarm_budget::DispatchPermitFactory = Arc::new(
+                        move |operation_id, step, request_digest| {
+                        let permit_journal = permit_journal.clone();
+                        let permit_owner = permit_owner.clone();
+                        Box::pin(async move {
+                            let mut journal = permit_journal.lock().await;
+                            journal.refresh().await?;
+                            journal.root_dispatch_permit(
+                                &permit_owner,
+                                operation_id,
+                                step,
+                                request_digest,
+                            )
+                        })
+                    });
                     let (provider, meter) = journal
-                        .metered_root_provider_with_dynamic(
+                        .lock()
+                        .await
+                        .metered_root_provider_with_refresh_and_permit(
                             provider.clone(),
                             source,
-                            dynamic_limits.clone(),
+                            refresh,
+                            permit,
                         )?;
                     let provider: Arc<dyn ModelProvider> = provider;
                     (
                         provider,
-                        Some(Arc::new(Mutex::new(journal))),
+                        Some(journal),
                         Some(meter),
                         Some(owner),
-                        Some(dynamic_limits),
                     )
                 }
-                (None, None, None) => (provider.clone(), None, None, None, None),
+                (None, None, None) => (provider.clone(), None, None, None),
                 _ => {
                     return Err(Error::Invalid(
                         "swarm budget requires limits, owner, and usage source".into(),
@@ -2327,7 +2461,6 @@ impl PersistentLocalSwarm {
             sessions: Mutex::new(opened),
             budget_journal,
             root_budget_meter,
-            root_dynamic_limits,
             budget_owner,
             budget_usage_source,
             task_gates: Mutex::new(BTreeMap::new()),
@@ -2340,7 +2473,7 @@ impl PersistentLocalSwarm {
         model: Model,
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         Self::open(root, LocalSwarmConfig::new(model, limits)?, provider).await
     }
 
@@ -2351,7 +2484,7 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
         bindings: LocalSwarmBindings,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         Self::open_with_bindings(
             root,
             LocalSwarmConfig::new(model, limits)?,
@@ -2369,21 +2502,7 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         bindings: LocalSwarmBindings,
     ) -> Result<Arc<Self>> {
-        let bindings = if let Some(plans) = bindings.model_fork_plans.clone() {
-            bindings.with_model_fork_plans(plans)
-        } else if let Some(resolver) = bindings.filesystem_fork_resolver.clone() {
-            bindings.with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
-        } else {
-            bindings
-        };
-        let swarm = Arc::new(Self::open_with_bindings(root, config, provider, bindings).await?);
-        if let Some(plans) = swarm.bindings.model_fork_plans.as_ref() {
-            plans.bind_swarm(Arc::downgrade(&swarm))?;
-        }
-        if let Some(publisher) = &swarm.model_fork_publisher {
-            publisher.bind(Arc::downgrade(&swarm))?;
-        }
-        Ok(swarm)
+        Self::open_with_bindings(root, config, provider, bindings).await
     }
 
     /// Opens a shared model-backed swarm using the default local composition.
@@ -2736,6 +2855,8 @@ impl PersistentLocalSwarm {
     /// when a live source is available. The journal append is authoritative;
     /// an observation-only live bridge does not undo the persisted decision.
     pub async fn cancel(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        let gate = self.task_gate(task).await;
+        let _task_guard = gate.lock().await;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let session = self.session(task).await?;
         if session.phase == LocalSessionPhase::Cancelled {
@@ -2762,7 +2883,22 @@ impl PersistentLocalSwarm {
         if session.parent.is_none() {
             self.persist_root_budget_usage().await?;
         }
+        // Stop a confirmed provider lease before releasing its durable
+        // reservation.  A registry cancellation record alone cannot fence a
+        // provider that is already running, and freeing the budget first
+        // would let another handle spend that capacity concurrently.
+        if session.operation.is_some() {
+            self.propagate_interrupted_provider(task).await?;
+        }
         self.cancel_child_budget(&session).await?;
+        if let Some(crate::swarm_budget::SwarmReservationState::Completed) =
+            self.child_budget_state(session.operation).await?
+        {
+            return Err(Error::Conflict(
+                "durable child budget completion wins cancellation; retry to finalize output"
+                    .into(),
+            ));
+        }
         let registry = self
             .registry
             .stream(REGISTRY_STREAM)
@@ -2783,15 +2919,6 @@ impl PersistentLocalSwarm {
         }
         if let Some(current) = self.records.lock().await.get_mut(&task) {
             current.phase = LocalSessionPhase::Cancelled;
-        }
-        if let Some(source) = &self.bindings.cancellation {
-            let _ = source.cancel(task);
-        }
-        if let Some(host) = &self.bindings.communication_host
-            && let Err(error) = host.cancel(task).await
-            && !matches!(error, Error::Unsupported(_))
-        {
-            return Err(error);
         }
         self.session(task).await
     }
@@ -2949,7 +3076,6 @@ impl PersistentLocalSwarm {
         journal
             .report_root_usage_with_receipt(owner, receipt)
             .await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
     }
 
@@ -2959,7 +3085,7 @@ impl PersistentLocalSwarm {
         };
         let mut journal = journal.lock().await;
         journal.refresh().await?;
-        self.update_root_dynamic_limits(&journal)
+        Ok(())
     }
 
     fn child_budget_resources(&self) -> SwarmResourceRequest {
@@ -2972,20 +3098,6 @@ impl PersistentLocalSwarm {
         }
     }
 
-    fn update_root_dynamic_limits(
-        &self,
-        journal: &SwarmBudgetJournal<LocalStream>,
-    ) -> Result<()> {
-        let Some(dynamic_limits) = &self.root_dynamic_limits else {
-            return Ok(());
-        };
-        *dynamic_limits
-            .lock()
-            .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))? =
-            journal.root_resource_limits()?;
-        Ok(())
-    }
-
     async fn admit_child_budget(
         &self,
         request: &LocalForkRequest,
@@ -2994,6 +3106,14 @@ impl PersistentLocalSwarm {
         boundary: &crate::model_input::CompletedModelBoundary,
         seed: &ForkSeed,
     ) -> Result<SwarmDispatchToken> {
+        if matches!(
+            parent.phase,
+            LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+        ) {
+            return Err(Error::Conflict(
+                "terminal parent cannot admit a child operation".into(),
+            ));
+        }
         let (Some(journal), Some(owner)) =
             (self.budget_journal.as_ref(), self.budget_owner.as_ref())
         else {
@@ -3010,6 +3130,10 @@ impl PersistentLocalSwarm {
         };
         let resources = self.child_budget_resources();
         let reservation_key = IdempotencyKey::new(format!("local-budget-reserve-{child}"))?;
+        // The child operation is the stable dispatch identity for this
+        // provider attempt. An already-active lease is recoverable state,
+        // never a permission to invoke the provider again: the caller must
+        // reconcile that exact lease.
         let dispatch_key = IdempotencyKey::new(format!("local-budget-dispatch-{child}"))?;
         let budget_request = SwarmForkRequest {
             operation_id: request.child_operation,
@@ -3031,7 +3155,32 @@ impl PersistentLocalSwarm {
         })?;
         let mut journal = journal.lock().await;
         journal.refresh().await?;
-        journal.reserve_child(budget_request).await?;
+        if let Some(existing) = journal.reservation(request.child_operation)? {
+            if matches!(
+                existing.state,
+                crate::swarm_budget::SwarmReservationState::Active
+            ) {
+                return Err(Error::Indeterminate(request.child_operation));
+            }
+            if matches!(
+                existing.state,
+                crate::swarm_budget::SwarmReservationState::Completed
+                    | crate::swarm_budget::SwarmReservationState::Cancelled
+            ) {
+                return Err(Error::Conflict(
+                    "terminal child reservation cannot be dispatched".into(),
+                ));
+            }
+        }
+        let admission = journal.reserve_child(budget_request).await?;
+        if admission.replayed
+            && matches!(
+                admission.reservation.state,
+                crate::swarm_budget::SwarmReservationState::Active
+            )
+        {
+            return Err(Error::Indeterminate(request.child_operation));
+        }
         let token = match journal
             .activate_verified_with_dispatch(
                 request.child_operation,
@@ -3043,11 +3192,20 @@ impl PersistentLocalSwarm {
         {
             Ok(token) => token,
             Err(error) => {
-                let _ = journal.cancel(request.child_operation, owner).await;
+                let can_release = journal
+                    .reservation(request.child_operation)?
+                    .is_some_and(|reservation| {
+                        matches!(
+                            reservation.state,
+                            crate::swarm_budget::SwarmReservationState::Reserved
+                        )
+                    });
+                if can_release {
+                    let _ = journal.cancel(request.child_operation, owner).await;
+                }
                 return Err(error);
             }
         };
-        self.update_root_dynamic_limits(&journal)?;
         drop(journal);
         Ok(token)
     }
@@ -3067,10 +3225,9 @@ impl PersistentLocalSwarm {
                 "local swarm budget binding is not configured".into(),
             ));
         };
-        journal
-            .lock()
-            .await
-            .resume_dispatch_token(operation, owner.clone())
+        let mut journal = journal.lock().await;
+        journal.refresh().await?;
+        journal.resume_unconfirmed_dispatch_token(operation, owner.clone())
     }
 
     async fn metered_child_provider(
@@ -3088,11 +3245,40 @@ impl PersistentLocalSwarm {
                 "local swarm budget binding is not configured".into(),
             ));
         };
+        let journal_handle = journal.clone();
+        let owner = self.budget_owner.as_ref().ok_or_else(|| {
+            Error::Unauthorized("local swarm budget owner is not configured".into())
+        })?.clone();
+        let operation = token.operation_id();
+        let dispatch_id = token.required_dispatch_id()?.clone();
+        let permit_factory: DispatchPermitFactory = Arc::new(move |_operation, step, request_digest| {
+            let journal = journal_handle.clone();
+            let owner = owner.clone();
+            let dispatch_id = dispatch_id.clone();
+            Box::pin(async move {
+                let mut journal = journal.lock().await;
+                journal.refresh().await?;
+                let step_dispatch = IdempotencyKey::new(format!(
+                    "{}:model:{}:{}",
+                    dispatch_id,
+                    step,
+                    blake3::hash(&request_digest).to_hex(),
+                ))?;
+                journal.dispatch_permit(
+                    operation,
+                    &owner,
+                    step,
+                    request_digest,
+                    step_dispatch,
+                )
+            })
+        });
         let journal = journal.lock().await;
-        let (provider, meter) = journal.metered_provider(
+        let (provider, meter) = journal.metered_provider_with_dispatch_permit(
             token,
             self.provider.clone(),
             source.clone(),
+            permit_factory,
         )?;
         let provider: Arc<dyn ModelProvider> = provider;
         Ok((provider, meter))
@@ -3112,10 +3298,10 @@ impl PersistentLocalSwarm {
         };
         let receipt = meter.issue_usage_receipt()?;
         let mut journal = journal.lock().await;
+        journal.refresh().await?;
         journal
             .report_usage_with_receipt(token.operation_id(), owner, receipt)
             .await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
     }
 
@@ -3133,10 +3319,10 @@ impl PersistentLocalSwarm {
         };
         let receipt = meter.issue_usage_receipt()?;
         let mut journal = journal.lock().await;
+        journal.refresh().await?;
         journal
             .complete_with_receipt(token.operation_id(), owner, receipt)
             .await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
     }
 
@@ -3154,8 +3340,8 @@ impl PersistentLocalSwarm {
             ));
         };
         let mut journal = journal.lock().await;
+        journal.refresh().await?;
         journal.cancel(token.operation_id(), owner).await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
     }
 
@@ -3168,6 +3354,7 @@ impl PersistentLocalSwarm {
             return Ok(());
         };
         let mut journal = journal.lock().await;
+        journal.refresh().await?;
         let Some(reservation) = journal.reservation(operation)? else {
             return Ok(());
         };
@@ -3183,8 +3370,19 @@ impl PersistentLocalSwarm {
         journal
             .complete_with_receipt(operation, owner, receipt)
             .await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
+    }
+
+    async fn child_budget_state(
+        &self,
+        operation: Option<OperationId>,
+    ) -> Result<Option<crate::swarm_budget::SwarmReservationState>> {
+        let (Some(operation), Some(journal)) = (operation, self.budget_journal.as_ref()) else {
+            return Ok(None);
+        };
+        let mut journal = journal.lock().await;
+        journal.refresh().await?;
+        Ok(journal.reservation(operation)?.map(|reservation| reservation.state))
     }
 
     async fn cancel_child_budget(&self, session: &LocalSwarmSession) -> Result<()> {
@@ -3196,6 +3394,7 @@ impl PersistentLocalSwarm {
             return Ok(());
         };
         let mut journal = journal.lock().await;
+        journal.refresh().await?;
         let Some(reservation) = journal.reservation(operation)? else {
             return Ok(());
         };
@@ -3206,7 +3405,9 @@ impl PersistentLocalSwarm {
         ) {
             return Ok(());
         }
-        if matches!(reservation.state, crate::swarm_budget::SwarmReservationState::Active) {
+        if matches!(reservation.state, crate::swarm_budget::SwarmReservationState::Active)
+            && reservation.dispatch_confirmed
+        {
             let token = journal.resume_dispatch_token(operation, owner.clone())?;
             let source = self.budget_usage_source.as_ref().ok_or_else(|| {
                 Error::Unauthorized("local swarm budget source is not configured".into())
@@ -3218,7 +3419,6 @@ impl PersistentLocalSwarm {
                 .await?;
         }
         journal.cancel(operation, owner).await?;
-        self.update_root_dynamic_limits(&journal)?;
         Ok(())
     }
 
@@ -3277,6 +3477,9 @@ impl PersistentLocalSwarm {
         parent: &StreamAggregate<LocalStream>,
         seed: &ForkSeed,
     ) -> Result<LocalForkOutcome> {
+        let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        let gate = self.task_gate(child).await;
+        let _task_guard = gate.lock().await;
         self.refresh_registry_state().await?;
         request.validate()?;
         seed.validate()?;
@@ -3296,7 +3499,6 @@ impl PersistentLocalSwarm {
         let parent_session = self.session(request.parent).await?;
         self.verify_admitted_task(request.parent, parent_session.parent)
             .await?;
-        let child = TaskId::from_bytes(request.child_operation.into_bytes());
         if let Some(existing) = self.requests.lock().await.get(&child)
             && existing != &request
         {
@@ -3367,6 +3569,7 @@ impl PersistentLocalSwarm {
                             "completed child operation differs from the retry binding".into(),
                         ));
                     }
+                    self.reconcile_completed_budget(request.child_operation).await?;
                     let output = self.outcome(child).await?;
                     return Ok(LocalForkOutcome {
                         child,
@@ -3534,7 +3737,9 @@ impl PersistentLocalSwarm {
         {
             Ok(harness) => Arc::new(harness),
             Err(error) => {
-                self.cancel_child_budget(&self.session(child).await?).await?;
+                if !matches!(error, Error::Storage(_) | Error::Indeterminate(_)) {
+                    self.cancel_child_budget(&self.session(child).await?).await?;
+                }
                 self.mark_failed(child, error.to_string()).await?;
                 return Err(error);
             }
@@ -3867,6 +4072,11 @@ impl PersistentLocalSwarm {
             ));
         }
         if let Some(output) = self.outcomes.lock().await.get(&child).cloned() {
+            // The output map is only an in-memory acceleration. A process
+            // restart or a concurrent handle may have committed the output
+            // before its budget completion, so reconcile the durable
+            // reservation before acknowledging the cached result.
+            self.reconcile_completed_budget(request.child_operation).await?;
             return Ok(LocalForkOutcome {
                 child,
                 operation: request.child_operation,
@@ -3882,6 +4092,40 @@ impl PersistentLocalSwarm {
                 child,
                 operation: request.child_operation,
                 output,
+            });
+        }
+        if let Some(prepared) = self
+            .recover_prepared_completion(&stream, child, request.child_operation, &harness)
+            .await?
+        {
+            self.reconcile_completed_budget(request.child_operation).await?;
+            if let Some(state) = self.child_budget_state(Some(request.child_operation)).await?
+                && state != crate::swarm_budget::SwarmReservationState::Completed
+            {
+                return Err(Error::Indeterminate(request.child_operation));
+            }
+            let observed_tail = self.refresh_registry_state_with_tail().await?;
+            append_record_at(
+                &stream,
+                StoredEvent::ForkCompleted {
+                    child,
+                    operation: request.child_operation,
+                    output: (prepared.output_ref.is_none()).then_some(prepared.output.clone()),
+                    output_ref: prepared.output_ref.clone(),
+                    output_digest: Some(prepared.output_digest),
+                },
+                observed_tail,
+            )
+            .await?;
+            self.refresh_registry_state().await?;
+            self.outcomes
+                .lock()
+                .await
+                .insert(child, prepared.output.clone());
+            return Ok(LocalForkOutcome {
+                child,
+                operation: request.child_operation,
+                output: prepared.output,
             });
         }
         let suffix = declared_suffix.unwrap_or_else(|| {
@@ -3920,17 +4164,25 @@ impl PersistentLocalSwarm {
             }) {
             Ok(bundle) => bundle,
             Err(error) => {
-                self.cancel_child_budget(&self.session(child).await?).await?;
+                if !matches!(error, Error::Storage(_) | Error::Indeterminate(_)) {
+                    self.cancel_child_budget(&self.session(child).await?).await?;
+                }
                 self.mark_failed(child, error.to_string()).await?;
                 return Err(error);
             }
         };
         let result = self.run_child_turn(&harness, &bundle, &request).await;
         if let Some((token, _, meter)) = child_budget.as_ref() {
-            let budget_result = if result.is_ok() {
-                self.report_child_budget_usage(token, meter).await
-            } else {
-                self.finish_child_budget(token, meter).await
+            let budget_result = match result.as_ref() {
+                Ok(_) => self.report_child_budget_usage(token, meter).await,
+                // The provider may have committed durable effects before an
+                // interrupted/storage result reached this process. Retain the
+                // active reservation for recovery instead of cancelling it.
+                Err(error) if matches!(error, Error::Storage(_) | Error::Indeterminate(_)) => {
+                    let _ = self.propagate_interrupted_provider(child).await;
+                    return Err(error.clone());
+                }
+                Err(_) => self.finish_child_budget(token, meter).await,
             };
             if let Err(error) = budget_result {
                 // The provider outcome and receipt are now uncertain. Keep
@@ -3980,6 +4232,23 @@ impl PersistentLocalSwarm {
                 "child operation was cancelled before completion acknowledgement".into(),
             ));
         }
+        // Publish the exact output before settling the budget. If the
+        // process stops after the ledger commit, recovery can project this
+        // prepared marker into the registry without invoking the provider.
+        append_record(
+            &stream,
+            StoredEvent::ForkOutputPrepared {
+                child,
+                operation: request.child_operation,
+                output: inline_output.clone(),
+                output_ref: output_ref.clone(),
+                output_digest: Some(output_digest),
+            },
+        )
+        .await?;
+        if let Some((token, _, meter)) = child_budget.as_ref() {
+            self.complete_child_budget(token, meter).await?;
+        }
         append_record(
             &stream,
             StoredEvent::ForkCompleted {
@@ -3991,9 +4260,6 @@ impl PersistentLocalSwarm {
             },
         )
         .await?;
-        if let Some((token, _, meter)) = child_budget.as_ref() {
-            self.complete_child_budget(token, meter).await?;
-        }
         self.refresh_registry_state().await?;
         self.outcomes.lock().await.insert(child, output.clone());
         Ok(LocalForkOutcome {
@@ -4091,6 +4357,74 @@ impl PersistentLocalSwarm {
                 })
                 .await?;
             }
+        }
+        Ok(recovered)
+    }
+
+    async fn recover_prepared_completion(
+        &self,
+        stream: &acyclic_stream::Stream<LocalStream>,
+        child: TaskId,
+        operation: OperationId,
+        harness: &PersistentLocalHarness,
+    ) -> Result<Option<RecoveredCompletion>> {
+        let records = load_records(stream).await?;
+        let mut recovered = None;
+        for record in records {
+            let StoredEvent::ForkOutputPrepared {
+                child: recorded_child,
+                operation: recorded_operation,
+                output,
+                output_ref,
+                output_digest,
+            } = record.event
+            else {
+                continue;
+            };
+            if recorded_child != child {
+                continue;
+            }
+            if recorded_operation != operation {
+                return Err(Error::Conflict(
+                    "prepared child completion is bound to another operation".into(),
+                ));
+            }
+            validate_completion_payload(&output, &output_ref, output_digest)?;
+            let (output, output_ref, output_digest) = match (output, output_ref, output_digest) {
+                (Some(output), None, digest) => {
+                    let bytes = crate::contract::canonical_json_bytes(&output)?;
+                    let digest = digest.unwrap_or(crate::contract::canonical_json_digest(&bytes)?);
+                    (output, None, digest)
+                }
+                (None, Some(file), Some(digest)) => {
+                    let bytes = harness.storage().read(&file).await?;
+                    if crate::contract::canonical_json_digest(&bytes)? != digest {
+                        return Err(Error::Conflict(
+                            "prepared child completion artifact digest changed".into(),
+                        ));
+                    }
+                    let output: TurnOutput = serde_json::from_slice(&bytes).map_err(|error| {
+                        Error::Storage(format!("invalid prepared child completion artifact: {error}"))
+                    })?;
+                    (output, Some(file), digest)
+                }
+                _ => unreachable!("completion payload was validated above"),
+            };
+            let candidate = RecoveredCompletion {
+                output,
+                output_ref,
+                output_digest,
+            };
+            if let Some(existing) = &recovered
+                && (existing.output != candidate.output
+                    || existing.output_ref != candidate.output_ref
+                    || existing.output_digest != candidate.output_digest)
+            {
+                return Err(Error::Conflict(
+                    "prepared child completion changed across retries".into(),
+                ));
+            }
+            recovered = Some(candidate);
         }
         Ok(recovered)
     }
@@ -4538,6 +4872,37 @@ async fn append_record_at(
     }
 }
 
+fn validate_completion_payload(
+    output: &Option<TurnOutput>,
+    output_ref: &Option<FileRef>,
+    output_digest: Option<[u8; 32]>,
+) -> Result<()> {
+    match (output, output_ref, output_digest) {
+        (Some(output), None, digest) => {
+            if let Some(digest) = digest {
+                let bytes = crate::contract::canonical_json_bytes(output)?;
+                if crate::contract::canonical_json_digest(&bytes)? != digest {
+                    return Err(Error::Conflict(
+                        "persisted inline child completion digest changed".into(),
+                    ));
+                }
+            }
+        }
+        (None, Some(_), Some(_)) => {}
+        (None, None, _) | (None, Some(_), None) => {
+            return Err(Error::Conflict(
+                "persisted child completion has no replayable output".into(),
+            ));
+        }
+        (Some(_), Some(_), _) => {
+            return Err(Error::Conflict(
+                "persisted child completion has duplicate output forms".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn apply_record(
     sessions: &mut BTreeMap<TaskId, LocalSwarmSession>,
     requests: &mut BTreeMap<TaskId, LocalForkRequest>,
@@ -4710,6 +5075,28 @@ fn apply_record(
                 declarations.insert(child, declaration);
             }
         }
+        StoredEvent::ForkOutputPrepared {
+            child,
+            operation,
+            output,
+            output_ref,
+            output_digest,
+        } => {
+            let session = sessions
+                .get(&child)
+                .ok_or_else(|| Error::Storage("prepared child completion is missing".into()))?;
+            if session.phase == LocalSessionPhase::Cancelled {
+                return Err(Error::Conflict(
+                    "persisted child output follows a terminal cancellation".into(),
+                ));
+            }
+            if session.operation != Some(operation) {
+                return Err(Error::Conflict(
+                    "prepared child completion is bound to another operation".into(),
+                ));
+            }
+            validate_completion_payload(&output, &output_ref, output_digest)?;
+        }
         StoredEvent::ForkCompleted {
             child,
             operation,
@@ -4727,6 +5114,7 @@ fn apply_record(
             }
             session.operation = Some(operation);
             session.phase = LocalSessionPhase::Completed;
+            validate_completion_payload(&output, &output_ref, output_digest)?;
             match (output, output_ref, output_digest) {
                 (Some(output), None, digest) => {
                     if let Some(digest) = digest {
