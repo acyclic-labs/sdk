@@ -747,3 +747,30 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[tokio::test]
+async fn default_local_composition_runs_recursive_models_and_reopens_without_dispatch() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let provider = DeterministicProvider::new(id(0xF1), id(0xF2), id(0xF3));
+    let model = Model::new("mock", "default-local-composition", "1", json!({}))?;
+    let limits = Limits::default();
+    let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        directory.path(), model.clone(), provider.clone(), limits,
+    ).await?;
+    provider.bind_swarm(&swarm);
+    let operation = id(0xF0);
+    let output = swarm.run_root(operation, "run default recursive composition").await?;
+    assert_eq!(output.text, "ordinary completion");
+    assert_eq!(swarm.sessions().await?.len(), 4);
+    assert!(provider.child_read_verified.load(Ordering::SeqCst));
+    assert!(provider.grandchild_inherited_read.load(Ordering::SeqCst));
+    let requests = provider.serialized_requests();
+    drop(swarm);
+    let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+        directory.path(), model, provider.clone(), limits,
+    ).await?;
+    provider.bind_swarm(&reopened);
+    assert_eq!(reopened.run_root(operation, "run default recursive composition").await?, output);
+    assert_eq!(provider.serialized_requests(), requests);
+    Ok(())
+}
