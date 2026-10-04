@@ -71,7 +71,16 @@ jobs:
 
       - name: Install Common Lisp toolchain
         if: matrix.language == 'common-lisp'
-        run: sudo apt-get install --yes sbcl ocicl
+        run: |
+          sudo install -d -m 0755 /usr/share/keyrings
+          curl --fail --silent --show-error --location \
+            https://ocicl.github.io/ocicl/deb-repo/ocicl-archive-keyring.gpg \
+            | sudo tee /usr/share/keyrings/ocicl-archive-keyring.asc >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/ocicl-archive-keyring.asc] https://ocicl.github.io/ocicl/deb-repo stable main" \
+            | sudo tee /etc/apt/sources.list.d/ocicl.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes sbcl ocicl
+          ocicl setup
 
       - name: Generate Rust-owned products
         run: |
