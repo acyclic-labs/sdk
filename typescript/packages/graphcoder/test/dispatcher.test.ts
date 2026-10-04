@@ -17,6 +17,8 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
     expect(missingOperation).toMatchObject({ request_id: "r2-missing", ok: false, error: { code: "invalid_input" } });
     const changes = JSON.parse(await dispatcher.dispatchLine(JSON.stringify({ request_id: "r3", method: "list_changes", params: { session_id: "session-1" } }))) as { result: { session_id: string; generation: string } };
     expect(changes.result).toMatchObject({ session_id: "session-1", generation: "1" });
+    const directChanges = await dispatcher.dispatch({ request_id: "r3-direct", method: "list_changes", params: { session_id: "session-1" } });
+    expect(directChanges).toMatchObject({ request_id: "r3-direct", ok: true, result: { session_id: "session-1", generation: "1" } });
     const file = JSON.parse(await dispatcher.dispatchLine(JSON.stringify({ request_id: "r4", method: "read_file", params: { session_id: "session-1", path: "README.md", generation: "1" } }))) as { result: { session_id: string; bytes: number[] } };
     expect(file.result.session_id).toBe("session-1");
     expect(file.result.bytes).toEqual([35, 32, 71, 114, 97, 112, 104, 67, 111, 100, 101, 114, 32, 102, 105, 120, 116, 117, 114, 101, 10]);

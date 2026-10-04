@@ -57,9 +57,9 @@ function parsePageQuery(value: unknown): { readonly after?: string; readonly lim
   return result;
 }
 
-export function encodeGeneration(generation: bigint, label: string): string {
+export function encodeGeneration(generation: bigint, label: string, code: "invalid_input" | "transport" = "invalid_input"): string {
   if (typeof generation !== "bigint" || generation < 0n) {
-    throw new GraphCoderError("invalid_input", `${label} must be a nonnegative bigint`);
+    throw new GraphCoderError(code, `${label} must be a nonnegative bigint`);
   }
   return generation.toString();
 }
@@ -85,7 +85,7 @@ export function wireSessionSummary(value: SessionSummary): unknown {
 }
 
 export function wireSnapshot(value: SessionSnapshot): unknown {
-  return { summary: wireSessionSummary(value.summary), agents: value.agents.map(wireAgent), workspace_generation: value.workspaceGeneration };
+  return { summary: wireSessionSummary(value.summary), agents: value.agents.map(wireAgent), workspace_generation: encodeGeneration(value.workspaceGeneration, "workspace generation", "transport") };
 }
 
 export function wireAgent(value: AgentSummary): unknown {
@@ -93,7 +93,7 @@ export function wireAgent(value: AgentSummary): unknown {
 }
 
 export function wireActivity(value: ActivityEvent): unknown {
-  return { ...value, sequence: value.sequence, actor_id: value.actorId as string | null };
+  return { ...value, sequence: encodeGeneration(value.sequence, "activity sequence", "transport"), actor_id: value.actorId as string | null };
 }
 
 export function wireMessage(value: GraphMessage): unknown {
@@ -109,11 +109,11 @@ export function wireChangeSummary(value: ChangeSummary): unknown {
 }
 
 export function wireChange(value: ChangeBody, session: SessionSummary["id"]): unknown {
-  return { session_id: session as string, path: value.path, unified_diff: value.unifiedDiff, generation: value.generation };
+  return { session_id: session as string, path: value.path, unified_diff: value.unifiedDiff, generation: encodeGeneration(value.generation, "change generation", "transport") };
 }
 
 export function wireFile(value: FileBody, session: SessionSummary["id"]): unknown {
-  return { session_id: session as string, path: value.path, media_type: value.mediaType, bytes: [...value.bytes], generation: value.generation };
+  return { session_id: session as string, path: value.path, media_type: value.mediaType, bytes: [...value.bytes], generation: encodeGeneration(value.generation, "file generation", "transport") };
 }
 
 export function decodeSessionSummary(value: unknown): SessionSummary {

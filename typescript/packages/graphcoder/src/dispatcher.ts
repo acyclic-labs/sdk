@@ -11,7 +11,7 @@ import {
   type GraphCoderTransport,
 } from "./api.js";
 import { checkedRequestId, GRAPH_CODER_WIRE_METHODS, type GraphCoderWireMethod, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
-import { decodeGeneration, decodePageQuery, wireActivity, wireApproval, wireChange, wireChangeSummary, wireFile, wireMessage, wirePage, wireSessionSummary, wireSnapshot } from "./wire-codec.js";
+import { decodeGeneration, decodePageQuery, encodeGeneration, wireActivity, wireApproval, wireChange, wireChangeSummary, wireFile, wireMessage, wirePage, wireSessionSummary, wireSnapshot } from "./wire-codec.js";
 
 /** Native-side JSON-lines dispatcher over an injected durable transport. */
 export class GraphCoderWireDispatcher {
@@ -33,7 +33,7 @@ export class GraphCoderWireDispatcher {
     let value: unknown;
     try { value = JSON.parse(line) as unknown; }
     catch (error) { return JSON.stringify({ request_id: "unknown", ok: false, error: { code: "invalid_input", message: `request is not JSON: ${error instanceof Error ? error.message : String(error)}` } }); }
-    return JSON.stringify(await this.dispatch(value), jsonReplacer);
+    return JSON.stringify(await this.dispatch(value));
   }
 
   async #dispatch(request: GraphCoderWireRequest): Promise<unknown> {
@@ -49,10 +49,10 @@ export class GraphCoderWireDispatcher {
       case "list_approvals": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wirePage(await this.transport.listApprovals(id, decodePageQuery(params.query)), wireApproval); }
       case "resolve_approval": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireApproval(await this.transport.resolveApproval({ approvalId: approvalId(checkedPublicText(params.approval_id, "approval_id", MAX_OPERATION_ID_BYTES)), approved: requiredBoolean(params.approved, "approved"), sessionId: id })); }
       case "cancel_session": return wireSnapshot(await this.transport.cancelSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
-      case "list_changes": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const changes = await this.transport.listChanges(id); return { session_id: id, generation: changes.generation, items: changes.items.map(wireChangeSummary) }; }
+      case "list_changes": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const changes = await this.transport.listChanges(id); return { session_id: id, generation: encodeGeneration(changes.generation, "changes generation", "transport"), items: changes.items.map(wireChangeSummary) }; }
       case "read_change": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireChange(await this.transport.readChange(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
       case "read_file": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireFile(await this.transport.readFile(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
-      case "approve_writeback": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const receipt = await this.transport.approveWriteback({ sessionId: id, operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), expectedGeneration: decodeGeneration(params.expected_generation, "expected_generation", "invalid_input"), approved: requiredBoolean(params.approved, "approved") }); return { operation_id: receipt.operationId, session_id: receipt.sessionId, generation: receipt.generation, applied: receipt.applied }; }
+      case "approve_writeback": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const receipt = await this.transport.approveWriteback({ sessionId: id, operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), expectedGeneration: decodeGeneration(params.expected_generation, "expected_generation", "invalid_input"), approved: requiredBoolean(params.approved, "approved") }); return { operation_id: receipt.operationId, session_id: receipt.sessionId, generation: encodeGeneration(receipt.generation, "writeback generation", "transport"), applied: receipt.applied }; }
     }
   }
 }
@@ -73,4 +73,3 @@ function requestIdentity(value: unknown): string {
 }
 function record(value: unknown, label: string): Record<string, unknown> { if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("invalid_input", `${label} must be an object`); return value as Record<string, unknown>; }
 function requiredBoolean(value: unknown, label: string): boolean { if (typeof value !== "boolean") throw new GraphCoderError("invalid_input", `${label} must be boolean`); return value; }
-function jsonReplacer(_key: string, value: unknown): unknown { return typeof value === "bigint" ? value.toString() : value; }
