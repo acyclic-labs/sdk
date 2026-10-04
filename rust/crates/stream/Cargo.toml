@@ -32,6 +32,8 @@ local = ["dep:fs2", "dep:libc"]
 wasm = []
 
 [dependencies]
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
+prost-reflect = { workspace = true, features = ["serde"] }
 async-trait.workspace = true
 bytes.workspace = true
 futures.workspace = true

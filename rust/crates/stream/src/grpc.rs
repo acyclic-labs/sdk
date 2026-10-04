@@ -47,6 +47,12 @@ pub const MAX_CA_CERTIFICATE_BYTES: usize = 64 * 1024;
 /// Connection configuration failure.
 #[derive(Debug, Error)]
 pub enum ConnectError {
+    /// The authenticated control service rejected the handshake.
+    #[error("Stream control handshake rejected: {0}")]
+    RemoteStatus(tonic::Status),
+    /// The endpoint did not prove the required contract identity.
+    #[error("Stream control identity mismatch: {0}")]
+    Negotiation(String),
     /// Endpoint URI was invalid or the TLS connection failed.
     #[error("invalid or unavailable Stream endpoint: {0}")]
     Endpoint(#[from] tonic::transport::Error),
@@ -105,6 +111,70 @@ fn check_command_size<T: Message>(request: &T) -> Result<(), Status> {
 }
 
 impl Client {
+    /// Connect after proving the independent Rust-owned control identity.
+    ///
+    /// # Errors
+    /// Authentication and identity errors are terminal. Absent or unavailable
+    /// control services return `None` without sending an application operation.
+    pub async fn connect_verified(
+        endpoint: &str,
+        token: &str,
+        ca: Option<&[u8]>,
+    ) -> Result<Option<Self>, ConnectError> {
+        use crate::control_wire::protocol::v1::{
+            Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
+        };
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let client = Self::connect_with_tls([endpoint], token, ca)?;
+        let family = BindingFamily::Stream;
+        let version = control::control_protocol_version(family);
+        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(client.channels[0].clone())
+            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        let mut request = Request::new(HandshakeRequest {
+            protocol: Some(ProtocolIdentity {
+                version: version.into(),
+                descriptor_digest: control::archived_descriptor_digest(family),
+            }),
+            required: Some(CapabilitySet {
+                capabilities: vec![Capability {
+                    name: family.name().into(),
+                    version: version.into(),
+                }],
+            }),
+        });
+        request
+            .metadata_mut()
+            .insert("authorization", client.authorization.clone());
+        request.metadata_mut().insert(
+            control::FAMILY_METADATA_KEY,
+            MetadataValue::from_static(family.name()),
+        );
+        request.set_timeout(OPERATION_DEADLINE);
+        let response = match probe.handshake(request).await {
+            Ok(response) => response.into_inner(),
+            Err(status)
+                if matches!(
+                    status.code(),
+                    Code::Unimplemented | Code::Unavailable | Code::DeadlineExceeded
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(status) => return Err(ConnectError::RemoteStatus(status)),
+        };
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &response.encode_to_vec(),
+            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+        )
+        .map_err(|error| ConnectError::Negotiation(format!("{error:?}")))?;
+        Ok(Some(client))
+    }
     /// Connects to a TLS endpoint with an account-bound bearer credential.
     pub async fn connect(
         endpoint: impl AsRef<str>,

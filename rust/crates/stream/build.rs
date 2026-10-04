@@ -13,7 +13,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let grpc = target_arch != "wasm32";
     acyclic_sdk_contract_wire::generate_rust_bindings(
         acyclic_sdk_contract_wire::BindingFamily::Stream,
-        output,
+        &output,
+        acyclic_sdk_contract_wire::BindingTransport::Tonic {
+            client: grpc,
+            server: grpc,
+        },
+    )?;
+    acyclic_sdk_contract_wire::transport_control::generate_control_bindings(
+        &output,
         acyclic_sdk_contract_wire::BindingTransport::Tonic {
             client: grpc,
             server: grpc,
@@ -24,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "../sdk-contract-wire/src/bindings.rs",
         "../sdk-contract-wire/src/lib.rs",
         "../sdk-contract-wire/src/protocol.rs",
+        "../sdk-contract-wire/src/transport_control.rs",
         "../sdk-contract-wire/src/stream.rs",
         "../sdk-contract-options/src/lib.rs",
     ] {

@@ -40,6 +40,21 @@ mod wire_codec;
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/acyclic.stream.v2.rs"));
 }
+/// Independent generated control plane; archived Stream descriptors remain immutable.
+#[allow(missing_docs, clippy::all, clippy::pedantic)]
+#[cfg(not(target_arch = "wasm32"))]
+pub mod control_wire {
+    pub mod protocol {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.protocol.v1.rs"));
+        }
+    }
+    pub mod transport {
+        pub mod v1 {
+            include!(concat!(env!("OUT_DIR"), "/acyclic.transport.v1.rs"));
+        }
+    }
+}
 /// Canonical public descriptor set used by compatibility gates.
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
 pub use client::{Client, ConnectError, DEFAULT_TRANSPORT, connect};
@@ -718,16 +733,25 @@ impl<P: StreamProvider> StreamClient<P> {
     }
 
     /// Executes the canonical tail projection against any provider.
-    pub async fn tail_wire(&self, request: wire::TailRequest) -> Result<wire::TailResponse, StreamError> {
+    pub async fn tail_wire(
+        &self,
+        request: wire::TailRequest,
+    ) -> Result<wire::TailResponse, StreamError> {
         Ok(wire::TailResponse {
             tail: self.provider.tail(StreamPath::new(request.path)?).await?,
         })
     }
 
     /// Executes the canonical fork projection against any provider.
-    pub async fn fork_wire(&self, request: wire::ForkRequest) -> Result<wire::ForkReceipt, StreamError> {
+    pub async fn fork_wire(
+        &self,
+        request: wire::ForkRequest,
+    ) -> Result<wire::ForkReceipt, StreamError> {
         Ok(wire_codec::fork_receipt_to_wire(
-            &self.provider.fork(wire_codec::fork_from_wire(request)?).await?,
+            &self
+                .provider
+                .fork(wire_codec::fork_from_wire(request)?)
+                .await?,
         ))
     }
 
@@ -737,7 +761,9 @@ impl<P: StreamProvider> StreamClient<P> {
         request: wire::ChildrenPageRequest,
     ) -> Result<wire::ChildrenPageResponse, StreamError> {
         Ok(wire_codec::children_page_to_wire(
-            self.provider.children_page(wire_codec::children_page_from_wire(request)?).await?,
+            self.provider
+                .children_page(wire_codec::children_page_from_wire(request)?)
+                .await?,
         ))
     }
 
@@ -766,7 +792,9 @@ impl<P: StreamProvider> StreamClient<P> {
             .try_into()
             .map_err(|_| StreamError::InvalidArgument)?;
         Ok(wire_codec::envelope_wire(
-            self.provider.read_commit(CommitId::from_bytes(bytes)).await?,
+            self.provider
+                .read_commit(CommitId::from_bytes(bytes))
+                .await?,
         ))
     }
 }

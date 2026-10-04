@@ -89,6 +89,95 @@ impl HttpStream {
             maximum,
         })
     }
+    /// Prove the canonical contract before selecting this transport.
+    ///
+    /// # Errors
+    /// Rejects authentication failures, redirects, malformed responses, and identity mismatches.
+    pub async fn verify_handshake(&self) -> Result<bool, crate::client::ConnectError> {
+        use crate::client::ConnectError;
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        use prost_reflect::{DescriptorPool, DynamicMessage};
+        let malformed = || ConnectError::Negotiation("invalid control handshake response".into());
+        let family = BindingFamily::Stream;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name()).ok_or_else(malformed)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| malformed())?;
+        let response = self
+            .client
+            .get(url.clone())
+            .timeout(Duration::from_secs(10))
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|error| ConnectError::Transport(error.to_string()))?;
+        if response.url() != &url {
+            return Err(malformed());
+        }
+        let status = response.status().as_u16();
+        if matches!(status, 404 | 405) {
+            return Ok(false);
+        }
+        if !response.status().is_success() {
+            return Err(ConnectError::HttpStatus(status));
+        }
+        if !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+            })
+        {
+            return Err(malformed());
+        }
+        let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        if response
+            .content_length()
+            .is_some_and(|length| length > maximum as u64)
+        {
+            return Err(malformed());
+        }
+        let mut bytes = Vec::new();
+        let mut chunks = response.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|error| ConnectError::Transport(error.to_string()))?;
+            if chunk.len() > maximum.saturating_sub(bytes.len()) {
+                return Err(malformed());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let pool = DescriptorPool::decode(
+            acyclic_sdk_contract_wire::protocol::protocol_descriptor().as_slice(),
+        )
+        .map_err(|_| malformed())?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or_else(malformed)?;
+        let mut deserializer = serde_json::Deserializer::from_slice(&bytes);
+        let decoded =
+            DynamicMessage::deserialize(descriptor, &mut deserializer).map_err(|_| malformed())?;
+        deserializer.end().map_err(|_| malformed())?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            maximum,
+        )
+        .map_err(|_| malformed())?;
+        Ok(true)
+    }
+
     async fn request(&self, route: &str, bytes: Vec<u8>) -> Result<Value, StreamError> {
         let body = http_codec::encode(route, &bytes).map_err(contract_error)?;
         let url = self
@@ -99,6 +188,7 @@ impl HttpStream {
         let mut response = self
             .client
             .post(url)
+            .timeout(Duration::from_secs(30))
             .header(AUTHORIZATION, self.authorization.clone())
             .header("content-type", "application/json")
             .body(body)
@@ -109,6 +199,7 @@ impl HttpStream {
         let response = self
             .client
             .post(url)
+            .timeout(Duration::from_secs(30))
             .header(AUTHORIZATION, self.authorization.clone())
             .header("content-type", "application/json")
             .body(body)
