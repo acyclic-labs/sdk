@@ -53,6 +53,17 @@ source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'lo
 product_manifest="$product_root/rust-authority.json"
 [[ -f "$product_manifest" ]] || { echo 'Rust authority manifest is missing from product output' >&2; exit 1; }
 
+run_runtime_probe() {
+  local endpoint=${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}
+  [[ -n "$endpoint" ]] || return 0
+  command -v python3 >/dev/null || { echo "python3 is required for the Rust authority runtime probe" >&2; exit 1; }
+  python3 -c "import grpc, google.protobuf" >/dev/null 2>&1 || {
+    echo "grpcio and protobuf are required for ACYCLIC_FIXTURE_GRPC_ENDPOINT" >&2
+    exit 1
+  }
+  python3 "$source_root/scripts/run-rust-authority-grpc-probe.py" \
+    "$descriptor_set" "$endpoint" "$output_root/rust-authority-grpc-probe.json"
+}
 archive_project() {
   local project=$1
   local archive_name=$2
@@ -96,6 +107,7 @@ PY
     test -n "$(find lib/generated -type f -name '*.ex' -print -quit)"
     test -n "$(find lib/generated -type f -name '*_grpc.ex' -print -quit)"
     test -n "$(rg -l 'stream' lib/generated --glob '*_grpc.ex' | head -n 1)"
+    python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/lib/generated" "${contract_protos[@]}"
     module=$(sed -n 's/^defmodule \([^ ]*\).*/\1/p' lib/generated/*_pb.ex | head -n 1)
     test -n "$module"
     mix run --no-start -e "m = String.to_atom(\"Elixir.$module\"); value = struct(m); encoded = apply(m, :encode, [value]); decoded = apply(m, :decode, [encoded]); unless decoded == value, do: raise \"protobuf round trip failed\""
@@ -128,6 +140,7 @@ EOF
     client_module=$(find src -type f -name '*_client.erl' -print -quit)
     test -n "$client_module"
     test -n "$(rg -l 'stream' src --glob '*_client.erl' | head -n 1)"
+    python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/src" "${contract_protos[@]}"
     module=$(basename "$(find src -type f -name 'actors_pb.erl' -print -quit)" .erl)
     test -n "$module"
     erl -noshell -pa _build/default/lib/*/ebin -eval "M=$module, [N|_] = M:get_msg_names(), B = M:encode_msg(#{}, N), _ = M:decode_msg(B, N), halt()."
@@ -163,6 +176,7 @@ EOF
     (cd "$project" && dune build)
     (cd "$project" && dune exec ./lib/serialization_smoke.exe)
     test -n "$(rg -l 'QualificationStream|stream' "$project/lib" --glob '*.ml' | head -n 1)"
+    python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/lib" "${contract_protos[@]}"
     archive_project "$project" acyclic_sdk_ocaml.tar.gz
     ;;
   common-lisp)
@@ -187,6 +201,7 @@ EOF
       --eval '(unless (find-package :acyclic.actors.v1) (error "generated Actors package missing"))' \
       --eval '(format t "generated Common Lisp package loaded~%")'
     test -n "$(rg -i 'stream|upload|put_object' "$project/generated" --glob '*.lisp' | head -n 1)"
+    python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/generated" "${contract_protos[@]}"
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
   lua-remote)
@@ -199,4 +214,5 @@ EOF
     ;;
 esac
 
+run_runtime_probe
 write_receipt passed

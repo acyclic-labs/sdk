@@ -61,7 +61,7 @@ jobs:
         if: matrix.os == 'ubuntu-24.04'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes protobuf-compiler build-essential pkg-config libssl-dev git
+          sudo apt-get install --yes protobuf-compiler build-essential pkg-config libssl-dev git python3-pip
 
       - name: Install BEAM toolchain
         if: matrix.language == 'elixir' || matrix.language == 'erlang'
@@ -103,16 +103,48 @@ jobs:
             brew install luajit
           fi
 
+      - name: Install runtime probe dependencies
+        if: matrix.language != 'lua-remote'
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir grpcio==1.66.2 protobuf==5.27.5
+
+      - name: Start Rust fixture server
+        if: matrix.language != 'lua-remote'
+        shell: bash
+        run: |
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 18080 --grpc-port 18081 >"$RUNNER_TEMP/fixture-server.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/fixture-server.pid"
+          for _ in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/fixture-server.log"
+          exit 1
       - name: Generate Rust-owned products
         run: |
           cargo run --locked --bin sdk-contract-wire -- generate-products \
             --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
 
       - name: Build and consume generated package
+        if: matrix.language != 'lua-remote'
+        env:
+          ACYCLIC_FIXTURE_GRPC_ENDPOINT: 127.0.0.1:18081
         run: |
           bash scripts/qualify-additional-language.sh \
             '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \
             "$RUNNER_TEMP/rust-products"
+
+      - name: Build LuaJIT remote package
+        if: matrix.language == 'lua-remote'
+        run: |
+          bash scripts/qualify-additional-language.sh \
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \
+            "$RUNNER_TEMP/rust-products"
+
+      - name: Stop Rust fixture server
+        if: always() && matrix.language != 'lua-remote'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/fixture-server.pid" ]; then kill "$(cat "$RUNNER_TEMP/fixture-server.pid")" || true; fi
 
       - name: Upload qualification receipt
         if: always()
