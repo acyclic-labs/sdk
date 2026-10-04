@@ -99,11 +99,11 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
                 continue;
             }
             let invocation: crate::tool::ToolInvocation = load_json(journal, &invocation).await?;
-            if invocation != message_invocation {
-                return Err(Error::Conflict("tool-call content differs from authoritative invocation".into()));
-            }
             if invocation.call_id != binding.call_id {
                 continue;
+            }
+            if invocation != message_invocation {
+                return Err(Error::Conflict("tool-call content differs from authoritative invocation".into()));
             }
             if found.is_some() {
                 return Err(Error::Storage("rejection journal binding is duplicated".into()));
