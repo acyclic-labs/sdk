@@ -1316,11 +1316,10 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0]["id"], started["result"]["summary"]["id"]);
         assert_eq!(agents[0]["children"], json!([]));
-        assert!(
-            started["result"]["workspace_generation"]
-                .as_str()
-                .is_some_and(|generation| !generation.is_empty())
-        );
+        // A session snapshot is metadata-only and may not have materialized a
+        // workspace generation yet. Generation-bearing operations obtain an
+        // explicit pinned generation through their own Filesystem projection.
+        assert!(started["result"]["workspace_generation"].is_null());
     }
 
     #[tokio::test]
@@ -1414,10 +1413,15 @@ mod tests {
             .as_str()
             .expect("stage session id")
             .to_owned();
-        let generation = retried["result"]["workspace_generation"]
-            .as_str()
-            .expect("stage workspace generation")
-            .to_owned();
+        let task = TaskId::parse(&session_id).expect("stage task id");
+        let generation = generation_token(
+            &reopened
+                .swarm
+                .list_files(task, "", None, None, 1)
+                .await
+                .expect("stage files projection")
+                .generation,
+        );
         let file = exchange(
             reopened.clone(),
             json!({
