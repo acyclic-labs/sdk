@@ -245,6 +245,7 @@ EOF
         "$project" "$project/runtime-consumer-receipt.json" "$source_revision" "$manifest_digest"
       test -s "$project/runtime-consumer-receipt.json"
       rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
+      rg -q '"rpc_count": 106' "$project/runtime-consumer-receipt.json"
     fi
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
