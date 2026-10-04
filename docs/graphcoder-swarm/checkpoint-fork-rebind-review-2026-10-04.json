@@ -1,0 +1,25 @@
+{
+  "schema": "graphcoder.review.v1",
+  "reviewed_commit": "f5dd2a108",
+  "base_commit": "06209f312",
+  "scope": "Read-only source review of the isolated fork-rebind-root-port checkpoint; no runtime qualification claimed",
+  "decision": "hold",
+  "findings": [
+    {
+      "priority": "P1",
+      "contract": "Serialize conflicting publications and fence stale generations",
+      "location": "rust/crates/harness/src/filesystem/fork_preparer.rs: rebind_fork_seed",
+      "evidence": "read_record calls host.read with no pinned generation. Phase two validates the current seed, then resolves a generation and applies the replacement against that later generation. An intervening owner can advance the seed between validation and resolve; CAS on the later generation does not validate the earlier seed observation.",
+      "required_verification": "Pin record reads and writes to one generation; deterministically interleave two owners and prove an earlier transition cannot overwrite a later transition. Cover intent admission as well as seed replacement."
+    },
+    {
+      "priority": "P2",
+      "contract": "Corrupt and missing durable content have distinct explicit outcomes",
+      "location": "rust/crates/harness/src/filesystem/swarm_local.rs: LocalModelForkPublisher",
+      "evidence": "The new published_seed lookup uses if let Ok, discarding errors before continuing publication. Corrupt or inaccessible durable state must not be treated as an absent publication.",
+      "required_verification": "Handle only the typed absence outcome as absence; preserve corruption and storage errors, with negative tests proving no subsequent publication."
+    }
+  ],
+  "actions": "Both findings sent to the fork owner. Checkpoint remains outside the root branch pending repair and production fault verification.",
+  "tests_run": []
+}
