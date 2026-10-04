@@ -68,6 +68,15 @@ impl LocalTaskCancellationSource {
     /// an active task preserves its sender so existing waits remain attached
     /// to the same cancellation channel; call `remove` before a new scope.
     pub fn register(&self, task_id: TaskId) -> Result<()> {
+        self.register_if_absent(task_id).map(|_| ())
+    }
+
+    /// Registers a task and reports whether this call created its scope.
+    ///
+    /// Admission cleanup must only remove a scope owned by the admission that
+    /// created it. Keeping this decision under the same mutex as insertion
+    /// prevents a concurrent retry from deleting a newer registration.
+    pub fn register_if_absent(&self, task_id: TaskId) -> Result<bool> {
         if task_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid("cancellation task identity is nil".into()));
         }
@@ -76,11 +85,11 @@ impl LocalTaskCancellationSource {
             .lock()
             .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?;
         if scopes.contains_key(&task_id) {
-            return Ok(());
+            return Ok(false);
         }
         let (sender, _) = watch::channel(false);
         scopes.insert(task_id, sender);
-        Ok(())
+        Ok(true)
     }
 
     /// Requests cancellation for one registered task.
@@ -755,6 +764,7 @@ mod tests {
         let sibling = task(9);
         source.register(owner)?;
         source.register(sibling)?;
+        assert!(!source.register_if_absent(owner)?);
         let owner_receiver = source.receiver(owner).expect("owner scope");
         assert!(!*owner_receiver.borrow());
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());

@@ -8,15 +8,19 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+    FilesystemSchedulerPayloadStore, InteractionApprovalAuthorization,
+    InteractionOperatorAuthorizer,
     LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
+    communication_tools::LocalTaskCancellationSource,
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    distributed::DistributedCoordinator,
+    durable_host::CoordinatorTaskHost,
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -27,15 +31,21 @@ use crate::{
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
-    runtime::TaskRunLimits,
+    runtime::{DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskRegistry, TaskRunLimits},
     store::StreamAggregate,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
     },
+    workflow::{
+        MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
+    },
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
+use acyclic_stream::{
+    AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError,
+    SystemUnixMillisClock,
+};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -116,6 +126,273 @@ async fn shared_local_filesystem(
     Ok(host)
 }
 
+struct LocalCommunicationMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+
+impl LocalCommunicationMachine {
+    fn new() -> Self {
+        Self {
+            identity: MachineIdentity {
+                name: "graphcoder.local.communication".into(),
+                version: "1".into(),
+                digest: [0x47; 32],
+            },
+            schema: json!({"type": "object"}),
+        }
+    }
+}
+
+impl ResumableMachine for LocalCommunicationMachine {
+    fn identity(&self) -> &MachineIdentity {
+        &self.identity
+    }
+    fn state_schema(&self) -> &Value {
+        &self.schema
+    }
+    fn initialize(&self, _input: &Value) -> Result<Value> {
+        Ok(json!({}))
+    }
+    fn transition(&self, state: &Value, _input: &Value) -> Result<MachineTransition> {
+        Ok(MachineTransition {
+            state: state.clone(),
+            commands: Vec::new(),
+            status: MachineStatus::Suspended,
+        })
+    }
+}
+
+trait LocalCommunicationAdmitter: Send + Sync {
+    fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>>;
+    fn observe<'a>(&'a self, task: TaskId) -> BoxFuture<'a, Result<()>>;
+}
+
+struct LocalCommunicationComposition {
+    host: Arc<dyn DurableTaskHost>,
+    task: ComponentIdentity,
+    machine: MachineIdentity,
+    schema: Value,
+    root_grants: Capabilities,
+    child_grants: Capabilities,
+    limits: Limits,
+    run_limits: TaskRunLimits,
+    cancellation: Arc<LocalTaskCancellationSource>,
+    admission_gates: Arc<Mutex<BTreeMap<TaskId, Arc<Mutex<()>>>>>,
+}
+
+fn cleanup_admission_failure(
+    cancellation: &LocalTaskCancellationSource,
+    task: TaskId,
+    owns_scope: bool,
+    error: Error,
+) -> Error {
+    if !owns_scope {
+        return error;
+    }
+    match cancellation.remove(task) {
+        Ok(()) => error,
+        Err(cleanup) => Error::Storage(format!(
+            "admission failed ({error}); cancellation cleanup failed ({cleanup})"
+        )),
+    }
+}
+
+impl LocalCommunicationComposition {
+    fn admission_failure(&self, task: TaskId, owns_scope: bool, error: Error) -> Error {
+        cleanup_admission_failure(&self.cancellation, task, owns_scope, error)
+    }
+}
+
+impl LocalCommunicationAdmitter for LocalCommunicationComposition {
+    fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let gate = {
+                let mut gates = self.admission_gates.lock().await;
+                gates
+                    .entry(task)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
+            };
+            let _admission_guard = gate.lock().await;
+            let owns_scope = self.cancellation.register_if_absent(task)?;
+            let operation_id = OperationId::from_bytes(task.into_bytes());
+            let admission = TaskAdmissionRecord {
+                operation_id,
+                task: self.task.clone(),
+                machine: self.machine.clone(),
+                input: json!({}),
+                input_schema: self.schema.clone(),
+                output_schema: self.schema.clone(),
+                parent,
+                dependencies: BTreeSet::new(),
+                grants: if parent.is_none() {
+                    self.root_grants.clone()
+                } else {
+                    self.child_grants.clone()
+                },
+                limits: self.limits,
+                run_limits: self.run_limits,
+                policy: None,
+                extensions: None,
+                execution: None,
+            };
+            let result = self.host.admit(admission).await;
+            match result {
+                Ok(crate::Admission::Accepted(_)) => Ok(()),
+                Ok(crate::Admission::Indeterminate { operation_id }) => {
+                    match self.host.reconcile_admission(operation_id).await {
+                        Ok(Some((_, _))) => Ok(()),
+                        Ok(None) => Err(self.admission_failure(
+                            task,
+                            owns_scope,
+                            Error::Indeterminate(operation_id),
+                        )),
+                        Err(error) => Err(self.admission_failure(task, owns_scope, error)),
+                    }
+                }
+                Ok(crate::Admission::Rejected { reason }) => Err(self.admission_failure(
+                    task,
+                    owns_scope,
+                    Error::Unauthorized(reason),
+                )),
+                Err(error) => Err(self.admission_failure(task, owns_scope, error)),
+            }
+        })
+    }
+
+    fn observe<'a>(&'a self, task: TaskId) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.host.observe_admission(task).await.map(|_| ())
+        })
+    }
+}
+
+async fn local_communication_bindings(
+    swarm: &Arc<PersistentLocalSwarm>,
+    limits: Limits,
+    run_limits: TaskRunLimits,
+) -> Result<LocalSwarmBindings> {
+    let root_task = swarm.root_task().await?;
+    let root_harness = swarm.open_session(root_task).await?;
+    let storage = root_harness.storage();
+    let owner = storage.conversation().clone();
+    let issuer = AuthorityIssuer::new("local-harness", root_harness.signing_key(), owner.clone());
+    let machine = Arc::new(LocalCommunicationMachine::new());
+    let mut tasks = TaskRegistry::default();
+    let definition = crate::runtime::TaskDefinition::<Value, Value>::resumable(
+        machine.clone(),
+        machine.schema.clone(),
+        machine.schema.clone(),
+    )?;
+    let task = definition.identity().clone();
+    tasks.register(definition)?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine.clone())?;
+    let mut root_capabilities = storage
+        .owner_scope()
+        .capabilities()
+        .iter()
+        .map(ToOwned::to_owned)
+        .chain([
+            "operation:declare".to_owned(),
+            "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
+            "mail:send".to_owned(),
+            "mail:read".to_owned(),
+            "timer:wait".to_owned(),
+            format!("task:spawn:{}@{}", task.name, task.version),
+        ])
+        .collect::<Vec<_>>();
+    root_capabilities.push(
+        storage
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Read)?,
+    );
+    root_capabilities.push(
+        storage
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Write)?,
+    );
+    root_capabilities.push(storage.volume().directory_read_capability("messages")?);
+    let root_capabilities = Capabilities::new(root_capabilities);
+    let mut child_capabilities = vec![
+        "operation:declare".to_owned(),
+        "operation:observe".to_owned(),
+        "operation:cancel".to_owned(),
+        "mail:send".to_owned(),
+        "mail:read".to_owned(),
+        "timer:wait".to_owned(),
+        format!("task:spawn:{}@{}", task.name, task.version),
+    ];
+    // Mail payloads are staged in a dedicated public subdirectory of the
+    // owner volume. Children receive only its directory read capability;
+    // they never receive the root private-volume read capability.
+    child_capabilities.push(
+        storage
+            .volume()
+            .directory_read_capability("messages")?,
+    );
+    let child_capabilities = Capabilities::new(child_capabilities);
+    let owner_agent = storage
+        .owner_scope()
+        .agent()
+        .ok_or_else(|| Error::Unauthorized("local communication owner agent is missing".into()))?;
+    let owner_scope =
+        issuer.root_for_agent(owner_agent, "communication-owner", root_capabilities.clone());
+    let verifier = issuer.verifier();
+    let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        swarm.filesystem_host.clone(),
+        storage.volume().clone(),
+        &verifier,
+        &owner_scope,
+        limits.file_bytes,
+    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(
+        swarm.filesystem_host.clone(),
+        verifier.clone(),
+        owner_scope.clone(),
+        limits.file_bytes,
+    )?);
+    let coordinator = DistributedCoordinator::open(&swarm.conversation_stream, reader.clone())
+        .await?
+        .with_payload_store(payloads.clone());
+    let host = Arc::new(CoordinatorTaskHost::new(
+        coordinator,
+        swarm.conversation_stream.clone(),
+        payloads,
+        reader,
+        owner,
+        owner_scope,
+        verifier,
+        RuntimeScope::new(root_capabilities.clone(), limits)?,
+        tasks,
+        machines,
+        Arc::new(SystemUnixMillisClock),
+    )?);
+    let admitter = Arc::new(LocalCommunicationComposition {
+        host: host.clone(),
+        task,
+        machine: machine.identity().clone(),
+        schema: machine.schema.clone(),
+        root_grants: root_capabilities,
+        child_grants: child_capabilities,
+        limits,
+        run_limits,
+        cancellation: Arc::new(LocalTaskCancellationSource::default()),
+        admission_gates: Arc::new(Mutex::new(BTreeMap::new())),
+    });
+    let waits = Arc::new(crate::communication::StreamWaitStore::new_with_clock(
+        swarm.conversation_stream.clone(), host.owner_clock(),
+    ));
+    Ok(LocalSwarmBindings::communication(
+        host,
+        Some(waits),
+        Some(admitter.cancellation.clone()),
+    )
+        .with_communication_admitter(admitter))
+}
+
 /// Configuration for one persistent local swarm.
 #[derive(Clone, Debug)]
 pub struct LocalSwarmConfig {
@@ -156,6 +433,7 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    communication_admitter: Option<Arc<dyn LocalCommunicationAdmitter>>,
 }
 
 impl LocalSwarmBindings {
@@ -173,6 +451,7 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            communication_admitter: None,
         }
     }
 
@@ -201,6 +480,14 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    fn with_communication_admitter(
+        mut self,
+        admitter: Arc<dyn LocalCommunicationAdmitter>,
+    ) -> Self {
+        self.communication_admitter = Some(admitter);
         self
     }
 
@@ -2174,6 +2461,20 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        if let Some(admitter) = bindings.communication_admitter.as_ref() {
+            for session in sessions.values() {
+                match &session.phase {
+                    LocalSessionPhase::Ready | LocalSessionPhase::Activating => {
+                        admitter.admit(session.task, session.parent).await?;
+                    }
+                    LocalSessionPhase::Completed
+                    | LocalSessionPhase::Cancelled
+                    | LocalSessionPhase::Failed(_) => {
+                        admitter.observe(session.task).await?;
+                    }
+                }
+            }
+        }
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -2336,6 +2637,8 @@ impl PersistentLocalSwarm {
         .await?;
         let root_task = base.root_task().await?;
         let host_secret = base.open_session(root_task).await?.signing_key();
+        let communication =
+            local_communication_bindings(&base, limits, base.config.run_limits).await?;
         drop(base);
         let resolver = Arc::new(
             LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
@@ -2346,7 +2649,7 @@ impl PersistentLocalSwarm {
             model,
             provider,
             limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            communication.with_filesystem_fork_resolver(resolver),
         )
         .await
     }
@@ -2748,17 +3051,16 @@ impl PersistentLocalSwarm {
             .communication_host
             .clone()
             .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
-        // Mail payloads are staged into the recipient's own private volume.
-        // A sender-owned FileRef would require an implicit sibling read grant
-        // and would make an otherwise valid parent/child message unreadable
-        // at inbox time. The owner host performs this copy before publishing
-        // the ref-only inbox event.
-        let harness = self.open_session(recipient).await?;
+        // Mail payloads are staged into the composition-owned root volume so
+        // the shared CoordinatorTaskHost can verify one immutable ref without
+        // widening a child grant to another agent's private volume.
+        let root_task = self.root_task().await?;
+        let harness = self.open_session(root_task).await?;
         let payload = harness
             .storage()
             .stage(
                 message_id,
-                &format!("system/swarm/messages/{message_id}.txt"),
+                &format!("messages/{message_id}.txt"),
                 body,
                 "text/plain",
                 "message.txt",
@@ -2779,6 +3081,38 @@ impl PersistentLocalSwarm {
             message_id,
             payload,
         })
+    }
+
+    /// Hydrates one already delivered mailbox payload through the composition
+    /// owner. The identity and exact FileRef must both match a retained inbox
+    /// event for the requested recipient.
+    pub async fn read_message_body(
+        &self,
+        task: TaskId,
+        message_id: OperationId,
+        payload: &FileRef,
+    ) -> Result<Vec<u8>> {
+        self.session(task).await?;
+        let mut after = 0;
+        loop {
+            let page = self.read_inbox(task, after, 1_024).await?;
+            if let Some(item) = page.iter().find(|item| {
+                item.message_id == message_id.to_string() && item.payload == *payload
+            }) {
+                let root = self.root_task().await?;
+                return self.open_session(root).await?.storage().read(&item.payload).await;
+            }
+            let Some(last) = page.last() else {
+                break;
+            };
+            after = last.sequence;
+            if page.len() < 1_024 {
+                break;
+            }
+        }
+        Err(Error::Unauthorized(
+            "message body reference is not retained by the recipient inbox".into(),
+        ))
     }
 
     /// Reads a bounded durable inbox page for a task.
@@ -3269,6 +3603,9 @@ impl PersistentLocalSwarm {
                 })
                 .await?;
             }
+        }
+        if let Some(admitter) = self.bindings.communication_admitter.as_ref() {
+            admitter.admit(child, Some(request.parent)).await?;
         }
         let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
             self.config.model.clone(),
@@ -4593,6 +4930,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::communication_tools::WaitCancellationSource;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
@@ -4605,6 +4943,126 @@ mod tests {
     struct MockModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    struct InterleavingAdmissionHost {
+        calls: AtomicUsize,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl DurableTaskHost for InterleavingAdmissionHost {
+        fn admit<'a>(
+            &'a self,
+            _admission: TaskAdmissionRecord,
+        ) -> BoxFuture<'a, Result<crate::Admission<TaskId>>> {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    Err(Error::Conflict("first admission failed".into()))
+                } else {
+                    Ok(crate::Admission::Accepted(TaskId::from_bytes([7; 16])))
+                }
+            })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<crate::Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn admission_failure_cleanup_covers_rejected_failed_reconcile_and_unknown() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let failures = [
+            Error::Unauthorized("rejected".into()),
+            Error::Conflict("failed".into()),
+            Error::Storage("reconcile failed".into()),
+            Error::Indeterminate(OperationId::from_bytes([44; 16])),
+        ];
+        for (index, failure) in failures.into_iter().enumerate() {
+            let task_id = TaskId::from_bytes([40 + index as u8; 16]);
+            assert!(source.register_if_absent(task_id)?);
+            assert_eq!(
+                cleanup_admission_failure(&source, task_id, true, failure.clone()),
+                failure
+            );
+            assert!(source.receiver(task_id).is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admission_retry_does_not_remove_existing_task_scope() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let task_id = TaskId::from_bytes([49; 16]);
+        assert!(source.register_if_absent(task_id)?);
+        // A concurrent retry observes the existing registration and therefore
+        // cannot clean up the scope owned by the first admission.
+        assert!(!source.register_if_absent(task_id)?);
+        let failure = Error::Unauthorized("retry rejected".into());
+        assert_eq!(
+            cleanup_admission_failure(&source, task_id, false, failure.clone()),
+            failure
+        );
+        assert!(source.receiver(task_id).is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn production_admitter_serializes_retry_before_failure_cleanup() -> Result<()> {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let host = Arc::new(InterleavingAdmissionHost {
+            calls: AtomicUsize::new(0),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let cancellation = Arc::new(LocalTaskCancellationSource::default());
+        let machine = LocalCommunicationMachine::new();
+        let composition = Arc::new(LocalCommunicationComposition {
+            host: host.clone(),
+            task: ComponentIdentity {
+                name: "test.communication".into(),
+                version: "1".into(),
+                digest: [8; 32],
+            },
+            machine: machine.identity().clone(),
+            schema: machine.schema.clone(),
+            root_grants: Capabilities::default(),
+            child_grants: Capabilities::default(),
+            limits: Limits::default(),
+            run_limits: TaskRunLimits::default(),
+            cancellation: cancellation.clone(),
+            admission_gates: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        });
+        let task = TaskId::from_bytes([6; 16]);
+        let first = {
+            let composition = composition.clone();
+            tokio::spawn(async move { composition.admit(task, None).await })
+        };
+        entered.notified().await;
+        let second = {
+            let composition = composition.clone();
+            tokio::spawn(async move { composition.admit(task, None).await })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        assert!(matches!(first.await.expect("first admission task"), Err(Error::Conflict(_))));
+        assert!(second.await.expect("retry admission task").is_ok());
+        assert!(cancellation.receiver(task).is_some());
+        assert_eq!(host.calls.load(Ordering::SeqCst), 2);
+        Ok(())
     }
 
     struct RecordingCommunicationHost {
@@ -4795,6 +5253,264 @@ mod tests {
         assert_eq!(
             waits.completed.lock().expect("wait store lock").as_slice(),
             &[crate::communication::WaitCompletion::Deadline]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_local_wait_cancellation_replays_after_restart() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let waiter = swarm.root_task().await?;
+        let host = swarm
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("communication host missing".into()))?;
+        let waits = swarm
+            .bindings
+            .wait_store
+            .clone()
+            .ok_or_else(|| Error::Unsupported("wait store missing".into()))?;
+        let cancellation = swarm
+            .bindings
+            .cancellation
+            .as_ref()
+            .and_then(|source| source.receiver(waiter))
+            .ok_or_else(|| Error::Unsupported("live cancellation scope missing".into()))?;
+        let request = crate::communication::WaitRequest {
+            operation_id: OperationId::from_bytes([0xa9; 16]),
+            waiter,
+            target: crate::communication::WaitTarget::Deadline {
+                deadline_epoch_ms: host.now_unix_millis().saturating_add(60_000),
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(OperationId::from_bytes([0xaa; 16])),
+        };
+        // Establish the durable pending wait before starting the live observer;
+        // this removes timing dependence from the cancellation race while
+        // still exercising the production StreamWaitStore on both sides.
+        waits.open(request.clone()).await?;
+        let pending = tokio::spawn({
+            let request = request.clone();
+            async move {
+                crate::communication::DurableCommunication::new(host)
+                    .with_wait_store(waits)
+                    .wait(request, Some(cancellation))
+                    .await
+            }
+        });
+        swarm.cancel(waiter).await?;
+        assert_eq!(pending.await.map_err(|error| Error::Storage(error.to_string()))??,
+            crate::communication::WaitCompletion::Cancelled);
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let host = reopened
+            .bindings
+            .communication_host
+            .clone()
+            .ok_or_else(|| Error::Unsupported("reopened communication host missing".into()))?;
+        let waits = reopened
+            .bindings
+            .wait_store
+            .clone()
+            .ok_or_else(|| Error::Unsupported("reopened wait store missing".into()))?;
+        assert_eq!(
+            crate::communication::DurableCommunication::new(host)
+                .with_wait_store(waits)
+                .wait(request, None)
+                .await?,
+            crate::communication::WaitCompletion::Cancelled
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_local_composition_delivers_pinned_mail_after_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(0),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let root_task = swarm.root_task().await?;
+        swarm
+            .run_root(
+                OperationId::from_bytes([0x91; 16]),
+                "wait for durable deadline",
+            )
+            .await?;
+        let child = TaskId::from_bytes([0x92; 16]);
+        let sibling = TaskId::from_bytes([0x95; 16]);
+        let grandchild = TaskId::from_bytes([0x96; 16]);
+        let child_session = LocalSwarmSession {
+            task: child,
+            parent: Some(root_task),
+            depth: 1,
+            task_description: "communication child".into(),
+            operation: Some(OperationId::from_bytes(child.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
+        let sibling_session = LocalSwarmSession {
+            task: sibling,
+            parent: Some(root_task),
+            depth: 1,
+            task_description: "communication sibling".into(),
+            operation: Some(OperationId::from_bytes(sibling.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
+        let grandchild_session = LocalSwarmSession {
+            task: grandchild,
+            parent: Some(child),
+            depth: 2,
+            task_description: "communication grandchild".into(),
+            operation: Some(OperationId::from_bytes(grandchild.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(&registry, StoredEvent::Session(child_session.into())).await?;
+        append_record(&registry, StoredEvent::Session(sibling_session.into())).await?;
+        append_record(&registry, StoredEvent::Session(grandchild_session.into())).await?;
+        swarm.refresh_registry_state().await?;
+        let admitter = swarm
+            .bindings
+            .communication_admitter
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("communication admission bridge missing".into()))?;
+        admitter.admit(child, Some(root_task)).await?;
+        admitter.admit(sibling, Some(root_task)).await?;
+        admitter.admit(grandchild, Some(child)).await?;
+        let child_admission = swarm
+            .bindings
+            .communication_host
+            .as_ref()
+            .expect("local communication host")
+            .observe_admission(child)
+            .await?;
+        let root_volume = swarm.open_session(root_task).await?.storage().volume().clone();
+        assert!(!child_admission
+            .grants
+            .contains(&root_volume.capability(crate::conversation::VolumeOperation::Read)?));
+        assert!(child_admission.grants.contains(
+            &root_volume.directory_read_capability("messages")?
+        ));
+        assert!(matches!(
+            swarm
+                .send_message(sibling, child, OperationId::from_bytes([0x97; 16]), b"sibling")
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .send_message(
+                    grandchild,
+                    root_task,
+                    OperationId::from_bytes([0x98; 16]),
+                    b"grandchild"
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let message_id = OperationId::from_bytes([0x93; 16]);
+        let receipt = swarm
+            .send_message(root_task, child, message_id, b"pinned-mail")
+            .await?;
+        swarm
+            .send_message(root_task, child, message_id, b"pinned-mail")
+            .await?;
+        let inbox = swarm.read_inbox(child, 0, 8).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].sender, root_task);
+        assert_eq!(
+            swarm
+                .read_message_body(child, receipt.message_id, &receipt.payload)
+                .await?,
+            b"pinned-mail"
+        );
+        let forged_payload = FileRef::new(
+            receipt.payload.volume().clone(),
+            receipt.payload.path(),
+            "forged-version",
+            receipt.payload.descriptor().clone(),
+            receipt.payload.display_name(),
+        )?;
+        assert!(matches!(
+            swarm
+                .read_message_body(child, receipt.message_id, &forged_payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .read_message_body(root_task, receipt.message_id, &receipt.payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        swarm
+            .open_session(root_task)
+            .await?
+            .storage()
+            .stage(
+                OperationId::from_bytes([0x94; 16]),
+                &format!("messages/{message_id}.txt"),
+                b"rewritten-mail",
+                "text/plain",
+                "message.txt",
+            )
+            .await?;
+        assert_eq!(
+            swarm
+                .read_message_body(child, receipt.message_id, &receipt.payload)
+                .await?,
+            b"pinned-mail"
+        );
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let inbox = reopened.read_inbox(child, 0, 8).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            reopened
+                .read_message_body(
+                    child,
+                    OperationId::parse(&inbox[0].message_id)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    &inbox[0].payload,
+                )
+                .await?,
+            b"pinned-mail"
         );
         Ok(())
     }
