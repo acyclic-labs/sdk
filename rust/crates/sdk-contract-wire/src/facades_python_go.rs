@@ -10,7 +10,8 @@ use crate::{
     family_registry::FAMILY_VIEWS,
     transport::TransportKind,
     type_policy::{
-        SemanticRule, FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES, WIRE_UNION_VARIANTS, WireValueKind,
+        semantic_type, SemanticRule, FIELD_SEMANTIC_TYPES, SEMANTIC_TYPES,
+        WIRE_UNION_VARIANTS, WireValueKind,
     },
 };
 
@@ -249,6 +250,7 @@ fn python_public_type_exports() -> String {
         "KnownOneof".to_owned(),
         "UnknownOneof".to_owned(),
         "WireChoice".to_owned(),
+        "SemanticFieldValues".to_owned(),
         "decode_wire_choice".to_owned(),
         "encode_wire_choice".to_owned(),
         "known_oneof".to_owned(),
@@ -578,6 +580,26 @@ fn python_type_projection() -> String {
             item.rust_name, annotation, item.rust_name, item.rust_name, item.rust_name
         ));
     }
+    output.push_str("@dataclass(frozen=True)\nclass SemanticFieldValues:\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        let item = semantic_type(mapping.semantic_type)
+            .expect("every Rust-owned field mapping resolves during Python projection");
+        output.push_str(&format!(
+            "    {}: {}Value | None = None\n",
+            python_field_identifier(mapping.family, mapping.field),
+            item.rust_name
+        ));
+    }
+    output.push_str("\n    def to_wire_fields(self) -> dict[tuple[str, str], object]:\n        values: dict[tuple[str, str], object] = {}\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        let identifier = python_field_identifier(mapping.family, mapping.field);
+        output.push_str(&format!(
+            "        if self.{identifier} is not None:\n            values[({family:?}, {field:?})] = self.{identifier}\n",
+            family = mapping.family,
+            field = mapping.field,
+        ));
+    }
+    output.push_str("        return values\n\n\n");
     output.push_str(
         r#"def _require_text(value: object, name: str) -> str:
     if not isinstance(value, str):
@@ -685,6 +707,7 @@ from acyclic_sdk.remote import (
     ActorInvokeRequest,
     ActorInvokeResponse,
     KnownOneof,
+    SemanticFieldValues,
     UnknownOneof,
     actor_id,
     decode_wire_choice,
@@ -710,6 +733,12 @@ def test_rust_owned_refinements_accept_valid_values():
     assert decode_wire_choice(encode_wire_choice(UnknownOneof(raw_payload=b"future"))).raw_payload == b"future"
     request = ActorInvokeRequest(actor_id=actor_id("actor"), method=method("run"))
     assert request.to_wire().actor_id == "actor"
+    fields = SemanticFieldValues(
+        actors_actor_id=actor_id("actor"),
+        stream_idempotency_key=idempotency_key_bytes(b"request"),
+    )
+    assert fields.to_wire_fields()[("actors", "actor_id")] == "actor"
+    assert fields.to_wire_fields()[("stream", "idempotency_key")] == b"request"
 
 
 def test_rust_owned_refinements_reject_invalid_values():
@@ -783,6 +812,25 @@ fn go_type_projection() -> String {
         emitted_go_types.push(name.clone());
         output.push_str(&format!("type {} {}\n\n", name, go_wire_base(item)));
     }
+    output.push_str("type SemanticFieldValues struct {\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        let item = semantic_type(mapping.semantic_type)
+            .expect("every Rust-owned field mapping resolves during Go projection");
+        output.push_str(&format!(
+            "\t{} *{}\n",
+            go_field_identifier(mapping.family, mapping.field),
+            go_type_name(item.rust_name)
+        ));
+    }
+    output.push_str("}\n\nfunc (values SemanticFieldValues) ToWireFields() map[string]any {\n\tresult := map[string]any{}\n");
+    for mapping in FIELD_SEMANTIC_TYPES {
+        let identifier = go_field_identifier(mapping.family, mapping.field);
+        output.push_str(&format!(
+            "\tif values.{identifier} != nil {{ result[{key:?}] = *values.{identifier} }}\n",
+            key = format!("{}.{}", mapping.family, mapping.field),
+        ));
+    }
+    output.push_str("\treturn result\n}\n\n");
     output.push_str(
         r#"func requireGoText(value, name string) error {
     if value == "" { return fmt.Errorf("%s must not be empty", name) }
@@ -882,6 +930,10 @@ func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if err != nil || request.GetActorId() != "actor" { t.Fatalf("typed request bridge failed: %v", err) }
 	response := actorInvokeResponseFromWire(&actorsv1.InvokeActorResponse{Status: 200, Body: []byte("ok")})
 	if response.Status != 200 || string(response.Body) != "ok" { t.Fatal("typed response bridge failed") }
+	actorValue := ActorID("actor")
+	keyValue := IdempotencyKeyBytes([]byte("request"))
+	fields := SemanticFieldValues{ActorsActorID: &actorValue, StreamIdempotencyKey: &keyValue}
+	if _, ok := fields.ToWireFields()["actors.actor_id"]; !ok { t.Fatal("typed field mapping missing") }
 }
 
 func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
@@ -1018,6 +1070,27 @@ fn go_constructor_name(item: &crate::type_policy::SemanticType) -> String {
         result.push_str("ID");
     }
     result
+}
+
+fn python_field_identifier(family: &str, field: &str) -> String {
+    format!("{}_{}", snake_case(family).replace('-', "_"), snake_case(field).replace('-', "_"))
+}
+
+fn go_field_identifier(family: &str, field: &str) -> String {
+    fn title(value: &str) -> String {
+        value
+            .split('_')
+            .filter(|part| !part.is_empty())
+            .map(|part| {
+                if part.eq_ignore_ascii_case("id") {
+                    return "ID".to_owned();
+                }
+                let mut chars = part.chars();
+                chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
+            })
+            .collect()
+    }
+    format!("{}{}", title(family), title(field))
 }
 
 fn snake_case(value: &str) -> String { value.to_owned() }

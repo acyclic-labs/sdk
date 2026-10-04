@@ -3,12 +3,25 @@ package acyclicsdk
 
 import "testing"
 
+import actorsv1 "github.com/acyclic-labs/sdk/go/gen/actors/v1"
+
 func TestRustOwnedRefinementsAcceptValidValues(t *testing.T) {
 	if _, err := NewActorID("actor"); err != nil { t.Fatal(err) }
 	if _, err := NewIdempotencyKeyBytes([]byte("request")); err != nil { t.Fatal(err) }
 	if _, err := NewPageLimit(1); err != nil { t.Fatal(err) }
 	if _, err := NewRevisionDigest(make([]byte, 32)); err != nil { t.Fatal(err) }
 	if _, err := NewSha256Digest(make([]byte, 32)); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewKnownOneof(map[string]any{"payload": 1})); err != nil { t.Fatal(err) }
+	if _, err := NewWireChoice(NewUnknownOneof([]byte("future"))); err != nil { t.Fatal(err) }
+	payload, err := EncodeWireChoiceJSON(NewUnknownOneof([]byte("future")))
+	if err != nil { t.Fatal(err) }
+	decoded, err := DecodeWireChoiceJSON(payload)
+	if err != nil { t.Fatal(err) }
+	if unknown, ok := decoded.(UnknownOneof); !ok || string(unknown.RawPayload) != "future" { t.Fatal("unknown oneof JSON bridge failed") }
+	request, err := (ActorInvokeRequest{ActorID: ActorID("actor"), Method: MethodName("run")}).toWire()
+	if err != nil || request.GetActorId() != "actor" { t.Fatalf("typed request bridge failed: %v", err) }
+	response := actorInvokeResponseFromWire(&actorsv1.InvokeActorResponse{Status: 200, Body: []byte("ok")})
+	if response.Status != 200 || string(response.Body) != "ok" { t.Fatal("typed response bridge failed") }
 }
 
 func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
@@ -18,4 +31,7 @@ func TestRustOwnedRefinementsRejectInvalidValues(t *testing.T) {
 	if _, err := NewPageLimit(1001); err == nil { t.Fatal("oversized page limit accepted") }
 	if _, err := NewRevisionDigest([]byte("short")); err == nil { t.Fatal("short revision digest accepted") }
 	if _, err := NewSha256Digest([]byte("short")); err == nil { t.Fatal("short digest accepted") }
+	if _, err := NewWireChoice(KnownOneof{Tag: "wrong"}); err == nil { t.Fatal("invalid known oneof tag accepted") }
+	if _, err := DecodeWireChoice(WireChoiceEnvelope{Tag: "future"}); err == nil { t.Fatal("unknown oneof discriminant accepted") }
+	if _, err := (ActorInvokeRequest{ActorID: ActorID(""), Method: MethodName("run")}).toWire(); err == nil { t.Fatal("empty actor id accepted by request bridge") }
 }

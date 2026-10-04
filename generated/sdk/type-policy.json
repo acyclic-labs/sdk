@@ -830,5 +830,19 @@
       "wire_kind": "oneof"
     }
   ],
-  "source": "rust/crates/sdk-contract-wire/src/type_policy.rs"
+  "source": "rust/crates/sdk-contract-wire/src/type_policy.rs",
+  "union_variants": [
+    {
+      "payload_wire_kind": "message",
+      "tag": "known",
+      "union": "wire_choice",
+      "variant": "KnownOneof"
+    },
+    {
+      "payload_wire_kind": "bytes",
+      "tag": "unknown",
+      "union": "wire_choice",
+      "variant": "UnknownOneof"
+    }
+  ]
 }
