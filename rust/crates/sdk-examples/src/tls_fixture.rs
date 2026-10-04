@@ -122,8 +122,8 @@ pub const MACHINES_RPC_METHODS: &[&str] = &[
     "acyclic.machines.v1.MachinesService/WatchOperation",
 ];
 
-/// Every modeled Inference RPC that the bounded fixture implements.
-pub const INFERENCE_RPC_METHODS: &[&str] = &[
+/// Every modeled Inference Runs RPC that the bounded fixture implements.
+pub const INFERENCE_RUNS_RPC_METHODS: &[&str] = &[
     "inference.customer.v1.ModelsService/List",
     "inference.customer.v1.ContextsService/Create",
     "inference.customer.v1.ContextsService/Inspect",
@@ -140,14 +140,6 @@ pub const INFERENCE_RPC_METHODS: &[&str] = &[
     "inference.customer.v1.EvaluationsService/Inspect",
 ];
 
-/// The Runs subset retained for callers that qualify streaming separately.
-pub const INFERENCE_RUNS_RPC_METHODS: &[&str] = &[
-    "inference.customer.v1.RunsService/Generate",
-    "inference.customer.v1.RunsService/Inspect",
-    "inference.customer.v1.RunsService/Watch",
-    "inference.customer.v1.RunsService/Cancel",
-];
-
 /// One deterministic request/response observation from an installed client.
 ///
 /// The hashes let the fixture prove that a concrete protobuf request reached a
@@ -161,10 +153,27 @@ pub struct MethodTranscript {
     pub request_bytes: usize,
     /// SHA-256 of the encoded request message.
     pub request_sha256: String,
-    /// Number of encoded response bytes emitted by the fixture.
+    /// Canonically encoded request bytes for Rust-owned typed collectors.
+    pub request_base64: String,
+    /// Number of encoded bytes in the first response frame.
     pub response_bytes: usize,
-    /// SHA-256 of the encoded response message, or the concatenated stream messages.
+    /// SHA-256 of the first response frame.
     pub response_sha256: String,
+    /// Canonically encoded first response frame for Rust-owned typed collectors.
+    pub response_base64: String,
+    /// Canonically encoded response frames in wire order.
+    pub response_frames: Vec<TranscriptFrame>,
+}
+
+/// One canonical encoded response frame from a streaming RPC.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TranscriptFrame {
+    /// Number of encoded protobuf bytes in this frame.
+    pub response_bytes: usize,
+    /// SHA-256 of the encoded protobuf frame.
+    pub response_sha256: String,
+    /// Canonically encoded protobuf frame.
+    pub response_base64: String,
 }
 
 /// Shared append-only transcript used by the bounded local fixture.
@@ -185,15 +194,59 @@ pub(crate) fn record_transcript(
     request_bytes: Vec<u8>,
     response_bytes: Vec<u8>,
 ) {
+    record_stream_transcript(log, rpc, request_bytes, vec![response_bytes]);
+}
+
+pub(crate) fn record_stream_transcript(
+    log: &MethodTranscriptLog,
+    rpc: &'static str,
+    request_bytes: Vec<u8>,
+    response_frames: Vec<Vec<u8>>,
+) {
+    let first_response = response_frames.first().cloned().unwrap_or_default();
     log.lock()
         .expect("Machines fixture transcript mutex poisoned")
         .push(MethodTranscript {
             rpc,
             request_bytes: request_bytes.len(),
             request_sha256: digest(&request_bytes),
-            response_bytes: response_bytes.len(),
-            response_sha256: digest(&response_bytes),
+            request_base64: base64(&request_bytes),
+            response_bytes: first_response.len(),
+            response_sha256: digest(&first_response),
+            response_base64: base64(&first_response),
+            response_frames: response_frames
+                .into_iter()
+                .map(|response| TranscriptFrame {
+                    response_bytes: response.len(),
+                    response_sha256: digest(&response),
+                    response_base64: base64(&response),
+                })
+                .collect(),
         });
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        output.push(ALPHABET[(first >> 2) as usize] as char);
+        output.push(ALPHABET[((first & 0x03) << 4 | second >> 4) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            ALPHABET[((second & 0x0f) << 2 | third >> 6) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            ALPHABET[(third & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
 }
 
 pub(crate) fn traced_response<Req, Resp>(
@@ -709,6 +762,231 @@ pub async fn serve_machines_rsa_with_transcript(
         .await
 }
 
+/// Rust-owned implementations for the non-run Inference services.  Keeping
+/// these in the same mTLS fixture is intentional: an installed SDK probe must
+/// exercise the complete generated service surface against one authority.
+#[derive(Clone)]
+pub struct InferenceMetadataFixture {
+    transcript: MethodTranscriptLog,
+}
+
+impl InferenceMetadataFixture {
+    pub fn with_transcript(transcript: MethodTranscriptLog) -> Self {
+        Self { transcript }
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::models_service_server::ModelsService
+    for InferenceMetadataFixture
+{
+    async fn list(
+        &self,
+        request: Request<acyclic_inference::wire::ListModelsRequest>,
+    ) -> Result<Response<acyclic_inference::wire::ListModelsResponse>, Status> {
+        let request = request.into_inner();
+        let response = acyclic_inference::wire::ListModelsResponse {
+            models: vec![acyclic_inference::wire::ModelCapability {
+                model: "fixture-model".to_owned(),
+                execution_profile: vec![1; 32],
+                maximum_context: 4096,
+                maximum_output: 1024,
+                features: vec!["generate".to_owned(), "stream".to_owned()],
+                ..Default::default()
+            }],
+        };
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ModelsService/List",
+            &request,
+            response,
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::contexts_service_server::ContextsService
+    for InferenceMetadataFixture
+{
+    async fn create(
+        &self,
+        request: Request<acyclic_inference::wire::CreateContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
+        let request = request.into_inner();
+        let response = acyclic_inference::wire::MutationReceipt {
+            revision: vec![1; 32],
+            command_digest: vec![2; 32],
+            sequence: 1,
+            retained: true,
+        };
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Create",
+            &request,
+            response,
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::ContextView>, Status> {
+        let request = request.into_inner();
+        let response = acyclic_inference::wire::ContextView {
+            revision: if request.revision.is_empty() { vec![1; 32] } else { request.revision.clone() },
+            lineage: vec![3; 32],
+            execution_profile: vec![4; 32],
+            content_digest: vec![5; 32],
+            model: "fixture-model".to_owned(),
+            provenance: Some(acyclic_inference::wire::ContextProvenance {
+                origin: Some(acyclic_inference::wire::context_provenance::Origin::Created(
+                    acyclic_inference::wire::Empty {},
+                )),
+            }),
+            ..Default::default()
+        };
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Inspect",
+            &request,
+            response,
+        ))
+    }
+
+    async fn mutate(
+        &self,
+        request: Request<acyclic_inference::wire::MutateContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
+        let request = request.into_inner();
+        let response = acyclic_inference::wire::MutationReceipt {
+            revision: vec![6; 32],
+            command_digest: vec![7; 32],
+            sequence: 2,
+            retained: false,
+        };
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Mutate",
+            &request,
+            response,
+        ))
+    }
+}
+
+fn warm_view() -> acyclic_inference::wire::WarmView {
+    acyclic_inference::wire::WarmView {
+        commitment: vec![8; 32],
+        context: vec![1; 32],
+        model_profile: vec![9; 32],
+        latency_profile: vec![10; 32],
+        expires_at_ms: 4_000,
+        state: acyclic_inference::wire::WarmState::Active as i32,
+        evidence_digest: vec![11; 32],
+        admission_receipt_id: vec![12; 32],
+        sequence: 1,
+        idle_kv: None,
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::warm_contexts_service_server::WarmContextsService
+    for InferenceMetadataFixture
+{
+    async fn retain(
+        &self,
+        request: Request<acyclic_inference::wire::RetainWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Retain",
+            &request,
+            warm_view(),
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Inspect",
+            &request,
+            warm_view(),
+        ))
+    }
+
+    async fn renew(
+        &self,
+        request: Request<acyclic_inference::wire::RenewWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Renew",
+            &request,
+            warm_view(),
+        ))
+    }
+
+    async fn release(
+        &self,
+        request: Request<acyclic_inference::wire::ReleaseWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        let mut response = warm_view();
+        response.state = acyclic_inference::wire::WarmState::Released as i32;
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Release",
+            &request,
+            response,
+        ))
+    }
+}
+
+fn evaluation_view(id: Vec<u8>) -> acyclic_inference::wire::EvaluationView {
+    acyclic_inference::wire::EvaluationView {
+        evaluation_id: if id.is_empty() { vec![13; 16] } else { id },
+        state: acyclic_inference::wire::EvaluationState::Completed as i32,
+        sequence: 1,
+        ..Default::default()
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::evaluations_service_server::EvaluationsService
+    for InferenceMetadataFixture
+{
+    async fn create(
+        &self,
+        request: Request<acyclic_inference::wire::CreateEvaluationRequest>,
+    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.EvaluationsService/Create",
+            &request,
+            evaluation_view(vec![13; 16]),
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectEvaluationRequest>,
+    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.EvaluationsService/Inspect",
+            &request,
+            evaluation_view(request.evaluation_id.clone()),
+        ))
+    }
+}
+
 /// A bounded Rust-owned Inference Runs service for installed SDK consumers.
 ///
 /// The service deliberately exposes the complete Runs RPC surface and keeps
@@ -799,17 +1077,15 @@ impl acyclic_inference::wire::runs_service_server::RunsService for InferenceRuns
                 )),
             },
         ];
-        let mut response_bytes = Vec::new();
-        for event in &events {
-            event
-                .encode(&mut response_bytes)
-                .expect("encode Inference watch event");
-        }
-        record_transcript(
+        let response_frames = events
+            .iter()
+            .map(|event| event.encode_to_vec())
+            .collect::<Vec<_>>();
+        record_stream_transcript(
             &self.transcript,
             "inference.customer.v1.RunsService/Watch",
             request.encode_to_vec(),
-            response_bytes,
+            response_frames,
         );
         Ok(Response::new(Box::pin(stream::iter(
             events.into_iter().map(Ok),
@@ -831,151 +1107,6 @@ impl acyclic_inference::wire::runs_service_server::RunsService for InferenceRuns
     }
 }
 
-#[tonic::async_trait]
-impl acyclic_inference::wire::models_service_server::ModelsService for InferenceRunsFixture {
-    async fn list(
-        &self,
-        request: Request<acyclic_inference::wire::ListModelsRequest>,
-    ) -> Result<Response<acyclic_inference::wire::ListModelsResponse>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.ModelsService/List",
-            &request,
-            acyclic_inference::wire::ListModelsResponse::default(),
-        ))
-    }
-}
-
-#[tonic::async_trait]
-impl acyclic_inference::wire::contexts_service_server::ContextsService for InferenceRunsFixture {
-    async fn create(
-        &self,
-        request: Request<acyclic_inference::wire::CreateContextRequest>,
-    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.ContextsService/Create",
-            &request,
-            acyclic_inference::wire::MutationReceipt::default(),
-        ))
-    }
-
-    async fn inspect(
-        &self,
-        request: Request<acyclic_inference::wire::InspectContextRequest>,
-    ) -> Result<Response<acyclic_inference::wire::ContextView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.ContextsService/Inspect",
-            &request,
-            acyclic_inference::wire::ContextView::default(),
-        ))
-    }
-
-    async fn mutate(
-        &self,
-        request: Request<acyclic_inference::wire::MutateContextRequest>,
-    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.ContextsService/Mutate",
-            &request,
-            acyclic_inference::wire::MutationReceipt::default(),
-        ))
-    }
-}
-
-#[tonic::async_trait]
-impl acyclic_inference::wire::warm_contexts_service_server::WarmContextsService
-    for InferenceRunsFixture
-{
-    async fn retain(
-        &self,
-        request: Request<acyclic_inference::wire::RetainWarmRequest>,
-    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.WarmContextsService/Retain",
-            &request,
-            acyclic_inference::wire::WarmView::default(),
-        ))
-    }
-
-    async fn inspect(
-        &self,
-        request: Request<acyclic_inference::wire::InspectWarmRequest>,
-    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.WarmContextsService/Inspect",
-            &request,
-            acyclic_inference::wire::WarmView::default(),
-        ))
-    }
-
-    async fn renew(
-        &self,
-        request: Request<acyclic_inference::wire::RenewWarmRequest>,
-    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.WarmContextsService/Renew",
-            &request,
-            acyclic_inference::wire::WarmView::default(),
-        ))
-    }
-
-    async fn release(
-        &self,
-        request: Request<acyclic_inference::wire::ReleaseWarmRequest>,
-    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.WarmContextsService/Release",
-            &request,
-            acyclic_inference::wire::WarmView::default(),
-        ))
-    }
-}
-
-#[tonic::async_trait]
-impl acyclic_inference::wire::evaluations_service_server::EvaluationsService
-    for InferenceRunsFixture
-{
-    async fn create(
-        &self,
-        request: Request<acyclic_inference::wire::CreateEvaluationRequest>,
-    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.EvaluationsService/Create",
-            &request,
-            acyclic_inference::wire::EvaluationView::default(),
-        ))
-    }
-
-    async fn inspect(
-        &self,
-        request: Request<acyclic_inference::wire::InspectEvaluationRequest>,
-    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
-        let request = request.into_inner();
-        Ok(traced_response(
-            &self.transcript,
-            "inference.customer.v1.EvaluationsService/Inspect",
-            &request,
-            acyclic_inference::wire::EvaluationView::default(),
-        ))
-    }
-}
 /// Starts a TLS-enabled bounded Inference Runs server on a loopback listener.
 pub async fn serve_inference_runs_rsa_with_transcript(
     listener: TcpListener,
@@ -994,17 +1125,17 @@ pub async fn serve_inference_runs_rsa_with_transcript(
         )?
         .add_service(
             acyclic_inference::wire::models_service_server::ModelsServiceServer::new(
-                InferenceRunsFixture::with_transcript(transcript.clone()),
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
             ),
         )
         .add_service(
             acyclic_inference::wire::contexts_service_server::ContextsServiceServer::new(
-                InferenceRunsFixture::with_transcript(transcript.clone()),
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
             ),
         )
         .add_service(
             acyclic_inference::wire::warm_contexts_service_server::WarmContextsServiceServer::new(
-                InferenceRunsFixture::with_transcript(transcript.clone()),
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
             ),
         )
         .add_service(
@@ -1014,7 +1145,7 @@ pub async fn serve_inference_runs_rsa_with_transcript(
         )
         .add_service(
             acyclic_inference::wire::evaluations_service_server::EvaluationsServiceServer::new(
-                InferenceRunsFixture::with_transcript(transcript),
+                InferenceMetadataFixture::with_transcript(transcript),
             ),
         )
         .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {

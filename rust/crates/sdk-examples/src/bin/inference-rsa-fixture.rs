@@ -1,7 +1,7 @@
 //! Bounded RSA/mTLS Inference Runs fixture for installed language consumers.
 
 use acyclic_sdk_examples::tls_fixture::{
-    INFERENCE_RPC_METHODS, RsaTlsMaterial, new_method_transcript_log,
+    INFERENCE_RUNS_RPC_METHODS, RsaTlsMaterial, new_method_transcript_log,
     serve_inference_runs_rsa_with_transcript,
 };
 use serde_json::json;
@@ -36,13 +36,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!(
         "{}",
         serde_json::to_string(&json!({
-            "schema": "acyclic.sdk.inference-rsa-fixture.v2",
+            "schema": "acyclic.sdk.inference-runs-rsa-fixture.v1",
             "endpoint": endpoint,
             "caCertificate": material.ca_certificate,
             "certificate": material.client_certificate,
             "privateKey": material.client_private_key,
             "runId": hex::encode([2u8; 16]),
-            "expectedRpcs": INFERENCE_RPC_METHODS,
+            "expectedRpcs": INFERENCE_RUNS_RPC_METHODS,
             "sourceSha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
             "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
             "seconds": seconds,
@@ -66,9 +66,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 json!({
                     "rpc": entry.rpc,
                     "requestBytes": entry.request_bytes,
+                    "requestBase64": entry.request_base64,
                     "requestSha256": entry.request_sha256,
                     "responseBytes": entry.response_bytes,
+                    "responseBase64": entry.response_base64,
                     "responseSha256": entry.response_sha256,
+                    "responseFrames": entry.response_frames.iter().map(|frame| json!({
+                        "bytesBase64": frame.response_base64,
+                        "sha256": frame.response_sha256,
+                    })).collect::<Vec<_>>(),
                 })
             })
             .collect::<Vec<_>>();
@@ -76,23 +82,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .iter()
             .filter_map(|entry| entry.get("rpc").and_then(|rpc| rpc.as_str()))
             .collect::<BTreeSet<_>>();
-        let expected_rpcs = INFERENCE_RPC_METHODS
+        let expected_rpcs = INFERENCE_RUNS_RPC_METHODS
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
         let artifact = json!({
-            "schema": "acyclic.sdk.inference-rsa-fixture-transcript.v2",
+            "schema": "acyclic.sdk.inference-runs-rsa-fixture-transcript.v1",
             "source": {
                 "path": "rust/crates/sdk-examples",
                 "sha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
                 "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
             },
-            "expectedRpcs": INFERENCE_RPC_METHODS,
+            "expectedRpcs": INFERENCE_RUNS_RPC_METHODS,
             "observedRpcs": observed_rpcs,
-            "expectedMethodCount": INFERENCE_RPC_METHODS.len(),
+            "expectedMethodCount": INFERENCE_RUNS_RPC_METHODS.len(),
             "observedMethodCount": methods.len(),
             "complete": observed_rpcs == expected_rpcs
-                && methods.len() == INFERENCE_RPC_METHODS.len(),
+                && methods.len() == INFERENCE_RUNS_RPC_METHODS.len(),
             "methods": methods,
         });
         fs::write(path, serde_json::to_vec_pretty(&artifact)?)?;

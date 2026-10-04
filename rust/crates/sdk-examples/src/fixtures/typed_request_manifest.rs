@@ -12,6 +12,7 @@ use bytes::Bytes;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use std::{env, fs};
 use tonic::Request;
 use acyclic_sdk_contract_wire::bindings::BindingFamily;
 
@@ -226,20 +227,40 @@ pub fn manifest_json_from_observations(observations: &[Value]) -> Result<Value, 
 /// Missing RPCs are left missing; the result is never padded with defaults.
 pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
     let mut output = Vec::new();
+    let inference_transcript = env::var_os("ACYCLIC_INFERENCE_TRANSCRIPT_FILE");
     output.extend(actor_worker_records().await?);
     output.extend(stream_records().await?);
     crate::workers_scenarios::execute()
         .map_err(|error| format!("execute Workers Rust fixture: {error}"))?;
-    crate::objects_scenarios::execute()
+    let objects_observations = crate::fixtures::objects_typed_scenarios::collect()
         .await
-        .map_err(|error| format!("execute Objects Rust fixture: {error}"))?;
+        .map_err(|error| format!("collect Objects Rust fixture: {error}"))?;
+    output.extend(
+        objects_observations
+            .iter()
+            .map(observation_record)
+            .collect::<Result<Vec<_>, _>>()?,
+    );
     crate::inference_scenarios::execute()
         .map_err(|error| format!("execute Inference Rust fixture: {error}"))?;
     crate::machines_scenarios::execute()
         .await
         .map_err(|error| format!("execute Machines Rust fixture: {error}"))?;
+    if inference_transcript.is_none() {
+        output.extend(inference_fixture_records().await?);
+    }
+    output.extend(
+        crate::fixtures::machines::collect()
+            .await?
+            .into_iter()
+            .map(machine_observation_record),
+    );
     for fixture in crate::transport_fixtures() {
-        if fixture.family == "actors" || fixture.family == "stream" {
+        if fixture.family == "actors"
+            || fixture.family == "stream"
+            || fixture.family == "inference"
+            || fixture.family == "machines"
+        {
             continue;
         }
         for request in fixture.requests {
@@ -252,31 +273,253 @@ pub async fn actual_records() -> Result<Vec<TypedRequestRecord>, String> {
             ));
         }
     }
-    let objects = crate::objects_scenarios::fixture();
-    for request in objects.requests {
-        let operation = if request.message.ends_with("GetObjectRequest") {
-            "acyclic.objects.v2.ObjectsService/GetObject"
-        } else {
-            "acyclic.objects.v2.ObjectsService/PutObject"
-        };
-        output.push(record_from_bytes(
-            "objects",
-            operation,
-            request.message,
-            &request.bytes,
-            "rust-fixture-defined",
-        ));
+    if let Some(path) = inference_transcript {
+        let bytes = fs::read(&path).map_err(|error| {
+            format!(
+                "read Rust Inference transcript {}: {error}",
+                path.to_string_lossy()
+            )
+        })?;
+        let document: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("decode Rust Inference transcript: {error}"))?;
+        output.extend(inference_records_from_transcript(&document)?);
     }
-    let machines = crate::machines_scenarios::fixture();
-    output.push(record_from_bytes(
-        "machines",
-        crate::machines_scenarios::OPERATION_ID,
-        "acyclic.machines.v1.CreateMachineRequest",
-        &machines.request,
-        "rust-fixture-defined",
-    ));
     let fs_harness = super::filesystem_harness_scenarios::export().await?;
     output.extend(fs_harness.iter().map(observation_record).collect::<Result<Vec<_>, _>>()?);
+    ensure_unique(&output)?;
+    Ok(output)
+}
+
+async fn inference_fixture_records() -> Result<Vec<TypedRequestRecord>, String> {
+    use crate::tls_fixture::{
+        InferenceMetadataFixture, InferenceRunsFixture, new_method_transcript_log,
+    };
+    use acyclic_inference::wire::{
+        contexts_service_server::ContextsService,
+        evaluations_service_server::EvaluationsService,
+        models_service_server::ModelsService,
+        runs_service_server::RunsService,
+        warm_contexts_service_server::WarmContextsService,
+    };
+
+    let transcript = new_method_transcript_log();
+    let metadata = InferenceMetadataFixture::with_transcript(transcript.clone());
+    let runs = InferenceRunsFixture::with_transcript(transcript.clone());
+    metadata.list(Request::new(acyclic_inference::wire::ListModelsRequest::default())).await
+        .map_err(|error| format!("Inference Models/List: {error}"))?;
+    ContextsService::create(&metadata, Request::new(acyclic_inference::wire::CreateContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Create: {error}"))?;
+    ContextsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Inspect: {error}"))?;
+    metadata.mutate(Request::new(acyclic_inference::wire::MutateContextRequest::default())).await
+        .map_err(|error| format!("Inference Contexts/Mutate: {error}"))?;
+    metadata.retain(Request::new(acyclic_inference::wire::RetainWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Retain: {error}"))?;
+    WarmContextsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Inspect: {error}"))?;
+    metadata.renew(Request::new(acyclic_inference::wire::RenewWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Renew: {error}"))?;
+    metadata.release(Request::new(acyclic_inference::wire::ReleaseWarmRequest::default())).await
+        .map_err(|error| format!("Inference WarmContexts/Release: {error}"))?;
+    runs.generate(Request::new(acyclic_inference::wire::GenerateRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Generate: {error}"))?;
+    runs.inspect(Request::new(acyclic_inference::wire::InspectRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Inspect: {error}"))?;
+    let mut watch = runs.watch(Request::new(acyclic_inference::wire::WatchRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Watch: {error}"))?.into_inner();
+    while let Some(event) = watch.next().await {
+        event.map_err(|error| format!("Inference Runs/Watch frame: {error}"))?;
+    }
+    runs.cancel(Request::new(acyclic_inference::wire::InspectRunRequest::default())).await
+        .map_err(|error| format!("Inference Runs/Cancel: {error}"))?;
+    EvaluationsService::create(&metadata, Request::new(acyclic_inference::wire::CreateEvaluationRequest::default())).await
+        .map_err(|error| format!("Inference Evaluations/Create: {error}"))?;
+    EvaluationsService::inspect(&metadata, Request::new(acyclic_inference::wire::InspectEvaluationRequest::default())).await
+        .map_err(|error| format!("Inference Evaluations/Inspect: {error}"))?;
+
+    let methods = transcript.lock().map_err(|_| "Inference fixture transcript mutex poisoned".to_owned())?
+        .iter().map(|entry| json!({
+            "rpc": entry.rpc,
+            "requestBytes": entry.request_bytes,
+            "requestBase64": entry.request_base64,
+            "requestSha256": entry.request_sha256,
+            "responseBytes": entry.response_bytes,
+            "responseBase64": entry.response_base64,
+            "responseSha256": entry.response_sha256,
+            "responseFrames": entry.response_frames.iter().map(|frame| json!({
+                "bytesBase64": frame.response_base64,
+                "sha256": frame.response_sha256,
+            })).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>();
+    inference_records_from_transcript(&json!({
+        "schema": "acyclic.sdk.inference-runs-rsa-fixture-transcript.v1",
+        "complete": true,
+        "methods": methods,
+    }))
+}
+
+fn machine_observation_record(
+    observation: crate::fixtures::machines::MachinesRpcObservation,
+) -> TypedRequestRecord {
+    let mut record = record_from_bytes(
+        "machines", observation.rpc, observation.request_type,
+        &observation.request_bytes, "rust-fixture-executed",
+    );
+    record.response_type = Some(observation.response_type.to_owned());
+    record.response_frames = observation.response_frames.into_iter().enumerate()
+        .map(|(sequence, bytes)| ResponseFrameRecord {
+            sequence,
+            response_type: observation.response_type.to_owned(),
+            response_base64: base64(&bytes),
+            response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
+        }).collect();
+    if let Some(first) = record.response_frames.first() {
+        record.response_base64 = Some(first.response_base64.clone());
+        record.response_sha256 = Some(first.response_sha256.clone());
+    }
+    record
+}
+
+fn inference_records_from_transcript(
+    document: &Value,
+) -> Result<Vec<TypedRequestRecord>, String> {
+    if document.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.inference-runs-rsa-fixture-transcript.v1")
+    {
+        return Err("Inference transcript schema is not Rust-owned".to_owned());
+    }
+    if document.get("complete").and_then(Value::as_bool) != Some(true) {
+        return Err("Inference transcript is incomplete".to_owned());
+    }
+    let methods = document
+        .get("methods")
+        .and_then(Value::as_array)
+        .ok_or("Inference transcript methods are missing")?;
+    if methods.len() != crate::tls_fixture::INFERENCE_RUNS_RPC_METHODS.len() {
+        return Err(format!(
+            "Inference transcript contains {}; expected {} methods",
+            methods.len(),
+            crate::tls_fixture::INFERENCE_RUNS_RPC_METHODS.len()
+        ));
+    }
+    let descriptor_records = records()?
+        .into_iter()
+        .filter(|record| record.family == "inference")
+        .map(|record| (record.rpc.clone(), record))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut output = Vec::with_capacity(methods.len());
+    let pool = DescriptorPool::decode(BindingFamily::Inference.model_descriptor().as_slice())
+        .map_err(|error| format!("decode Inference descriptor set: {error}"))?;
+    for method in methods {
+        let object = method
+            .as_object()
+            .ok_or("Inference transcript method is not an object")?;
+        let rpc = object
+            .get("rpc")
+            .and_then(Value::as_str)
+            .ok_or("Inference transcript RPC is missing")?;
+        let mut record = descriptor_records
+            .get(rpc)
+            .cloned()
+            .ok_or_else(|| format!("Inference transcript RPC is absent from Rust descriptors: {rpc}"))?;
+        let request_base64 = object
+            .get("requestBase64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} requestBase64 is missing"))?;
+        let request_sha256 = object
+            .get("requestSha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} requestSha256 is missing"))?;
+        let response_base64 = object
+            .get("responseBase64")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} responseBase64 is missing"))?;
+        let response_sha256 = object
+            .get("responseSha256")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{rpc} responseSha256 is missing"))?;
+        let request_bytes = decode_base64(request_base64)
+            .map_err(|error| format!("{rpc} requestBase64: {error}"))?;
+        let response_bytes = decode_base64(response_base64)
+            .map_err(|error| format!("{rpc} responseBase64: {error}"))?;
+        if request_sha256 != format!("sha256:{}", hex(&Sha256::digest(&request_bytes))) {
+            return Err(format!("{rpc} request digest does not match bytes"));
+        }
+        if response_sha256 != format!("sha256:{}", hex(&Sha256::digest(&response_bytes))) {
+            return Err(format!("{rpc} response digest does not match bytes"));
+        }
+        let (service_name, method_name) = rpc
+            .rsplit_once('/')
+            .ok_or_else(|| format!("Inference transcript RPC has no method separator: {rpc}"))?;
+        let method_descriptor = pool.services().find_map(|service| {
+            (service.full_name() == service_name)
+                .then(|| service.methods().find(|candidate| candidate.name() == method_name))
+                .flatten()
+        })
+            .ok_or_else(|| format!("Inference descriptor method is missing: {rpc}"))?;
+        let response_type = method_descriptor.output().full_name().to_owned();
+        let response_frames = object
+            .get("responseFrames")
+            .or_else(|| object.get("response_frames"))
+            .and_then(Value::as_array)
+            .map(|frames| {
+                frames
+                    .iter()
+                    .enumerate()
+                    .map(|(sequence, frame)| {
+                        let frame = frame
+                            .as_object()
+                            .ok_or_else(|| format!("{rpc} response frame is not an object"))?;
+                        let frame_base64 = frame
+                            .get("bytesBase64")
+                            .or_else(|| frame.get("bytes_base64"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} response frame bytes are missing"))?;
+                        let frame_sha256 = frame
+                            .get("sha256")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| format!("{rpc} response frame digest is missing"))?;
+                        let frame_bytes = decode_base64(frame_base64)
+                            .map_err(|error| format!("{rpc} response frame {sequence}: {error}"))?;
+                        let expected_sha256 = format!("sha256:{}", hex(&Sha256::digest(&frame_bytes)));
+                        if frame_sha256 != expected_sha256 {
+                            return Err(format!(
+                                "{rpc} response frame {sequence} digest does not match bytes"
+                            ));
+                        }
+                        Ok(ResponseFrameRecord {
+                            sequence,
+                            response_type: response_type.clone(),
+                            response_base64: frame_base64.to_owned(),
+                            response_sha256: frame_sha256.to_owned(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .transpose()?
+            .unwrap_or_else(|| vec![ResponseFrameRecord {
+                sequence: 0,
+                response_type: response_type.clone(),
+                response_base64: response_base64.to_owned(),
+                response_sha256: response_sha256.to_owned(),
+            }]);
+        if response_frames.is_empty() {
+            return Err(format!("{rpc} response frames are empty"));
+        }
+        if response_frames[0].response_base64 != response_base64
+            || response_frames[0].response_sha256 != response_sha256
+        {
+            return Err(format!("{rpc} top-level response does not match frame 0"));
+        }
+        record.request_base64 = request_base64.to_owned();
+        record.request_sha256 = request_sha256.to_owned();
+        record.response_type = Some(response_type);
+        record.response_base64 = Some(response_base64.to_owned());
+        record.response_sha256 = Some(response_sha256.to_owned());
+        record.response_frames = response_frames;
+        record.expected_status = "rust-fixture-executed";
+        output.push(record);
+    }
     ensure_unique(&output)?;
     Ok(output)
 }
@@ -394,7 +637,10 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
     use acyclic_stream::wire::stream_service_server::StreamService;
     use std::sync::Arc;
 
-    let service = Service::new(Arc::new(acyclic_stream::MemoryStream::default()));
+    let service = Service::new(Arc::new(acyclic_stream::MemoryStream::new_with_clock(
+        acyclic_stream::MemoryLimits::default(),
+        crate::fixtures::fixture_clock::stream_clock(),
+    )));
     let path = "typed/stream".to_owned();
     let records: Vec<Bytes> = vec![Bytes::from_static(b"alpha"), Bytes::from_static(b"beta")];
     let key = Bytes::from_static(b"typed-stream-append");
@@ -503,7 +749,13 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .into_inner();
 
     let commit = wire::CommitRequest {
-        conditions: Vec::new(),
+        conditions: vec![wire::CommitCondition {
+            condition: Some(wire::commit_condition::Condition::Absent(
+                wire::AbsentCondition {
+                    path: "typed/commit".into(),
+                },
+            )),
+        }],
         mutations: vec![wire::CommitMutation {
             mutation: Some(wire::commit_mutation::Mutation::Append(
                 wire::AppendMutation {
@@ -717,16 +969,52 @@ fn observation_record(observation: &Value) -> Result<TypedRequestRecord, String>
         .and_then(|response| response.get("sha256"))
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let response_frames = match (&response_type, &response_base64, &response_sha256) {
-        (Some(response_type), Some(response_base64), Some(response_sha256)) => {
-            vec![ResponseFrameRecord {
-                sequence: 0,
-                response_type: response_type.clone(),
-                response_base64: response_base64.clone(),
-                response_sha256: response_sha256.clone(),
-            }]
+    let response_frames = if let Some(frames) = object
+        .get("response_frames")
+        .and_then(Value::as_array)
+    {
+        frames
+            .iter()
+            .enumerate()
+            .map(|(sequence, frame)| {
+                let frame = frame
+                    .as_object()
+                    .ok_or_else(|| format!("{rpc} response frame is not an object"))?;
+                Ok(ResponseFrameRecord {
+                    sequence: frame
+                        .get("sequence")
+                        .and_then(Value::as_u64)
+                        .map_or(sequence, |value| value as usize),
+                    response_type: frame
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("{rpc} response frame type is missing"))?
+                        .to_owned(),
+                    response_base64: frame
+                        .get("bytes_base64")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("{rpc} response frame bytes are missing"))?
+                        .to_owned(),
+                    response_sha256: frame
+                        .get("sha256")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| format!("{rpc} response frame digest is missing"))?
+                        .to_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?
+    } else {
+        match (&response_type, &response_base64, &response_sha256) {
+            (Some(response_type), Some(response_base64), Some(response_sha256)) => {
+                vec![ResponseFrameRecord {
+                    sequence: 0,
+                    response_type: response_type.clone(),
+                    response_base64: response_base64.clone(),
+                    response_sha256: response_sha256.clone(),
+                }]
+            }
+            _ => Vec::new(),
         }
-        _ => Vec::new(),
     };
     Ok(TypedRequestRecord {
         family: family.to_owned(),
@@ -917,7 +1205,7 @@ fn append_pool(
                 let request_sha256 = hex(&digest);
                 output.push(TypedRequestRecord {
                     family: family.to_owned(),
-                    rpc: method.full_name().to_owned(),
+                    rpc: format!("{}/{}", service.full_name(), method.name()),
                     request_type: input.full_name().to_owned(),
                     request_base64: base64(&bytes),
                     request_sha256: request_sha256.clone(),
@@ -1025,7 +1313,10 @@ fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, records, validate_actual_records, ResponseFrameRecord, TypedRequestRecord};
+    use super::{
+        actual_records, base64, records, validate_actual_records, ResponseFrameRecord,
+        TypedRequestRecord,
+    };
 
     fn observed_record() -> TypedRequestRecord {
         let encoded = base64(&[0]);
@@ -1093,6 +1384,19 @@ mod tests {
         wrong_status.expected_status = "forged-status";
         let error = validate_actual_records(&[wrong_status]).expect_err("altered status must fail");
         assert!(error.contains("unrecognized observed status"));
+    }
+
+    #[tokio::test]
+    async fn actual_collector_is_complete_and_uses_put_object_envelope() {
+        let records = actual_records().await.expect("Rust actual fixture collector");
+        assert_eq!(records.len(), 106);
+        validate_actual_records(&records).expect("actual fixture records are canonical");
+        let put = records
+            .iter()
+            .find(|record| record.rpc == "acyclic.objects.v2.ObjectsService/PutObject")
+            .expect("Objects PutObject record");
+        assert_eq!(put.request_type, "acyclic.objects.v2.PutObjectRequest");
+        assert_eq!(put.response_frames.len(), 1);
     }
 }
 
