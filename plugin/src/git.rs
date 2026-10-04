@@ -173,7 +173,14 @@ impl PluginGitExecutor<'_> {
         if let Some(expected_workspace_tree) = expected_workspace_tree {
             self.validate_workspace_tree(expected_workspace_tree)
                 .await?;
-            return Ok(expected_workspace_tree.authored_generation());
+            return match expected_workspace_tree {
+                GitTreeRef::Exact(reference) => Ok(reference.generation),
+                // A live Lazy snapshot authenticates the visible workspace,
+                // while its authored generation can precede an unresolved
+                // conflict overlay. CAS the effect against the validated
+                // live head instead of that historical authored generation.
+                GitTreeRef::Lazy(_) => Ok(self.current.head().await.map_err(display)?.id()),
+            };
         }
         Ok(self.current.head().await.map_err(display)?.id())
     }
@@ -568,17 +575,34 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                             }
                         }
                     } else {
-                        match self
-                            .current
-                            .restore_generation_with_permit(
-                                &source,
-                                current_id,
-                                IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                                self.permit,
-                            )
-                            .await
-                            .map_err(display)?
-                        {
+                        let mut restore_current = current_id;
+                        let mut restore_attempts = 0_u8;
+                        let outcome = 'restore: loop {
+                            let outcome = self
+                                .current
+                                .restore_generation_with_permit(
+                                    &source,
+                                    restore_current,
+                                    IdempotencyKey::from_bytes(operation_id.into_bytes()),
+                                    self.permit,
+                                )
+                                .await
+                                .map_err(display)?;
+                            match outcome {
+                                WorkspaceRestore::Stale(latest)
+                                    if restore_current != latest.id() && restore_attempts < 2 =>
+                                {
+                                    // The mount may publish the conflict
+                                    // overlay between the live-head read and
+                                    // the CAS. The operation identity makes
+                                    // these bounded retries recoverable.
+                                    restore_current = latest.id();
+                                    restore_attempts = restore_attempts.saturating_add(1);
+                                }
+                                outcome => break 'restore outcome,
+                            }
+                        };
+                        match outcome {
                             WorkspaceRestore::Restored(generation)
                             | WorkspaceRestore::AlreadyRestored(generation)
                             | WorkspaceRestore::Current(generation) => generation,

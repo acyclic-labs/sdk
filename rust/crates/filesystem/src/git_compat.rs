@@ -2075,7 +2075,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let action = GitFilesystemAction::RestoreGeneration {
             tree: target_tree,
             paths: None,
-            expected_workspace_tree: Some(workspace_tree),
+            // A live lazy snapshot authenticates the caller before dispatch,
+            // but its authored generation may precede conflict overlay
+            // publication. Let the host executor read the current CAS head
+            // for the restore while retaining the pre-dispatch snapshot
+            // validation above.
+            expected_workspace_tree: None,
         };
         let result = executor
             .execute(OperationId::from_bytes(operation_id), &action)
