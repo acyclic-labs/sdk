@@ -69,4 +69,25 @@ describe("native process owner adapter", () => {
     })).resolves.toBeUndefined();
     await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "unknown", pid: 43 });
   });
+
+  test("retries a retained launch owner through the typed recovery handle", async () => {
+    let terminateCalls = 0;
+    const io = {
+      launch: () => ({ token: "recovery-token", pid: 44 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => ({ kind: "idle" as const }),
+      pollExit: () => ({ kind: "running" as const }),
+      terminate: () => {
+        terminateCalls += 1;
+        return terminateCalls === 1
+          ? { kind: "unknown" as const, pid: 44, reason: "launch initialization failed" }
+          : { kind: "terminated" as const, pid: 44 };
+      },
+    };
+    const owner = createNativeProcessOwnerAdapter(io);
+    await expect(owner.recoverLaunch({ source: "launch failed", token: "recovery-token", pid: 44 }, 50))
+      .resolves.toEqual({ kind: "terminated", pid: 44 });
+    expect(terminateCalls).toBe(2);
+  });
 });

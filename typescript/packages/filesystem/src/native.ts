@@ -278,6 +278,7 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
     io,
     spawn: adapter.spawn,
     terminate: adapter.terminate,
+    recoverLaunch: adapter.recoverLaunch,
   });
 }
 

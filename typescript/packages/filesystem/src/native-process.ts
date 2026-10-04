@@ -56,9 +56,42 @@ export interface NativeProcessIo {
 export interface NativeProcessOwnerAdapter {
   readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<NativeProcessTermination>;
+  /** Reconciles a native owner retained after launch initialization failed. */
+  readonly recoverLaunch: (recovery: NativeProcessLaunchRecovery, graceMs?: number) => Promise<NativeProcessTermination>;
 }
 
 const NATIVE_STREAM_HIGH_WATER_MARK = 64 * 1024;
+
+function recoverNativeLaunch(
+  io: NativeProcessIo,
+  recovery: NativeProcessLaunchRecovery,
+  graceMs = 250,
+): Promise<NativeProcessTermination> {
+  if (!Number.isSafeInteger(graceMs) || graceMs < 0) {
+    return Promise.reject(new RangeError("process cleanup grace must be a nonnegative safe integer"));
+  }
+  return Promise.resolve().then(async () => {
+    const pid = recovery.pid ?? -1;
+    const deadline = Date.now() + graceMs;
+    let result: NativeProcessTermination;
+    try {
+      result = { ...io.terminate(recovery.token), pid };
+      while (result.kind !== "terminated" && Date.now() < deadline) {
+        await new Promise<void>(resolve => setTimeout(resolve, 10));
+        result = { ...io.terminate(recovery.token), pid };
+      }
+    } catch (error) {
+      return {
+        kind: "unknown",
+        pid,
+        reason: error instanceof Error ? error.message : String(error),
+      } satisfies NativeProcessTermination;
+    }
+    return result.kind === "timeout"
+      ? { kind: "timeout", pid, phase: "command" }
+      : result;
+  });
+}
 
 /**
  * Bridges token-scoped native I/O to a ChildProcess-shaped host boundary.
@@ -293,6 +326,9 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
       }
       return operation;
     },
+    recoverLaunch(recovery, graceMs = 250) {
+      return recoverNativeLaunch(io, recovery, graceMs);
+    },
   };
   return owner;
 }
@@ -310,6 +346,7 @@ export interface NativeProcessOwnerBinding {
   readonly version: string;
   readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<NativeProcessTermination>;
+  readonly recoverLaunch?: (recovery: NativeProcessLaunchRecovery, graceMs?: number) => Promise<NativeProcessTermination>;
   /** Launches without inheriting environment or host stdio. */
   readonly launch?: (
     executable: string,
@@ -323,6 +360,7 @@ export interface NativeProcessOwnerBinding {
 export interface NativeProcessOwner {
   readonly spawn: NativeProcessOwnerBinding["spawn"];
   readonly terminate: NativeProcessOwnerBinding["terminate"];
+  readonly recoverLaunch?: NativeProcessOwnerBinding["recoverLaunch"];
   readonly launch?: NativeProcessOwnerBinding["launch"];
   readonly io?: NativeProcessIo;
 }
@@ -349,6 +387,7 @@ export function createNativeProcessOwner(binding: unknown): NativeProcessOwner {
   return Object.freeze({
     spawn: candidate.spawn,
     terminate: candidate.terminate,
+    ...(typeof candidate.recoverLaunch === "function" ? { recoverLaunch: candidate.recoverLaunch } : {}),
     ...(typeof candidate.launch === "function" ? { launch: candidate.launch } : {}),
     ...(candidate.io !== undefined ? { io: candidate.io } : {}),
   });

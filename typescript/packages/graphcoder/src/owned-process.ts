@@ -6,11 +6,36 @@ export type OwnedProcessTermination =
   | { readonly kind: "timeout"; readonly pid: number; readonly phase: "command" | "pipes" }
   | { readonly kind: "unknown"; readonly pid: number; readonly reason: string; readonly exitCode?: number | null };
 
+/** Opaque native ownership retained when launch initialization fails. */
+export interface OwnedProcessRecovery {
+  readonly source: string;
+  readonly token: string;
+  readonly pid?: number;
+}
+
+/** Reads a typed native recovery handle without importing a platform binding. */
+export function getOwnedProcessRecovery(error: unknown): OwnedProcessRecovery | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const recovery = (error as { readonly recovery?: unknown }).recovery;
+  if (typeof recovery !== "object" || recovery === null) return undefined;
+  const value = recovery as { readonly source?: unknown; readonly token?: unknown; readonly pid?: unknown };
+  if (typeof value.source !== "string" || typeof value.token !== "string") return undefined;
+  const pid = typeof value.pid === "number" ? value.pid : undefined;
+  if (value.pid !== undefined && (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0)) return undefined;
+  return {
+    source: value.source,
+    token: value.token,
+    ...(pid === undefined ? {} : { pid }),
+  };
+}
+
 /** Host-provided process ownership boundary. A native adapter may supply a
  * real process handle/Job owner; GraphCoder does not duplicate that engine. */
 export interface OwnedProcessOwner {
   readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
   readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<OwnedProcessTermination>;
+  /** Reconciles a native owner retained after launch initialization failed. */
+  readonly recoverLaunch?: (recovery: OwnedProcessRecovery, graceMs?: number) => Promise<OwnedProcessTermination>;
 }
 
 type OwnedProcessState = { closed: boolean; errored: boolean };

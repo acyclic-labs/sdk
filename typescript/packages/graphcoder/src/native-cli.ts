@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
+import type { ChildProcess } from "node:child_process";
 import {
   defaultOwnedProcessOwner,
+  getOwnedProcessRecovery,
   type OwnedProcessOwner,
   type OwnedProcessTermination,
 } from "./owned-process.js";
@@ -40,12 +42,31 @@ async function run(): Promise<number> {
 
   // Do not inherit host credentials or ambient provider settings. The native
   // runtime receives only explicit command-line configuration.
-  const child = owner.spawn(executable, args, {
-    env: {},
-    shell: false,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  let child: ChildProcess;
+  try {
+    child = owner.spawn(executable, args, {
+      env: {},
+      shell: false,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+  } catch (error) {
+    const recovery = getOwnedProcessRecovery(error);
+    if (recovery !== undefined && owner.recoverLaunch !== undefined) {
+      try {
+        const outcome = await owner.recoverLaunch(recovery);
+        if (outcome.kind !== "terminated") {
+          process.stderr.write(`runtime launch cleanup ${outcome.kind}\n`);
+        }
+      } catch (cleanupError) {
+        process.stderr.write(`runtime launch cleanup unknown: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}\n`);
+      }
+    } else if (recovery !== undefined) {
+      process.stderr.write("runtime launch cleanup unknown: owner cannot reconcile retained launch\n");
+    }
+    process.stderr.write(`failed to start graphcoder-runtime: ${error instanceof Error ? error.message : String(error)}\n`);
+    return 1;
+  }
   const input = child.stdin;
   if (input !== null) process.stdin.pipe(input);
   child.stdout?.pipe(process.stdout);
