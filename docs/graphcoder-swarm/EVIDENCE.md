@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+Fork failure diagnosis at `2e0ed9bd9`: the prior native suite's attestation error came from its forged-request path expecting preparation success. Its missing-child assertion failed before preparation because Filesystem flattened Missing to Storage. These observations do not prove valid-fork rejection or premature allocation. The early-denial fixture and typed error mapping are repaired; fresh qualification remains pending. The C-drive attempt (29742) executed zero tests due to archive disk exhaustion; its source-bound failed log is retained at `D:/graphcoder-builds/root-fork-20261004/checkpoints/2e0ed9bd9/attempt-fork-authorization.json`.
+
 [Manifest restoration checkpoint](checkpoint-fork-policy-restoration-2026-10-04.json): current Windows request regressions 21/21; native fork-boundary suite 1/3 with both failures retained. This does not qualify full recursive forks.
 
 [Wait clock admission](checkpoint-wait-clock-admission-2026-10-04.json) records 32/32 communication cases and 2/2 real-storage cases at `57ce74ec1`. Both direct store and communication admission bound every future deadline/timeout before append, including mixed expired/future declarations. The original test compile failure is retained. Agreement with an injected owner clock and public operator cancellation authority remain separate unmet contracts.
