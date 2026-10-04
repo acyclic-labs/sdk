@@ -9,7 +9,7 @@ embedded Stream SDK.
 
 | Consumer family | Rust-owned boundary | Current package producer | Current evidence | Embedded Stream status |
 | --- | --- | --- | --- | --- |
-| Node.js / TypeScript | N-API `acyclic-stream-native` | `scripts/build-stream-native-package.mjs` | Eight OS/architecture/libc packages, automatic package loader, installed consumer, and ten-RPC native receipt in `.github/workflows/stream-native-packages.yml` | Qualified for the current native package matrix |
+| Node.js / TypeScript | N-API `acyclic-stream-native` | `scripts/build-stream-native-package.mjs` | Eight OS/architecture/libc packages, automatic package loader, installed consumer, and ten-RPC native receipt in `.github/workflows/stream-native-packages.yml` | Local ten-RPC evidence and hosted qualification path cover the current matrix; the next corrected hosted run supplies the platform receipts |
 | C/C++ | cbindgen C ABI from `sdk-embedded-prototype` | `cpp/embedded-consumer/portable-package-test.ps1` and `.sh` | Native package and clean-prefix consumers exercise the bounded embedded prototype | ABI prototype; it is not the Stream service producer |
 | .NET | `sdk-dotnet-transport` C ABI | `dotnet/producer-adapter.ps1` and `scripts/build-dotnet-native-transport.ps1` | The adapter emits generated Grpc.Net.Client remote stubs. The native script maps eight Rust targets to NuGet RIDs and exports a Rustls byte stream for mutual TLS | Remote SDK qualified separately; embedded Stream producer is missing |
 | JVM / Java / Kotlin | None yet | `jvm/producer-adapter.ps1` | The adapter emits a generated grpc-java transport JAR and installed remote consumer. There is no JNI, JNA, UniFFI, or WASM Stream package | Remote SDK qualified separately; embedded Stream producer is missing |
