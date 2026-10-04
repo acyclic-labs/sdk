@@ -12,6 +12,7 @@ use crate::{
 };
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamClient, StreamError, StreamProvider,
+    SystemUnixMillisClock, UnixMillisClock,
 };
 use bytes::Bytes;
 use futures::TryStreamExt as _;
@@ -630,13 +631,20 @@ struct RetainedWait {
 /// second coordinator or local recovery cache.
 pub struct StreamWaitStore<P> {
     stream: StreamClient<P>,
+    clock: Arc<dyn UnixMillisClock>,
 }
 
 impl<P: StreamProvider> StreamWaitStore<P> {
     /// Binds wait persistence to an existing owner stream provider.
     #[must_use]
     pub fn new(stream: StreamClient<P>) -> Self {
-        Self { stream }
+        Self::new_with_clock(stream, Arc::new(SystemUnixMillisClock))
+    }
+
+    /// Binds durable wait timestamps to the owner clock used by the host.
+    #[must_use]
+    pub fn new_with_clock(stream: StreamClient<P>, clock: Arc<dyn UnixMillisClock>) -> Self {
+        Self { stream, clock }
     }
 
     fn wait_stream(&self, waiter: TaskId) -> Result<acyclic_stream::Stream<P>> {
@@ -781,7 +789,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
         Box::pin(async move {
             request.validate(None)?;
-            let now_epoch_ms = unix_millis()?;
+            let now_epoch_ms = self.clock.now_unix_millis();
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
             if let Some(retained) = Self::retained(&events, &request, now_epoch_ms)? {
@@ -801,14 +809,17 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                 .await;
             if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
-                if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
+                if let Some(retained) =
+                    Self::retained(&events, &request, self.clock.now_unix_millis())?
+                {
                     return Ok(retained.completion);
                 }
                 return Err(error.clone());
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
+            let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            else {
                 return Err(Error::Storage(
                     "wait admission disappeared after append".into(),
                 ));
@@ -832,7 +843,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
+            if let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            {
                 if let Some(completion) = retained.completion {
                     return Ok(completion);
                 }
@@ -841,7 +853,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                     "wait completion has no retained admission".into(),
                 ));
             }
-            let completed_at_epoch_ms = unix_millis()?;
+            let completed_at_epoch_ms = self.clock.now_unix_millis();
             request.validate_completion_at(&completion, Some(completed_at_epoch_ms))?;
             let append = self
                 .append(
@@ -858,7 +870,9 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                 .await;
             if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
-                if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
+                if let Some(retained) =
+                    Self::retained(&events, &request, self.clock.now_unix_millis())?
+                {
                     if let Some(completion) = retained.completion {
                         return Ok(completion);
                     }
@@ -867,7 +881,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
+            let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            else {
                 return Err(Error::Storage(
                     "wait completion disappeared after append".into(),
                 ));
@@ -887,7 +902,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
+            let Some(retained) = Self::retained(&events, &request, self.clock.now_unix_millis())?
+            else {
                 return Err(Error::Conflict(
                     "wait cancellation has no retained admission".into(),
                 ));
@@ -919,6 +935,17 @@ impl DurableCommunication {
     pub fn with_wait_store(mut self, waits: Arc<dyn DurableWaitStore>) -> Self {
         self.waits = Some(waits);
         self
+    }
+
+    /// Binds the owner clock to the durable wait journal in one composition
+    /// path. The returned store and host share the same clock object.
+    #[must_use]
+    pub fn with_stream_wait_store<P: StreamProvider>(self, stream: StreamClient<P>) -> Self {
+        let waits = Arc::new(StreamWaitStore::new_with_clock(
+            stream,
+            self.host.owner_clock(),
+        ));
+        self.with_wait_store(waits)
     }
 
     /// Validates target authorization from owner-retained admissions before
@@ -960,7 +987,7 @@ impl DurableCommunication {
         request: WaitRequest,
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
-        request.validate_admission_at(unix_millis()?)?;
+        request.validate_admission_at(self.host.now_unix_millis())?;
         if cancellation.is_some() && request.cancellation_id.is_none() {
             return Err(Error::Invalid(
                 "live wait cancellation requires its declared cancellation identity".into(),
@@ -974,7 +1001,7 @@ impl DurableCommunication {
         self.authorize_wait(&request).await?;
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {
-                request.validate_completion_at(&completion, Some(unix_millis()?))?;
+                request.validate_completion_at(&completion, Some(self.host.now_unix_millis()))?;
                 return Ok(completion);
             }
         }
@@ -984,7 +1011,7 @@ impl DurableCommunication {
         // that became due while being admitted is retained as a typed
         // terminal result instead of entering the observation path with a
         // stale duration.
-        let now = unix_millis()?;
+        let now = self.host.now_unix_millis();
         let expired = request
             .timeout_epoch_ms
             .is_some_and(|deadline| deadline <= now);
@@ -1068,11 +1095,11 @@ impl DurableCommunication {
         request: WaitRequest,
         completion: WaitCompletion,
     ) -> Result<WaitCompletion> {
-        request.validate_completion_at(&completion, Some(unix_millis()?))?;
+        request.validate_completion_at(&completion, Some(self.host.now_unix_millis()))?;
         match &self.waits {
             Some(waits) => {
                 let retained = waits.complete(request.clone(), completion).await?;
-                request.validate_completion_at(&retained, Some(unix_millis()?))?;
+                request.validate_completion_at(&retained, Some(self.host.now_unix_millis()))?;
                 Ok(retained)
             }
             None => Ok(completion),
@@ -1136,6 +1163,7 @@ impl DurableCommunication {
     }
 }
 
+#[cfg(test)]
 fn unix_millis() -> Result<u64> {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1227,6 +1255,46 @@ mod tests {
 
     fn operation(value: u8) -> OperationId {
         OperationId::from_bytes([value; 16])
+    }
+
+    #[derive(Clone)]
+    struct FixedClock(u64);
+
+    impl UnixMillisClock for FixedClock {
+        fn now_unix_millis(&self) -> u64 {
+            self.0
+        }
+    }
+
+    #[tokio::test]
+    async fn injected_owner_clock_rejects_far_future_wait_without_append() -> Result<()> {
+        let now = 1_000_000;
+        let provider = std::sync::Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = StreamClient::new(provider.clone());
+        let store = StreamWaitStore::new_with_clock(stream, Arc::new(FixedClock(now)));
+        let request = WaitRequest {
+            operation_id: operation(90),
+            waiter: task(90),
+            target: WaitTarget::Messages {
+                task_id: task(90),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: Some(now + MAX_WAIT_DURATION_MS + 1),
+            cancellation_id: Some(operation(91)),
+        };
+        assert!(matches!(
+            store.open(request).await,
+            Err(Error::Invalid(message)) if message.contains("outside")
+        ));
+        let bounds = store
+            .stream
+            .stream(format!("harness/v2/waits/{}", task(90)))
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .bounds()
+            .await;
+        assert!(matches!(bounds, Err(acyclic_stream::StreamError::NotFound)));
+        Ok(())
     }
 
     fn payload() -> Result<FileRef> {
@@ -1875,10 +1943,7 @@ mod tests {
         let journal = stream
             .stream(format!("harness/v2/waits/{}", task(1)))
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert!(matches!(
-            journal.bounds().await,
-            Err(StreamError::NotFound)
-        ));
+        assert!(matches!(journal.bounds().await, Err(StreamError::NotFound)));
         Ok(())
     }
 

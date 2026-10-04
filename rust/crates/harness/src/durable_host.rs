@@ -3,8 +3,8 @@
 use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
-    conversation::{ContentResidencyVerifier, FileRef},
     communication::message_endpoint_operation,
+    conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
     durable_tool::DurableToolRunner,
@@ -37,12 +37,39 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
+/// Version-one mailbox envelope. The explicit field makes old unversioned
+/// records fail closed instead of being silently reinterpreted.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {
+    #[serde(rename = "schema_version")]
+    schema_version: u8,
     sender: TaskId,
+    recipient: TaskId,
     message_id: OperationId,
     payload: FileRef,
+}
+
+impl MailEvent {
+    fn validate_for(&self, recipient: TaskId) -> Result<()> {
+        if self.schema_version != 1 {
+            return Err(Error::Invalid(
+                "unsupported mail event schema version".into(),
+            ));
+        }
+        if self.sender.into_bytes() == [0; 16]
+            || self.recipient.into_bytes() == [0; 16]
+            || self.message_id.into_bytes() == [0; 16]
+        {
+            return Err(Error::Invalid("mail event identity is empty".into()));
+        }
+        if self.recipient != recipient {
+            return Err(Error::Conflict(
+                "mail event recipient differs from its mailbox".into(),
+            ));
+        }
+        self.payload.validate()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -546,6 +573,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    fn owner_clock(&self) -> Arc<dyn UnixMillisClock> {
+        self.clock.clone()
+    }
+
+    fn now_unix_millis(&self) -> u64 {
+        self.clock.now_unix_millis()
+    }
+
     fn supports_admission_dependencies(&self) -> bool {
         true
     }
@@ -1024,10 +1059,13 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             }
             self.reader.verify(&payload).await?;
             let event = MailEvent {
+                schema_version: 1,
                 sender,
+                recipient,
                 message_id,
                 payload,
             };
+            event.validate_for(recipient)?;
             let bytes = crate::contract::canonical_json_bytes(&event)?;
             let mailbox = self.mailbox(recipient)?;
             let endpoint_operation = message_endpoint_operation(sender, recipient, message_id);
@@ -1079,15 +1117,24 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 }
                 let event: MailEvent = serde_json::from_value(value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate()?;
+                event.validate_for(task_id)?;
                 recipient_admission.limits.validate_file(&event.payload)?;
                 if !read_granted(&recipient_admission.grants, &event.payload)? {
                     return Err(Error::Unauthorized(
                         "mail history contains an unreadable payload".into(),
                     ));
                 }
-                self.admission(OperationId::from_bytes(event.sender.into_bytes()))
+                let sender_admission = self
+                    .admission(OperationId::from_bytes(event.sender.into_bytes()))
                     .await?;
+                if !sender_admission.grants.contains("mail:send")
+                    || (sender_admission.parent != Some(task_id)
+                        && recipient_admission.parent != Some(event.sender))
+                {
+                    return Err(Error::Unauthorized(
+                        "mail history contains an unauthorized endpoint".into(),
+                    ));
+                }
                 // The owner stream supplies immutable delivery time. Keeping it
                 // out of MailEvent preserves exact append bytes on a retry.
                 let delivered_at_epoch_ms = record.committed_at_micros / 1_000;
@@ -1259,6 +1306,42 @@ mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
     use std::collections::BTreeSet;
+
+    #[test]
+    fn mail_event_is_bound_to_its_mailbox_endpoint() -> Result<()> {
+        let volume = VolumeRef::new(
+            ProviderRef::new("mail-test", "filesystem", "2")?,
+            "private",
+            VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(AgentId::from_bytes([7; 16])),
+        )?;
+        let payload = FileRef::new(
+            volume,
+            "message.txt",
+            "v1",
+            FileDescriptor::from_bytes(b"message", "text/plain")?,
+            "message.txt",
+        )?;
+        let event = MailEvent {
+            schema_version: 1,
+            sender: TaskId::from_bytes([1; 16]),
+            recipient: TaskId::from_bytes([2; 16]),
+            message_id: OperationId::from_bytes([3; 16]),
+            payload,
+        };
+        assert!(event.validate_for(TaskId::from_bytes([2; 16])).is_ok());
+        assert!(matches!(
+            event.validate_for(TaskId::from_bytes([4; 16])),
+            Err(Error::Conflict(message)) if message.contains("mailbox")
+        ));
+        let mut unsupported = event;
+        unsupported.schema_version = 2;
+        assert!(matches!(
+            unsupported.validate_for(TaskId::from_bytes([2; 16])),
+            Err(Error::Invalid(message)) if message.contains("schema version")
+        ));
+        Ok(())
+    }
 
     struct MemoryPayloads {
         volume: VolumeRef,
