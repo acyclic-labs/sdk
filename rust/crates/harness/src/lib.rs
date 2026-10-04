@@ -45,6 +45,7 @@ pub(crate) mod memory_store;
 pub mod merge;
 pub mod model;
 pub mod model_input;
+pub mod native_host;
 pub mod native_tool;
 #[cfg(feature = "objects")]
 pub mod objects;
@@ -116,7 +117,10 @@ pub use extension::{
 pub use handles::{Agent, Conversation, Session, Task, Turn};
 pub use native_tool::{
     native_command_definition, native_command_tools, NativeCommandBinding, NativeCommandHost,
-    NATIVE_COMMAND_REVISION, NATIVE_COMMAND_TOOL,
+    NativeCommandBindingFactory, NATIVE_COMMAND_REVISION, NATIVE_COMMAND_TOOL,
+};
+pub use native_host::{
+    DEFAULT_MAX_SESSION_TIMEOUT_MS, NativeCommandAdmission, ProviderNativeCommandHost,
 };
 pub use live::{
     TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,

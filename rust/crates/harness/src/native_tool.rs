@@ -7,7 +7,7 @@
 //! the optional integration unloaded.
 
 use crate::{
-    Error, OperationId, Result,
+    Error, OperationId, Result, TaskId,
     host_execution::ExecutionSpec,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -63,6 +63,25 @@ pub trait NativeCommandHost: Send + Sync {
 pub struct NativeCommandBinding {
     host: Arc<dyn NativeCommandHost>,
     policy: Arc<dyn crate::runtime::ToolPolicy>,
+}
+
+/// Builds a native command binding for one authenticated task.
+///
+/// A swarm must use a factory instead of sharing one host binding across
+/// descendants. The factory is the composition boundary where the owner can
+/// attach the child task's private journal, authority, and receipt namespace.
+pub trait NativeCommandBindingFactory: Send + Sync {
+    /// Creates the host and policy binding scoped to `task_id`.
+    fn binding_for(&self, task_id: TaskId) -> Result<NativeCommandBinding>;
+}
+
+impl<F> NativeCommandBindingFactory for F
+where
+    F: Fn(TaskId) -> Result<NativeCommandBinding> + Send + Sync,
+{
+    fn binding_for(&self, task_id: TaskId) -> Result<NativeCommandBinding> {
+        self(task_id)
+    }
 }
 
 impl NativeCommandBinding {
@@ -193,7 +212,7 @@ fn native_command_output_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "status": {"enum": ["exited", "timed_out", "cancelled", "unknown"]},
+            "status": {"enum": ["exited", "timed_out", "cancelled", "denied", "unknown"]},
             "exit_code": {"type": ["integer", "null"]},
             "stdout": {"type": "string"},
             "stderr": {"type": "string"},

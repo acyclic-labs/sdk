@@ -25,7 +25,7 @@ use crate::{
     interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
-    native_tool::NativeCommandBinding,
+    native_tool::NativeCommandBindingFactory,
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
@@ -213,8 +213,9 @@ pub struct LocalSwarmBindings {
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
-    /// Optional owner-selected native command provider and policy.
-    pub native_command: Option<NativeCommandBinding>,
+    /// Optional task-scoped native command binding factory. Each child gets a
+    /// fresh host binding for its private journal, authority, and receipts.
+    pub native_command_factory: Option<Arc<dyn NativeCommandBindingFactory>>,
 }
 
 impl LocalSwarmBindings {
@@ -233,7 +234,7 @@ impl LocalSwarmBindings {
             model_fork_plans: None,
             filesystem_fork_resolver: None,
             observer: None,
-            native_command: None,
+            native_command_factory: None,
         }
     }
 
@@ -247,11 +248,13 @@ impl LocalSwarmBindings {
         self
     }
 
-    /// Adds the optional Harness native command binding to every task
-    /// composition created by this swarm.
+    /// Installs task-scoped native command bindings for all swarm tasks.
     #[must_use]
-    pub fn with_native_command(mut self, binding: NativeCommandBinding) -> Self {
-        self.native_command = Some(binding);
+    pub fn with_native_command_factory(
+        mut self,
+        factory: Arc<dyn NativeCommandBindingFactory>,
+    ) -> Self {
+        self.native_command_factory = Some(factory);
         self
     }
 
@@ -289,8 +292,8 @@ impl LocalSwarmBindings {
                 registry.register(local_fork_tool(parent, plans.clone()))?;
                 tools = LocalHarnessTools::from_registry(registry);
             }
-            if let Some(binding) = &self.native_command {
-                tools = tools.with_native_command(binding.clone())?;
+            if let Some(factory) = &self.native_command_factory {
+                tools = tools.with_native_command(factory.binding_for(parent)?)?;
             }
             return Ok(match &self.model_batch_publisher {
                 Some(publisher) => tools.with_batch_publisher(publisher.clone()),
@@ -307,8 +310,8 @@ impl LocalSwarmBindings {
             registry.register(local_fork_tool(parent, plans.clone()))?;
         }
         let mut tools = LocalHarnessTools::from_registry(registry).with_authenticated_task(parent);
-        if let Some(binding) = &self.native_command {
-            tools = tools.with_native_command(binding.clone())?;
+        if let Some(factory) = &self.native_command_factory {
+            tools = tools.with_native_command(factory.binding_for(parent)?)?;
         }
         Ok(match &self.model_batch_publisher {
             Some(publisher) => tools.with_batch_publisher(publisher.clone()),
