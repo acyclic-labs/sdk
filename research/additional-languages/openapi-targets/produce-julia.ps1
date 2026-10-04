@@ -19,6 +19,18 @@ if (-not (Test-Path -LiteralPath $AuthorityManifest -PathType Leaf)) {
 if (-not (Test-Path -LiteralPath $Request -PathType Leaf)) {
     throw "generation request is missing: $Request"
 }
+$authority = Get-Content -LiteralPath $AuthorityManifest -Raw | ConvertFrom-Json
+if ($authority.schema -ne "acyclic.sdk.examples.source-authority.v1" -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_revision) -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_sha256) -or
+    $authority.source_files.Count -eq 0) {
+    throw "Rust source authority manifest is incomplete or has an unexpected schema"
+}
+$requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
+$requestedRevision = [string]$requestDocument.source.revision
+if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne [string]$authority.source_revision) {
+    throw "Rust source authority revision does not match producer request: expected $requestedRevision, got $($authority.source_revision)"
+}
 
 $openapiStage = Join-Path $OutputRoot "openapi"
 $stageReceipt = Join-Path $openapiStage "stage-receipt.json"

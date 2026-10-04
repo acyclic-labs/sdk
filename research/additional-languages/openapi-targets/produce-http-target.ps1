@@ -21,6 +21,18 @@ if ($TargetId -notin @('bash', 'perl', 'powershell')) { throw "Unsupported HTTP 
 foreach ($required in @($AuthorityManifest, $Request)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required source-bound input is missing: $required" }
 }
+$authority = Get-Content -LiteralPath $AuthorityManifest -Raw | ConvertFrom-Json
+if ($authority.schema -ne 'acyclic.sdk.examples.source-authority.v1' -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_revision) -or
+    [string]::IsNullOrWhiteSpace([string]$authority.source_sha256) -or
+    $authority.source_files.Count -eq 0) {
+    throw 'Rust source authority manifest is incomplete or has an unexpected schema'
+}
+$requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
+$requestedRevision = [string]$requestDocument.source.revision
+if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne [string]$authority.source_revision) {
+    throw "Rust source authority revision does not match producer request: expected $requestedRevision, got $($authority.source_revision)"
+}
 $stage = Join-Path $OutputRoot 'openapi'
 $stageReceipt = Join-Path $stage 'stage-receipt.json'
 if (-not (Test-Path -LiteralPath $stageReceipt -PathType Leaf)) { throw "Rust OpenAPI stage receipt is missing: $stageReceipt" }
