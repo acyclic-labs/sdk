@@ -1992,6 +1992,10 @@ pub struct PersistentLocalSwarm {
     declarations: Mutex<BTreeMap<TaskId, LocalInheritedModelDeclaration>>,
     outcomes: Mutex<BTreeMap<TaskId, TurnOutput>>,
     completion_refs: Mutex<BTreeMap<TaskId, StoredCompletionRef>>,
+    /// Last append-only registry sequence incorporated into the in-memory
+    /// projection. This is a disposable cursor; the registry remains the
+    /// authority and refreshes read only an unseen suffix.
+    registry_tail: Mutex<u64>,
     sessions: Mutex<BTreeMap<TaskId, Arc<PersistentLocalHarness>>>,
     /// Per-task live terminal fences. The registry remains the cross-process
     /// authority; these narrow gates prevent duplicate retries without
@@ -2077,7 +2081,12 @@ impl PersistentLocalSwarm {
         if let Some(plans) = bindings.model_fork_plans.as_ref() {
             plans.bind_journal(registry.clone()).await?;
         }
-        let records = load_records(&stream).await?;
+        let initial_tail = match stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        let records = load_records_at(&stream, initial_tail).await?;
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
         let mut seeds = BTreeMap::new();
@@ -2117,6 +2126,11 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        let registry_tail = match stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -2152,6 +2166,7 @@ impl PersistentLocalSwarm {
             declarations: Mutex::new(declarations),
             outcomes: Mutex::new(outcomes),
             completion_refs: Mutex::new(completion_refs),
+            registry_tail: Mutex::new(registry_tail),
             sessions: Mutex::new(opened),
             task_gates: Mutex::new(BTreeMap::new()),
             operator_choices: Mutex::new(BTreeMap::new()),
@@ -2418,8 +2433,9 @@ impl PersistentLocalSwarm {
 
     /// Lists canonical session descriptors without starting workers or
     /// reading child filesystem content.
-    pub async fn sessions(&self) -> Vec<LocalSwarmSession> {
-        self.records.lock().await.values().cloned().collect()
+    pub async fn sessions(&self) -> Result<Vec<LocalSwarmSession>> {
+        self.refresh_registry_state().await?;
+        Ok(self.records.lock().await.values().cloned().collect())
     }
 
     /// Reads one bounded, refreshed page of canonical session descriptors.
@@ -2444,12 +2460,12 @@ impl PersistentLocalSwarm {
     /// Reads the refreshed recursive registry subtree rooted at one task.
     /// No child journal, filesystem volume, or model worker is opened.
     pub async fn recursive_agent_tree(&self, task: TaskId) -> Result<Vec<LocalSwarmAgent>> {
-        self.refresh_registry_state().await?;
-        project_recursive_agent_tree(self.sessions().await, task)
+        project_recursive_agent_tree(self.sessions().await?, task)
     }
 
     /// Reads one descriptor without opening its local journal or filesystem.
     pub async fn session(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        self.refresh_registry_state().await?;
         self.records
             .lock()
             .await
@@ -2473,26 +2489,26 @@ impl PersistentLocalSwarm {
             .cloned()
             .collect();
         let harness = self.open_session(task).await?;
-        let aggregate = harness.conversation_aggregate(self.config.limits).await?;
-        let conversation = aggregate
-            .reducer()
-            .conversation()
-            .cloned()
-            .ok_or_else(|| Error::Storage("conversation projection is missing".into()))?;
-        let workspace_generation = match harness
-            .list_private_directory("", None, None, 1)
-            .await
-        {
-            Ok(page) => Some(page.generation),
-            Err(Error::NotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
+        let conversation_revision = self.conversation_tail(&harness).await?;
         Ok(LocalSwarmSnapshot {
             session,
             children,
-            conversation_revision: conversation.messages.len() as u64,
-            workspace_generation,
+            conversation_revision,
+            workspace_generation: None,
         })
+    }
+
+    async fn conversation_tail(&self, harness: &PersistentLocalHarness) -> Result<u64> {
+        let path = harness.storage().conversation().stream_path()?;
+        let stream = self
+            .conversation_stream
+            .stream(path)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        match stream.tail().await {
+            Ok(tail) => Ok(tail),
+            Err(StreamError::NotFound) => Ok(0),
+            Err(error) => Err(Error::Storage(error.to_string())),
+        }
     }
 
     /// Reads a bounded page of authoritative conversation events. The cursor
@@ -2504,6 +2520,11 @@ impl PersistentLocalSwarm {
         after_revision: u64,
         limit: usize,
     ) -> Result<Vec<crate::core::Event>> {
+        if limit == 0 || limit > 1_024 {
+            return Err(Error::Invalid(
+                "conversation activity page limit must be between 1 and 1024".into(),
+            ));
+        }
         let harness = self.open_session(task).await?;
         harness
             .conversation_events(after_revision, limit, self.config.limits)
@@ -2525,13 +2546,44 @@ impl PersistentLocalSwarm {
             ));
         }
         let harness = self.open_session(task).await?;
-        let state = harness.conversation_state(self.config.limits).await?;
-        Ok(state
-            .messages
-            .into_iter()
-            .filter(|message| message.sequence > after_sequence)
-            .take(limit)
-            .collect())
+        let mut cursor = after_sequence;
+        let mut messages = Vec::with_capacity(limit);
+        while messages.len() < limit {
+            let page_limit = (limit - messages.len()).min(256);
+            let page = self
+                .read_conversation_events(&harness, cursor, page_limit)
+                .await?;
+            if page.is_empty() {
+                break;
+            }
+            cursor = page.last().map_or(cursor, |event| event.revision);
+            for event in page {
+                if let crate::core::EventPayload::ConversationMessageAppended { message } =
+                    event.payload
+                    && message.sequence > after_sequence
+                {
+                    messages.push(*message);
+                    if messages.len() == limit {
+                        break;
+                    }
+                }
+            }
+            if cursor == 0 {
+                break;
+            }
+        }
+        Ok(messages)
+    }
+
+    async fn read_conversation_events(
+        &self,
+        harness: &PersistentLocalHarness,
+        after_revision: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::core::Event>> {
+        harness
+            .conversation_events(after_revision, limit, self.config.limits)
+            .await
     }
 
     /// Reads one page of owner-authenticated private files. The generation
@@ -3888,6 +3940,10 @@ impl PersistentLocalSwarm {
     }
 
     async fn open_session(&self, task: TaskId) -> Result<Arc<PersistentLocalHarness>> {
+        self.refresh_registry_state().await?;
+        if !self.records.lock().await.contains_key(&task) {
+            return Err(Error::NotFound(format!("local swarm task {task}")));
+        }
         if let Some(existing) = self.sessions.lock().await.get(&task).cloned() {
             return Ok(existing);
         }
@@ -4026,15 +4082,24 @@ impl PersistentLocalSwarm {
             Err(StreamError::NotFound) => 0,
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
-        let records = load_records_at(&stream, observed_tail).await?;
-        let mut sessions = BTreeMap::new();
-        let mut requests = BTreeMap::new();
-        let mut seeds = BTreeMap::new();
-        let mut reports = BTreeMap::new();
-        let mut publications = BTreeMap::new();
-        let mut declarations = BTreeMap::new();
-        let mut outcomes = BTreeMap::new();
-        let mut completion_refs = BTreeMap::new();
+        let known_tail = *self.registry_tail.lock().await;
+        if observed_tail < known_tail {
+            return Err(Error::Conflict(
+                "local swarm registry tail moved backwards during refresh".into(),
+            ));
+        }
+        if observed_tail == known_tail {
+            return Ok(observed_tail);
+        }
+        let records = load_records_range(&stream, known_tail, observed_tail).await?;
+        let mut sessions = self.records.lock().await.clone();
+        let mut requests = self.requests.lock().await.clone();
+        let mut seeds = self.seeds.lock().await.clone();
+        let mut reports = self.reports.lock().await.clone();
+        let mut publications = self.publications.lock().await.clone();
+        let mut declarations = self.declarations.lock().await.clone();
+        let mut outcomes = self.outcomes.lock().await.clone();
+        let mut completion_refs = self.completion_refs.lock().await.clone();
         for record in records {
             apply_record(
                 &mut sessions,
@@ -4048,9 +4113,7 @@ impl PersistentLocalSwarm {
                 record,
             )?;
         }
-        if !sessions.is_empty() {
-            *self.records.lock().await = sessions;
-        }
+        *self.records.lock().await = sessions;
         *self.requests.lock().await = requests;
         *self.seeds.lock().await = seeds;
         *self.reports.lock().await = reports;
@@ -4058,6 +4121,7 @@ impl PersistentLocalSwarm {
         *self.declarations.lock().await = declarations;
         *self.outcomes.lock().await = outcomes;
         *self.completion_refs.lock().await = completion_refs;
+        *self.registry_tail.lock().await = observed_tail;
         Ok(observed_tail)
     }
 
@@ -4131,19 +4195,33 @@ async fn load_records_at(
     stream: &acyclic_stream::Stream<LocalStream>,
     tail: u64,
 ) -> Result<Vec<StoredRecord>> {
-    if tail == 0 {
+    load_records_range(stream, 0, tail).await
+}
+
+async fn load_records_range(
+    stream: &acyclic_stream::Stream<LocalStream>,
+    from: u64,
+    tail: u64,
+) -> Result<Vec<StoredRecord>> {
+    if from > tail {
+        return Err(Error::Conflict(
+            "local swarm registry range starts after its observed tail".into(),
+        ));
+    }
+    let count = tail - from;
+    if count == 0 {
         return Ok(Vec::new());
     }
     let mut records = stream
         .read(
-            0,
-            u32::try_from(tail)
+            from,
+            u32::try_from(count)
                 .map_err(|_| Error::Storage("swarm registry is too large".into()))?,
         )
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let mut decoded = Vec::new();
-    let mut expected_sequence = 0_u64;
+    let mut expected_sequence = from;
     while let Some(record) = records.next().await {
         let record = record.map_err(|error| Error::Storage(error.to_string()))?;
         if record.sequence != expected_sequence {
@@ -4732,7 +4810,7 @@ mod tests {
             .await
             .expect_err("seedless fork must not dispatch a child");
         assert!(error.to_string().contains("typed fork publication"));
-        assert_eq!(swarm.sessions().await.len(), 1);
+        assert_eq!(swarm.sessions().await?.len(), 1);
         assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
@@ -4763,7 +4841,7 @@ mod tests {
             .await
             .expect_err("incomplete parent must not activate a child");
         assert!(error.to_string().contains("completed model boundary"));
-        assert_eq!(swarm.sessions().await.len(), 1);
+        assert_eq!(swarm.sessions().await?.len(), 1);
         Ok(())
     }
 

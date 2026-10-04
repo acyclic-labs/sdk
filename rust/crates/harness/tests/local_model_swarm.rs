@@ -195,7 +195,7 @@ impl ModelProvider for DeterministicProvider {
                     let swarm = weak
                         .upgrade()
                         .ok_or_else(|| Error::Storage("swarm dropped during dispatch".into()))?;
-                    let sessions = swarm.sessions().await;
+                    let sessions = swarm.sessions().await?;
                     for operation in [expected_a, expected_b] {
                         let task = acyclic_harness::TaskId::from_bytes(operation.into_bytes());
                         let session = sessions
@@ -444,7 +444,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         );
     }
 
-    let sessions = swarm.sessions().await;
+    let sessions = swarm.sessions().await?;
     assert_eq!(sessions.len(), 4);
     for operation in [child_a, child_b, grandchild] {
         let task = acyclic_harness::TaskId::from_bytes(operation.into_bytes());
