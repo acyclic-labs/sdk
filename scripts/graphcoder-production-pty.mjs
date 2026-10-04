@@ -23,6 +23,18 @@ const REQUIRED_MARKERS = [
   '"state":"cancelled"',
   '"exited":true',
 ];
+const EXPLICIT_BRIDGE_ENVIRONMENT = new Set([
+  "GRAPHCODER_PACKAGE_ROOT",
+  "GRAPHCODER_PACKAGE_ARTIFACT",
+  "GRAPHCODER_BRIDGE_EXECUTABLE",
+  "GRAPHCODER_BRIDGE_ARGS_JSON",
+  "GRAPHCODER_BRIDGE_ENV_JSON",
+  "GRAPHCODER_BRIDGE_CWD",
+  "GRAPHCODER_IDENTITY_PATH",
+  "GRAPHCODER_REQUIRE_PACKAGE_IDENTITY",
+  "GRAPHCODER_LAZY_OBSERVATION_PATH",
+  "GRAPHCODER_REQUIRE_LAZY_COUNTERS",
+]);
 
 function fail(message) {
   throw new Error(`graphcoder-production-pty: ${message}`);
@@ -41,7 +53,7 @@ function nativeConhost() {
 export function bridgeEnvironment(environment = process.env) {
   return Object.fromEntries(
     Object.entries(environment).filter(([key]) =>
-      ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].includes(key) || key.startsWith("GRAPHCODER_"),
+      ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"].includes(key) || EXPLICIT_BRIDGE_ENVIRONMENT.has(key),
     ),
   );
 }
@@ -234,7 +246,7 @@ export async function run(commands) {
     }
     child.stdin.write("quit\r");
     const exit = await waitForClose(processClosed, processError, child);
-    if (exit.code !== 0) fail(`PTY process exited with code ${exit.code}`);
+    if (exit.code !== 0 || exit.signal !== null) fail(`PTY process did not exit cleanly (code ${exit.code}, signal ${exit.signal ?? "none"})`);
     const transcript = state.output;
     const missing = [PROMPT, ...REQUIRED_MARKERS].filter(marker => !transcript.includes(marker));
     if (missing.length > 0) fail(`missing transcript markers: ${missing.join(", ")}`);

@@ -8,6 +8,7 @@ test("PTY environment keeps only platform and explicit GraphCoder variables", ()
     SystemRoot: "root",
     GRAPHCODER_PACKAGE_ROOT: "package",
     GRAPHCODER_BRIDGE_ENV_JSON: "{}",
+    GRAPHCODER_UNDECLARED_SECRET: "must-not-pass",
     AWS_SECRET_ACCESS_KEY: "must-not-pass",
     HOME: "must-not-pass",
   });
@@ -16,6 +17,26 @@ test("PTY environment keeps only platform and explicit GraphCoder variables", ()
     SystemRoot: "root",
     GRAPHCODER_PACKAGE_ROOT: "package",
     GRAPHCODER_BRIDGE_ENV_JSON: "{}",
+  });
+});
+
+test("PTY environment does not forward undeclared GraphCoder variables", () => {
+  const filtered = bridgeEnvironment({
+    PATH: "path",
+    GRAPHCODER_PACKAGE_ROOT: "package",
+    GRAPHCODER_BRIDGE_EXECUTABLE: "runtime.exe",
+    GRAPHCODER_BRIDGE_ARGS_JSON: "[]",
+    GRAPHCODER_BRIDGE_ENV_JSON: "{}",
+    GRAPHCODER_BRIDGE_CWD: "C:\\qualification",
+    GRAPHCODER_UNDECLARED_SECRET: "must-not-pass",
+  });
+  assert.deepEqual(filtered, {
+    PATH: "path",
+    GRAPHCODER_PACKAGE_ROOT: "package",
+    GRAPHCODER_BRIDGE_EXECUTABLE: "runtime.exe",
+    GRAPHCODER_BRIDGE_ARGS_JSON: "[]",
+    GRAPHCODER_BRIDGE_ENV_JSON: "{}",
+    GRAPHCODER_BRIDGE_CWD: "C:\\qualification",
   });
 });
 

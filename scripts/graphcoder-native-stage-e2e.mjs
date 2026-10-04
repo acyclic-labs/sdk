@@ -59,6 +59,21 @@ function assertNoAttachments(value, label) {
   if (value && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, "attachments")) fail(`${label} unexpectedly exposed automatic attachments`);
 }
 
+async function closeOwnedChild(child, closed, label) {
+  if (child.exitCode === null && child.signalCode === null) {
+    try { child.stdin?.destroy(); } catch { /* close remains authoritative */ }
+    try { child.kill(); } catch { /* close remains authoritative */ }
+  }
+  let timer;
+  const result = await Promise.race([
+    closed,
+    new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
+  ]);
+  clearTimeout(timer);
+  if (result.timeout) fail(`${label} did not close within ${CLOSE_TIMEOUT_MS}ms after termination`);
+  return result;
+}
+
 async function withDeadline(promise, label) {
   let timer;
   const result = await Promise.race([
@@ -118,22 +133,19 @@ async function runSuppressedStart(runtime, root) {
   let errorResolve;
   const errored = new Promise(resolvePromise => { errorResolve = resolvePromise; });
   child.once("error", error => errorResolve(error));
-  child.stdin.write(request("stage-dropped", "start_session", { prompt: "write fixture", operation_id: "op-stage-1", model_fixture: "stage" }));
-  const outcome = await Promise.race([
-    closed,
-    errored.then(error => ({ error })),
-    new Promise(resolvePromise => setTimeout(() => resolvePromise({ interrupted: true }), 300)),
-  ]);
-  if (outcome?.error) fail(`suppressed native process failed: ${outcome.error.message}`);
-  if (outcome?.code !== undefined) fail(`suppressed native process closed before interruption (code ${outcome.code})`);
-  child.stdin.destroy();
-  child.kill();
-  const exit = await Promise.race([
-    closed,
-    new Promise(resolvePromise => setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS)),
-  ]);
-  if (exit.timeout) fail(`suppressed native process did not close within ${CLOSE_TIMEOUT_MS}ms`);
-  return { request_id: "stage-dropped", operation_id: "op-stage-1", response_suppressed: true };
+  try {
+    child.stdin.write(request("stage-dropped", "start_session", { prompt: "write fixture", operation_id: "op-stage-1", model_fixture: "stage" }));
+    const outcome = await Promise.race([
+      closed,
+      errored.then(error => ({ error })),
+      new Promise(resolvePromise => setTimeout(() => resolvePromise({ interrupted: true }), 300)),
+    ]);
+    if (outcome?.error) fail(`suppressed native process failed: ${outcome.error.message}`);
+    if (outcome?.code !== undefined) fail(`suppressed native process closed before interruption (code ${outcome.code})`);
+    return { request_id: "stage-dropped", operation_id: "op-stage-1", response_suppressed: true };
+  } finally {
+    await closeOwnedChild(child, closed, "suppressed native process");
+  }
 }
 
 async function runReopen(runtime, root) {
@@ -245,29 +257,28 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
   const scopeRoot = join(consumerRoot, "node_modules", "@acyclic-labs");
   const packageLink = join(scopeRoot, "graphcoder");
   mkdirSync(scopeRoot, { recursive: true });
-  try { symlinkSync(packageRoot, packageLink, "junction"); }
-  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`could not install package export consumer junction: ${error instanceof Error ? error.message : String(error)}`); }
-  const resolver = createRequire(join(consumerRoot, "consumer.cjs"));
-  let modulePath;
-  let terminalPath;
-  try { modulePath = resolver.resolve("@acyclic-labs/graphcoder/node"); }
-  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`installed package ./node export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
-  try { terminalPath = resolver.resolve("@acyclic-labs/graphcoder/terminal"); }
-  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`installed package ./terminal export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
-  const [{ createNodeGraphCoderConnection }, { runCliWithTransport }] = await Promise.all([
-    import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`),
-    import(`${pathToFileURL(terminalPath).href}?qualification=${Date.now()}`),
-  ]);
-  let exitResolve;
-  const exited = new Promise(resolvePromise => { exitResolve = resolvePromise; });
-  const connection = createNodeGraphCoderConnection({
-    executable: runtime,
-    args: ["--root", root, "--model-fixture", "stage"],
-    cwd: resolve("."),
-    env: childEnvironment(),
-    onDiagnostic: event => { if (event.kind === "exit") exitResolve(event); },
-  });
+  let connection;
   try {
+    try { symlinkSync(packageRoot, packageLink, "junction"); }
+    catch (error) { fail(`could not install package export consumer junction: ${error instanceof Error ? error.message : String(error)}`); }
+    const resolver = createRequire(join(consumerRoot, "consumer.cjs"));
+    let modulePath;
+    let terminalPath;
+    try { modulePath = resolver.resolve("@acyclic-labs/graphcoder/node"); }
+    catch (error) { fail(`installed package ./node export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
+    try { terminalPath = resolver.resolve("@acyclic-labs/graphcoder/terminal"); }
+    catch (error) { fail(`installed package ./terminal export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
+    const [{ createNodeGraphCoderConnection }, { runCliWithTransport }] = await Promise.all([
+      import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`),
+      import(`${pathToFileURL(terminalPath).href}?qualification=${Date.now()}`),
+    ]);
+    connection = createNodeGraphCoderConnection({
+      executable: runtime,
+      args: ["--root", root, "--model-fixture", "stage"],
+      cwd: resolve("."),
+      env: childEnvironment(),
+    });
+    if (typeof connection.bridge.waitForExit !== "function") fail("installed node export does not expose waitForExit");
     const terminalOutput = [];
     const terminalStatus = await withDeadline(runCliWithTransport(
       [`open ${sessionId}`, "activity", "file graphcoder-fixture.txt"],
@@ -303,15 +314,16 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
       package: packageIdentity,
     };
   } finally {
-    connection.bridge.close("native stage qualification finished");
-    let timer;
-    const result = await Promise.race([
-      exited,
-      new Promise(resolvePromise => { timer = setTimeout(() => resolvePromise({ timeout: true }), CLOSE_TIMEOUT_MS); }),
-    ]);
-    clearTimeout(timer);
+    let closeError;
+    let exitResult;
+    if (connection !== undefined) {
+      connection.bridge.close("native stage qualification finished");
+      try { exitResult = await connection.bridge.waitForExit(CLOSE_TIMEOUT_MS); }
+      catch (error) { closeError = error; }
+    }
     rmSync(consumerRoot, { recursive: true, force: true });
-    if (result.timeout) fail(`installed consumer bridge did not close within ${CLOSE_TIMEOUT_MS}ms`);
+    if (closeError !== undefined) fail(`installed consumer bridge did not close: ${closeError instanceof Error ? closeError.message : String(closeError)}`);
+    if (connection !== undefined && exitResult?.kind !== "closed") fail(`installed consumer bridge returned an invalid exit result: ${JSON.stringify(exitResult)}`);
   }
 }
 

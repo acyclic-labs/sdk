@@ -4,7 +4,7 @@
 // package and native runtime build. This records provenance; it does not build
 // artifacts or launch a process.
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describeArtifact } from "./graphcoder-artifact.mjs";
@@ -18,6 +18,13 @@ function required(value, label) {
   return value;
 }
 
+function validateWindowsExecutable(path) {
+  const bytes = readFileSync(path);
+  if (bytes.length < 2 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) {
+    fail(`runtime is not a Windows PE executable: ${path}`);
+  }
+}
+
 export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, packageRoot, output, buildId, builtAt, gitOps }) {
   const source = resolve(required(sourceCwd, "sourceCwd"));
   const archive = resolve(required(packageArchive, "packageArchive"));
@@ -25,7 +32,9 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
   const installedPackage = resolve(required(packageRoot, "packageRoot"));
   const outputPath = resolve(required(output, "output"));
   if (!existsSync(source)) fail(`sourceCwd does not exist: ${source}`);
+  if (!existsSync(executable)) fail(`runtime does not exist: ${executable}`);
   if (!existsSync(installedPackage)) fail(`packageRoot does not exist: ${installedPackage}`);
+  validateWindowsExecutable(executable);
   const id = required(buildId, "buildId");
   const packageArtifact = describeArtifact({ path: archive, sourceCwd: source, buildId: `${id}-package`, builtAt, gitOps });
   const nativeArtifact = describeArtifact({ path: executable, sourceCwd: source, buildId: `${id}-native`, builtAt, gitOps });

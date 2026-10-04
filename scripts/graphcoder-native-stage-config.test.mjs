@@ -11,7 +11,7 @@ test("native stage config binds package and runtime to one source provenance", (
     const packageArchive = join(directory, "graphcoder.tgz");
     const runtime = join(directory, "graphcoder-runtime.exe");
     writeFileSync(packageArchive, "package bytes\n");
-    writeFileSync(runtime, "runtime bytes\n");
+    writeFileSync(runtime, "MZruntime bytes\n");
     const gitOps = { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : "b".repeat(40) };
     const config = makeNativeStageConfig({
       sourceCwd: directory,
@@ -43,7 +43,7 @@ test("native stage config refuses package and runtime provenance drift", () => {
     const packageArchive = join(directory, "graphcoder.tgz");
     const runtime = join(directory, "graphcoder-runtime.exe");
     writeFileSync(packageArchive, "package bytes\n");
-    writeFileSync(runtime, "runtime bytes\n");
+    writeFileSync(runtime, "MZruntime bytes\n");
     let call = 0;
     const gitOps = { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : `${"b".repeat(39)}${call++ % 2}` };
     assert.throws(() => makeNativeStageConfig({
@@ -55,6 +55,29 @@ test("native stage config refuses package and runtime provenance drift", () => {
       buildId: "build-1",
       gitOps,
     }), /one source commit\/tree/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("native stage config rejects a non-PE runtime before recording provenance", () => {
+  const directory = mkdtempSync(join(tmpdir(), "graphcoder-native-config-"));
+  try {
+    const packageArchive = join(directory, "graphcoder.tgz");
+    const runtime = join(directory, "graphcoder-runtime.exe");
+    writeFileSync(packageArchive, "package bytes\n");
+    writeFileSync(runtime, "not an executable\n");
+    const gitOps = { git: (_cwd, ...args) => args.at(-1) === "HEAD" ? "a".repeat(40) : "b".repeat(40) };
+    assert.throws(() => makeNativeStageConfig({
+      sourceCwd: directory,
+      packageArchive,
+      runtime,
+      packageRoot: directory,
+      output: join(directory, "suites"),
+      buildId: "build-1",
+      builtAt: "2026-10-03T10:00:00.000Z",
+      gitOps,
+    }), /Windows PE executable/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
