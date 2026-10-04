@@ -27,7 +27,7 @@ use acyclic_harness::{
         FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole,
     },
-    model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
+    model_input::{CompletedModelBoundary, FrozenModelPrefix, InheritedModelContext, PreparedModelInput},
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
@@ -887,6 +887,7 @@ impl ForkAtBatch {
                 (index == 0).then(|| child_zero_ready.clone()),
                 (index == 0).then(|| child_zero_release.clone()),
             ));
+            let inherited = InheritedModelContext::new(boundary.clone(), suffix.clone(), self.limits)?;
             let bundle = storage
                 .inherited_builder(boundary.clone(), suffix, child_model, self.limits)?
                 .tools(storage.default_tools(self.limits)?)
@@ -904,6 +905,7 @@ impl ForkAtBatch {
                     child_issuer.clone(),
                     child_scope.clone(),
                     project.clone(),
+                    inherited,
                 ));
             }
             let child_operation = OperationId::from_bytes([index + 60; 16]);
@@ -943,6 +945,7 @@ impl ForkAtBatch {
             child_zero_issuer,
             child_zero_scope,
             child_zero_project,
+            child_zero_inherited,
         ) = child_zero_context
             .ok_or_else(|| Error::Storage("child zero context missing".into()))?;
         tokio::select! {
@@ -965,6 +968,7 @@ impl ForkAtBatch {
             child_zero_issuer,
             child_zero_scope,
             child_zero_project,
+            &child_zero_inherited,
         )
         .await?;
         child_zero_release.wait().await;
@@ -1005,9 +1009,14 @@ impl ForkAtBatch {
         parent_issuer: AuthorityIssuer,
         parent_scope: acyclic_harness::core::Scope,
         parent_project: VolumeRef,
+        inherited: &InheritedModelContext,
     ) -> Result<()> {
+        assert!(matches!(
+            storage.verified_model_fork_boundary(&admission, self.limits).await,
+            Err(Error::Conflict(message)) if message.contains("authoritative conversation")
+        ));
         let verified = storage
-            .verified_model_fork_boundary(&admission, self.limits)
+            .verified_inherited_model_fork_boundary(&admission, self.limits, inherited)
             .await?;
         let boundary = verified.boundary().clone();
         let (_, mut parent) = verified.into_parts();
@@ -1118,7 +1127,7 @@ impl ForkAtBatch {
         };
 
         let verified_references = storage
-            .verified_model_fork_boundary(&admission, self.limits)
+            .verified_inherited_model_fork_boundary(&admission, self.limits, inherited)
             .await?;
         let mut request = request;
         storage
