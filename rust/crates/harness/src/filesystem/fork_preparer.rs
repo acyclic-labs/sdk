@@ -16,7 +16,7 @@ use crate::{
         ForkSeed, ForkSelection, InheritedConversationPrefix, ReferenceGrant, ResourceRevision,
         SharedGrant,
     },
-    resources::{ProviderRef, WorkspaceRef},
+    resources::{GenerationRef, ProviderRef, WorkspaceRef},
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use futures::future::BoxFuture;
@@ -955,7 +955,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // No seed file is changed until all journals have acknowledged it.
         for volume in &volumes {
             let journal = allocation_ref(self.provider.clone(), volume)?;
-            let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
+            // Pin the journal generation before reading any record. Every
+            // validation below and the following CAS must describe this same
+            // immutable snapshot; reading the mutable head first would allow
+            // a concurrent rebind to advance the seed between validation and
+            // the expected-generation write.
+            let observed = self.resolve(&journal).await?;
+            let claim = read_record_at::<A, O, AllocationClaim>(
+                self,
+                &journal,
+                &observed.generation,
+                "/claim.json",
+                4_096,
+            )
                 .await?
                 .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
             if claim.operation_id != new_seed.operation_id
@@ -967,8 +979,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     "fork child volume belongs to another preparation".into(),
                 ));
             }
-            let current =
-                read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096).await?;
+            let current = read_record_at::<A, O, SeedBinding>(
+                self,
+                &journal,
+                &observed.generation,
+                "/seed.json",
+                4_096,
+            )
+            .await?;
             // Keep each transition as an immutable receipt. A single mutable
             // intent file would permanently fence a later retry if the
             // parent advanced again before the earlier publication reconciled.
@@ -983,7 +1001,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .as_ref()
                 .is_some_and(|binding| binding.digest == new_binding.digest)
             {
-                let prior = read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096)
+                let prior = read_record_at::<A, O, SeedRebindIntent>(
+                    self,
+                    &journal,
+                    &observed.generation,
+                    &path,
+                    4_096,
+                )
                     .await?
                     .ok_or_else(|| {
                         Error::Conflict(
@@ -1021,7 +1045,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 from,
                 to: new_binding.digest,
             };
-            match read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096).await? {
+            match read_record_at::<A, O, SeedRebindIntent>(
+                self,
+                &journal,
+                &observed.generation,
+                &path,
+                4_096,
+            )
+            .await?
+            {
                 Some(prior) if prior == intent => {}
                 Some(_) => {
                     return Err(Error::Conflict(
@@ -1029,13 +1061,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     ));
                 }
                 None => {
-                    let observed = self.resolve(&journal).await?;
                     let key = IdempotencyKey::new(format!(
                         "fork:{}:seed-rebind-intent:{}",
                         new_seed.operation_id,
                         blake3::Hash::from_bytes(new_binding.digest).to_hex(),
                     ))?;
-                    match self
+                    let committed = match self
                         .apply(
                             &journal,
                             Some(&observed.generation),
@@ -1047,10 +1078,19 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         )
                         .await
                     {
-                        Ok(_) | Err(Error::Conflict(_)) => {}
+                        Ok(generation) => Some(generation),
+                        Err(Error::Conflict(_)) => None,
                         Err(error) => return Err(error),
-                    }
-                    match read_record::<A, O, SeedRebindIntent>(self, &journal, &path, 4_096)
+                    };
+                    let verification_generation =
+                        committed.as_ref().unwrap_or(&observed.generation);
+                    match read_record_at::<A, O, SeedRebindIntent>(
+                        self,
+                        &journal,
+                        verification_generation,
+                        &path,
+                        4_096,
+                    )
                         .await?
                     {
                         Some(prior) if prior == intent => {}
@@ -1070,20 +1110,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         // preparer binding; a different binding is never overwritten.
         for (journal, intent) in journals {
             let binding_path = "/seed.json";
-            match read_record::<A, O, SeedBinding>(self, &journal, binding_path, 4_096).await? {
+            // Pin the generation before reading the current binding and use it
+            // as the CAS precondition for the mutation.
+            let observed = self.resolve(&journal).await?;
+            match read_record_at::<A, O, SeedBinding>(
+                self,
+                &journal,
+                &observed.generation,
+                binding_path,
+                4_096,
+            )
+            .await?
+            {
                 Some(prior) if prior.digest == intent.to => continue,
                 Some(prior) if prior.digest != intent.from => {
                     return Err(Error::Conflict("fork allocation has another seed".into()));
                 }
                 Some(_) | None => {}
             }
-            let observed = self.resolve(&journal).await?;
             let key = IdempotencyKey::new(format!(
                 "fork:{}:seed-rebind:{}",
                 new_seed.operation_id,
                 blake3::Hash::from_bytes(intent.to).to_hex(),
             ))?;
-            match self
+            let committed = match self
                 .apply(
                     &journal,
                     Some(&observed.generation),
@@ -1095,10 +1145,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
                 .await
             {
-                Ok(_) | Err(Error::Conflict(_)) => {}
+                Ok(generation) => Some(generation),
+                Err(Error::Conflict(_)) => None,
                 Err(error) => return Err(error),
-            }
-            match read_record::<A, O, SeedBinding>(self, &journal, binding_path, 4_096).await? {
+            };
+            let verification_generation = committed.as_ref().unwrap_or(&observed.generation);
+            match read_record_at::<A, O, SeedBinding>(
+                self,
+                &journal,
+                verification_generation,
+                binding_path,
+                4_096,
+            )
+            .await?
+            {
                 Some(prior) if prior.digest == intent.to => {}
                 Some(_) => return Err(Error::Conflict("fork allocation has another seed".into())),
                 None => return Err(Error::Indeterminate(new_seed.operation_id)),
@@ -1500,6 +1560,25 @@ fn encode_record<T: Serialize>(value: &T, maximum_bytes: u64) -> Result<Vec<u8>>
         ));
     }
     Ok(bytes)
+}
+
+async fn read_record_at<A: AsyncAuthorityStore, O: AsyncObjectStore, T: DeserializeOwned>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    generation: &GenerationRef,
+    path: &str,
+    maximum_bytes: u64,
+) -> Result<Option<T>> {
+    match host
+        .read(journal, Some(generation), path, maximum_bytes)
+        .await
+    {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|error| Error::Invalid(format!("fork journal record is invalid: {error}"))),
+        Err(Error::NotFound(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 async fn read_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T: DeserializeOwned>(

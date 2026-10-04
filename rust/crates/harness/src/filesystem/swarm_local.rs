@@ -1346,11 +1346,15 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 // the durable admission only when the parent aggregate proves
                 // that publication already exists; otherwise continue through
                 // the rebind intent below.
-                if let Ok(existing_seed) = swarm.published_seed(child).await {
-                    if parent.reducer().fork(&existing_seed.child) == Some(&existing_seed) {
-                        prepared.push((plan, existing_seed));
-                        continue;
+                match swarm.published_seed(child).await {
+                    Ok(existing_seed) => {
+                        if parent.reducer().fork(&existing_seed.child) == Some(&existing_seed) {
+                            prepared.push((plan, existing_seed));
+                            continue;
+                        }
                     }
+                    Err(Error::NotFound(_)) => {}
+                    Err(error) => return Err(error),
                 }
                 // Multiple children selected by one completed batch publish
                 // sequentially on the same parent stream. Their immutable
