@@ -1088,8 +1088,18 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 }
                 self.admission(OperationId::from_bytes(event.sender.into_bytes()))
                     .await?;
+                // The owner stream supplies immutable delivery time. Keeping it
+                // out of MailEvent preserves exact append bytes on a retry.
+                let delivered_at_epoch_ms = record.committed_at_micros / 1_000;
+                if delivered_at_epoch_ms == 0 {
+                    return Err(Error::Storage(
+                        "mail record is missing its committed delivery timestamp".into(),
+                    ));
+                }
                 items.push(InboxItem {
                     task_id,
+                    sender: event.sender,
+                    delivered_at_epoch_ms,
                     sequence: record
                         .sequence
                         .checked_add(1)

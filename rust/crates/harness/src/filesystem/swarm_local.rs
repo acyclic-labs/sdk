@@ -2731,6 +2731,7 @@ impl PersistentLocalSwarm {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<crate::scheduler::InboxItem>> {
+        self.session(task).await?;
         let host =
             self.bindings.communication_host.clone().ok_or_else(|| {
                 Error::Unsupported("durable communication host is not bound".into())
@@ -4642,6 +4643,11 @@ mod tests {
         )
         .await?;
         let root_task = swarm.root_task().await?;
+        assert!(matches!(
+            swarm.read_inbox(TaskId::from_bytes([99; 16]), 0, 1).await,
+            Err(Error::NotFound(_))
+        ));
+        assert!(host.observed.lock().expect("communication host lock").is_empty());
         swarm.run_root(OperationId::from_bytes([82; 16]), "wait for the deadline").await?;
         let observed = host.observed.lock().expect("communication host lock");
         assert!(!observed.is_empty());

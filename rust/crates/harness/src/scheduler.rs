@@ -2144,6 +2144,10 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
 pub struct InboxItem {
     /// Owning task.
     pub task_id: TaskId,
+    /// Authenticated sender retained by the owner journal.
+    pub sender: TaskId,
+    /// Owner stream commit timestamp used for delivery ordering and replay.
+    pub delivered_at_epoch_ms: u64,
     /// Gapless one-based sequence.
     pub sequence: u64,
     /// Sender-defined idempotency identity.
@@ -2171,16 +2175,22 @@ impl TaskInbox {
 
     /// Applies one committed item, deduplicating exact message identities.
     pub fn apply(&mut self, item: InboxItem) -> Result<()> {
-        if item.task_id != self.task_id || item.message_id.trim().is_empty() {
+        if item.task_id != self.task_id
+            || item.sender.into_bytes() == [0; 16]
+            || item.delivered_at_epoch_ms == 0
+            || item.message_id.trim().is_empty()
+        {
             return Err(Error::Invalid(
-                "inbox item has the wrong task or an empty message identity".into(),
+                "inbox item has invalid task, sender, timestamp, or message identity".into(),
             ));
         }
         item.payload.validate()?;
         if let Some(existing) = self
             .items
             .iter()
-            .find(|existing| existing.message_id == item.message_id)
+            .find(|existing| {
+                existing.sender == item.sender && existing.message_id == item.message_id
+            })
         {
             return if existing == &item {
                 Ok(())
@@ -2732,8 +2742,11 @@ mod tests {
     #[test]
     fn task_inbox_is_gapless_and_idempotent() -> Result<()> {
         let task_id = TaskId::from_bytes([4; 16]);
+        let alternate_sender = TaskId::from_bytes([5; 16]);
         let item = InboxItem {
             task_id,
+            sender: task_id,
+            delivered_at_epoch_ms: 1,
             sequence: 1,
             message_id: "message-1".into(),
             payload: state_ref()?,
@@ -2742,6 +2755,15 @@ mod tests {
         inbox.apply(item.clone())?;
         inbox.apply(item)?;
         assert_eq!(inbox.after(0, 10).len(), 1);
+        inbox.apply(InboxItem {
+            task_id,
+            sender: alternate_sender,
+            delivered_at_epoch_ms: 2,
+            sequence: 2,
+            message_id: "message-1".into(),
+            payload: state_ref()?,
+        })?;
+        assert_eq!(inbox.after(0, 10).len(), 2);
         Ok(())
     }
 

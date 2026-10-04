@@ -233,10 +233,19 @@ pub fn validate_inbox_page(
                 "inbox delivery sequence is not contiguous".into(),
             ));
         }
+        nonzero_task(item.sender, "inbox sender")?;
+        if item.delivered_at_epoch_ms == 0 {
+            return Err(Error::Invalid(
+                "inbox delivery timestamp is invalid".into(),
+            ));
+        }
         let identity = OperationId::parse(&item.message_id)
             .map_err(|_| Error::Invalid("inbox message identity is not canonical".into()))?;
         nonzero_operation(identity, "inbox message")?;
-        if !identities.insert(identity) {
+        // Message IDs are caller-scoped. Distinct authenticated senders may
+        // legitimately reuse one ID in the same recipient mailbox, while a
+        // repeated sender/ID pair still indicates duplicate delivery.
+        if !identities.insert((item.sender, identity)) {
             return Err(Error::Conflict(
                 "inbox page repeats a message identity".into(),
             ));
@@ -431,6 +440,17 @@ impl WaitRequest {
     /// target, cursor, or page shape merely because it has the same operation
     /// identity.
     pub fn validate_completion(&self, completion: &WaitCompletion) -> Result<()> {
+        self.validate_completion_at(completion, None)
+    }
+
+    /// Validates a retained terminal result against the current clock when
+    /// the completion is a caller timeout. A durable store must not replay a
+    /// timeout before the declared bound has elapsed.
+    pub fn validate_completion_at(
+        &self,
+        completion: &WaitCompletion,
+        now_epoch_ms: Option<u64>,
+    ) -> Result<()> {
         match (&self.target, completion) {
             (WaitTarget::Tasks { task_ids }, WaitCompletion::Tasks { outcomes }) => {
                 if outcomes.len() != task_ids.len()
@@ -454,9 +474,25 @@ impl WaitRequest {
             ) => {
                 validate_inbox_page(*task_id, *after, *limit, items)?;
             }
-            (WaitTarget::Deadline { .. }, WaitCompletion::Deadline)
-            | (_, WaitCompletion::Cancelled) => {}
-            (_, WaitCompletion::TimedOut) if self.timeout_epoch_ms.is_some() => {}
+            (WaitTarget::Deadline { deadline_epoch_ms }, WaitCompletion::Deadline) => {
+                if let Some(completed_at) = now_epoch_ms
+                    && completed_at < *deadline_epoch_ms
+                {
+                    return Err(Error::Conflict(
+                        "deadline completion arrived before its declared deadline".into(),
+                    ));
+                }
+            }
+            (_, WaitCompletion::Cancelled) => {}
+            (_, WaitCompletion::TimedOut) if self.timeout_epoch_ms.is_some() => {
+                if let (Some(timeout), Some(now)) = (self.timeout_epoch_ms, now_epoch_ms)
+                    && timeout > now
+                {
+                    return Err(Error::Conflict(
+                        "wait timeout completion arrived before its declared bound".into(),
+                    ));
+                }
+            }
             (_, WaitCompletion::TimedOut) => {
                 return Err(Error::Conflict(
                     "wait timeout completion has no declared timeout".into(),
@@ -497,11 +533,21 @@ pub trait DurableWaitStore: Send + Sync {
     /// task cancellation endpoint before a process restart; the retained
     /// completion is then returned by [`Self::open`] during recovery.
     fn cancel<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<WaitCompletion>> {
-        self.complete(request, WaitCompletion::Cancelled)
+        Box::pin(async move {
+            if request.cancellation_id.is_none() {
+                return Err(Error::Invalid(
+                    "durable wait cancellation requires its declared cancellation identity".into(),
+                ));
+            }
+            self.complete(request, WaitCompletion::Cancelled).await
+        })
     }
 }
 
-const WAIT_EVENT_CONTRACT: &str = "harness.wait-event.v1";
+// Completion records carry an owner-clock timestamp.  This is a new journal
+// shape; old records are rejected at the contract boundary instead of being
+// decoded with a fabricated timestamp.
+const WAIT_EVENT_CONTRACT: &str = "harness.wait-event.v2";
 const WAIT_STREAM_PAGE: u32 = 1_024;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -515,6 +561,10 @@ enum PersistedWaitEvent {
         contract: String,
         request: WaitRequest,
         completion: WaitCompletion,
+        /// Owner-clock timestamp captured when the terminal result was
+        /// durably appended. Timeout validity is checked against this value
+        /// during replay rather than against a later recovery clock.
+        completed_at_epoch_ms: u64,
     },
 }
 
@@ -629,6 +679,7 @@ impl<P: StreamProvider> StreamWaitStore<P> {
     fn retained(
         events: &[PersistedWaitEvent],
         request: &WaitRequest,
+        now_epoch_ms: u64,
     ) -> Result<Option<RetainedWait>> {
         let mut retained = None;
         for event in events {
@@ -649,7 +700,11 @@ impl<P: StreamProvider> StreamWaitStore<P> {
                     }
                     retained = Some(RetainedWait { completion: None });
                 }
-                PersistedWaitEvent::Completion { completion, .. } => {
+                PersistedWaitEvent::Completion {
+                    completion,
+                    completed_at_epoch_ms,
+                    ..
+                } => {
                     let Some(current) = retained.as_mut() else {
                         return Err(Error::Storage(
                             "wait completion is missing its admission".into(),
@@ -660,7 +715,17 @@ impl<P: StreamProvider> StreamWaitStore<P> {
                             "wait journal has duplicate completion".into(),
                         ));
                     }
-                    request.validate_completion(completion)?;
+                    if *completed_at_epoch_ms == 0 {
+                        return Err(Error::Storage(
+                            "wait completion is missing its durable timestamp".into(),
+                        ));
+                    }
+                    if *completed_at_epoch_ms > now_epoch_ms {
+                        return Err(Error::Conflict(
+                            "wait completion timestamp is in the future".into(),
+                        ));
+                    }
+                    request.validate_completion_at(completion, Some(*completed_at_epoch_ms))?;
                     current.completion = Some(completion.clone());
                 }
             }
@@ -697,9 +762,10 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
         Box::pin(async move {
             request.validate(None)?;
+            let now_epoch_ms = unix_millis()?;
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            if let Some(retained) = Self::retained(&events, &request)? {
+            if let Some(retained) = Self::retained(&events, &request, now_epoch_ms)? {
                 return Ok(retained.completion);
             }
             let append = self
@@ -715,14 +781,14 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                 .await;
             if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
-                if let Some(retained) = Self::retained(&events, &request)? {
+                if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
                     return Ok(retained.completion);
                 }
                 return Err(error.clone());
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request)? else {
+            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
                 return Err(Error::Storage(
                     "wait admission disappeared after append".into(),
                 ));
@@ -738,9 +804,15 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
     ) -> BoxFuture<'a, Result<WaitCompletion>> {
         Box::pin(async move {
             request.validate(None)?;
+            if matches!(completion, WaitCompletion::Cancelled) && request.cancellation_id.is_none()
+            {
+                return Err(Error::Invalid(
+                    "durable wait cancellation requires its declared cancellation identity".into(),
+                ));
+            }
             let stream = self.wait_stream(request.waiter)?;
             let events = self.read_events(&stream, request.waiter).await?;
-            if let Some(retained) = Self::retained(&events, &request)? {
+            if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
                 if let Some(completion) = retained.completion {
                     return Ok(completion);
                 }
@@ -749,7 +821,8 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                     "wait completion has no retained admission".into(),
                 ));
             }
-            request.validate_completion(&completion)?;
+            let completed_at_epoch_ms = unix_millis()?;
+            request.validate_completion_at(&completion, Some(completed_at_epoch_ms))?;
             let append = self
                 .append(
                     &stream,
@@ -758,13 +831,14 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
                         contract: WAIT_EVENT_CONTRACT.into(),
                         request: request.clone(),
                         completion,
+                        completed_at_epoch_ms,
                     },
                     "completion",
                 )
                 .await;
             if let Err(error @ Error::Conflict(_)) = &append {
                 let events = self.read_events(&stream, request.waiter).await?;
-                if let Some(retained) = Self::retained(&events, &request)? {
+                if let Some(retained) = Self::retained(&events, &request, unix_millis()?)? {
                     if let Some(completion) = retained.completion {
                         return Ok(completion);
                     }
@@ -773,7 +847,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             }
             append?;
             let events = self.read_events(&stream, request.waiter).await?;
-            let Some(retained) = Self::retained(&events, &request)? else {
+            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
                 return Err(Error::Storage(
                     "wait completion disappeared after append".into(),
                 ));
@@ -786,7 +860,19 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
 
     fn cancel<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<WaitCompletion>> {
         Box::pin(async move {
-            if let Some(completion) = self.open(request.clone()).await? {
+            if request.cancellation_id.is_none() {
+                return Err(Error::Invalid(
+                    "durable wait cancellation requires its declared cancellation identity".into(),
+                ));
+            }
+            let stream = self.wait_stream(request.waiter)?;
+            let events = self.read_events(&stream, request.waiter).await?;
+            let Some(retained) = Self::retained(&events, &request, unix_millis()?)? else {
+                return Err(Error::Conflict(
+                    "wait cancellation has no retained admission".into(),
+                ));
+            };
+            if let Some(completion) = retained.completion {
                 return Ok(completion);
             }
             self.complete(request, WaitCompletion::Cancelled).await
@@ -854,11 +940,47 @@ impl DurableCommunication {
         request: WaitRequest,
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
-        let now = unix_millis()?;
+        let initial_now = unix_millis()?;
         // A request whose timeout has already elapsed is a valid replay of a
         // previously admitted wait. Preserve the typed terminal result rather
         // than turning recovery into an invalid-input error. Zero remains
         // invalid through the ordinary validation path.
+        let expired = request
+            .timeout_epoch_ms
+            .is_some_and(|deadline| deadline <= initial_now);
+        let deadline_expired = matches!(
+            &request.target,
+            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= initial_now
+        );
+        if expired || deadline_expired {
+            request.validate(None)?;
+        } else {
+            request.validate(Some(initial_now))?;
+        }
+        if cancellation.is_some() && request.cancellation_id.is_none() {
+            return Err(Error::Invalid(
+                "live wait cancellation requires its declared cancellation identity".into(),
+            ));
+        }
+        if cancellation.is_some() && self.waits.is_none() {
+            return Err(Error::Unsupported(
+                "live wait cancellation requires an owner-retained durable wait store".into(),
+            ));
+        }
+        self.authorize_wait(&request).await?;
+        if let Some(waits) = &self.waits {
+            if let Some(completion) = waits.open(request.clone()).await? {
+                request.validate_completion_at(&completion, Some(unix_millis()?))?;
+                return Ok(completion);
+            }
+        }
+
+        // Authorization and durable admission may cross the caller's
+        // deadline. Re-read the owner clock after admission so an operation
+        // that became due while being admitted is retained as a typed
+        // terminal result instead of entering the observation path with a
+        // stale duration.
+        let now = unix_millis()?;
         let expired = request
             .timeout_epoch_ms
             .is_some_and(|deadline| deadline <= now);
@@ -866,18 +988,6 @@ impl DurableCommunication {
             &request.target,
             WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= now
         );
-        if expired || deadline_expired {
-            request.validate(None)?;
-        } else {
-            request.validate(Some(now))?;
-        }
-        self.authorize_wait(&request).await?;
-        if let Some(waits) = &self.waits {
-            if let Some(completion) = waits.open(request.clone()).await? {
-                request.validate_completion(&completion)?;
-                return Ok(completion);
-            }
-        }
         if expired {
             return self.finish(request, WaitCompletion::TimedOut).await;
         }
@@ -932,6 +1042,11 @@ impl DurableCommunication {
     /// request survives process loss and can be replayed after restart.
     pub async fn cancel(&self, request: WaitRequest) -> Result<WaitCompletion> {
         request.validate(None)?;
+        if request.cancellation_id.is_none() {
+            return Err(Error::Invalid(
+                "durable wait cancellation requires its declared cancellation identity".into(),
+            ));
+        }
         self.authorize_wait(&request).await?;
         let waits = self.waits.as_ref().ok_or_else(|| {
             Error::Unsupported(
@@ -949,11 +1064,11 @@ impl DurableCommunication {
         request: WaitRequest,
         completion: WaitCompletion,
     ) -> Result<WaitCompletion> {
+        request.validate_completion_at(&completion, Some(unix_millis()?))?;
         match &self.waits {
             Some(waits) => {
-                request.validate_completion(&completion)?;
                 let retained = waits.complete(request.clone(), completion).await?;
-                request.validate_completion(&retained)?;
+                request.validate_completion_at(&retained, Some(unix_millis()?))?;
                 Ok(retained)
             }
             None => Ok(completion),
@@ -1102,64 +1217,6 @@ mod tests {
     use serde_json::json;
     use std::{collections::BTreeMap, sync::Mutex};
 
-    struct MemoryWaitStore {
-        records: Mutex<BTreeMap<OperationId, (WaitRequest, Option<WaitCompletion>)>>,
-    }
-
-    impl MemoryWaitStore {
-        fn new() -> Self {
-            Self {
-                records: Mutex::new(BTreeMap::new()),
-            }
-        }
-    }
-
-    impl DurableWaitStore for MemoryWaitStore {
-        fn open<'a>(
-            &'a self,
-            request: WaitRequest,
-        ) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
-            Box::pin(async move {
-                let mut records = self
-                    .records
-                    .lock()
-                    .map_err(|_| Error::Storage("wait store lock poisoned".into()))?;
-                if let Some((retained, completion)) = records.get(&request.operation_id) {
-                    if retained != &request {
-                        return Err(Error::Conflict("wait identity was reused".into()));
-                    }
-                    return Ok(completion.clone());
-                }
-                records.insert(request.operation_id, (request, None));
-                Ok(None)
-            })
-        }
-
-        fn complete<'a>(
-            &'a self,
-            request: WaitRequest,
-            completion: WaitCompletion,
-        ) -> BoxFuture<'a, Result<WaitCompletion>> {
-            Box::pin(async move {
-                let mut records = self
-                    .records
-                    .lock()
-                    .map_err(|_| Error::Storage("wait store lock poisoned".into()))?;
-                let Some((retained, current)) = records.get_mut(&request.operation_id) else {
-                    return Err(Error::Conflict("wait completion has no admission".into()));
-                };
-                if retained != &request {
-                    return Err(Error::Conflict("wait identity was reused".into()));
-                }
-                if let Some(current) = current {
-                    return Ok(current.clone());
-                }
-                *current = Some(completion.clone());
-                Ok(completion)
-            })
-        }
-    }
-
     fn task(value: u8) -> TaskId {
         TaskId::from_bytes([value; 16])
     }
@@ -1210,6 +1267,8 @@ mod tests {
         sent: Mutex<Vec<MessageRequest>>,
         inbox: Vec<InboxItem>,
         outcomes: BTreeMap<TaskId, Outcome<Value>>,
+        observed_outcomes: Mutex<Vec<TaskId>>,
+        observe_delay: Duration,
     }
 
     impl DurableTaskHost for RecordingHost {
@@ -1217,7 +1276,11 @@ mod tests {
             &'a self,
             task_id: TaskId,
         ) -> futures::future::BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            let delay = self.observe_delay;
             Box::pin(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
                 self.admissions
                     .get(&task_id)
                     .cloned()
@@ -1237,6 +1300,10 @@ mod tests {
             task_id: TaskId,
         ) -> futures::future::BoxFuture<'a, Result<Outcome<Value>>> {
             Box::pin(async move {
+                self.observed_outcomes
+                    .lock()
+                    .map_err(|_| Error::Storage("recording host lock poisoned".into()))?
+                    .push(task_id);
                 self.outcomes
                     .get(&task_id)
                     .cloned()
@@ -1301,12 +1368,16 @@ mod tests {
             sent: Mutex::new(Vec::new()),
             inbox: Vec::new(),
             outcomes,
+            observed_outcomes: Mutex::new(Vec::new()),
+            observe_delay: Duration::ZERO,
         }))
     }
 
     fn item(sequence: u64, id: u8) -> Result<InboxItem> {
         Ok(InboxItem {
             task_id: task(2),
+            sender: task(1),
+            delivered_at_epoch_ms: 1,
             sequence,
             message_id: operation(id).to_string(),
             payload: payload()?,
@@ -1335,6 +1406,12 @@ mod tests {
         assert!(validate_inbox_page(task(2), 0, 2, &[first.clone(), first.clone()]).is_err());
         assert!(validate_inbox_page(task(2), 1, 2, &[first.clone()]).is_err());
         assert!(validate_inbox_page(task(3), 0, 2, &[first]).is_err());
+        let mut invalid_sender = item(1, 12)?;
+        invalid_sender.sender = TaskId::from_bytes([0; 16]);
+        assert!(validate_inbox_page(task(2), 0, 1, &[invalid_sender]).is_err());
+        let mut invalid_timestamp = item(1, 13)?;
+        invalid_timestamp.delivered_at_epoch_ms = 0;
+        assert!(validate_inbox_page(task(2), 0, 1, &[invalid_timestamp]).is_err());
         Ok(())
     }
 
@@ -1426,6 +1503,46 @@ mod tests {
                 })
                 .is_err()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn timeout_completion_must_not_precede_its_declared_bound() -> Result<()> {
+        let request = WaitRequest {
+            operation_id: operation(23),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: Some(2_000),
+            cancellation_id: None,
+        };
+        assert!(matches!(
+            request.validate_completion_at(&WaitCompletion::TimedOut, Some(1_999)),
+            Err(Error::Conflict(message)) if message.contains("before")
+        ));
+        request.validate_completion_at(&WaitCompletion::TimedOut, Some(2_000))?;
+        Ok(())
+    }
+
+    #[test]
+    fn deadline_completion_must_not_precede_its_declared_deadline() -> Result<()> {
+        let request = WaitRequest {
+            operation_id: operation(24),
+            waiter: task(1),
+            target: WaitTarget::Deadline {
+                deadline_epoch_ms: 2_000,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        assert!(matches!(
+            request.validate_completion_at(&WaitCompletion::Deadline, Some(1_999)),
+            Err(Error::Conflict(message)) if message.contains("before")
+        ));
+        request.validate_completion_at(&WaitCompletion::Deadline, Some(2_000))?;
         Ok(())
     }
 
@@ -1556,7 +1673,11 @@ mod tests {
     #[tokio::test]
     async fn inbox_wait_can_resume_with_explicit_cancellation() -> Result<()> {
         let host = host(BTreeMap::new())?;
-        let communication = DurableCommunication::new(host);
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let waits = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
+        let communication = DurableCommunication::new(host).with_wait_store(waits);
         let (sender, receiver) = tokio::sync::watch::channel(false);
         let wait = tokio::spawn(async move {
             communication
@@ -1633,6 +1754,74 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn wait_rechecks_clock_after_slow_durable_admission() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("recording host is uniquely owned")
+            .observe_delay = Duration::from_millis(30);
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::StreamClient::new(provider);
+        let waits = Arc::new(StreamWaitStore::new(stream.clone()));
+        let deadline = unix_millis()?.saturating_add(5);
+        let completion = DurableCommunication::new(host)
+            .with_wait_store(waits)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(48),
+                    waiter: task(1),
+                    target: WaitTarget::Deadline {
+                        deadline_epoch_ms: deadline,
+                    },
+                    timeout_epoch_ms: None,
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::Deadline);
+        let journal = stream
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(journal.bounds().await?.tail, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn wait_rechecks_timeout_after_slow_durable_admission() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("recording host is uniquely owned")
+            .observe_delay = Duration::from_millis(30);
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::StreamClient::new(provider);
+        let waits = Arc::new(StreamWaitStore::new(stream.clone()));
+        let timeout = unix_millis()?.saturating_add(5);
+        let completion = DurableCommunication::new(host)
+            .with_wait_store(waits)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(49),
+                    waiter: task(1),
+                    target: WaitTarget::Messages {
+                        task_id: task(1),
+                        after: 0,
+                        limit: 1,
+                    },
+                    timeout_epoch_ms: Some(timeout),
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::TimedOut);
+        let journal = stream
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(journal.bounds().await?.tail, 2);
+        Ok(())
+    }
+
     #[test]
     fn future_deadline_must_fit_the_wait_horizon() -> Result<()> {
         let now = unix_millis()?;
@@ -1655,7 +1844,11 @@ mod tests {
     #[tokio::test]
     async fn wait_observes_already_cancelled_and_closed_channels_without_spinning() -> Result<()> {
         let host = host(BTreeMap::new())?;
-        let communication = DurableCommunication::new(host.clone());
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let waits = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
+        let communication = DurableCommunication::new(host.clone()).with_wait_store(waits);
         let (sender, receiver) = tokio::sync::watch::channel(true);
         let completion = communication
             .wait(
@@ -1668,7 +1861,7 @@ mod tests {
                         limit: 10,
                     },
                     timeout_epoch_ms: None,
-                    cancellation_id: None,
+                    cancellation_id: Some(operation(35)),
                 },
                 Some(receiver),
             )
@@ -1688,7 +1881,7 @@ mod tests {
                         limit: 10,
                     },
                     timeout_epoch_ms: Some(now + 40),
-                    cancellation_id: None,
+                    cancellation_id: Some(operation(34)),
                 },
                 Some(tokio::sync::watch::channel(false).1),
             ),
@@ -1700,12 +1893,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_cancellation_requires_identity_before_receiver_use() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let request = WaitRequest {
+            operation_id: operation(47),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        let communication = DurableCommunication::new(host);
+        let (_, receiver) = tokio::sync::watch::channel(true);
+        assert!(matches!(
+            communication.wait(request, Some(receiver)).await,
+            Err(Error::Invalid(message)) if message.contains("declared cancellation identity")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn wait_store_replays_terminal_completion_before_observation() -> Result<()> {
         let host = host(BTreeMap::from([(
             task(2),
             Outcome::Succeeded(json!("first")),
         )]))?;
-        let store = Arc::new(MemoryWaitStore::new());
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider.clone(),
+        )));
         let request = WaitRequest {
             operation_id: operation(38),
             waiter: task(1),
@@ -1715,22 +1934,41 @@ mod tests {
             timeout_epoch_ms: None,
             cancellation_id: None,
         };
-        let communication = DurableCommunication::new(host.clone()).with_wait_store(store.clone());
+        let communication = DurableCommunication::new(host.clone()).with_wait_store(store);
         assert_eq!(
             communication.wait(request.clone(), None).await?,
             WaitCompletion::Tasks {
                 outcomes: vec![(task(2), Outcome::Succeeded(json!("first")))],
             }
         );
+        assert_eq!(
+            host.observed_outcomes
+                .lock()
+                .expect("recording host lock")
+                .as_slice(),
+            &[task(2)]
+        );
         // The second call returns the retained completion from the admission
         // store before asking the host for a new observation.
+        let reopened = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
         assert_eq!(
-            communication.wait(request, None).await?,
+            DurableCommunication::new(host.clone())
+                .with_wait_store(reopened)
+                .wait(request, None)
+                .await?,
             WaitCompletion::Tasks {
                 outcomes: vec![(task(2), Outcome::Succeeded(json!("first")))],
             }
         );
-        assert_eq!(store.records.lock().expect("wait store lock").len(), 1);
+        assert_eq!(
+            host.observed_outcomes
+                .lock()
+                .expect("recording host lock")
+                .as_slice(),
+            &[task(2)]
+        );
         Ok(())
     }
 
@@ -1746,7 +1984,7 @@ mod tests {
                 limit: 10,
             },
             timeout_epoch_ms: None,
-            cancellation_id: None,
+            cancellation_id: Some(operation(40)),
         };
         let store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider.clone()));
         assert_eq!(store.open(request.clone()).await?, None);
@@ -1787,14 +2025,187 @@ mod tests {
         let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
             provider.clone(),
         )));
+        // Explicit cancellation is scoped to an existing durable wait
+        // admission; it cannot mint a cancellation record for an unknown
+        // operation identity.
+        assert_eq!(store.open(request.clone()).await?, None);
         let communication = DurableCommunication::new(host).with_wait_store(store);
         assert_eq!(
             communication.cancel(request.clone()).await?,
             WaitCompletion::Cancelled
         );
         let reopened_store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider));
-        let reopened = reopened_store.open(request).await?;
+        let reopened = reopened_store.open(request.clone()).await?;
         assert_eq!(reopened, Some(WaitCompletion::Cancelled));
+        let mut mismatched = request;
+        mismatched.cancellation_id = Some(operation(45));
+        assert!(matches!(
+            reopened_store.open(mismatched).await,
+            Err(Error::Conflict(message)) if message.contains("identity")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_cannot_cross_owner_wait_store() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let owner_provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let foreign_provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let request = WaitRequest {
+            operation_id: operation(47),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(48)),
+        };
+        let owner_store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            owner_provider,
+        )));
+        owner_store.open(request.clone()).await?;
+        let foreign_store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            foreign_provider,
+        )));
+        let error = DurableCommunication::new(host)
+            .with_wait_store(foreign_store)
+            .cancel(request)
+            .await
+            .expect_err("a foreign owner must not cancel another wait");
+        assert!(matches!(error, Error::Conflict(message) if message.contains("retained admission")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn durable_wait_cancellation_requires_the_declared_identity() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            provider,
+        )));
+        let request = WaitRequest {
+            operation_id: operation(44),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: None,
+        };
+        assert!(matches!(
+            store.cancel(request.clone()).await,
+            Err(Error::Invalid(message)) if message.contains("cancellation identity")
+        ));
+        assert!(matches!(
+            DurableCommunication::new(host)
+                .with_wait_store(store)
+                .cancel(request)
+                .await,
+            Err(Error::Invalid(message)) if message.contains("cancellation identity")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_replay_rejects_a_forged_early_timeout_after_clock_advance() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider));
+        // Make the declared timeout stale relative to the current process
+        // clock, while keeping it after the forged durable completion time.
+        // A replay implementation that checks only `now` would accept this
+        // record; replay must use the timestamp persisted with the event.
+        let now = unix_millis()?;
+        let request = WaitRequest {
+            operation_id: operation(46),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: Some(now.saturating_sub(1_000)),
+            cancellation_id: None,
+        };
+        let stream = store.wait_stream(request.waiter)?;
+        store
+            .append(
+                &stream,
+                &request,
+                PersistedWaitEvent::Admission {
+                    contract: WAIT_EVENT_CONTRACT.into(),
+                    request: request.clone(),
+                },
+                "admission",
+            )
+            .await?;
+        store
+            .append(
+                &stream,
+                &request,
+                PersistedWaitEvent::Completion {
+                    contract: WAIT_EVENT_CONTRACT.into(),
+                    request: request.clone(),
+                    completion: WaitCompletion::TimedOut,
+                    completed_at_epoch_ms: 1,
+                },
+                "completion",
+            )
+            .await?;
+        assert!(matches!(
+            store.open(request).await,
+            Err(Error::Conflict(message)) if message.contains("before")
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stream_replay_rejects_a_future_completion_timestamp() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let store = StreamWaitStore::new(acyclic_stream::StreamClient::new(provider));
+        let request = WaitRequest {
+            operation_id: operation(48),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: Some(unix_millis()?.saturating_sub(1)),
+            cancellation_id: None,
+        };
+        let stream = store.wait_stream(request.waiter)?;
+        store
+            .append(
+                &stream,
+                &request,
+                PersistedWaitEvent::Admission {
+                    contract: WAIT_EVENT_CONTRACT.into(),
+                    request: request.clone(),
+                },
+                "admission",
+            )
+            .await?;
+        store
+            .append(
+                &stream,
+                &request,
+                PersistedWaitEvent::Completion {
+                    contract: WAIT_EVENT_CONTRACT.into(),
+                    request: request.clone(),
+                    completion: WaitCompletion::TimedOut,
+                    completed_at_epoch_ms: unix_millis()?.saturating_add(60_000),
+                },
+                "completion",
+            )
+            .await?;
+        assert!(matches!(
+            store.open(request).await,
+            Err(Error::Conflict(message)) if message.contains("future")
+        ));
         Ok(())
     }
 }
