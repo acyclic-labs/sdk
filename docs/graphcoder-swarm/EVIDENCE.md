@@ -1,6 +1,6 @@
 # Qualification evidence index
 
-[Local model-option preflight](checkpoint-local-option-preflight-2026-10-04.json) records 8/8 real-storage local regressions, 18/18 prepared-input regressions, and 4/4 model wire contracts at `229b22276`. Denied options create no local session storage. This does not qualify swarm entrypoints, policy-aware persisted forks, or final artifacts.
+[Local model-option preflight](checkpoint-local-option-preflight-2026-10-04.json) records 8/8 real-storage local regressions, 18/18 prepared-input regressions, and 4/4 model wire contracts at `229b22276`, plus 6/6 swarm module tests at `d5739ee67`. Denied options create no local session storage, swarm providers or recursive volumes. This does not qualify policy-aware persisted forks, the full recursive swarm/fault matrix, or final artifacts.
 
 [Local composition and uncertainty claim](checkpoint-local-composition-claim-2026-10-04.json) records the initial 6/7 failing real-storage run and subsequent 7/7 pass at `f2a02e1dc`, preserving the failing executable/log and exact source/artifact digests. Full recovery and swarm qualification remain separate.
 

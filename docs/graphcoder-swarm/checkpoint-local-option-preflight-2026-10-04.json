@@ -53,9 +53,27 @@
     "Existing real LocalStream/Filesystem claim, cancellation, history overflow and reopen regressions still pass",
     "Prepared input and default provider admission use one option-policy validator, preserving registered identity/schema binding and immutable-prefix checks"
   ],
+  "swarm_followup": {
+    "source_commit": "d5739ee67d20ec55b2d4df3faba329c64e6514be",
+    "rust_tree_before_and_after": "1a34d55d2405badf9a8fc87f1e43c917a5914f5e",
+    "source_and_suite": {"path": "rust/crates/harness/src/filesystem/swarm_local.rs", "sha256": "6e050ce02e2d000f187eb12e362173904a5ae96d08315b1c0eb2e3fa27ac32b1"},
+    "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --lib filesystem::swarm_local::tests --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+    "environment": {"CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0"},
+    "process_session": 10498,
+    "exit_code": 0,
+    "passed": 6,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 321,
+    "build_duration_seconds": 187,
+    "test_duration_seconds": 1.57,
+    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/d5739ee67/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "0c5f9f0b2ef6c718d52453a5b3a48f378aeb570fb9db129c5f058749087661ec"},
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/d5739ee67/swarm-option-preflight.log", "sha256": "a2437a834a51992562db6c96fd98e2c9c621cca4fb9360a2ec46d5e6b7eb98ce"},
+    "verified": "Both ordinary and recursive public swarm construction reject undeclared options before any provider directory or volume is created; existing operator, authenticated wait, seedless-fork rejection and recursive constructor reopen cases pass"
+  },
   "boundaries": [
     "Four deepest PersistentLocalHarness constructors are preflighted; direct entrypoint coverage beyond open is source review rather than separate black-box cases",
-    "Swarm entrypoint preflight follow-up d5739ee67 has a separate running qualification and is not qualified by this artifact",
+    "Swarm follow-up has its own source-bound artifact; six module tests do not qualify the full recursive model-driven swarm or fault suite",
     "Policy-aware persisted fork verification for valid nonempty options remains a separate unmet contract",
     "No full recursive swarm, complete fault matrix, sandbox, root writeback or packaged qualification is claimed"
   ]

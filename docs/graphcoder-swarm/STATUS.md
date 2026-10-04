@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Local and swarm construction now share request admission's model-option validator before durable effects. Source-bound runs pass 8/8 local, 18/18 input and 4/4 wire regressions at `229b22276`, plus 6/6 swarm module tests at `d5739ee67`. Both ordinary and recursive swarm denial leave no provider directory or volume. [Scoped evidence](checkpoint-local-option-preflight-2026-10-04.json) does not close the full recursive swarm/fault matrix or the separate valid nonempty-policy fork-verification gap.
+
 Shared durable-local composition and terminal uncertainty claim ordering now pass 7/7 existing real-storage regressions at `f2a02e1dc`. The earlier 6/7 failure is preserved in [local composition/claim evidence](checkpoint-local-composition-claim-2026-10-04.json). Historical pending records no longer mask a verified terminal Unknown outcome; no-rerun fences remain enforced. This does not qualify the full effect or recursive swarm matrix.
 
 Integrated immutable execution-fence repair passes 19/19 existing host execution tests on Rust tree `e3d9a3c39ca21684b5e9e29b38c96fdae94c63ef`, including substituted Unknown-receipt rejection and actual Windows subprocess checks. [Scoped evidence](checkpoint-integrated-uncertain-replay-fence-2026-10-04.json) excludes held cleanup/reaper changes, local-provider recovery and the full fault matrix.
