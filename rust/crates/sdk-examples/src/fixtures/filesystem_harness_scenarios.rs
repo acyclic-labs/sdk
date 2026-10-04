@@ -805,6 +805,8 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
         ..Default::default()
     };
     let observed = backend.observe(observe.clone()).await?;
+    state.insert("observed_state_code", observed.state.to_string());
+    state.insert("observed_revision", observed.revision.to_string());
     output.push(evidence(
         "harness",
         "Observe",
@@ -823,6 +825,10 @@ async fn export_harness() -> Result<Vec<Value>, acyclic_harness::Error> {
         ..Default::default()
     };
     let cancelled = backend.cancel(cancel.clone()).await?;
+    if let Some(status) = cancelled.status.as_ref() {
+        state.insert("cancelled_state_code", status.state.to_string());
+        state.insert("cancelled_revision", status.revision.to_string());
+    }
     output.push(evidence(
         "harness",
         "Cancel",
@@ -951,5 +957,15 @@ mod tests {
             .expect("harness cancel evidence");
         assert_eq!(harness_cancel["state"]["operation_id"], "fixture-op");
         assert_eq!(harness_cancel["state"]["authority"], "task:fixture");
+        assert_eq!(
+            harness_cancel["state"]["observed_state_code"],
+            (acyclic_harness::wire::CompletionState::Succeeded as i32).to_string()
+        );
+        assert_eq!(harness_cancel["state"]["observed_revision"], "1");
+        assert_eq!(
+            harness_cancel["state"]["cancelled_state_code"],
+            (acyclic_harness::wire::CompletionState::Cancelled as i32).to_string()
+        );
+        assert_eq!(harness_cancel["state"]["cancelled_revision"], "2");
     }
 }
