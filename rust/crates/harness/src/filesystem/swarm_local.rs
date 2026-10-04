@@ -4489,6 +4489,11 @@ async fn load_records_range(
         }
         decoded.push(value);
     }
+    if expected_sequence != tail {
+        return Err(Error::Conflict(
+            "local swarm registry range ended before its observed tail".into(),
+        ));
+    }
     Ok(decoded)
 }
 
@@ -5093,6 +5098,38 @@ mod tests {
             waits.completed.lock().expect("wait store lock").as_slice(),
             &[crate::communication::WaitCompletion::Deadline]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn registry_range_rejects_a_missing_record_before_the_pinned_tail() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            Model::new("mock", "local-swarm", "1", json!({}))?,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let tail = registry
+            .tail()
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(load_records_range(&registry, 0, tail).await?.len() as u64, tail);
+        for from in [0, tail] {
+            let error = load_records_range(&registry, from, tail + 1)
+                .await
+                .expect_err("an incomplete registry page must not become a projection");
+            assert!(matches!(error, Error::Conflict(ref reason)
+                if reason == "local swarm registry range ended before its observed tail"));
+        }
         Ok(())
     }
 
