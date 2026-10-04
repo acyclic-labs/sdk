@@ -4,6 +4,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At source `173cb1b85`, 12 Windows native exact-input tests pass with no ignored cases, including the physical corruption/deletion test enabled by `test-support`. These capture serialized provider requests and exercise generation-pinned content, explicit limits, schema denials and restart replay. See [source, suite and artifact evidence](checkpoint-exact-input-native-2026-10-04.json). Full recursive coordinator, WASM and installed qualification remain separate gates.
+
 At source `1953894ae`, the two Windows native owned/shared crash-atomic regressions pass with no ignored cases after hidden subprocess launch and intentional crash termination changes. Test execution takes 14.99 seconds. See [focused source, log and executable evidence](checkpoint-hidden-crash-atomic-native-2026-10-04.json). This does not qualify the full Filesystem matrix or the Harness swarm.
 
 At source `4ba8293a9`, all 353 Windows native Harness library tests pass with no ignored cases. The recursive production swarm fails on a missing exact read capability for an inherited staged file. The separate fault suite passes 2/5: two cases observe three provider dispatches instead of two, and cold fork-intent recovery duplicates completion text. See [source, suite, log and executable evidence](checkpoint-integrated-fork-native-2026-10-04.json). These failures remain acceptance blockers; library results do not qualify production orchestration.
