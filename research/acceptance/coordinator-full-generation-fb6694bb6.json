@@ -1,6 +1,6 @@
 {
   "schema": "acyclic.sdk.coordinator-run.v1",
-  "recorded_at": "2026-10-04T07:02:42.4549349+01:00",
+  "recorded_at": "2026-10-04T06:42:27.357Z",
   "goal_status": "active",
   "redirects": "removed",
   "source_revision": "fb6694bb624be8713638568b7622067ec3e3fbf4",
@@ -8,7 +8,7 @@
   "source_capture": "independent detached depth-one Git fetch",
   "source_clean_at_launch": true,
   "output": "Q:\\sdk\\work\\rust-generation-full-output-fb6694bb6",
-  "run_status": "running",
+  "run_status": "failed",
   "session_id": 82432,
   "cargo_jobs": 2,
   "compiler_cache": "Q:\\sdk\\work\\rust-generation-full-target-64d4d7a2a",
@@ -36,10 +36,25 @@
       "reason": "committed standalone Cargo.lock requires update under --locked",
       "owner": "examples_resume",
       "stage": "sdk-examples"
+    },
+    {
+      "stage": "source-immutability",
+      "reason": "Five portable policy producers modified tracked source files",
+      "owner": "generation_resume"
+    },
+    {
+      "stage": "sdk-docs-rustdoc/wasm-bindings",
+      "reason": "Stream MemoryStream async_trait Send futures disagree with the WASM trait",
+      "owner": "embedded_resume"
+    },
+    {
+      "stage": "sdk-language-producer-csharp",
+      "reason": "Pinned dotnet host cannot resolve an installed SDK for pack",
+      "owner": "jvm_resume"
     }
   ],
   "next_required_results": [
-    "full generation manifest and terminal exit",
+    "successful corrected clean source generation and drift check",
     "all snippet installed-consumer executions",
     "central remote receipt integration",
     "source-aligned complete docs bundle",
@@ -49,5 +64,25 @@
   "all_subagent_slots_active": 16,
   "merged_main": false,
   "published": false,
-  "deployed_production": false
+  "deployed_production": false,
+  "exit_code": 1,
+  "terminal_receipt": {
+    "source_revision": "fb6694bb624be8713638568b7622067ec3e3fbf4",
+    "finished_at": "2026-10-04T07:38:50.9092843+01:00",
+    "source_root": "Q:\\sdk\\work\\rust-generation-checkout-fb6694bb6",
+    "exit_code": 1,
+    "output": "Q:\\sdk\\work\\rust-generation-full-output-fb6694bb6"
+  },
+  "source_changes": [
+    "M dart/lib/src/generated_remote_policy.dart",
+    " M dotnet/GeneratedRemotePolicy.cs",
+    " M jvm/src/main/java/dev/acyclic/transport/GeneratedRemotePolicy.java",
+    " M php/src/Acyclic/Runtime/GeneratedRemotePolicy.php",
+    " M ruby/lib/acyclic_sdk/generated_remote_policy.rb"
+  ],
+  "integrated_fixes": {
+    "examples_lock": "31b8591cd0e95cec8f5994462cb4dba1e0f9ad4c",
+    "producer_order": "2689c787f",
+    "rust_rpc_inventory": "f599f380bf26a2210993cd6d548ed480715ab5ee"
+  }
 }
