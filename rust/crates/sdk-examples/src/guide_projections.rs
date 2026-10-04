@@ -238,10 +238,12 @@ fn lower_camel(value: &str) -> String {
 /// The request values are the same stable identities used by the Rust fixture.
 /// Embedded behavior remains in the Rust projection, which calls the native
 /// provider APIs in the source scenario.
-pub fn project(scenario_id: &str, language: Language) -> Option<GuideProjection> {
+pub fn project(scenario_id: &'static str, language: Language) -> Option<GuideProjection> {
     let (_, family, source) = GUIDE_PROJECTION_SCENARIOS
         .iter()
         .find(|(id, _, _)| *id == scenario_id)?;
+    let family = *family;
+    let source = *source;
     let (module, version) = package_module(family)?;
     let (service, method, request, operation) = remote_operation(family)?;
     let package_type = package_type(module)?;
