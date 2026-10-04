@@ -1524,7 +1524,8 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
             root_attachments.clone(),
             3,
         )
-        .await?;
+        .await
+        .map_err(|error| Error::Storage(format!("initial root conversation failed: {error}")))?;
     assert_eq!(output.text, " \nα🦀\t retained\nfinal only");
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
     let (root_requests, root_serialized, root_bindings) = root_model.evidence()?;
@@ -1546,7 +1547,8 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
     }
     let boundary = storage
         .completed_model_boundary(operation, 0, limits)
-        .await?
+        .await
+        .map_err(|error| Error::Storage(format!("completed root boundary failed: {error}")))?
         .ok_or_else(|| Error::Storage("test completed boundary missing".into()))?;
     assert_eq!(boundary.rejection_evidence.len(), 1);
     assert_eq!(boundary.rejection_evidence[0].call_id, "invalid");
@@ -1611,7 +1613,8 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
     }
     storage
         .run_conversation(&bundle, operation, input, root_attachments.clone(), 3)
-        .await?;
+        .await
+        .map_err(|error| Error::Storage(format!("completed root replay failed: {error}")))?;
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
     let next_operation = OperationId::from_bytes([3; 16]);
     let next_input = storage
@@ -1625,7 +1628,8 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         .await?;
     storage
         .run_conversation(&bundle, next_operation, next_input.clone(), Vec::new(), 3)
-        .await?;
+        .await
+        .map_err(|error| Error::Storage(format!("follow-up root conversation failed: {error}")))?;
     let requests = root_model
         .requests
         .lock()
