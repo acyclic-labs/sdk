@@ -36,7 +36,7 @@
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification.",
+      "evidence": "Root locked default wasm32 Actors and Workers checks passed at49d0b301, native tests Actors2/Workers5 passed. Root independently checked default Stream wasm32 exit0 on2026-10-04. Combined remaining6family wasm check failed native mio/getrandom dependencies in Objects/Machines/Inference; complete seamless remote and embedded platform qualification remains outstanding. Hosted39bac2d single Windows x64 release native build/upload succeeded; other7matrix jobs skipped build and cannot qualify their RIDs. Signed0e253465 adds Rust-owned bounded handshake response validation against exact archived identity and required capability versions; six focused control tests pass. Endpoint registration and seamless adapter selection still require implementation and runtime verification. Coordinator ec5a603545b602650333b3984bff4f585da3b015 adds Actors/Workers authenticated pre-operation control negotiation and generated runtime backend dispatch. Actual locked default native and wasm32 builds pass for both crates; three live HTTP tests verify selected HTTP, authenticated application dispatch, and terminal archive substitution rejection. Native/browser request deadlines compile. Authenticated gRPC fixture integration and all other family runtime defaults remain outstanding.",
       "state": "partial"
     },
     {
@@ -141,5 +141,28 @@
     },
     "application_rpc_count": 106,
     "remaining": "Authenticated endpoint registration, actual facade negotiation, full clean generation and downstream qualification."
+  },
+  "latest_transport_runtime_iteration": {
+    "status": "incomplete",
+    "commit": "ec5a603545b602650333b3984bff4f585da3b015",
+    "signature": "verified-good-ssh",
+    "native_default_builds": [
+      "actors",
+      "workers"
+    ],
+    "wasm32_default_builds": [
+      "actors",
+      "workers"
+    ],
+    "http_runtime_tests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "source_of_control_bindings": "Rust control descriptor through maintained prost/tonic",
+    "remaining": [
+      "authenticated gRPC fixture and native selection runtime proof",
+      "remaining family seamless native/browser integration",
+      "full frozen generation and all language/package/snippet qualification"
+    ]
   }
 }
