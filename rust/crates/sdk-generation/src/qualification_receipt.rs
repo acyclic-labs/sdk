@@ -230,6 +230,70 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 "scenario {family}/{rpc} did not prove Rust identity preservation"
             ));
         }
+        let observations = semantic
+            .get("observations")
+            .and_then(Value::as_object)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no structured observations"))?;
+        let identity_pairs = observations
+            .get("identity_pairs")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no identity observations"))?;
+        for pair in identity_pairs {
+            let pair = pair
+                .as_object()
+                .ok_or_else(|| format!("scenario {family}/{rpc} has an invalid identity observation"))?;
+            let request_value = nonempty_string(pair, "request")?;
+            let response_value = nonempty_string(pair, "response")?;
+            if request_value != response_value {
+                return Err(format!(
+                    "scenario {family}/{rpc} identity field {} changed from request to response",
+                    nonempty_string(pair, "field")?
+                ));
+            }
+        }
+        if authority_shape.response_rules.iter().any(|rule| rule.contains("identity"))
+            && identity_pairs.is_empty()
+        {
+            return Err(format!("scenario {family}/{rpc} has no Rust identity pair"));
+        }
+        let cursor_trace = observations
+            .get("cursor_trace")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no cursor trace"))?;
+        let mut previous_cursor = None;
+        for cursor in cursor_trace {
+            let cursor = cursor
+                .as_u64()
+                .ok_or_else(|| format!("scenario {family}/{rpc} has a non-integer cursor observation"))?;
+            if previous_cursor.is_some_and(|previous| cursor < previous) {
+                return Err(format!("scenario {family}/{rpc} cursor trace is not monotonic"));
+            }
+            previous_cursor = Some(cursor);
+        }
+        if authority_shape.response_rules.iter().any(|rule| rule.contains("cursor"))
+            && cursor_trace.is_empty()
+        {
+            return Err(format!("scenario {family}/{rpc} has no Rust cursor observation"));
+        }
+        let status_trace = observations
+            .get("status_trace")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no status trace"))?;
+        for status in status_trace {
+            if status.as_str().is_none_or(str::is_empty) {
+                return Err(format!("scenario {family}/{rpc} has an empty status observation"));
+            }
+        }
+        if authority_shape.response_rules.iter().any(|rule| {
+            rule.contains("status") || rule.contains("terminal") || rule.contains("outcome")
+        }) && status_trace.is_empty()
+        {
+            return Err(format!("scenario {family}/{rpc} has no Rust status observation"));
+        }
+        let transitions = observations
+            .get("transitions")
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("scenario {family}/{rpc} has no lifecycle transitions"))?;
         let transport = nonempty_string(&result, "transport")?;
         if !matches!(transport.as_str(), "grpc" | "http" | "http-json" | "grpc-web") {
             return Err(format!("scenario {family}/{rpc} has an unknown transport"));
@@ -262,6 +326,20 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             || !check_set.contains("serialization")
         {
             return Err(format!("scenario {family}/{rpc} lacks invocation or transport evidence"));
+        }
+        for required_transition in ["cancellation", "recovery"] {
+            if check_set.contains(required_transition)
+                && !transitions.iter().any(|transition| {
+                    transition
+                        .get("kind")
+                        .and_then(Value::as_str)
+                        == Some(required_transition)
+                })
+            {
+                return Err(format!(
+                    "scenario {family}/{rpc} claims {required_transition} without a Rust lifecycle transition"
+                ));
+            }
         }
         if !seen.insert((family.clone(), rpc.clone())) {
             return Err(format!("scenario {family}/{rpc} is duplicated"));
@@ -718,6 +796,54 @@ mod tests {
         cleanup(&output);
     }
 
+    #[test]
+    fn receipt_writer_rejects_identity_value_drift() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["identity_pairs"][0]["response"] = json!("wrong-actor");
+        });
+        let error = write(&options).expect_err("identity value drift must fail closed");
+        assert!(error.contains("identity field actor_id changed"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_non_monotonic_cursor_trace() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["cursor_trace"] = json!([2, 1]);
+        });
+        let error = write(&options).expect_err("cursor regression must fail closed");
+        assert!(error.contains("cursor trace is not monotonic"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_empty_status_observation() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["observations"]["status_trace"] = json!([""]);
+        });
+        let error = write(&options).expect_err("empty status observation must fail closed");
+        assert!(error.contains("empty status observation"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
+    fn receipt_writer_rejects_unproven_cancellation_claim() {
+        let (root, output, options) = fixture(false, false, false);
+        mutate_scenario(&output, |scenario| {
+            scenario["checks"].as_array_mut().unwrap().push(json!("cancellation"));
+        });
+        let error = write(&options).expect_err("cancellation needs a lifecycle transition");
+        assert!(error.contains("claims cancellation without a Rust lifecycle transition"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
     fn fixture(missing_rpc: bool, in_process: bool, rpc_error: bool) -> (PathBuf, PathBuf, Options) {
         let root = env::temp_dir().join(format!(
             "acyclic-sdk-receipt-helper-{}-{}-{}",
@@ -740,7 +866,7 @@ mod tests {
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false},"checks":["invocation","transport","receiver-response","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","rpc_outcome":{"status":"ok","code":0,"response_count":1},"semantic_evidence":{"response_type":"acyclic.actors.v1.CreateActorResponse","present_fields":["actor"],"checked_rules":[],"rule_results":{},"identity_matches":false,"observations":{"identity_pairs":[{"field":"actor_id","request":"fixture-actor","response":"fixture-actor"}],"cursor_trace":[1,2],"status_trace":["ok"],"transitions":[]}},"checks":["invocation","transport","receiver-response","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let outcome = if rpc_error {
             r#"{"status":"ok","code":12,"response_count":0}"#

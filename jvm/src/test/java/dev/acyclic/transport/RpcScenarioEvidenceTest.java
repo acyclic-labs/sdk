@@ -325,13 +325,25 @@ final class RpcScenarioEvidenceTest {
     // fixture never exercised the Rust wire contract.
     boolean identityMatches = true;
     Map<String, Boolean> ruleResults = new LinkedHashMap<>();
+    List<IdentityPair> identityPairs = new ArrayList<>();
+    List<Long> cursorTrace = new ArrayList<>();
+    List<String> statusTrace = new ArrayList<>();
     boolean hasIdentityRule = expectation.responseRules().stream().anyMatch(rule -> rule.contains("identity"));
     if (expectation.allowEmptyResponse()) {
       for (String rule : expectation.responseRules()) ruleResults.put(rule, true);
-      return new ResponseObservation(descriptor.getFullName(), presentFields, expectation.responseRules(), ruleResults, true);
+      return new ResponseObservation(descriptor.getFullName(), presentFields, expectation.responseRules(), ruleResults,
+          identityPairs, cursorTrace, statusTrace, true);
     }
     if (presentFields.isEmpty() || message.getSerializedSize() == 0) {
       throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
+    }
+    for (var entry : message.getAllFields().entrySet()) {
+      String name = entry.getKey().getJsonName();
+      Object value = entry.getValue();
+      if (name.equals("cursor") && value instanceof Number number) cursorTrace.add(number.longValue());
+      if (name.equals("status") || name.equals("state") || name.equals("terminal")) {
+        statusTrace.add(String.valueOf(value));
+      }
     }
     for (String rule : expectation.responseRules()) {
       if (rule.endsWith("terminal.required")) requireResponseField(message, rpc, "terminal");
@@ -340,13 +352,13 @@ final class RpcScenarioEvidenceTest {
         if (!(request instanceof Message requestMessage) || requestMessage.getAllFields().isEmpty()) {
           throw new AssertionError(rpc + " requires a populated Rust request for identity validation");
         }
-        assertMatchingIdentityFields(requestMessage, message, rpc);
+        identityPairs.addAll(assertMatchingIdentityFields(requestMessage, message, rpc));
       }
       if (rule.contains("identity")) identityMatches = true;
       ruleResults.put(rule, true);
     }
     return new ResponseObservation(descriptor.getFullName(), presentFields, expectation.responseRules(), ruleResults,
-        !hasIdentityRule || identityMatches);
+        identityPairs, cursorTrace, statusTrace, !hasIdentityRule || identityMatches);
   }
 
   private static void requireResponseField(Message response, String rpc, String name) {
@@ -357,8 +369,9 @@ final class RpcScenarioEvidenceTest {
     }
   }
 
-  private static void assertMatchingIdentityFields(Message request, Message response, String rpc) {
+  private static List<IdentityPair> assertMatchingIdentityFields(Message request, Message response, String rpc) {
     boolean matched = false;
+    List<IdentityPair> pairs = new ArrayList<>();
     for (var entry : request.getAllFields().entrySet()) {
       var requestField = entry.getKey();
       var responseField = response.getDescriptorForType().findFieldByName(requestField.getName());
@@ -371,10 +384,13 @@ final class RpcScenarioEvidenceTest {
           || !response.getField(responseField).equals(entry.getValue())) {
         throw new AssertionError(rpc + " changed Rust identity field " + requestField.getJsonName());
       }
+      pairs.add(new IdentityPair(requestField.getJsonName(), String.valueOf(entry.getValue()),
+          String.valueOf(response.getField(responseField))));
     }
     if (!matched) {
       throw new AssertionError(rpc + " has an identity rule but no request identity field was echoed");
     }
+    return pairs;
   }
 
   private static String toSnakeCase(String value) {
@@ -479,8 +495,11 @@ final class RpcScenarioEvidenceTest {
 
   private record InvocationResult(int responseCount, ResponseObservation semantic) {}
 
+  private record IdentityPair(String field, String request, String response) {}
+
   private record ResponseObservation(String responseType, List<String> presentFields,
-      List<String> checkedRules, Map<String, Boolean> ruleResults, boolean identityMatches) {}
+      List<String> checkedRules, Map<String, Boolean> ruleResults, List<IdentityPair> identityPairs,
+      List<Long> cursorTrace, List<String> statusTrace, boolean identityMatches) {}
 
   private record Scenario(String revision, String family, String rpc, String shape,
       String executionMode, int responseCount, ResponseObservation semantic) {
@@ -496,7 +515,10 @@ final class RpcScenarioEvidenceTest {
           + stringArray(semantic.presentFields()) + ",\"checked_rules\":"
           + stringArray(semantic.checkedRules()) + ",\"rule_results\":"
           + booleanMap(semantic.ruleResults()) + ",\"identity_matches\":"
-          + semantic.identityMatches() + "},"
+          + semantic.identityMatches() + ",\"observations\":{\"identity_pairs\":"
+          + identityPairs(semantic.identityPairs()) + ",\"cursor_trace\":"
+          + longArray(semantic.cursorTrace()) + ",\"status_trace\":"
+          + stringArray(semantic.statusTrace()) + ",\"transitions\":[]}},"
           + "\"checks\":[\"invocation\",\"transport\",\"receiver-response\",\"serialization\"]}\n";
     }
   }
@@ -509,6 +531,26 @@ final class RpcScenarioEvidenceTest {
       result.append('"').append(json(entry.getKey())).append("\":").append(entry.getValue());
     }
     return result.append('}').toString();
+  }
+
+  private static String identityPairs(List<IdentityPair> values) {
+    StringBuilder result = new StringBuilder("[");
+    for (int index = 0; index < values.size(); index++) {
+      if (index > 0) result.append(',');
+      IdentityPair pair = values.get(index);
+      result.append("{\"field\":\"").append(json(pair.field())).append("\",\"request\":\"")
+          .append(json(pair.request())).append("\",\"response\":\"").append(json(pair.response())).append("\"}");
+    }
+    return result.append(']').toString();
+  }
+
+  private static String longArray(List<Long> values) {
+    StringBuilder result = new StringBuilder("[");
+    for (int index = 0; index < values.size(); index++) {
+      if (index > 0) result.append(',');
+      result.append(values.get(index));
+    }
+    return result.append(']').toString();
   }
 
   private static String stringArray(List<String> values) {
