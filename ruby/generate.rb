@@ -91,6 +91,29 @@ run!([
   *schema_names
 ])
 
+rust_family_goldens = nil
+if manifest_path
+  fixture_source = File.join(schema_roots.fetch(0), "rust-family-goldens.json")
+  abort "Rust-owned fixture missing: #{fixture_source}" unless File.file?(fixture_source)
+
+  fixture_bytes = File.binread(fixture_source)
+  fixture = JSON.parse(fixture_bytes)
+  abort "Rust-owned fixture must contain nine family goldens" unless fixture.is_a?(Array) && fixture.length == 9
+
+  manifest_sha256 = Digest::SHA256.file(manifest_path).hexdigest
+  unless fixture.all? { |entry| entry.is_a?(Hash) && entry["authority_manifest_sha256"] == manifest_sha256 }
+    abort "Rust-owned fixture is bound to a different authority manifest"
+  end
+
+  fixture_destination = File.join(__dir__, "test", "fixtures", "rust-family-goldens.json")
+  FileUtils.mkdir_p(File.dirname(fixture_destination))
+  File.binwrite(fixture_destination, fixture_bytes)
+  rust_family_goldens = {
+    "path" => "test/fixtures/rust-family-goldens.json",
+    "sha256" => Digest::SHA256.hexdigest(fixture_bytes)
+  }
+end
+
 root_prefix = "#{ROOT.tr('\\', '/')}/"
 lock_path = File.join(__dir__, "generator.lock.json")
 provenance = {
@@ -104,6 +127,7 @@ provenance = {
   "authority_manifest_schema" => authority && authority["schema"],
   "authority_source_revision" => authority && authority["source_revision"],
   "authority_exporter" => authority && authority["exporter"],
+  "rust_family_goldens" => rust_family_goldens,
   "generated_files" => Dir[File.join(OUT, "**", "*.rb")].sort.map { |path| path.tr('\\', '/').delete_prefix(root_prefix) }
 }
 File.write(File.join(OUT, "provenance.json"), JSON.pretty_generate(provenance) + "\n")
