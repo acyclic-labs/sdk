@@ -12,8 +12,10 @@ use futures::StreamExt;
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio_stream::iter;
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_stream::{iter, wrappers::TcpListenerStream};
 use tonic::{Request, Status};
+use tonic::transport::Server;
 
 use acyclic_fs::wire::filesystem::v2 as fs_wire;
 use acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemService;
@@ -162,7 +164,7 @@ fn head_ref(workspace: &fs_wire::Workspace) -> Result<fs_wire::GenerationRef, St
 
 async fn export_filesystem<S>(service: S) -> Result<Vec<Value>, Status>
 where
-    S: FilesystemService + Clone,
+    S: FilesystemService + Clone + Send + Sync + 'static,
 {
     let mut output = Vec::new();
     let mut state = BTreeMap::new();
@@ -579,9 +581,31 @@ where
         terminal: true,
     };
     let import_request_bytes = import_chunk.encode_to_vec();
-    let import_result = service
-        .import(Request::new(iter(vec![Ok(import_chunk.clone())])))
-        .await;
+    // The generated server trait accepts tonic::Streaming, so exercise this
+    // client-stream operation through the generated client over an in-process
+    // loopback listener. This keeps the request typed while avoiding a second
+    // hand-written stream adapter in the fixture.
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .map_err(|error| Status::internal(format!("bind import fixture: {error}")))?;
+    let address = listener
+        .local_addr()
+        .map_err(|error| Status::internal(format!("read import fixture address: {error}")))?;
+    let incoming = TcpListenerStream::new(listener);
+    let server = acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(service.clone());
+    let server_task: JoinHandle<Result<(), tonic::transport::Error>> = tokio::spawn(async move {
+        Server::builder()
+            .add_service(server)
+            .serve_with_incoming(incoming)
+            .await
+    });
+    let mut client = acyclic_fs::wire::filesystem::v2::filesystem_service_client::FilesystemServiceClient::connect(
+        format!("http://{address}"),
+    )
+    .await
+    .map_err(|error| Status::internal(format!("connect import fixture: {error}")))?;
+    let import_result = client.import(iter(vec![import_chunk.clone()])).await;
+    server_task.abort();
     match import_result {
         Ok(response) => {
             let response = response.into_inner();
