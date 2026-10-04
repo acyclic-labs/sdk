@@ -1117,6 +1117,83 @@ impl LocalModelForkPlans {
         Ok(plans)
     }
 
+    /// Reconstructs one already admitted child activation from the owner
+    /// bindings retained by this plan index. The durable request and report
+    /// are the authority here: resolver recovery may only reproduce the
+    /// issuer/host services for that exact child, and must never allocate a
+    /// replacement report or derive a new child boundary.
+    async fn recover_plan(
+        &self,
+        request: &LocalForkRequest,
+        report: &ForkReport,
+        publication: &ModelBatchPublication,
+        declaration: &LocalInheritedModelDeclaration,
+    ) -> Result<LocalModelForkPlan> {
+        self.refresh_intents_from_journal().await?;
+        let fork_operation = request.fork_operation.ok_or_else(|| {
+            Error::Conflict("durable activating child request has no fork operation".into())
+        })?;
+        let key = (fork_operation, request.child_operation);
+        if let Some(plan) = self.plans.lock().await.get(&key).cloned() {
+            plan.validate()?;
+            if plan.publication_operation != publication.operation_id
+                || plan.request != *request
+                || plan.report != *report
+                || plan.declaration != *declaration
+            {
+                return Err(Error::Conflict(
+                    "live fork plan differs from the durable activation binding".into(),
+                ));
+            }
+            return Ok(plan);
+        }
+        let intent = self
+            .intents
+            .lock()
+            .await
+            .values()
+            .find(|intent| {
+                intent.parent == request.parent
+                    && intent.parent_operation == request.parent_operation
+                    && intent.parent_step == request.parent_step
+                    && intent.publication_operation == Some(publication.operation_id)
+                    && intent.fork_operation == fork_operation
+                    && intent.child_operation == request.child_operation
+                    && intent.task == request.task
+                    && intent.prompt == request.prompt
+            })
+            .cloned()
+            .ok_or_else(|| {
+                Error::Conflict(
+                    "activating child has no durable model fork intent for its publication".into(),
+                )
+            })?;
+        if let Some(resolver) = self.resolver.as_ref()
+            && let Some(expected) = resolver.issuer_binding_digest()
+            && self.issuer_bindings.lock().await.get(&key) != Some(&expected)
+        {
+            return Err(Error::Conflict(
+                "durable model fork issuer binding does not match the owner secret".into(),
+            ));
+        }
+        let resolver = self.resolver.clone().ok_or_else(|| {
+            Error::Unsupported("local model fork resolver is not bound".into())
+        })?;
+        let plan = resolver.resolve(intent, publication.clone()).await?;
+        plan.validate()?;
+        if plan.publication_operation != publication.operation_id
+            || plan.request != *request
+            || plan.report != *report
+            || plan.declaration != *declaration
+        {
+            return Err(Error::Conflict(
+                "reconstructed fork plan differs from the durable activation binding".into(),
+            ));
+        }
+        self.register(plan.clone()).await?;
+        Ok(plan)
+    }
+
     /// Registers one exact prepared report before a model turn begins.
     pub async fn register(&self, plan: LocalModelForkPlan) -> Result<()> {
         plan.validate()?;
@@ -3022,6 +3099,12 @@ impl PersistentLocalSwarm {
         self.verify_admitted_task(request.parent, parent_session.parent)
             .await?;
         let child = TaskId::from_bytes(request.child_operation.into_bytes());
+        // Recovery and publication can arrive through independent handles.
+        // Fence the complete activation, including model dispatch, so a
+        // second owner reconciles the first terminal result instead of
+        // creating a duplicate child turn.
+        let gate = self.task_gate(child).await;
+        let _activation_guard = gate.lock().await;
         if let Some(existing) = self.requests.lock().await.get(&child)
             && existing != &request
         {
@@ -3982,14 +4065,108 @@ impl PersistentLocalSwarm {
 
     /// Replays the exact admitted request after a process interruption.
     pub async fn retry(&self, task: TaskId) -> Result<LocalForkOutcome> {
+        self.recover_activation(task).await
+    }
+
+    /// Recovers one admitted child activation from the durable task identity.
+    ///
+    /// All owner services stay in the swarm composition. Recovery reloads the
+    /// original request, seed, report, publication, declaration, and issuer
+    /// binding, then reuses the typed spawn/activate path. A caller cannot
+    /// supply a replacement authority, workspace, prefix, or provider
+    /// service.
+    pub async fn recover_activation(&self, task: TaskId) -> Result<LocalForkOutcome> {
+        self.refresh_registry_state().await?;
+        let session = self.session(task).await?;
+        if session.phase == LocalSessionPhase::Completed {
+            return Ok(LocalForkOutcome {
+                child: task,
+                operation: session.operation.ok_or_else(|| {
+                    Error::Conflict("completed local child has no operation binding".into())
+                })?,
+                output: self.outcome(task).await?,
+            });
+        }
+        if session.phase == LocalSessionPhase::Cancelled {
+            return Err(Error::Conflict(
+                "cancelled child operation is terminal and cannot be resurrected".into(),
+            ));
+        }
+        if let LocalSessionPhase::Failed(reason) = &session.phase {
+            return Err(Error::Conflict(format!(
+                "failed child operation is terminal and cannot be resurrected: {reason}"
+            )));
+        }
+        if session.phase != LocalSessionPhase::Activating {
+            return Err(Error::Conflict(
+                "activation recovery requires a durably activating child".into(),
+            ));
+        }
         let request = self
             .requests
             .lock()
             .await
             .get(&task)
             .cloned()
-            .ok_or_else(|| Error::NotFound(format!("local swarm fork request {task}")))?;
-        self.fork(request).await
+            .ok_or_else(|| Error::Conflict("activating child has no durable fork request".into()))?;
+        let seed = self
+            .seeds
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("activating child has no durable fork seed".into()))?;
+        let report = self
+            .reports
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::Conflict("activating child has no durable fork report".into()))?;
+        let publication = self
+            .publications
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Conflict("activating child has no durable model publication".into())
+            })?;
+        let declaration = self
+            .declarations
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| {
+                Error::Conflict("activating child has no durable recursive declaration".into())
+            })?;
+        let plans = self.bindings.model_fork_plans.as_ref().ok_or_else(|| {
+            Error::Conflict("activating child has no retained owner fork services".into())
+        })?;
+        let plan = plans
+            .recover_plan(&request, &report, &publication, &declaration)
+            .await?;
+        let recovered_seed = report.clone().into_seed()?;
+        if recovered_seed != seed {
+            return Err(Error::Conflict(
+                "durable activating child seed differs from its fork report".into(),
+            ));
+        }
+        let parent = self.open_session(request.parent).await?;
+        let parent_aggregate = parent
+            .storage()
+            .conversation_aggregate(self.config.limits)
+            .await?;
+        self.activate_published_child(
+            request,
+            plan.host,
+            plan.stream,
+            plan.issuer,
+            &parent_aggregate,
+            &seed,
+        )
+        .await
     }
 
     /// Replays a typed child activation after interruption, preserving the
