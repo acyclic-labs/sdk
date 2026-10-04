@@ -132,8 +132,8 @@ text = re.sub(r'\.package\(\s*url: "https://github.com/grpc/grpc-swift-2\.git",\
 text = re.sub(r'\.package\(\s*url: "https://github.com/apple/swift-protobuf\.git",\s*from: "[^"]+",\s*traits: \[\]\s*\)', f'.package(path: "{sys.argv[3]}")', text, count=1)
 manifest.write_text(text)
 PY
-    swift build --package-path "$swift_protobuf_source" -c release --product protoc-gen-swift
-    swift build --package-path "$grpc_swift_protobuf_source" -c release --product protoc-gen-grpc-swift-2
+    python3 "${GITHUB_WORKSPACE:-.}/scripts/run-swift-sanitized.py" swift build --package-path "$swift_protobuf_source" -c release --product protoc-gen-swift
+    python3 "${GITHUB_WORKSPACE:-.}/scripts/run-swift-sanitized.py" swift build --package-path "$grpc_swift_protobuf_source" -c release --product protoc-gen-grpc-swift-2
     swift_plugin="$swift_protobuf_source/.build/release/protoc-gen-swift"
     grpc_plugin="$grpc_swift_protobuf_source/.build/release/protoc-gen-grpc-swift-2"
     test -x "$swift_plugin"
@@ -149,3 +149,4 @@ PY
     exit 2
     ;;
 esac
+
