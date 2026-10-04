@@ -32,7 +32,7 @@ The Rust HTTP fixture exercises every entry in `HTTP_ROUTES` and asserts that
 each route was called in
 `rust/crates/objects/src/v2/http_tests.rs`.
 
-## OpenAPI streaming projection defect
+## OpenAPI streaming projection defect and correction
 
 The checked-in OpenAPI artifact currently describes all three streaming
 operations as ordinary JSON bodies and responses:
@@ -48,7 +48,7 @@ The source of this output is the generic branch in
 `application/json` request and response, then adds
 `x-acyclic-http-streaming.ndjson: false` for non-Stream streaming RPCs.
 
-That metadata disagrees with the authoritative Objects contract:
+That metadata disagreed with the authoritative Objects contract:
 
 - `docs/objects-v2-http.md` requires `application/x-ndjson` for streaming
   bodies and documents the frame grammar.
@@ -59,27 +59,36 @@ That metadata disagrees with the authoritative Objects contract:
   splits frames across arbitrary transport chunks, and rejects wrong media,
   malformed, truncated, and oversized responses.
 
-This is a generated-contract defect rather than a missing Objects route. An
-OpenAPI consumer using only the artifact can select JSON framing and fail
+This was a generated-contract defect rather than a missing Objects route. An
+OpenAPI consumer using only the artifact could select JSON framing and fail
 against the Rust gateway even though the generated TypeScript package uses the
 correct Rust/WASM HTTP adapter.
 
-## Required correction
+The Rust-owned OpenAPI projection now derives the media type by direction for
+the Objects family. PUT and multipart upload-part requests emit
+`application/x-ndjson` with JSON success responses; GET requests emit JSON with
+an `application/x-ndjson` success response. The streaming extension is
+`ndjson:true` for all three operations, while unary routes remain JSON.
 
-The OpenAPI generator should derive media metadata from the contract family or
-an explicit Rust HTTP projection descriptor. For Objects streaming routes it
-should emit `application/x-ndjson` for the request or response direction as
-appropriate and set `x-acyclic-http-streaming.ndjson` to `true`, while retaining
-the protobuf client/server streaming flags. The generic projection should
-remain unchanged for families whose HTTP projection is JSON polling or another
-framing.
+The focused regression
+`objects_export_preserves_all_routes_external_timestamp_and_stream_direction`
+asserts all three streaming directions and a unary bucket route. A disposable
+generated output was also inspected and produced exactly these media sets:
 
-The OpenAPI generator owner should regenerate
+```text
+/v2/objects/objects/put           request x-ndjson  response json
+/v2/objects/objects/get           request json      response x-ndjson
+/v2/objects/multipart/upload-part request x-ndjson  response json
+/v2/objects/buckets/create        request json      response json
+```
+
+## Follow-up for generated artifacts
+
+The additional-language artifact owner should regenerate
 `research/additional-languages/target/bash/objects.json` and add a regression
-to `objects_export_preserves_all_routes_external_timestamp_and_stream_direction`
-covering media types and the NDJSON extension. No change was made to the shared
-OpenAPI generator in this review because it is outside Objects module
-ownership.
+check against these emitted media types. The generic projection remains
+unchanged for families whose HTTP projection is JSON polling or another
+framing.
 
 ## Verification commands
 

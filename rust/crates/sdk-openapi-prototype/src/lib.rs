@@ -689,8 +689,24 @@ pub fn document_from_contract_with_projection(
                 method.name
             )));
         }
+        // Objects' HTTP projection uses NDJSON for the streaming direction,
+        // while retaining ordinary protobuf JSON on the unary side of an
+        // upload or download. Other families keep the generic JSON/polling
+        // projection below until they declare a different HTTP framing.
+        let objects_ndjson = contract.package == "acyclic.objects.v2"
+            && (method.client_streaming || method.server_streaming);
+        let request_media_type = if objects_ndjson && method.client_streaming {
+            "application/x-ndjson"
+        } else {
+            "application/json"
+        };
+        let response_media_type = if objects_ndjson && method.server_streaming {
+            "application/x-ndjson"
+        } else {
+            "application/json"
+        };
         let mut responses = json!({
-            "200": {"description": "Successful response", "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, method.output))}}}}
+            "200": {"description": "Successful response", "content": {response_media_type: {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, method.output))}}}}
         });
         if contract.message("Error").is_some() {
             responses["default"] = json!({"description": "Canonical service error", "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, "Error"))}}}});
@@ -704,7 +720,7 @@ pub fn document_from_contract_with_projection(
             "x-protobuf-streaming": {"client": method.client_streaming, "server": method.server_streaming},
             "x-acyclic-route-source": "acyclic_sdk_contract_wire::ContractSpec.routes",
             "security": [{"bearerAuth": []}],
-            "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, method.input))}}}},
+            "requestBody": {"required": true, "content": {request_media_type: {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, method.input))}}}},
             "responses": responses
         });
         let parameters = path_parameters(route.path);
@@ -726,7 +742,7 @@ pub fn document_from_contract_with_projection(
                 "grpc_server_streaming": method.server_streaming,
                 "wire_projection": "Rust-model request/response schemas",
                 "sse": false,
-                "ndjson": false
+                "ndjson": objects_ndjson
             });
         }
         paths.insert(
@@ -1645,6 +1661,24 @@ mod tests {
             paths["/v2/objects/objects/get"]["post"]["x-protobuf-streaming"]["server"],
             true
         );
+        let put = &paths["/v2/objects/objects/put"]["post"];
+        assert!(put["requestBody"]["content"]["application/x-ndjson"].is_object());
+        assert!(put["requestBody"]["content"]["application/json"].is_null());
+        assert!(put["responses"]["200"]["content"]["application/json"].is_object());
+        assert_eq!(put["x-acyclic-http-streaming"]["ndjson"], true);
+        let get = &paths["/v2/objects/objects/get"]["post"];
+        assert!(get["requestBody"]["content"]["application/json"].is_object());
+        assert!(get["responses"]["200"]["content"]["application/x-ndjson"].is_object());
+        assert!(get["responses"]["200"]["content"]["application/json"].is_null());
+        assert_eq!(get["x-acyclic-http-streaming"]["ndjson"], true);
+        let upload_part = &paths["/v2/objects/multipart/upload-part"]["post"];
+        assert!(upload_part["requestBody"]["content"]["application/x-ndjson"].is_object());
+        assert!(upload_part["requestBody"]["content"]["application/json"].is_null());
+        assert!(upload_part["responses"]["200"]["content"]["application/json"].is_object());
+        assert_eq!(upload_part["x-acyclic-http-streaming"]["ndjson"], true);
+        let create_bucket = &paths["/v2/objects/buckets/create"]["post"];
+        assert!(create_bucket["requestBody"]["content"]["application/json"].is_object());
+        assert!(create_bucket["responses"]["200"]["content"]["application/json"].is_object());
         assert_eq!(
             doc["components"]["schemas"]["acyclic_objects_v2_ObjectInfo"]["properties"]["lastModified"]
                 ["format"],
