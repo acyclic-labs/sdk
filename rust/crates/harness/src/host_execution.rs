@@ -852,9 +852,20 @@ impl ExecutionReceiptRecord {
 
     /// Validates the typed record against a dispatch before replay.
     pub fn validate_for(&self, dispatch: &EffectDispatch) -> Result<()> {
+        self.validate_fence_for(dispatch)?;
+        if self.key.attempt_id != dispatch.attempt_id {
+            return Err(Error::Conflict(
+                "execution receipt identity does not match dispatch attempt".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    // Historical uncertainty may belong to a prior attempt, but never to a
+    // different effect, request, provider or execution guarantee.
+    fn validate_fence_for(&self, dispatch: &EffectDispatch) -> Result<()> {
         if self.key.operation_id.into_bytes() != dispatch.effect_id.into_bytes()
             || self.key.effect_id != dispatch.effect_id
-            || self.key.attempt_id != dispatch.attempt_id
             || self.key.provider != dispatch.provider
             || self.key.effect_kind != dispatch.effect_kind
             || self.key.guarantee != dispatch.guarantee
@@ -1682,6 +1693,7 @@ impl NativeExecutionProvider {
                 }
                 Ok(ExecutionClaim::Completed(record)) => {
                     self.release_attempt(approval.operation_id, request.attempt_id)?;
+                    record.validate_fence_for(&request)?;
                     if record.key.operation_id == approval.operation_id
                         && record.key.effect_id == request.effect_id
                         && matches!(record.receipt, ExecutionReceipt::Unknown { .. })
@@ -2174,6 +2186,42 @@ mod tests {
                 state.cancellation_requested.push(key.clone());
                 Ok(())
             })
+        }
+    }
+
+    struct FixedCompletedReceiptStore {
+        record: ExecutionReceiptRecord,
+    }
+
+    impl ExecutionReceiptStore for FixedCompletedReceiptStore {
+        fn claim<'a>(
+            &'a self,
+            _key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
+            let record = self.record.clone();
+            async move { Ok(ExecutionClaim::Completed(record)) }.boxed()
+        }
+
+        fn load<'a>(
+            &'a self,
+            _key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+            let record = self.record.clone();
+            async move { Ok(Some(record)) }.boxed()
+        }
+
+        fn publish<'a>(
+            &'a self,
+            _key: &'a ExecutionReceiptKey,
+            _handle: &'a ExecutionClaimHandle,
+            _receipt: &'a ExecutionReceipt,
+        ) -> futures::future::BoxFuture<'a, Result<FileRef>> {
+            async {
+                Err(Error::Unsupported(
+                    "fixed completed test store cannot publish".into(),
+                ))
+            }
+            .boxed()
         }
     }
 
@@ -2996,6 +3044,78 @@ mod tests {
         let replay = restarted.dispatch(dispatch).await?;
         assert!(matches!(replay.status, EffectStatus::Succeeded { .. }));
         assert_eq!(replay_calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_fast_path_rejects_mismatched_provider_fence() -> Result<()> {
+        let operation = OperationId::from_bytes([59; 16]);
+        let approval = ExecutionApproval::approve(operation, spec())?;
+        let (content, request_file) = content_fixture(&approval)?;
+        let store = Arc::new(MemoryReceiptStore {
+            volume: Some(content.volume.clone()),
+            state: Mutex::new(MemoryReceiptState::default()),
+        });
+        let provider = NativeExecutionProvider::new_with_receipt_store(
+            content.clone(),
+            store.clone(),
+            Arc::new(FixedRunner(RunnerOutcome::Exited {
+                status_code: Some(0),
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+            })),
+            approval_verifier(),
+        )?;
+        let request_digest = crate::core::effect_request_digest(
+            provider.id(),
+            EffectGuarantee::AtMostOnce,
+            "host.process",
+            &request_file,
+        )?;
+        let dispatch = EffectDispatch {
+            provider: provider.id().into(),
+            effect_id: EffectId::from_bytes(operation.into_bytes()),
+            attempt_id: EffectAttemptId::from_bytes([60; 16]),
+            effect_kind: "host.process".into(),
+            request: request_file,
+            guarantee: EffectGuarantee::AtMostOnce,
+            request_digest,
+        };
+        assert!(matches!(
+            provider.dispatch(dispatch.clone()).await?.status,
+            EffectStatus::Succeeded { .. }
+        ));
+        let mut record = store
+            .state
+            .lock()
+            .map_err(|_| Error::Storage("test receipt lock poisoned".into()))?
+            .records
+            .first()
+            .cloned()
+            .ok_or_else(|| Error::Storage("test receipt record missing".into()))?;
+        record.key.provider = "harness.malicious-provider.v1".into();
+        record.receipt = ExecutionReceipt::Unknown {
+            reason: "forged uncertainty".into(),
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let forged = NativeExecutionProvider::new_with_receipt_store(
+            content,
+            Arc::new(FixedCompletedReceiptStore { record }),
+            Arc::new(CountingFixedRunner {
+                calls: Arc::clone(&calls),
+                outcome: RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                },
+            }),
+            approval_verifier(),
+        )?;
+        assert!(matches!(
+            forged.dispatch(dispatch).await,
+            Err(Error::Conflict(message)) if message.contains("identity")
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
 
