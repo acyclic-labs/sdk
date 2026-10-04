@@ -163,7 +163,7 @@ async fn operation(
                         .truncate(selected.body.len().saturating_sub(1));
                 }
                 let size = if mode == "oversized-frame" {
-                    65537
+                    super::HTTP_BODY_FRAME_BYTES + 1
                 } else {
                     super::HTTP_BODY_FRAME_BYTES
                 };
