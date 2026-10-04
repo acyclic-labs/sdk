@@ -2338,7 +2338,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Commits a prepared transition after its filesystem action succeeds.
-    pub(crate) async fn complete_transition(
+    pub async fn complete_transition(
         &self,
         transition: GitTransitionId,
         resulting_tree: Option<GitTreeRef>,
@@ -2357,7 +2357,7 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     ///
     /// Capture and branch transitions require their full result so recovery can
     /// publish compatibility state without reconstructing filesystem facts.
-    pub(crate) async fn complete_transition_result(
+    pub async fn complete_transition_result(
         &self,
         transition: GitTransitionId,
         result: &GitFilesystemResult,
