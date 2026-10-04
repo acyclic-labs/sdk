@@ -4,9 +4,13 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At source `99ae53078`, 13 Windows native local coordinator regressions pass with no ignored cases, including concurrent empty-registry openers, cancellation/completion preservation across late failure and restart, and direct-parent project selection. The production entrypoint's three Node contract tests also pass after removing its implicit working-directory fallback. This remains focused coordinator evidence, not full recursive swarm qualification. The native suite executable SHA256 is `4f0b43c6b832318be7b25aea06223981baecc0a35faa66dfe88e24e8011c0d32`.
+
+At source `5214f51ea`, `cargo check --workspace --all-targets` passes after the fork model-boundary bindings and async coordinator closure repair. This is native compilation evidence, not WASM execution or installed-artifact qualification.
+
 At source `bc110358c`, 21 Windows native fork regressions pass after reports and seeds share one history-capture validator. Wire formats, proof digests and strict/rebound scopes remain unchanged. See [focused validation evidence](checkpoint-fork-validation-cut-native-2026-10-04.json).
 
-Independent review holds the integrated lazy/coordinator slice: failure publication can overwrite terminal cancellation/completion, duplicate activation can dispatch a child more than once, and a concurrent empty-registry opener fails instead of reconciling the winner. These require deterministic concurrent/restart tests and implementation repairs; passing focused projection tests do not close them.
+Independent review still holds duplicate child activation: concurrent retries can dispatch a child more than once. The startup and late-failure defects identified in that review have focused repairs and regression evidence above. Durable cross-handle activation claims and full production qualification remain required.
 
 At source `d595f3ba4`, 10 Windows native lazy-projection regressions pass with no ignored cases after integration. Registry refresh reads an unseen suffix, metadata inspection avoids cold child activation, and cancellation releases the refresh fence before host propagation. See [focused source and artifact evidence](checkpoint-integrated-lazy-native-2026-10-04.json). Independent review, installed counters and full coordinator qualification remain required.
 
