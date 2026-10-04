@@ -449,9 +449,6 @@ pub struct ExecutionReceiptKey {
 
 impl ExecutionReceiptKey {
     /// Validates the canonical identity and provider tuple of one receipt slot.
-    ///
-    /// The operation/effect relationship is part of this provider's fence,
-    /// including when a receipt is reconciled without its original dispatch.
     pub fn validate(&self) -> Result<()> {
         if self.operation_id.into_bytes() == [0; 16]
             || self.effect_id.into_bytes() == [0; 16]
@@ -460,11 +457,6 @@ impl ExecutionReceiptKey {
         {
             return Err(Error::Invalid(
                 "execution receipt key contains an empty identity or request digest".into(),
-            ));
-        }
-        if self.effect_id.into_bytes() != self.operation_id.into_bytes() {
-            return Err(Error::Conflict(
-                "execution receipt effect identity does not match its operation".into(),
             ));
         }
         if self.provider != "harness.native-execution.v1"
@@ -1934,6 +1926,18 @@ impl EffectProvider for NativeExecutionProvider {
                 return Ok(None);
             };
             record.validate()?;
+            // Native dispatch derives the effect identity from the approved
+            // operation. Generic receipt stores may bind distinct identities.
+            if record.key.effect_id.into_bytes() != record.key.operation_id.into_bytes() {
+                return Err(Error::Conflict(
+                    "execution receipt effect identity does not match its operation".into(),
+                ));
+            }
+            if record.key.attempt_id != attempt_id {
+                return Err(Error::Conflict(
+                    "execution receipt attempt identity does not match reconciliation".into(),
+                ));
+            }
             Ok(Some(EffectObservation {
                 provider: record.key.provider.clone(),
                 effect_id: record.key.effect_id,
