@@ -1,0 +1,39 @@
+{
+  "schema": "acyclic.additional-language-qualification.v1",
+  "trigger": "release-or-manual-workflow",
+  "source_of_truth": "Rust contract model and its generated proto compatibility projection",
+  "source_revision": "workflow checkout revision",
+  "targets": [
+    {
+      "id": "elixir",
+      "toolchain": { "otp": "27.2.4", "elixir": "1.17.3", "rebar3": "3.24.0" },
+      "generator": { "package": "protobuf", "version": "0.13.2", "license": "Apache-2.0" },
+      "transport": { "package": "grpc", "version": "1.0.3", "license": "Apache-2.0" },
+      "artifact": "mix project with generated Actors protobuf and gRPC modules",
+      "qualification": "compile-generated-package"
+    },
+    {
+      "id": "erlang",
+      "toolchain": { "otp": "27.2.4", "rebar3": "3.24.0" },
+      "generator": { "package": "rebar3_gpb_plugin", "version": "2.10.0", "license": "MIT" },
+      "wire": { "package": "gpb", "source": "https://github.com/tomas-abrahamsson/gpb" },
+      "artifact": "rebar3 application with generated Actors Erlang modules",
+      "qualification": "compile-generated-package"
+    },
+    {
+      "id": "ocaml",
+      "toolchain": { "ocaml": "5.2.1", "opam": "2.2" },
+      "generator": { "package": "ocaml-protoc-plugin", "version": "6.2.0", "source": "https://github.com/andersfugmann/ocaml-protoc-plugin", "license": "Apache-2.0" },
+      "transport": { "package": "grpc", "version": "0.2.0", "sha512": "03bf7448330346959fe581822fdd0580279f5042b3b51acc220950b0fa78764e64a0ead7dda0bcad22374e6e4d77870ff8e70431d233832912278a4ae5ad0390" },
+      "artifact": "dune project with generated Actors OCaml modules",
+      "qualification": "compile-generated-package"
+    },
+    {
+      "id": "common-lisp",
+      "toolchain": { "sbcl": "2.4.10" },
+      "generator": { "repository": "https://github.com/atgreen/ag-gRPC", "commit": "f76354d8e3ba5a65c2767df68d32570a1668883d", "license": "MIT" },
+      "artifact": "ag-protoc generated Actors Lisp source compiled by SBCL",
+      "qualification": "compile-generated-package"
+    }
+  ]
+}

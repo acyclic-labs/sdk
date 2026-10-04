@@ -1,0 +1,85 @@
+name: Additional language qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: additional-language-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: elixir
+            elixir_version: '1.17.3'
+          - language: erlang
+            elixir_version: ''
+          - language: ocaml
+            elixir_version: ''
+          - language: common-lisp
+            elixir_version: ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install protobuf compiler and common build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler build-essential pkg-config libssl-dev git
+
+      - name: Install BEAM toolchain
+        if: matrix.language == 'elixir' || matrix.language == 'erlang'
+        uses: erlef/setup-beam@v1.8.0
+        with:
+          otp-version: '27.2.4'
+          elixir-version: ${{ matrix.elixir_version }}
+          rebar3-version: '3.24.0'
+          version-type: strict
+
+      - name: Install OCaml toolchain
+        if: matrix.language == 'ocaml'
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.2.1'
+          opam-depext: true
+          dune-cache: true
+
+      - name: Install Common Lisp toolchain
+        if: matrix.language == 'common-lisp'
+        run: sudo apt-get install --yes sbcl
+
+      - name: Generate Rust-owned products
+        run: |
+          cargo run --locked --bin sdk-contract-wire -- generate-products \
+            --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
+
+      - name: Build and consume generated package
+        run: |
+          bash scripts/qualify-additional-language.sh \
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}"
+
+      - name: Upload qualification receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: additional-language-${{ matrix.language }}
+          path: ${{ runner.temp }}/${{ matrix.language }}
