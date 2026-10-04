@@ -589,6 +589,14 @@ impl<P: StreamProvider> StreamClient<P> {
         Self { provider }
     }
 
+    /// Returns whether two clients are bound to the same authenticated
+    /// provider instance.  Callers use this to reject substituting a client
+    /// from another stream domain at an authority-sensitive boundary.
+    #[must_use]
+    pub fn same_provider(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.provider, &other.provider)
+    }
+
     /// Observes the exact replay window without guessing from a failed read.
     pub async fn bounds(&self, path: &str) -> Result<StreamBounds, StreamError> {
         self.provider.bounds(StreamPath::new(path)?).await
