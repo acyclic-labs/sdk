@@ -6,6 +6,13 @@ export type OwnedProcessTermination =
   | { readonly kind: "timeout"; readonly pid: number; readonly phase: "command" | "pipes" }
   | { readonly kind: "unknown"; readonly pid: number; readonly reason: string; readonly exitCode?: number | null };
 
+/** Host-provided process ownership boundary. A native adapter may supply a
+ * real process handle/Job owner; GraphCoder does not duplicate that engine. */
+export interface OwnedProcessOwner {
+  readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+  readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<OwnedProcessTermination>;
+}
+
 type OwnedProcessState = { closed: boolean; errored: boolean };
 type ProcessWait = "closed" | "timeout" | "error";
 type GroupWait = "gone" | "timeout" | "error";
@@ -71,6 +78,12 @@ export function retryOwnedProcessTermination(child: ChildProcess, graceMs = 250)
   terminations.delete(child);
   return terminateOwnedProcess(child, graceMs);
 }
+
+/** Default Node ownership boundary used when a host does not inject a native owner. */
+export const defaultOwnedProcessOwner: OwnedProcessOwner = Object.freeze({
+  spawn: spawnOwnedProcess,
+  terminate: terminateOwnedProcess,
+});
 
 async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): Promise<OwnedProcessTermination> {
   if (!Number.isSafeInteger(graceMs) || graceMs < 0) {

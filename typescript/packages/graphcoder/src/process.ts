@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams, SpawnOptions } from "node:child_pr
 import { randomUUID } from "node:crypto";
 import { GraphCoderError } from "./api.js";
 import { checkedRequestId, type GraphCoderBridge, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
-import { spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "./owned-process.js";
+import { defaultOwnedProcessOwner, type OwnedProcessOwner, type OwnedProcessTermination } from "./owned-process.js";
 
 export interface GraphCoderProcessBridgeOptions {
   readonly executable: string;
@@ -17,6 +17,8 @@ export interface GraphCoderProcessBridgeOptions {
   readonly cancelMessage?: (requestId: string) => GraphCoderWireRequest | undefined;
   /** Host-only operator credential; generated when omitted and never model-visible. */
   readonly operatorToken?: string;
+  /** Optional native process owner. Omit to use the bounded Node fallback. */
+  readonly processOwner?: OwnedProcessOwner;
   readonly onDiagnostic?: (event: GraphCoderProcessDiagnostic) => void;
 }
 
@@ -58,6 +60,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #maximumPendingRequests: number;
   readonly #cancelMessage: ((requestId: string) => GraphCoderWireRequest | undefined) | undefined;
   readonly #operatorToken: string;
+  readonly #processOwner: OwnedProcessOwner;
   readonly #cancelled = new Set<string>();
   readonly #cancelControls = new Map<string, string>();
   readonly #exitWaiters = new Set<(exit: GraphCoderProcessExit) => void>();
@@ -78,6 +81,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     }
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.#cancelMessage = options.cancelMessage;
+    this.#processOwner = options.processOwner ?? defaultOwnedProcessOwner;
     this.#operatorToken = options.operatorToken ?? randomUUID();
     if (this.#operatorToken.trim() === "") throw new GraphCoderError("invalid_input", "operator token must be nonempty");
     const spawnOptions: SpawnOptions = {
@@ -86,7 +90,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     };
-    const child = spawnOwnedProcess(options.executable, options.args ?? [], spawnOptions);
+    const child = this.#processOwner.spawn(options.executable, options.args ?? [], spawnOptions);
     if (child.stdin === null || child.stdout === null || child.stderr === null) throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
     this.#child = child as ChildProcessWithoutNullStreams;
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
@@ -293,7 +297,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #requestTermination(): void {
     if (this.#termination !== undefined) return;
     this.#terminationDone = false;
-    this.#termination = terminateOwnedProcess(this.#child).catch(error => {
+    this.#termination = this.#processOwner.terminate(this.#child).catch(error => {
       try { this.#child.kill(); }
       catch { /* The close event remains the authoritative termination signal. */ }
       return {

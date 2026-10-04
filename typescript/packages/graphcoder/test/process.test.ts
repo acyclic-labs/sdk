@@ -230,6 +230,26 @@ describe("JSON-lines process bridge", () => {
     expect(stderr).toContain("runtime process cleanup unknown");
   });
 
+  test("delegates runtime ownership to one injected native boundary", async () => {
+    let spawned = 0;
+    let terminated = 0;
+    const processOwner = {
+      spawn(executable: string, args: readonly string[], options: Parameters<typeof spawnOwnedProcess>[2]) {
+        spawned += 1;
+        return spawnOwnedProcess(executable, args, options);
+      },
+      terminate(child: ReturnType<typeof spawnOwnedProcess>, graceMs?: number) {
+        terminated += 1;
+        return terminateOwnedProcess(child, graceMs);
+      },
+    };
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", "setInterval(() => {}, 100000)"], env: env(), processOwner });
+    bridge.close("native owner delegation");
+    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(spawned).toBe(1);
+    expect(terminated).toBe(1);
+  });
+
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
     const connection = ownConnection({ executable: process.execPath, args: ["-e", script], env: env() });
