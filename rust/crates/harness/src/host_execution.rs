@@ -1068,6 +1068,11 @@ impl ExecutionRunner for NativeExecutionRunner {
             })
             .transpose()?;
         let mut command = Command::new(&request.executable);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
         command
             .args(&request.arguments)
             .current_dir(&request.working_directory)
