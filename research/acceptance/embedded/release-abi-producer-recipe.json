@@ -3,7 +3,8 @@
   "producer": "embedded-release-abi",
   "authority": {
     "kind": "rust-crate",
-    "source_root": "rust/crates/sdk-embedded-prototype",
+    "source_root": "<sdk checkout>",
+    "source_crate": "rust/crates/sdk-embedded-prototype",
     "source_manifest": "rust/crates/sdk-embedded-prototype/Cargo.toml",
     "source_lockfile": "rust/crates/sdk-embedded-prototype/Cargo.lock",
     "source_revision": "receipt.source.revision",

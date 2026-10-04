@@ -26,6 +26,11 @@ CONSUMER_BUILD="$BUILD_DIRECTORY/consumer"
 PREFIX="$BUILD_DIRECTORY/prefix"
 INSTALLED_BUILD="$BUILD_DIRECTORY/installed-consumer"
 
+CMAKE_PLATFORM_ARGS=()
+if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
+  CMAKE_PLATFORM_ARGS+=("-DCMAKE_OSX_ARCHITECTURES=$CMAKE_OSX_ARCHITECTURES")
+fi
+
 mkdir -p "$BUILD_DIRECTORY"
 command -v cargo >/dev/null
 command -v rustc >/dev/null
@@ -47,7 +52,8 @@ test -n "$HEADER"
 cmake -S "$CONSUMER_SOURCE" -B "$CONSUMER_BUILD" -G Ninja \
   -DCMAKE_CXX_COMPILER="$CXX" \
   -DACYCLIC_EMBEDDED_ROOT="$RELEASE_DIRECTORY" \
-  -DACYCLIC_EMBEDDED_HEADER="$HEADER"
+  -DACYCLIC_EMBEDDED_HEADER="$HEADER" \
+  "${CMAKE_PLATFORM_ARGS[@]}"
 cmake --build "$CONSUMER_BUILD"
 ctest --test-dir "$CONSUMER_BUILD" --output-on-failure
 cmake --install "$CONSUMER_BUILD" --prefix "$PREFIX"
@@ -66,7 +72,8 @@ env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" \
   python3 "$ROOT/rust/crates/sdk-embedded-prototype/tests/python_consumer.py" "$INSTALLED_RUNTIME"
 
 cmake -S "$CONSUMER_SOURCE/install-consumer" -B "$INSTALLED_BUILD" -G Ninja \
-  -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_PREFIX_PATH="$PREFIX"
+  -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_PREFIX_PATH="$PREFIX" \
+  "${CMAKE_PLATFORM_ARGS[@]}"
 cmake --build "$INSTALLED_BUILD"
 env "$RUNTIME_ENV=$INSTALLED_LIBRARY_DIRECTORY" "$INSTALLED_BUILD/acyclic_cpp_installed_consumer"
 

@@ -1,0 +1,106 @@
+name: Embedded ABI release qualification
+
+on:
+  push:
+    tags:
+      - "acyclic-v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: embedded-abi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package-consumer:
+    name: ${{ matrix.platform }}
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/acyclic-v')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            shell: pwsh
+            rust_target: x86_64-pc-windows-msvc
+            kind: windows
+          - platform: linux-x64-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            shell: bash
+            rust_target: x86_64-unknown-linux-musl
+            kind: unix
+          - platform: linux-arm64-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            shell: bash
+            rust_target: aarch64-unknown-linux-musl
+            kind: unix
+          - platform: macos-x64
+            runner: blacksmith-6vcpu-macos-15
+            shell: bash
+            rust_target: x86_64-apple-darwin
+            cmake_arch: x86_64
+            kind: unix
+          - platform: macos-arm64
+            runner: blacksmith-6vcpu-macos-15
+            shell: bash
+            rust_target: aarch64-apple-darwin
+            cmake_arch: arm64
+            kind: unix
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact release source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned Rust toolchain
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install musl linker
+        if: matrix.kind == 'unix' && endsWith(matrix.rust_target, '-musl')
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends musl-tools
+
+      - name: Fetch locked embedded dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fetch --locked --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml
+
+      - name: Run the Windows installed-package consumers
+        if: matrix.kind == 'windows'
+        shell: pwsh
+        run: >-
+          pwsh -NoLogo -NoProfile -File cpp/embedded-consumer/portable-package-test.ps1
+          -Root $env:GITHUB_WORKSPACE
+          -BuildDirectory (Join-Path $env:RUNNER_TEMP 'embedded-abi')
+
+      - name: Run the Unix and Darwin installed-package consumers
+        if: matrix.kind == 'unix'
+        shell: bash
+        env:
+          RUST_TARGET: ${{ matrix.rust_target }}
+          BUILD_DIRECTORY: ${{ runner.temp }}/embedded-abi
+          CMAKE_OSX_ARCHITECTURES: ${{ matrix.cmake_arch || '' }}
+        run: bash cpp/embedded-consumer/portable-package-test.sh
+
+      - name: Upload package, receipts, and consumer evidence
+        if: always()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
+        with:
+          name: embedded-abi-${{ matrix.platform }}
+          path: ${{ runner.temp }}/embedded-abi
+          if-no-files-found: error
+          retention-days: 14
