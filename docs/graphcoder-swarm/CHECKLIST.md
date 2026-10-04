@@ -5,12 +5,13 @@ do not substitute for full acceptance gates.
 
 - [x] Managed worktree and codex/graphcoder-sdk from the pinned base, without merging.
 - [x] Active full-scope goal and recorded Harness baseline.
-- [x] Shared exact request admission, manifests and immutable completed prefixes.
+- [x] Shared exact request and manifest admission matches frozen native/WASM vectors.
+- [ ] Immutable completed prefixes through production recursive forks and cold restart on current source.
 - [x] Durable single-agent local storage composition and replay.
-- [x] Complete batch publication admission and safe reconciliation.
-- [x] Exact authoritative exchange publication and child inherited binding.
+- [ ] Complete batch publication admission and safe reconciliation (fresh local swarm faults fail 4/5).
+- [ ] Exact authoritative exchange publication and child inherited binding on current source.
 - [ ] Native sibling fork/provider-prefix scenario and stale-boundary refusal on current source (positive fork attestation remains failed).
-- [x] Checked runtime model-tool provenance and disjoint completed-batch publication identity.
+- [ ] Runtime model-tool provenance and disjoint completed-batch publication identity qualified through current recursive execution.
 - [ ] Production fork intent tools and durable child task activation.
 - [ ] Session-wide active/total/depth/step/output/time budget admission.
 - [ ] Recursive swarming through the existing scheduler/task host.
