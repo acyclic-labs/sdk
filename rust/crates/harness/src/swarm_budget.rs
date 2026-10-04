@@ -951,19 +951,47 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
 /// Shared metering handle for one concrete model dispatch.
 pub struct SwarmProviderMeter<S> {
     context: Arc<Mutex<SwarmProviderBoundary<S>>>,
+    deferred_error: Arc<Mutex<Option<String>>>,
 }
 
 impl<S> Clone for SwarmProviderMeter<S> {
     fn clone(&self) -> Self {
         Self {
             context: self.context.clone(),
+            deferred_error: self.deferred_error.clone(),
         }
     }
 }
 
 impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
+    fn new(boundary: SwarmProviderBoundary<S>) -> Self {
+        Self {
+            context: Arc::new(Mutex::new(boundary)),
+            deferred_error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn check_deferred_error(&self) -> Result<()> {
+        let error = self
+            .deferred_error
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider deferred error lock is poisoned".into()))?
+            .clone();
+        match error {
+            Some(error) => Err(Error::Storage(error)),
+            None => Ok(()),
+        }
+    }
+
+    fn record_deferred_error(&self, error: Error) {
+        if let Ok(mut deferred) = self.deferred_error.lock() {
+            deferred.get_or_insert_with(|| format!("metered stream finalization failed: {error}"));
+        }
+    }
+
     /// Admits one model provider request before invoking the provider.
     pub fn admit_model_step(&self) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
         self.context
             .lock()
             .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
@@ -972,6 +1000,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 
     /// Admits bytes before accepting model output from the provider.
     pub fn admit_output(&self, bytes: u64) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
         self.context
             .lock()
             .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
@@ -980,6 +1009,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 
     /// Admits one measured elapsed execution slice.
     pub fn admit_execution_time(&self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
         self.context
             .lock()
             .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
@@ -987,6 +1017,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
     }
 
     fn remaining_execution_time_ms(&self) -> Result<u64> {
+        self.check_deferred_error()?;
         Ok(self
             .context
             .lock()
@@ -1003,6 +1034,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 
     /// Issues the next receipt from the host-bound cumulative measurement source.
     pub fn issue_usage_receipt(&self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.check_deferred_error()?;
         self.context
             .lock()
             .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
@@ -1011,6 +1043,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 
     /// Returns the latest guarded usage admitted by this runtime.
     pub fn usage(&self) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
         Ok(self
             .context
             .lock()
@@ -1020,6 +1053,7 @@ impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
 
     /// Returns the cursor that must be persisted with the next receipt.
     pub fn receipt_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        self.check_deferred_error()?;
         Ok(self
             .context
             .lock()
@@ -1110,7 +1144,9 @@ impl<S: SwarmUsageSource> Drop for MeteredStream<'_, S> {
         }
         let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let delta = elapsed_ms.saturating_sub(self.charged_ms);
-        let _ = self.meter.admit_execution_time(delta);
+        if let Err(error) = self.meter.admit_execution_time(delta) {
+            self.meter.record_deferred_error(error);
+        }
     }
 }
 
@@ -1125,9 +1161,7 @@ where
         context: SwarmDispatchContext<S>,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
         let bound_dispatch_id = context.token().dispatch_id().cloned();
-        let meter = SwarmProviderMeter {
-            context: Arc::new(Mutex::new(SwarmProviderBoundary::Child(context))),
-        };
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Child(context));
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
@@ -1146,9 +1180,7 @@ where
         provider: Arc<P>,
         context: SwarmRootDispatchContext<S>,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        let meter = SwarmProviderMeter {
-            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(context))),
-        };
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(context));
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
@@ -1169,15 +1201,13 @@ where
         context: SwarmRootDispatchContext<S>,
         dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        let meter = SwarmProviderMeter {
-            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(
-                SwarmRootDispatchContext::new_with_dynamic(
-                    context.limiter,
-                    context.issuer,
-                    dynamic_limits,
-                ),
-            ))),
-        };
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(
+            SwarmRootDispatchContext::new_with_dynamic(
+                context.limiter,
+                context.issuer,
+                dynamic_limits,
+            ),
+        ));
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),
@@ -1237,9 +1267,7 @@ where
             context.issuer,
             dynamic_limits.clone(),
         );
-        let meter = SwarmProviderMeter {
-            context: Arc::new(Mutex::new(SwarmProviderBoundary::Root(root_context))),
-        };
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(root_context));
         let wrapped = Arc::new(Self {
             provider,
             meter: meter.clone(),

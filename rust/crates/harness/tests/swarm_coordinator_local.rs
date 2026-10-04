@@ -8,7 +8,8 @@ use acyclic_harness::{
     resources::ProviderRef,
     runtime::{TaskAdmissionRecord, TaskRunLimits},
     scheduler::{
-        DurableOwner, EntrypointRef, OperationSpec, Orchestration, Reservation,
+        DurableOwner, EntrypointRef, LeaseFence, OperationSpec, Orchestration, Reservation,
+        SchedulerEvent,
         canonical_swarm_resources,
     },
     swarm_budget::{SwarmBudgetLimits, SwarmForkRequest, SwarmOwnerFence, SwarmResourceRequest},
@@ -182,6 +183,33 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         )
         .await
         .expect("declare child");
+    let root_reservation = Reservation {
+        id: "lease-session".into(),
+        placement: "worker".into(),
+        admitted: Default::default(),
+    };
+    coordinator
+        .apply(
+            session_id,
+            IdempotencyKey::new("admit-session").expect("key"),
+            SchedulerEvent::Admitted {
+                operation_id: session_id,
+                reservation: root_reservation.clone(),
+            },
+        )
+        .await
+        .expect("admit session root");
+    coordinator
+        .apply(
+            session_id,
+            IdempotencyKey::new("start-session").expect("key"),
+            SchedulerEvent::Started {
+                operation_id: session_id,
+                fence: LeaseFence::from(&root_reservation),
+            },
+        )
+        .await
+        .expect("start session root");
 
     let limits = SwarmBudgetLimits {
         max_active_agents: 2,
@@ -208,16 +236,18 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         placement: "worker".into(),
         admitted: canonical_swarm_resources(request.resources),
     };
+    drop(coordinator);
+    drop(initial_client);
+    let racing_provider = LocalStream::open(&stream_path, LocalStreamLimits::default())
+        .await
+        .expect("racing local stream provider");
+    let racing_client = StreamClient::new(Arc::new(racing_provider));
     let coordinators = join_all((0..16).map(|_| {
-        let stream_path = stream_path.clone();
+        let client = racing_client.clone();
         let verifier = Arc::new(ContentVerifier {
             contents: contents.clone(),
         });
         async move {
-            let provider = LocalStream::open(stream_path, LocalStreamLimits::default())
-                .await
-                .expect("independent local stream provider");
-            let client = StreamClient::new(Arc::new(provider));
             DistributedCoordinator::open(&client, verifier).await
         }
     }))
@@ -229,6 +259,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
         let scope = scope.clone();
         let issuer = issuer.clone();
         let request = request.clone();
+        let child_state = child_state.clone();
         let reservation = reservation.clone();
         async move {
             coordinator
@@ -260,6 +291,7 @@ async fn local_stream_coordinator_same_operation_race_is_one_applied_and_fifteen
     assert_eq!(applied, 1);
     assert_eq!(replayed, 15);
 
+    drop(racing_client);
     let provider = LocalStream::open(&stream_path, LocalStreamLimits::default())
         .await
         .expect("reopen local stream provider");

@@ -1149,7 +1149,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             canonical,
             committed_at_ms,
         );
-        let stream_key = stream_key(key)?;
+        // Use a unique transport attempt identity for the append. The durable
+        // scheduler idempotency key remains in the event envelope, while the
+        // tail CAS makes concurrent attempts elect one commit and lets the
+        // others refresh and replay it. Reusing the stable key here would make
+        // a provider return the committed receipt to every racing caller,
+        // which cannot distinguish the winner from a replay.
+        let stream_key = stream_key(key, OperationId::new())?;
         let outcome = match self
             .stream
             .append_batch(
@@ -1174,7 +1180,18 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 }
             }
             Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict("coordinator retry identity reused".into()));
+                self.refresh().await?;
+                return match self.intents.get(key) {
+                    Some((committed_digest, committed))
+                        if committed_digest == &digest && committed == &event =>
+                    {
+                        Ok(CoordinatorApply::Replayed)
+                    }
+                    Some(_) => Err(Error::Conflict("coordinator retry identity reused".into())),
+                    None => Err(Error::Conflict(
+                        "coordinator retry identity has no committed intent".into(),
+                    )),
+                };
             }
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
@@ -1631,10 +1648,11 @@ fn validate_coordinator_protocol(protocol: Option<&wire::ProtocolIdentity>) -> R
     }
 }
 
-fn stream_key(key: &str) -> Result<StreamIdempotencyKey> {
+fn stream_key(key: &str, attempt_id: OperationId) -> Result<StreamIdempotencyKey> {
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"acyclic-harness-coordinator-v2");
     hasher.update(key.as_bytes());
+    hasher.update(&attempt_id.into_bytes());
     StreamIdempotencyKey::new(Bytes::copy_from_slice(hasher.finalize().as_bytes()))
         .map_err(|error| Error::Invalid(error.to_string()))
 }
