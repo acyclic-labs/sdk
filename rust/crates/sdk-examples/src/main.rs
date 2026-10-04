@@ -895,9 +895,13 @@ fn run_rust(
     );
     fs::write(staging.join("Cargo.toml"), manifest)
         .map_err(|error| format!("write Rust consumer manifest: {error}"))?;
+    let bundle_snippet = snippet
+        .code
+        .replace("use acyclic_actors::", "use acyclic_sdk_bundle::")
+        .replace("use acyclic_stream::", "use acyclic_sdk_bundle::");
     let main = format!(
         "#![allow(unused_imports)]\nuse std::error::Error;\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn Error>> {{\n{}\nOk(())\n}}\n",
-        snippet.code
+        bundle_snippet
     );
     fs::write(staging.join("src/main.rs"), main)
         .map_err(|error| format!("write Rust consumer snippet: {error}"))?;
@@ -917,12 +921,23 @@ fn run_rust(
     let package_name = "acyclic-sdk-bundle";
     fs::create_dir_all(package_root.join("src"))
         .map_err(|error| format!("create SDK package root: {error}"))?;
-    fs::write(
-        &package_manifest,
-        format!(
-            "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\n"
-        ),
-    )
+    // The extracted archive is a standalone Cargo workspace.  Without an
+    // explicit workspace root Cargo walks up into the checkout that happened
+    // to produce the bundle, so an archive consumer can accidentally resolve
+    // source paths outside the artifact (or inherit the producer's members,
+    // lints, and workspace dependency table).  Preserve the Rust workspace
+    // policy and dependency pins while relocating its members below `crates`.
+    let workspace_manifest = fs::read_to_string(source_root.join("Cargo.toml"))
+        .map_err(|error| format!("read Rust workspace manifest: {error}"))?;
+    let workspace_tail = workspace_manifest
+        .find("[workspace.package]")
+        .map(|index| &workspace_manifest[index..])
+        .ok_or("Rust workspace manifest is missing [workspace.package]")?;
+    let package_manifest_contents = format!(
+        "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\nlicense = \"Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\n\n[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n{workspace_tail}",
+        workspace_tail = workspace_tail.trim_start(),
+    );
+    fs::write(&package_manifest, package_manifest_contents)
     .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
@@ -938,7 +953,6 @@ fn run_rust(
         let crate_source = entry.path();
         if !crate_source.join("Cargo.toml").is_file()
             || entry.file_name() == "sdk-examples"
-            || entry.file_name() == "sdk-source-identity"
         {
             continue;
         }
@@ -1007,7 +1021,7 @@ fn run_rust(
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
     let consumer_metadata = consumers.join(format!("{}-cargo-metadata.json", snippet.metadata.id));
     let consumer_manifest_bytes = format!(
-        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nacyclic-stream = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
+        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
     fs::write(staging.join("Cargo.toml"), &consumer_manifest_bytes)
