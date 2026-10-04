@@ -42,6 +42,7 @@ package $rootUnit is
    type One_Of_String_Integer is new Ada.Strings.Unbounded.Unbounded_String;
    type Value_Type is null record;
    subtype Object is Value_Type;
+   function Is_Null (Value : Value_Type) return Boolean;
    package Value_Vectors is new Ada.Containers.Vectors (Positive, Value_Type);
    subtype Value_Array_Type is Value_Vectors.Vector;
    function To_String (Value : Value_Type) return String;
@@ -56,6 +57,7 @@ package $rootUnit is
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_UString);
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Integer);
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean);
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Value_Type);
    type Mime_List is array (Positive range 1 .. 1) of Integer;
    Mime_Json : constant Integer := 1;
    type URI_Type is record Path : UString; end record;
@@ -81,6 +83,7 @@ package body $rootUnit is
    function Is_Null (Value : Nullable_UString) return Boolean is begin return not Value.Present; end;
    function Is_Null (Value : Nullable_Integer) return Boolean is begin return not Value.Present; end;
    function Is_Null (Value : Nullable_Boolean) return Boolean is begin return not Value.Present; end;
+   function Is_Null (Value : Value_Type) return Boolean is begin return False; end;
    function To_String (Value : Value_Type) return String is begin return ""; end;
    function To_UString (Value : Value_Type) return UString is begin return To_UString (To_String (Value)); end;
    procedure Start_Entity (Into : in out Output_Stream; Name : String) is begin null; end;
@@ -92,6 +95,7 @@ package body $rootUnit is
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_UString) is begin null; end;
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Integer) is begin null; end;
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean) is begin null; end;
+   procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Value_Type) is begin null; end;
    procedure Set_Path (URI : in out URI_Type; Value : String) is begin URI.Path := To_UString (Value); end;
    procedure Set_Path_Param (URI : in out URI_Type; Name : String; Value : UString) is begin null; end;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List) is begin null; end;
