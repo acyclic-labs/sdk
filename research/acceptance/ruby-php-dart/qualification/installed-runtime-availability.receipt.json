@@ -82,6 +82,18 @@
         "exit_code": -1073741819,
         "ntstatus": "0xC0000005",
         "failure": "official PECL gRPC/protobuf process shutdown access violation"
+      },
+      "minimum_lifecycle_reproducer": {
+        "extensions_only_exit": 0,
+        "channel_credentials_and_channel_explicit_cleanup_exit": 0,
+        "composer_vendor_single_client_exit": 0,
+        "generated_client_constructors_completed": 12,
+        "generated_clients_without_shutdown_cleanup_exit": -1073741819,
+        "generated_clients_with_unset_gc_and_autoloader_unregister_exit": -1073740791,
+        "ntstatus_without_cleanup": "0xC0000005",
+        "ntstatus_with_cleanup": "0xC0000409",
+        "repro_script_scope": "official PHP 8.2.34 NTS plus PECL gRPC 1.82.0 and protobuf 5.36.2; no network call; process exit is sampled after constructor output",
+        "cleanup_result": "explicit object cleanup and autoloader unregister are timing-dependent and do not qualify the whole process"
       }
     },
     "dart": {
@@ -99,6 +111,39 @@
       "mtls_scope": "credential construction only; no live certificate handshake fixture"
     }
   },
+  "live_fixture_calls": {
+    "fixture": {
+      "binary": "rust/crates/sdk-examples/target/debug/fixture-server.exe",
+      "binary_sha256": "D66D7519B40122F0D20975BAFEEFC64E25AEBE9450E6385D78460BB9F8CB090E",
+      "source": "rust/crates/sdk-examples/src/lib.rs",
+      "source_sha256": "A9B25653E5E4BED4146E4927BAB23E186778DDD5AA77A7450B8C842C1A1B414C",
+      "loopback": true,
+      "max_requests": 4,
+      "tls": false,
+      "availability_claim": "not_claimed"
+    },
+    "ruby": {
+      "status": "passed",
+      "runtime": "Q:/sdk/ruby-cache/ruby/rubyinstaller-3.2.11-1-x64/bin/ruby.exe",
+      "operation": "acyclic.actors.v1.ActorsService/CreateActor",
+      "transport": "grpc_insecure_loopback",
+      "endpoint": "127.0.0.1:63697",
+      "result": "fixture-actor",
+      "process_exit": 0,
+      "tls_handshake": "not_exercised: bounded fixture is plaintext"
+    },
+    "dart": {
+      "status": "passed",
+      "runtime": "C:/Users/varun/.codex/worktrees/rust-sdk-docs-source/sdk/dart/.toolchain/dart-sdk/bin/dart.exe",
+      "operations": ["acyclic.stream.v2.StreamService/Append", "acyclic.stream.v2.StreamService/Read", "acyclic.stream.v2.StreamService/Follow"],
+      "transport": "grpc_insecure_loopback",
+      "endpoint": "127.0.0.1:63697",
+      "result": "append_end=2; page=0,1; resume=1; cancel_first=0; cancelled=subscription.cancel",
+      "process_exit": 0,
+      "tls_handshake": "not_exercised: bounded fixture is plaintext"
+    },
+    "scope": "These are real installed-package service calls against the Rust-owned bounded fixture. The fixture advertises no TLS and no hosted-service availability; credential construction remains separate from live TLS qualification."
+  },
   "tests": {
     "ruby_remote_policy": "6 runs, 16 assertions, 0 failures",
     "php_remote_policy": "passed",
@@ -108,3 +153,5 @@
   },
   "failure_policy": "The PHP native shutdown access violation remains failed despite all constructors completing; constructor output is not promoted to a whole-process pass."
 }
+
+
