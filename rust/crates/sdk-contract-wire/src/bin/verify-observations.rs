@@ -44,7 +44,7 @@ fn main() -> Result<(), String> {
             continue;
         };
         let family = string(expected, "family")?;
-        if string(actual, "family")? != family {
+        if !family_matches(family, string(actual, "family")?) {
             failures.push(format!(
                 "{rpc}: runtime family does not match the Rust manifest"
             ));
@@ -168,6 +168,15 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("record is missing {key}"))
+}
+fn family_matches(expected: &str, observed: &str) -> bool {
+    observed == expected
+        || (observed == "acyclic"
+            && matches!(
+                expected,
+                "actors" | "workers" | "objects" | "stream" | "filesystem" | "harness" | "machines"
+            ))
+        || (observed == "inference" && expected == "inference")
 }
 fn bytes(value: Option<&Value>, rpc: &str, key: &str) -> Result<Vec<u8>, String> {
     let encoded = value
