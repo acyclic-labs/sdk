@@ -75,6 +75,24 @@ impl ModelOptionPolicy {
     }
 }
 
+/// Applies the registered model-visible option policy before construction or dispatch.
+/// An unregistered provider can receive only null or an empty options object.
+pub(crate) fn validate_model_options(
+    options: &Value,
+    policy: Option<&ModelOptionPolicy>,
+) -> Result<()> {
+    if let Some(policy) = policy {
+        return policy.validate(options);
+    }
+    if options.is_null() || options.as_object().is_some_and(|value| value.is_empty()) {
+        Ok(())
+    } else {
+        Err(Error::Invalid(
+            "model options require a registered provider policy".into(),
+        ))
+    }
+}
+
 impl Model {
     /// Creates a validated immutable model value.
     pub fn new(
@@ -383,22 +401,7 @@ pub trait ModelProvider: Send + Sync {
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
     fn admit(&self, request: &ModelRequest) -> Result<()> {
-        if let Some(policy) = self.model_option_policy() {
-            return policy.validate(&request.model.options);
-        }
-        let empty = request.model.options.is_null()
-            || request
-                .model
-                .options
-                .as_object()
-                .is_some_and(|value| value.is_empty());
-        if empty {
-            Ok(())
-        } else {
-            Err(Error::Invalid(
-                "model options require a registered provider policy".into(),
-            ))
-        }
+        validate_model_options(&request.model.options, self.model_option_policy())
     }
 
     /// Starts one request from the exact bytes admitted by the harness.

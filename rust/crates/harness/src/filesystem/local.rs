@@ -1078,6 +1078,7 @@ impl PersistentLocalHarness {
         project: Option<&VolumeRef>,
     ) -> Result<Self> {
         limits.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let project_capabilities = match project {
             Some(project) => {
                 if project.class() != VolumeClass::Project || project.provider() != &host.provider {
@@ -1183,6 +1184,7 @@ impl PersistentLocalHarness {
         stream_provider: ProviderRef,
     ) -> Result<Self> {
         limits.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
             host.clone(),
@@ -1262,6 +1264,7 @@ impl PersistentLocalHarness {
         filesystem_provider: ProviderRef,
     ) -> Result<Self> {
         limits.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref();
         let stream = StreamClient::new(Arc::new(
             LocalStream::open(root.join("history"), LocalStreamLimits::default())
@@ -1375,6 +1378,7 @@ impl PersistentLocalHarness {
         stream_provider: ProviderRef,
     ) -> Result<Self> {
         limits.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         if stream_provider.family() != "stream" {
             return Err(Error::Invalid(
                 "local session requires a stream provider identity".into(),
@@ -1857,6 +1861,49 @@ mod tests {
             Box::pin(async { Ok(None) })
         }
     }
+    #[tokio::test]
+    async fn denied_model_options_do_not_create_session_storage() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let unregistered = Arc::new(Mock(AtomicUsize::new(0)));
+        let registered = Arc::new(RecordingMock {
+            calls: AtomicUsize::new(0),
+            prepared: Mutex::new(Vec::new()),
+            policy: ModelOptionPolicy::new(
+                ComponentIdentity {
+                    name: "test.local-construction-options".into(),
+                    version: "1".into(),
+                    digest: [62; 32],
+                },
+                serde_json::json!({"type": "object", "additionalProperties": false}),
+            )?,
+        });
+        let providers: [Arc<dyn ModelProvider>; 2] =
+            [unregistered.clone(), registered.clone()];
+        for (index, provider) in providers.into_iter().enumerate() {
+            let session_root = root.path().join(format!("denied-{index}"));
+            let model = Model::new(
+                "mock",
+                "durable",
+                "1",
+                serde_json::json!({"api_key": "private-provider-state"}),
+            )?;
+            assert!(matches!(
+                PersistentLocalHarness::open(
+                    &session_root,
+                    model,
+                    provider,
+                    Limits::default(),
+                )
+                .await,
+                Err(Error::Invalid(_))
+            ));
+            assert!(!session_root.exists(), "denied model created durable storage");
+        }
+        assert_eq!(unregistered.0.load(Ordering::SeqCst), 0);
+        assert_eq!(registered.calls.load(Ordering::SeqCst), 0);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn authoritative_history_overflow_refuses_dispatch_after_restart() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;

@@ -73,19 +73,7 @@ impl PreparedModelInput {
         policy: Option<&ModelOptionPolicy>,
     ) -> Result<Self> {
         limits.validate()?;
-        if let Some(policy) = policy {
-            policy.validate(&request.model.options)?;
-        } else if !(request.model.options.is_null()
-            || request
-                .model
-                .options
-                .as_object()
-                .is_some_and(|value| value.is_empty()))
-        {
-            return Err(Error::Invalid(
-                "model options require a registered provider policy".into(),
-            ));
-        }
+        crate::model::validate_model_options(&request.model.options, policy)?;
         if request.messages.is_empty() || request.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
