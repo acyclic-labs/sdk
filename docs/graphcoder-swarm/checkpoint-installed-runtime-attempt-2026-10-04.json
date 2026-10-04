@@ -30,9 +30,11 @@
   },
   "runner_repair": {
     "path": "scripts/graphcoder-native-stage-e2e.mjs",
-    "sha256_after_repair": "4aa6463126850140bdd3aff8389b13e8735cd516e11f981abc102e5dbba6394f",
+    "sha256_after_repair": "3177c4227ec7250e46c3a012005e62ac0a2783b608fda29590694c2ec78999dd",
+    "test_path": "scripts/graphcoder-native-stage-e2e.test.mjs",
+    "test_sha256": "6fff29eef12eacaa9d598f4659ad1475f9dea046ae878e648eb35b203376e332",
     "change": "preflight responses are correlated by unique request_id, with duplicate, unknown, and missing identities rejected",
-    "focused_validation": "the previously observed reversed response order now reaches lazy-observation validation"
+    "focused_validation": "4 response-correlation tests pass; the previously observed reversed response order now reaches lazy-observation validation"
   },
   "lanes": [
     {
