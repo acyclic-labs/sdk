@@ -2855,6 +2855,40 @@ impl PersistentLocalSwarm {
     /// when a live source is available. The journal append is authoritative;
     /// an observation-only live bridge does not undo the persisted decision.
     pub async fn cancel(&self, task: TaskId) -> Result<LocalSwarmSession> {
+        // Walk the task tree iteratively so cancellation remains stack-safe at
+        // the configured recursive depth.  Children are settled before their
+        // parent, matching the former post-order recursive implementation.
+        let mut pending = vec![(task, false)];
+        while let Some((current, settle)) = pending.pop() {
+            if settle {
+                self.cancel_one(current).await?;
+                continue;
+            }
+            let session = self.session(current).await?;
+            if session.phase == LocalSessionPhase::Completed {
+                return Err(Error::Conflict(
+                    "completed local swarm task cannot be cancelled".into(),
+                ));
+            }
+            if session.phase == LocalSessionPhase::Cancelled {
+                continue;
+            }
+            let mut descendants = self
+                .sessions()
+                .await
+                .into_iter()
+                .filter(|candidate| candidate.parent == Some(current))
+                .collect::<Vec<_>>();
+            descendants.sort_by_key(|candidate| std::cmp::Reverse(candidate.depth));
+            pending.push((current, true));
+            for descendant in descendants {
+                pending.push((descendant.task, false));
+            }
+        }
+        self.session(task).await
+    }
+
+    async fn cancel_one(&self, task: TaskId) -> Result<LocalSwarmSession> {
         let gate = self.task_gate(task).await;
         let _task_guard = gate.lock().await;
         let observed_tail = self.refresh_registry_state_with_tail().await?;
@@ -2866,19 +2900,6 @@ impl PersistentLocalSwarm {
             return Err(Error::Conflict(
                 "completed local swarm task cannot be cancelled".into(),
             ));
-        }
-        let mut descendants = self
-            .sessions()
-            .await
-            .into_iter()
-            .filter(|candidate| candidate.task != task)
-            .filter(|candidate| candidate.parent == Some(task))
-            .collect::<Vec<_>>();
-        descendants.sort_by_key(|candidate| std::cmp::Reverse(candidate.depth));
-        for descendant in descendants {
-            if descendant.phase != LocalSessionPhase::Cancelled {
-                self.cancel(descendant.task).await?;
-            }
         }
         if session.parent.is_none() {
             self.persist_root_budget_usage().await?;
@@ -3260,7 +3281,7 @@ impl PersistentLocalSwarm {
                 journal.refresh().await?;
                 let step_dispatch = IdempotencyKey::new(format!(
                     "{}:model:{}:{}",
-                    dispatch_id,
+                    dispatch_id.0,
                     step,
                     blake3::hash(&request_digest).to_hex(),
                 ))?;
@@ -3406,7 +3427,7 @@ impl PersistentLocalSwarm {
             return Ok(());
         }
         if matches!(reservation.state, crate::swarm_budget::SwarmReservationState::Active)
-            && reservation.dispatch_confirmed
+            && !reservation.confirmed_dispatches.is_empty()
         {
             let token = journal.resume_dispatch_token(operation, owner.clone())?;
             let source = self.budget_usage_source.as_ref().ok_or_else(|| {
@@ -4280,7 +4301,7 @@ impl PersistentLocalSwarm {
         harness: &PersistentLocalHarness,
     ) -> Result<Option<TurnOutput>> {
         let records = load_records(stream).await?;
-        let mut recovered = None;
+        let mut recovered: Option<TurnOutput> = None;
         for record in records {
             let StoredEvent::ForkCompleted {
                 child: recorded_child,
@@ -4369,7 +4390,7 @@ impl PersistentLocalSwarm {
         harness: &PersistentLocalHarness,
     ) -> Result<Option<RecoveredCompletion>> {
         let records = load_records(stream).await?;
-        let mut recovered = None;
+        let mut recovered: Option<RecoveredCompletion> = None;
         for record in records {
             let StoredEvent::ForkOutputPrepared {
                 child: recorded_child,
@@ -4670,14 +4691,6 @@ impl PersistentLocalSwarm {
                 }
             }
         }
-    }
-
-    async fn task_gate(&self, task: TaskId) -> Arc<Mutex<()>> {
-        let mut gates = self.task_gates.lock().await;
-        gates
-            .entry(task)
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
     }
 
     /// Reconciles the in-memory index with the append-only registry before a

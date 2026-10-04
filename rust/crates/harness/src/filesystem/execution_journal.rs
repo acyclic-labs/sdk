@@ -656,7 +656,7 @@ where
             }
             let budget_path = StreamPath::new(&permit.budget_path)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-            let execution_path = self.path(operation_id)?;
+            let execution_path = self.path(operation_id)?.path().clone();
             let idempotency_key = StreamKey::new(Bytes::from(permit.idempotency_key))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let outcome = self
