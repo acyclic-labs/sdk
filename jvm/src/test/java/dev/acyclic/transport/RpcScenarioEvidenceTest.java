@@ -94,6 +94,8 @@ final class RpcScenarioEvidenceTest {
     List<String> outputs = new ArrayList<>();
     for (int index = 0; index < scenarios.size(); index++) {
       Scenario scenario = scenarios.get(index);
+      assertTrue(scenario.responseCount() > 0,
+          scenario.rpc() + " must receive at least one response from the generated transport");
       String filename = String.format("jvm-rpc-%03d.json", index + 1);
       Path path = consumerRoot.resolve(filename);
       Files.writeString(path, scenario.json(), StandardCharsets.UTF_8);
@@ -328,7 +330,7 @@ final class RpcScenarioEvidenceTest {
           + RpcScenarioEvidenceTest.json(executionMode) + "\","
           + "\"rpc_outcome\":{\"status\":\"ok\",\"code\":0,\"response_count\":"
           + responseCount + "},"
-          + "\"checks\":[\"invocation\",\"transport\",\"serialization\"]}\n";
+          + "\"checks\":[\"invocation\",\"transport\",\"receiver-response\",\"serialization\"]}\n";
     }
   }
 
