@@ -71,7 +71,7 @@ jobs:
 
       - name: Install Common Lisp toolchain
         if: matrix.language == 'common-lisp'
-        run: sudo apt-get install --yes sbcl
+        run: sudo apt-get install --yes sbcl ocicl
 
       - name: Generate Rust-owned products
         run: |
