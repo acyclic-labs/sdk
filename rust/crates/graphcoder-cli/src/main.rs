@@ -1341,6 +1341,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn json_lines_reads_messages_through_the_public_pinned_content_path() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let runtime = Arc::new(
+            Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                .await
+                .expect("runtime opens"),
+        );
+        let started = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"messages-start",
+                "method":"start_session",
+                "params":{"prompt":"hello","operation_id":"op-messages-1","model_fixture":"echo"}
+            }),
+        )
+        .await;
+        assert_eq!(started["ok"], true, "{started}");
+        let session_id = started["result"]["summary"]["id"]
+            .as_str()
+            .expect("message session id")
+            .to_owned();
+        let messages = exchange(
+            runtime,
+            json!({
+                "request_id":"messages-read",
+                "method":"read_messages",
+                "params":{"session_id":session_id,"query":{"limit":8,"max_bytes":4096}}
+            }),
+        )
+        .await;
+        assert_eq!(messages["ok"], true, "{messages}");
+        let items = messages["result"]["items"]
+            .as_array()
+            .expect("message page");
+        assert!(!items.is_empty());
+        assert!(items.iter().any(|item| item["body"] == "hello"));
+        for item in items {
+            assert!(item["content_ref"].is_object());
+            assert!(item.get("sender_id").is_none());
+            assert!(item.get("recipient_id").is_none());
+            assert!(item.get("delivered_at").is_none());
+        }
+        let over_budget = exchange(
+            Arc::new(
+                Runtime::open(&runtime_args(root.path().to_owned(), "echo"))
+                    .await
+                    .expect("runtime reopens for bounds"),
+            ),
+            json!({
+                "request_id":"messages-small",
+                "method":"read_messages",
+                "params":{"session_id":session_id,"query":{"max_bytes":1}}
+            }),
+        )
+        .await;
+        assert_eq!(over_budget["ok"], false, "{over_budget}");
+        assert_eq!(over_budget["error"]["code"], "invalid_input");
+    }
+
+    #[tokio::test]
     async fn json_lines_flushes_each_response_before_input_eof() {
         let root = tempfile::tempdir().expect("temporary root");
         let runtime = Arc::new(
