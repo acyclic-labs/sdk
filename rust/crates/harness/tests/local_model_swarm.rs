@@ -656,7 +656,10 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
             .session(acyclic_harness::TaskId::from_bytes(child_a.into_bytes()))
             .await?
             .phase,
-        LocalSessionPhase::Failed(message) if message.contains("depth limit")
+        // The child's model attempt was admitted before its invalid fork.
+        // Retain that activation claim for executor reconciliation; marking
+        // it failed would permit a fresh dispatch of an admitted attempt.
+        LocalSessionPhase::Activating
     ));
     assert!(matches!(
         swarm
@@ -669,6 +672,12 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
         .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
         .await
         .is_err());
+    let requests = provider.decoded_requests();
+    assert_eq!(requests.iter().filter(|request|
+        latest_declared_child_task(request) == Some("child-a")).count(), 1);
+    assert!(!requests.iter().any(|request|
+        latest_declared_child_task(request) == Some("grandchild")),
+        "depth denial dispatched a grandchild model request");
     Ok(())
 }
 
