@@ -47,11 +47,14 @@ def main() -> int:
         if not match:
             continue
         prefix = match.group(1)
+        extra_requests = sorted(observation_dir.glob(f"{prefix}.request.*.bin"))
+        request_frames = [request, *extra_requests]
         responses = sorted(observation_dir.glob(f"{prefix}.response.*.bin"))
         item = {
             "request_file": request.name,
+            "request_files": [path.name for path in request_frames],
             "request_base64": base64.b64encode(request.read_bytes()).decode("ascii"),
-            "request_frames_base64": [base64.b64encode(request.read_bytes()).decode("ascii")],
+            "request_frames_base64": [base64.b64encode(path.read_bytes()).decode("ascii") for path in request_frames],
             "request_sha256": digest(request),
             "response_files": [response.name for response in responses],
             "response_frame_base64": [base64.b64encode(response.read_bytes()).decode("ascii") for response in responses],

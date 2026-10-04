@@ -77,7 +77,7 @@ def main() -> int:
         "    if is_nil(path) or not File.exists?(path), do: [fallback], else: stream_request_frames(path, rpc, module, fallback)",
         "  end",
         "  def stream_request_frames(path, rpc, module, fallback) do",
-        "    key = Base.encode64(rpc)",
+        "    key = rpc",
         "    line = File.read!(path) |> String.split(\"\\n\", trim: true) |> Enum.find(fn value -> String.starts_with?(value, key <> \"\\t\") end)",
         "    case line do nil -> [fallback]; value -> value |> String.split(\"\\t\", parts: 2) |> List.last() |> String.split(\",\", trim: true) |> Enum.map(fn encoded -> encoded |> Base.decode64!() |> decode_request(module) end) end",
         "  end",
