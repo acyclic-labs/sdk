@@ -175,13 +175,17 @@ fn verify(
         .parent()
         .ok_or_else(|| "scenario path has no parent".to_owned())?;
     for item in scenarios {
-        let object = item.as_object().ok_or_else(|| "scenario is not an object".to_owned())?;
+        let object = item
+            .as_object()
+            .ok_or_else(|| "scenario is not an object".to_owned())?;
         let rpc = object
             .get("rpc")
             .and_then(Value::as_str)
             .ok_or_else(|| "scenario RPC is missing".to_owned())?;
         if !REQUIRED_RPCS.contains(&rpc) || !observed.insert(rpc.to_owned()) {
-            return Err(format!("unexpected or duplicate Stream RPC scenario: {rpc}"));
+            return Err(format!(
+                "unexpected or duplicate Stream RPC scenario: {rpc}"
+            ));
         }
         if object.get("family").and_then(Value::as_str) != Some("stream")
             || object.get("status").and_then(Value::as_str) != Some("passed")
@@ -203,7 +207,8 @@ fn verify(
             return Err(format!("scenario output escapes its evidence root: {rpc}"));
         }
         let result = read_json(&result_path)?;
-        if result.get("schema").and_then(Value::as_str) != Some("acyclic.sdk.rpc-scenario-result.v1")
+        if result.get("schema").and_then(Value::as_str)
+            != Some("acyclic.sdk.rpc-scenario-result.v1")
             || result.get("source_revision").and_then(Value::as_str) != Some(source_revision)
             || result.get("status").and_then(Value::as_str) != Some("passed")
             || result.get("invoked").and_then(Value::as_bool) != Some(true)
@@ -222,7 +227,9 @@ fn verify(
     }
     let required: BTreeSet<String> = REQUIRED_RPCS.iter().map(|rpc| (*rpc).to_owned()).collect();
     if observed != required {
-        return Err(format!("Stream scenario inventory is incomplete: {observed:?}"));
+        return Err(format!(
+            "Stream scenario inventory is incomplete: {observed:?}"
+        ));
     }
     Ok(json!({
         "schema": OUTPUT_SCHEMA,
@@ -358,20 +365,32 @@ fn verify_archive(path: &Path, package_root: &Path, package_name: &str) -> Resul
         std::io::Read::read_to_end(&mut entry, &mut content).map_err(|error| error.to_string())?;
         entries.insert(name, content);
     }
-    let required = ["package.json", "index.js", "BUILD.json", "acyclic_stream_native.node"];
+    let required = [
+        "package.json",
+        "index.js",
+        "BUILD.json",
+        "acyclic_stream_native.node",
+    ];
     let mut matched = BTreeSet::new();
     for (name, content) in &entries {
         for required_name in required {
             if name.ends_with(&format!("package/{required_name}")) {
-                if content != &fs::read(package_root.join(required_name)).map_err(|error| error.to_string())? {
-                    return Err(format!("archive entry differs from installed package: {required_name}"));
+                if content
+                    != &fs::read(package_root.join(required_name))
+                        .map_err(|error| error.to_string())?
+                {
+                    return Err(format!(
+                        "archive entry differs from installed package: {required_name}"
+                    ));
                 }
                 matched.insert(required_name);
             }
         }
     }
     if matched.len() != required.len() {
-        return Err(format!("archive for {package_name} is missing package files: {matched:?}"));
+        return Err(format!(
+            "archive for {package_name} is missing package files: {matched:?}"
+        ));
     }
     Ok(json!({
         "path": path.to_string_lossy(),
@@ -403,7 +422,9 @@ fn verify_file_hash(
 
 fn expect_revision(value: &Value, expected: &str, label: &str) -> Result<(), String> {
     if value.get("source_revision").and_then(Value::as_str) != Some(expected) {
-        return Err(format!("{label} source revision differs from requested revision"));
+        return Err(format!(
+            "{label} source revision differs from requested revision"
+        ));
     }
     Ok(())
 }
@@ -423,7 +444,9 @@ fn string_field(value: &Value, key: &str) -> Result<String, String> {
 }
 
 fn hash_file(path: &Path) -> Result<String, String> {
-    Ok(hash_bytes(&fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?))
+    Ok(hash_bytes(
+        &fs::read(path).map_err(|error| format!("{}: {error}", path.display()))?,
+    ))
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -433,7 +456,11 @@ fn hash_bytes(bytes: &[u8]) -> String {
 }
 
 fn required<'a>(values: &'a BTreeMap<String, String>, key: &str) -> Result<&'a str, String> {
-    values.get(key).map(String::as_str).filter(|value| !value.is_empty()).ok_or_else(usage)
+    values
+        .get(key)
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(usage)
 }
 
 fn usage() -> String {
@@ -453,7 +480,11 @@ mod tests {
             REQUIRED_RPCS.len()
         );
         assert!(REQUIRED_RPCS.iter().any(|rpc| rpc.ends_with("/Follow")));
-        assert!(REQUIRED_RPCS.iter().any(|rpc| rpc.ends_with("/InspectIdempotency")));
+        assert!(
+            REQUIRED_RPCS
+                .iter()
+                .any(|rpc| rpc.ends_with("/InspectIdempotency"))
+        );
     }
 
     #[test]
