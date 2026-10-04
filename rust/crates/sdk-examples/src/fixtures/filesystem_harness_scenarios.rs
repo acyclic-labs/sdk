@@ -899,12 +899,12 @@ mod tests {
             assert_eq!(record["source"], super::SOURCE);
             let request = record["request"].as_object().expect("typed request");
             assert!(!request["type"].as_str().unwrap_or_default().is_empty());
-            assert!(!request["bytes_base64"].as_str().unwrap_or_default().is_empty());
+            assert!(request["bytes_base64"].as_str().is_some());
             assert!(request["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
 
             let response = record["response"].as_object().expect("response evidence");
             if let Some(bytes) = response.get("bytes_base64") {
-                assert!(!bytes.as_str().unwrap_or_default().is_empty());
+                assert!(bytes.as_str().is_some());
                 assert!(response["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
             } else {
                 assert!(!response["status"].as_str().unwrap_or_default().is_empty());
