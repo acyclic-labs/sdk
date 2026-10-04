@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Integrated communication](checkpoint-communication-root-2026-10-04.json) records 31/31 communication contracts, 1/1 durable-host reducer, 1/1 inbox and 6/6 local-swarm regressions at `ebc33d86a`, plus 6/6 exact-provider input regressions and 2/2 strengthened real LocalStream/LocalFs scenarios at `8500ee7cb`. The original 1/2 cancellation-fixture failure is preserved. These checks prove sender-scoped delivery and immutable metadata after provider reopen, not recursive model-selected messaging or an independent process restart.
+
 [Persistent Root input](checkpoint-persistent-input-root-2026-10-04.json) records 6/6 current Windows tests at `3f5a619d8`, capturing actual provider bytes with real storage and cold replay. The original 5/6 run and executable are preserved; its option test was corrected to assert earlier construction rejection and no storage effects. True sibling/UI-store exclusion and recursive swarm activation remain open.
 
 [Native CLI process feature](checkpoint-native-process-feature-2026-10-04.json) records 7/7 Windows CLI tests with Harness process-tree support enabled at `15f9e870e`. It does not prove installed descendant cleanup or a fresh distributable. The subsequent persistent-input build failed at linking with disk exhaustion; its shell exit zero is explicitly not test success.

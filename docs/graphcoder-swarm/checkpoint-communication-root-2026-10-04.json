@@ -1,0 +1,184 @@
+{
+  "scope": "Integrated authenticated communication, owner-retained waits and native persistent communication regression",
+  "platform": "Windows native",
+  "models": "mocked",
+  "tool_revision": "2",
+  "wait_event_contract": "harness.wait-event.v2",
+  "sources": [
+    {
+      "path": "rust/crates/harness/src/communication.rs",
+      "sha256": "a791e694a7630f53baeb6b55e4beaaea1fdd5bd5416fc9219eebe2fe6acecda2"
+    },
+    {
+      "path": "rust/crates/harness/src/communication_tools.rs",
+      "sha256": "9481b6877194f34ffe50bc2a9869c0d01182b37699cd1a0a7d6d6a0cde4e0fba"
+    },
+    {
+      "path": "rust/crates/harness/src/scheduler.rs",
+      "sha256": "1a56bfbf33782bc117be796538c690a966937d7e4fdd0476aa4ee20e59b55a2c"
+    },
+    {
+      "path": "rust/crates/harness/src/durable_host.rs",
+      "sha256": "833978ab15309dc258bd917d9899d8afb21b98540acd3a5143441242ae973172"
+    },
+    {
+      "path": "rust/crates/harness/src/filesystem/swarm_local.rs",
+      "sha256": "7c332986edb73aafe1df3f5cab7ce0e0da7dfc72ddcce2804c526f475ab10d42"
+    }
+  ],
+  "environment": {
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_BUILD_JOBS": "2",
+    "CARGO_INCREMENTAL": "0"
+  },
+  "target": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/target",
+  "runs": [
+    {
+      "passed": 31,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/acyclic_harness-41fc1555027bbefa.exe",
+        "sha256": "53e6b31d3b3f531d308d02453f9ae5bf5b7d0d0f41f38227ad5ade549a12e1e5"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/communication-root.log",
+        "sha256": "bdd8c36d5246eca6981a6836ceb94f5c3dd0d4fb0517801a29b20e15a632158e"
+      },
+      "name": "communication unit contracts",
+      "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+      "failed": 0,
+      "filtered": 305
+    },
+    {
+      "passed": 1,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/acyclic_harness-41fc1555027bbefa.exe",
+        "sha256": "53e6b31d3b3f531d308d02453f9ae5bf5b7d0d0f41f38227ad5ade549a12e1e5"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/durable-host.log",
+        "sha256": "4587d617e994319a4c5271736c6f4bb90f98c83efaed09347470dd0a06b583c8"
+      },
+      "name": "durable host reducer",
+      "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+      "failed": 0,
+      "filtered": 335
+    },
+    {
+      "passed": 1,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/acyclic_harness-41fc1555027bbefa.exe",
+        "sha256": "53e6b31d3b3f531d308d02453f9ae5bf5b7d0d0f41f38227ad5ade549a12e1e5"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/inbox.log",
+        "sha256": "a71ea6de44a42b0a5f8b5aeab849072c056fcb6731ad43ee05d2e1c01701cb39"
+      },
+      "name": "sender-scoped inbox",
+      "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+      "failed": 0,
+      "filtered": 335
+    },
+    {
+      "passed": 6,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/acyclic_harness-41fc1555027bbefa.exe",
+        "sha256": "53e6b31d3b3f531d308d02453f9ae5bf5b7d0d0f41f38227ad5ade549a12e1e5"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/swarm-local.log",
+        "sha256": "71c25bb8c8f4ced4d81a69e1f0beaba01c151e18bd4a2b7e81e771ba737f1f18"
+      },
+      "name": "persistent local swarm regressions",
+      "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+      "failed": 0,
+      "filtered": 330
+    },
+    {
+      "process_session": 21064,
+      "passed": 6,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/persistent_model_input_admission_v3-102e6d34eab379bf.exe",
+        "sha256": "7383a4185ea6b9650cf02b33483aca18a52c7222354169e72dffad48a6ec2c14"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/communication-input-regression.log",
+        "sha256": "537bd07c7daa4f7204e1d4cf7effc11b83704933f7917e3f6e53f7bfc53caf83"
+      },
+      "name": "persistent actual-provider input regression",
+      "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+      "failed": 0,
+      "filtered": 0
+    },
+    {
+      "process_session": 49273,
+      "passed": 2,
+      "artifact": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/8500ee7cb/communication_local-648a4d1497b0c654.exe",
+        "sha256": "3c38348c1dfde7bb6d0d6aaa8969c05469b08386d33200ade466e40e27442655"
+      },
+      "log": {
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/8500ee7cb/communication-local-final.log",
+        "sha256": "e181b4ad3409b8f4498a1d0c25a6277ba24778bf8398dbc3199c34c7bfa4c49c"
+      },
+      "name": "real LocalStream/LocalFs messaging and cancellation reopen",
+      "suite": {
+        "path": "rust/crates/harness/tests/communication_local.rs",
+        "sha256": "31050cddc3f352775e5ec5533bd48b4071e44d51e5bf8b9dc65bbcfad2545fbc"
+      },
+      "source_commit": "8500ee7cb0512c8e20ef014b90b459b6ca15d4a2",
+      "ignored": 0,
+      "exit_code": 0,
+      "rust_tree": "201fb830f86253517b3d6fd9f05ba34b0d43a99a",
+      "failed": 0,
+      "filtered": 0
+    }
+  ],
+  "prior_failure": {
+    "process_session": 6304,
+    "passed": 1,
+    "cause": "Existing live cancellation fixture omitted the now-required declared identity; fixed by granting an explicit distinct cancellation identity, not weakening runtime admission.",
+    "log": {
+      "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/communication-local-initial.log",
+      "sha256": "275a409e969cf3d8be62634d34fa15e8f4be57822ffbd4b061d0ee4293eb3f01"
+    },
+    "failed": 1,
+    "source_commit": "ebc33d86a74dd79e08a47344923b6a670f3ecd0d",
+    "ignored": 0,
+    "exit_code": 101,
+    "rust_tree": "c0463b2f171ee31f1714c0bfc19c3e61e08bc345",
+    "artifact": {
+      "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/ebc33d86a/communication_local-648a4d1497b0c654.exe",
+      "sha256": "5dd1d4ee5c7bf35dab57c5823decb7c77f0261a8c7eea50482cf411e41476ac0"
+    }
+  },
+  "verified": [
+    "Authenticated sender and caller identity jointly distinguish messages",
+    "Real stream-delivery timestamps and file references replay unchanged after provider reopen",
+    "Sibling message targets rejected; two children may reuse a message identity when sending to their parent",
+    "Cancellation channels survive repeated registration; durable waits reject missing cancellation identity and impossible completion times",
+    "Unknown inbox owners rejected before communication host lookup",
+    "Actual provider input regressions remain passing"
+  ],
+  "unmet": [
+    "Recursive model-selected messaging and integration across multiple depths remain unqualified",
+    "Native JSON transport and generated public bindings still need current contract qualification",
+    "Provider reopen within one test process does not establish independent process restart",
+    "Final installed artifacts, complete fault matrix, and full swarm gate remain open"
+  ]
+}
