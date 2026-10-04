@@ -2,6 +2,12 @@
   "schema": "acyclic.ruby-php-dart.producer-request.v1",
   "languages": ["ruby", "php", "dart"],
   "purpose": "Generate the three installed remote SDK package artifacts from one Rust authority manifest.",
+  "source": {
+    "binding": "derive at execution from the frozen Rust rust-authority.json",
+    "git_sha": "rust-authority.json.source_git_sha",
+    "model_digest": "rust-authority.json.source_revision",
+    "authority_field_requirements": ["source_git_sha", "source_revision"]
+  },
   "qualification": {
     "authority": "rust-authority.json",
     "source_hashes": "required",

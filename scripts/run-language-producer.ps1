@@ -108,6 +108,18 @@ Assert-SafeDestination $TargetOutput $OutputRoot $SourceRoot
 $wireManifest = Join-Path $WireRoot 'rust-authority.json'
 Require-File $wireManifest 'Rust authority manifest'
 Require-File $Request 'generation request'
+$requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
+$authorityDocument = Get-Content -LiteralPath $wireManifest -Raw | ConvertFrom-Json
+$sourceGitSha = [string]$authorityDocument.source_git_sha
+$sourceModelDigest = [string]$authorityDocument.source_revision
+if ($sourceGitSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw 'rust-authority.json must carry a 40-character source_git_sha'
+}
+if ($sourceModelDigest -notmatch '^[0-9a-fA-F]{64}$') {
+    throw 'rust-authority.json source_revision must be the 64-character Rust model digest'
+}
+$env:GIT_COMMIT = $sourceGitSha.ToLowerInvariant()
+$env:ACYCLIC_RUST_MODEL_DIGEST = $sourceModelDigest.ToLowerInvariant()
 $toolPaths = [System.Collections.Generic.List[string]]::new()
 
 switch ($TargetId) {
@@ -271,12 +283,13 @@ switch ($TargetId) {
     }
 }
 
-$requestDocument = Get-Content -LiteralPath $Request -Raw | ConvertFrom-Json
 $toolReceipt = [ordered]@{
     schema = 'acyclic.sdk.language-toolchain-receipt.v1'
     target = $TargetId
-    source_revision = [string]$requestDocument.source.revision
-    source_digest = [string]$requestDocument.source.digest
+    source_revision = $sourceGitSha.ToLowerInvariant()
+    source_git_sha = $sourceGitSha.ToLowerInvariant()
+    source_digest = $sourceModelDigest.ToLowerInvariant()
+    rust_model_digest = $sourceModelDigest.ToLowerInvariant()
     tools = @($toolPaths | Sort-Object -Unique | ForEach-Object {
         [ordered]@{
             path = $_
