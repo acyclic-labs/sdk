@@ -2,6 +2,11 @@ use super::*;
 use tonic::transport::{
     Certificate, Channel, ClientTlsConfig, Endpoint as TonicEndpoint, Identity,
 };
+use tonic::{
+    Request, Status,
+    metadata::{Ascii, MetadataValue},
+    service::{Interceptor, interceptor::InterceptedService},
+};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
@@ -15,9 +20,42 @@ pub struct Tls<'a> {
     pub private_key: &'a [u8],
 }
 
+/// Opaque account credential metadata shared by all generated requests.
+#[derive(Clone, Default)]
+struct BearerAuth(Option<MetadataValue<Ascii>>);
+
+impl BearerAuth {
+    fn new(token: &str) -> Result<Self, ProviderError> {
+        if token.trim().is_empty() {
+            return Err(ProviderError::Invalid(
+                "invalid Machines bearer credential".into(),
+            ));
+        }
+        let mut value: MetadataValue<Ascii> = format!("Bearer {token}")
+            .parse()
+            .map_err(|_| ProviderError::Invalid("invalid Machines bearer credential".into()))?;
+        value.set_sensitive(true);
+        Ok(Self(Some(value)))
+    }
+}
+
+impl Interceptor for BearerAuth {
+    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
+        if let Some(value) = &self.0 {
+            request
+                .metadata_mut()
+                .insert("authorization", value.clone());
+        }
+        Ok(request)
+    }
+}
+
+type Client =
+    wire::machines_service_client::MachinesServiceClient<InterceptedService<Channel, BearerAuth>>;
+
 #[derive(Clone)]
 struct GrpcProvider {
-    client: wire::machines_service_client::MachinesServiceClient<Channel>,
+    client: Client,
 }
 
 #[cfg(target_os = "linux")]
@@ -45,10 +83,20 @@ impl Machines {
     /// `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
     /// `ACYCLIC_MACHINES_KEY_FILE`.
     pub async fn from_env() -> Result<Self, ProviderError> {
+        Self::from_env_auth(BearerAuth::default()).await
+    }
+
+    /// Connects using the endpoint/TLS files from the environment and an explicitly
+    /// supplied opaque account bearer. The credential is forwarded, never verified here.
+    pub async fn from_env_with_bearer(token: &str) -> Result<Self, ProviderError> {
+        Self::from_env_auth(BearerAuth::new(token)?).await
+    }
+
+    async fn from_env_auth(auth: BearerAuth) -> Result<Self, ProviderError> {
         let endpoint = std::env::var("ACYCLIC_MACHINES_ENDPOINT")
             .map_err(|_| ProviderError::Invalid("ACYCLIC_MACHINES_ENDPOINT is required".into()))?;
         if let Some(path) = endpoint.strip_prefix("unix:") {
-            return Self::connect_local(std::path::Path::new(path)).await;
+            return Self::connect_local_auth(std::path::Path::new(path), auth).await;
         }
         let read = |name: &'static str| async move {
             let path = std::env::var(name)
@@ -62,19 +110,38 @@ impl Machines {
             read("ACYCLIC_MACHINES_CERT_FILE"),
             read("ACYCLIC_MACHINES_KEY_FILE")
         )?;
-        Self::connect(
+        Self::connect_auth(
             &endpoint,
             Tls {
                 ca: &ca,
                 certificate: &certificate,
                 private_key: &private_key,
             },
+            auth,
         )
         .await
     }
 
     /// Connects to an HTTPS Machines endpoint with mandatory mutual TLS.
     pub async fn connect(uri: &str, tls: Tls<'_>) -> Result<Self, ProviderError> {
+        Self::connect_auth(uri, tls, BearerAuth::default()).await
+    }
+
+    /// Connects with mandatory mutual TLS and an explicit opaque account bearer
+    /// applied to every unary, watch, inspection, and operation polling request.
+    pub async fn connect_with_bearer(
+        uri: &str,
+        tls: Tls<'_>,
+        token: &str,
+    ) -> Result<Self, ProviderError> {
+        Self::connect_auth(uri, tls, BearerAuth::new(token)?).await
+    }
+
+    async fn connect_auth(
+        uri: &str,
+        tls: Tls<'_>,
+        auth: BearerAuth,
+    ) -> Result<Self, ProviderError> {
         if !uri.starts_with("https://") {
             return Err(ProviderError::Invalid(
                 "remote Machines endpoint must use https".into(),
@@ -94,12 +161,29 @@ impl Machines {
             .connect()
             .await
             .map_err(|_| ProviderError::Unavailable)?;
-        Ok(Self::grpc(channel))
+        Ok(Self::grpc_with_auth(channel, auth))
     }
 
     /// Connects to an owner-confined local Unix socket.
     #[cfg(target_os = "linux")]
     pub async fn connect_local(path: &std::path::Path) -> Result<Self, ProviderError> {
+        Self::connect_local_auth(path, BearerAuth::default()).await
+    }
+
+    /// Connects to an owner-confined socket with an explicit opaque account bearer.
+    #[cfg(target_os = "linux")]
+    pub async fn connect_local_with_bearer(
+        path: &std::path::Path,
+        token: &str,
+    ) -> Result<Self, ProviderError> {
+        Self::connect_local_auth(path, BearerAuth::new(token)?).await
+    }
+
+    #[cfg(target_os = "linux")]
+    async fn connect_local_auth(
+        path: &std::path::Path,
+        auth: BearerAuth,
+    ) -> Result<Self, ProviderError> {
         use std::os::unix::fs::MetadataExt as _;
         use tokio::net::UnixStream;
         use tower::service_fn;
@@ -135,21 +219,39 @@ impl Machines {
             }))
             .await
             .map_err(|_| ProviderError::Unavailable)?;
-        Ok(Self::grpc(channel))
+        Ok(Self::grpc_with_auth(channel, auth))
     }
 
     /// Reports that Unix sockets are unavailable on this platform.
     #[cfg(not(target_os = "linux"))]
-    pub async fn connect_local(_path: &std::path::Path) -> Result<Self, ProviderError> {
+    pub async fn connect_local(path: &std::path::Path) -> Result<Self, ProviderError> {
+        Self::connect_local_auth(path, BearerAuth::default()).await
+    }
+
+    /// Reports that Unix sockets are unavailable on this platform.
+    #[cfg(not(target_os = "linux"))]
+    pub async fn connect_local_with_bearer(
+        path: &std::path::Path,
+        token: &str,
+    ) -> Result<Self, ProviderError> {
+        Self::connect_local_auth(path, BearerAuth::new(token)?).await
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    async fn connect_local_auth(
+        _path: &std::path::Path,
+        _auth: BearerAuth,
+    ) -> Result<Self, ProviderError> {
         Err(ProviderError::Unsupported(
             "local Machines sockets require Linux".into(),
         ))
     }
 
-    fn grpc(channel: Channel) -> Self {
-        let client = wire::machines_service_client::MachinesServiceClient::new(channel)
-            .max_decoding_message_size(MAX_MESSAGE_BYTES)
-            .max_encoding_message_size(MAX_MESSAGE_BYTES);
+    fn grpc_with_auth(channel: Channel, auth: BearerAuth) -> Self {
+        let client =
+            wire::machines_service_client::MachinesServiceClient::with_interceptor(channel, auth)
+                .max_decoding_message_size(MAX_MESSAGE_BYTES)
+                .max_encoding_message_size(MAX_MESSAGE_BYTES);
         Self::new(Arc::new(GrpcProvider { client }))
     }
 }
@@ -597,7 +699,7 @@ enum MachineMutation {
 }
 
 impl GrpcProvider {
-    fn client(&self) -> wire::machines_service_client::MachinesServiceClient<Channel> {
+    fn client(&self) -> Client {
         self.client.clone()
     }
     async fn recovered_admission(
@@ -1629,7 +1731,21 @@ mod tests {
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
         let server = tokio::spawn(async move {
             Server::builder()
-                .add_service(MachinesServiceServer::new(service))
+                .add_service(MachinesServiceServer::with_interceptor(
+                    service,
+                    |request: Request<()>| {
+                        let values: Vec<_> =
+                            request.metadata().get_all("authorization").iter().collect();
+                        if values.len() != 1
+                            || values
+                                .first()
+                                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+                        {
+                            return Err(Status::unauthenticated("missing or substituted bearer"));
+                        }
+                        Ok(request)
+                    },
+                ))
                 .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                     let _ = shutdown_rx.await;
                 })
@@ -1638,7 +1754,11 @@ mod tests {
         let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
             .connect()
             .await?;
-        Ok((Machines::grpc(channel), shutdown_tx, server))
+        Ok((
+            Machines::grpc_with_auth(channel, BearerAuth::new("opaque.account+/=")?),
+            shutdown_tx,
+            server,
+        ))
     }
 
     fn operation_state(
@@ -1672,6 +1792,334 @@ mod tests {
                 },
             )),
         }
+    }
+
+    #[tokio::test]
+    async fn bearer_crosses_every_generated_rpc_and_client_clone()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: state.clone(),
+            cancelled: state,
+            watch: WatchReply::Items(Vec::new()),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let received = observed.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(MachinesServiceServer::with_interceptor(
+                    service,
+                    move |request: Request<()>| {
+                        let values: Vec<_> =
+                            request.metadata().get_all("authorization").iter().collect();
+                        if values.len() != 1
+                            || values
+                                .first()
+                                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+                        {
+                            return Err(Status::unauthenticated("missing or substituted bearer"));
+                        }
+                        received.fetch_add(1, Ordering::SeqCst);
+                        Ok(request)
+                    },
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let channel = TonicEndpoint::from_shared(format!("http://{address}"))?
+            .connect()
+            .await?;
+        let mut denied = wire::machines_service_client::MachinesServiceClient::with_interceptor(
+            channel.clone(),
+            BearerAuth::default(),
+        );
+        assert_eq!(
+            denied
+                .list_machines(wire::ListMachinesRequest::default())
+                .await
+                .err()
+                .ok_or("RPC unexpectedly succeeded")?
+                .code(),
+            Code::Unauthenticated
+        );
+        let client = wire::machines_service_client::MachinesServiceClient::with_interceptor(
+            channel,
+            BearerAuth::new("opaque.account+/=")?,
+        );
+        macro_rules! observe {
+            ($method:ident, $request:ident) => {
+                let error = client
+                    .clone()
+                    .$method(wire::$request::default())
+                    .await
+                    .unwrap_err();
+                assert_ne!(error.code(), Code::Unauthenticated, stringify!($method));
+            };
+        }
+        observe!(qualify_image, QualifyImageRequest);
+        observe!(create, CreateMachineRequest);
+        observe!(checkpoint, CheckpointMachineRequest);
+        observe!(fork, ForkCheckpointRequest);
+        observe!(fork_machine, ForkMachineRequest);
+        observe!(suspend, MachineMutationRequest);
+        observe!(wake, MachineMutationRequest);
+        observe!(set_suspension_policy, SetSuspensionPolicyRequest);
+        observe!(destroy_machine, MachineMutationRequest);
+        observe!(destroy_checkpoint, CheckpointMutationRequest);
+        observe!(recover, RecoverRequest);
+        observe!(inspect_machine, InspectMachineRequest);
+        observe!(inspect_checkpoint, InspectCheckpointRequest);
+        observe!(list_machines, ListMachinesRequest);
+        observe!(events, EventsRequest);
+        observe!(usage, UsageRequest);
+        observe!(cancel, OperationRequest);
+        observe!(inspect_operation, OperationRequest);
+        let mut stream = client
+            .clone()
+            .watch_operation(operation_request(operation))
+            .await?
+            .into_inner();
+        assert!(stream.message().await?.is_none());
+        assert_eq!(observed.load(Ordering::SeqCst), 19);
+        let _ = shutdown_tx.send(());
+        server.await??;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn remote_bearer_crosses_mtls_constructor_and_operation_clones()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use rcgen::{
+            BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tonic::transport::ServerTlsConfig;
+
+        let server_identity = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
+        let server_pem = server_identity.cert.pem();
+        let server_key = server_identity.signing_key.serialize_pem();
+        let ca_key = KeyPair::generate()?;
+        let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca_cert = ca_params.self_signed(&ca_key)?;
+        let issuer = Issuer::new(ca_params, ca_key);
+        let client_key = KeyPair::generate()?;
+        let mut client_params = CertificateParams::new(Vec::<String>::new())?;
+        client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        let client_cert = client_params.signed_by(&client_key, &issuer)?;
+        let client_pem = client_cert.pem();
+        let client_key_pem = client_key.serialize_pem();
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: state.clone(),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        };
+        let observed = Arc::new(AtomicUsize::new(0));
+        let received = observed.clone();
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let mut builder = Server::builder().tls_config(
+            ServerTlsConfig::new()
+                .identity(Identity::from_pem(&server_pem, &server_key))
+                .client_ca_root(Certificate::from_pem(ca_cert.pem())),
+        )?;
+        let server = tokio::spawn(async move {
+            builder
+                .add_service(MachinesServiceServer::with_interceptor(
+                    service,
+                    move |request: Request<()>| {
+                        let values: Vec<_> =
+                            request.metadata().get_all("authorization").iter().collect();
+                        if values.len() != 1
+                            || values
+                                .first()
+                                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+                        {
+                            return Err(Status::unauthenticated("missing or substituted bearer"));
+                        }
+                        received.fetch_add(1, Ordering::SeqCst);
+                        Ok(request)
+                    },
+                ))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let tls = || Tls {
+            ca: server_pem.as_bytes(),
+            certificate: client_pem.as_bytes(),
+            private_key: client_key_pem.as_bytes(),
+        };
+        let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+            let denied = Machines::connect(&endpoint, tls()).await?;
+            assert!(denied.operation_for(key).await.is_err());
+            let machines =
+                Machines::connect_with_bearer(&endpoint, tls(), "opaque.account+/=").await?;
+            assert_eq!(machines.clone().operation_for(key).await?, operation);
+            assert_eq!(
+                machines.clone().inspect_operation(operation).await?.phase,
+                OperationPhase::Succeeded
+            );
+            assert_eq!(
+                machines.clone().cancel_operation(operation).await?.phase,
+                OperationPhase::Cancelled
+            );
+            let mut watch = machines.clone().watch_operation(operation).await?;
+            assert_eq!(
+                watch.next().await.transpose()?.map(|value| value.phase),
+                Some(OperationPhase::Succeeded)
+            );
+            assert!(watch.next().await.is_none());
+            assert_eq!(observed.load(Ordering::SeqCst), 4);
+            Ok(())
+        }
+        .await;
+        let _ = shutdown_tx.send(());
+        server.await??;
+        result
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn local_bearer_crosses_owner_confined_socket_and_operation_clones()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::net::UnixListener;
+        use tokio_stream::wrappers::UnixListenerStream;
+
+        let key = IdempotencyKey::parse("00000000-0000-0000-0000-000000000001")?;
+        let operation = OperationId::parse("00000000-0000-0000-0000-000000000002")?;
+        let machine = MachineId::parse("00000000-0000-0000-0000-000000000003")?;
+        let state = operation_state(operation, wire::OperationStatus::Succeeded);
+        let service = OperationService {
+            expected_key: key,
+            expected_operation: operation,
+            recovered: recovered_suspend(operation, operation, machine),
+            inspected: state.clone(),
+            cancelled: operation_state(operation, wire::OperationStatus::Cancelled),
+            watch: WatchReply::Items(vec![WatchItem::State(state)]),
+        };
+        let directory = std::env::temp_dir().join(format!("machines-bearer-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory)?;
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))?;
+        let socket = directory.join("machines.sock");
+        let listener = UnixListener::bind(&socket)?;
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600))?;
+        let observed = Arc::new(AtomicUsize::new(0));
+        let received = observed.clone();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            Server::builder()
+                .add_service(MachinesServiceServer::with_interceptor(
+                    service,
+                    move |request: Request<()>| {
+                        let values: Vec<_> =
+                            request.metadata().get_all("authorization").iter().collect();
+                        if values.len() != 1
+                            || values
+                                .first()
+                                .is_none_or(|value| *value != "Bearer opaque.account+/=")
+                        {
+                            return Err(Status::unauthenticated("missing or substituted bearer"));
+                        }
+                        received.fetch_add(1, Ordering::SeqCst);
+                        Ok(request)
+                    },
+                ))
+                .serve_with_incoming_shutdown(UnixListenerStream::new(listener), async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+        });
+        let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+            let denied = Machines::connect_local(&socket).await?;
+            assert!(denied.operation_for(key).await.is_err());
+            let machines =
+                Machines::connect_local_with_bearer(&socket, "opaque.account+/=").await?;
+            assert_eq!(machines.clone().operation_for(key).await?, operation);
+            assert_eq!(
+                machines.clone().inspect_operation(operation).await?.phase,
+                OperationPhase::Succeeded
+            );
+            assert_eq!(
+                machines.clone().cancel_operation(operation).await?.phase,
+                OperationPhase::Cancelled
+            );
+            let mut watch = machines.clone().watch_operation(operation).await?;
+            assert_eq!(
+                watch.next().await.transpose()?.map(|value| value.phase),
+                Some(OperationPhase::Succeeded)
+            );
+            assert!(watch.next().await.is_none());
+            assert_eq!(observed.load(Ordering::SeqCst), 4);
+            Ok(())
+        }
+        .await;
+        let _ = shutdown_tx.send(());
+        let server_result = server.await;
+        // Attempt both removals before propagating server or cleanup errors.
+        let socket_cleanup = std::fs::remove_file(&socket);
+        let directory_cleanup = std::fs::remove_dir(&directory);
+        server_result??;
+        socket_cleanup?;
+        directory_cleanup?;
+        result
+    }
+
+    #[test]
+    fn bearer_is_opaque_sensitive_and_replaces_existing_authorization()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut auth = BearerAuth::new("opaque.account+/=")?;
+        let mut request = Request::new(());
+        request
+            .metadata_mut()
+            .append("authorization", MetadataValue::from_static("stale"));
+        let request = auth.call(request)?;
+        let value = request
+            .metadata()
+            .get("authorization")
+            .ok_or("missing authorization")?;
+        assert_eq!(value, "Bearer opaque.account+/=");
+        assert!(value.is_sensitive());
+        assert_eq!(
+            request.metadata().get_all("authorization").iter().count(),
+            1
+        );
+        for invalid in [
+            "",
+            "   ",
+            "opaque\nsecret",
+            "opaque\rsecret",
+            "opaque\0secret",
+        ] {
+            assert!(matches!(
+                BearerAuth::new(invalid),
+                Err(ProviderError::Invalid(_))
+            ));
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -1963,8 +2411,9 @@ mod tests {
     #[tokio::test]
     async fn recovered_forks_reject_empty_and_duplicate_child_sets_before_fanout() {
         let provider = GrpcProvider {
-            client: wire::machines_service_client::MachinesServiceClient::new(
+            client: wire::machines_service_client::MachinesServiceClient::with_interceptor(
                 TonicEndpoint::from_static("http://127.0.0.1:1").connect_lazy(),
+                BearerAuth::default(),
             ),
         };
         let operation = OperationId::parse("00000000-0000-0000-0000-000000000001")

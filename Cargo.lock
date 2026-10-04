@@ -253,6 +253,7 @@ dependencies = [
  "hex",
  "hyper-util",
  "prost",
+ "rcgen",
  "rustix",
  "serde",
  "serde_json",
