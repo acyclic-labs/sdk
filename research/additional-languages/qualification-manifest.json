@@ -40,9 +40,10 @@
       "id": "lua",
       "toolchain": { "lua": "5.4", "luarocks": "Ubuntu release package", "go": "Ubuntu release package" },
       "generator": { "repository": "https://github.com/Protocol-Lattice/lua-grpc", "commit": "1247ad7278ec39b3e2db384ede8ca6d1e6204fa1", "rockspec": "lua-grpc-0.1.6-1", "license": "blocked: pinned repository has no LICENSE or COPYING file and no grant in reachable history" },
-      "transport": { "package": "lua-http", "protocol": "HTTP/2", "tls": "lua-http TLS request option", "cancellation": "grpc.context cancellation and deadline" },
-      "artifact": "LuaRocks archive plus Rust-generated descriptor and Lua service binding",
-      "qualification": "pending-license-grant-and-full-Rust-product-consumer"
+      "transport": { "package": "Rust sdk-embedded-prototype C ABI", "protocol": "Rust-owned embedded Stream provider", "license": "Apache-2.0 from workspace crate", "ffi": "LuaJIT built-in FFI", "cancellation": "Rust reader cancellation through C ABI" },
+      "artifact": "Rust cdylib plus LuaJIT FFI consumer; no unlicensed Lua gRPC runtime redistribution",
+      "qualification": "prototype-script-pending-host-run",
+      "recipe": "scripts/qualify-luajit-ffi-embedded.sh"
     }
   ]
 }
