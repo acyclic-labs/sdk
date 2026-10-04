@@ -2,7 +2,7 @@
   "schema": "acyclic.sdk.embedded.release-abi.v1",
   "status": "qualified-local-release-package",
   "source": {
-    "revision": "dca61a23a95d5156fa9284adcbc54bce6e4609d9",
+    "revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
     "crate": "rust/crates/sdk-embedded-prototype",
     "version": "0.2.0",
     "abi_version": 1,
