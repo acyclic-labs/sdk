@@ -7,7 +7,7 @@ const driver = readFileSync("scripts/graphcoder-installed-swarm-e2e.mjs", "utf8"
 
 test("installed swarm scenario requires exact recursive/effect evidence", () => {
   assert.equal(scenario.driver, "scripts/graphcoder-installed-swarm-e2e.mjs");
-  for (const marker of ["two direct children with exact tasks child-a and child-b", "typed command or writeback approval with operation/action binding", "host approval before public resolution", "concurrent-user reconciliation", "verified bridge cleanup"]) {
+  for (const marker of ["two direct children with exact tasks child-a and child-b", "distinct typed command and writeback approvals with operation/action binding", "host approval before each public resolution", "physical checkout bytes unchanged before approval and equal to expected bytes after writeback", "concurrent-user reconciliation", "verified bridge cleanup"]) {
     assert.equal(scenario.required_effects.includes(marker), true, marker);
   }
   assert.match(driver, /agent\.task === "child-a"/u);
@@ -18,8 +18,8 @@ test("installed swarm scenario requires exact recursive/effect evidence", () => 
   assert.match(driver, /concurrent_user_edit_preserved/u);
   assert.match(driver, /before_sha256/u);
   assert.match(driver, /after_sha256/u);
-  assert.match(driver, /pending\.executable !== expectedCommand\.executable/u);
-  assert.match(driver, /pending\.operation_id !== expectedApproval\.operation_id/u);
+  assert.match(driver, /command\.executable !== expectedCommand\.executable/u);
+  assert.match(driver, /item\.operation_id !== expected\.operation_id/u);
   assert.match(driver, /beforeFiles\[path\] !== expectation\.before_sha256/u);
   assert.match(driver, /digest !== expectation\.after_sha256/u);
   assert.match(driver, /concurrent_user_edit_preserved !== true/u);
