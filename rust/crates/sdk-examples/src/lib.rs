@@ -21,6 +21,7 @@ use serde_json::{Value, json};
 /// Executable source-owned scenarios for each guide family.
 pub mod filesystem_scenarios;
 pub mod fixtures;
+pub mod guide_projections;
 pub mod harness_scenarios;
 pub mod inference_scenarios;
 pub mod machines_scenarios;
@@ -41,8 +42,22 @@ pub struct GuideScenarioSpec {
     pub source: &'static str,
 }
 
-/// All dedicated guide scenarios included in qualification receipts.
+/// All guide scenarios included in qualification receipts.
+///
+/// Actors and Stream are part of the same registry as the six embedded and
+/// protocol families below. Keeping them here makes the generated guide
+/// navigation and package-consumer receipts cover every public SDK family.
 pub const GUIDE_SCENARIOS: &[GuideScenarioSpec] = &[
+    GuideScenarioSpec {
+        family: "actors",
+        id: "actors-create-roundtrip",
+        source: SOURCE,
+    },
+    GuideScenarioSpec {
+        family: "stream",
+        id: "stream-append-read",
+        source: SOURCE,
+    },
     GuideScenarioSpec {
         family: "filesystem",
         id: filesystem_scenarios::SCENARIO_ID,
@@ -902,6 +917,33 @@ pub fn render_all() -> Vec<RenderedSnippet> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guide_registry_covers_every_public_family() {
+        let mut families = GUIDE_SCENARIOS
+            .iter()
+            .map(|scenario| scenario.family)
+            .collect::<Vec<_>>();
+        families.sort_unstable();
+        assert_eq!(
+            families,
+            vec![
+                "actors",
+                "filesystem",
+                "harness",
+                "inference",
+                "machines",
+                "objects",
+                "stream",
+                "workers",
+            ]
+        );
+    }
+
+    #[test]
+    fn guide_projection_matrix_has_all_published_variants() {
+        assert_eq!(guide_projections::all().len(), 54);
+    }
 
     #[test]
     fn registry_is_typed_and_stable() {

@@ -7,12 +7,14 @@
 #![recursion_limit = "256"]
 
 use acyclic_sdk_examples::{
-    filesystem_scenarios, harness_scenarios, inference_scenarios, machines_scenarios,
+    filesystem_scenarios, guide_projections, harness_scenarios, inference_scenarios, machines_scenarios,
     objects_scenarios, workers_scenarios, GUIDE_SCENARIOS, Language, RenderedSnippet,
-    TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all,
+    TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all, scenarios,
     transport_fixtures,
 };
-use acyclic_sdk_examples::fixtures::{qualification_scenarios, scenario_expectation};
+use acyclic_sdk_examples::fixtures::{
+    filesystem_harness_scenarios, qualification_scenarios, scenario_expectation,
+};
 use prost::Message;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -305,6 +307,25 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     .map_err(|error| format!("read guide source {}: {error}", spec.source))?,
             );
             let result = match spec.id {
+                "actors-create-roundtrip" => acyclic_sdk_examples::execute_actors_roundtrip()
+                    .map(|()| json!({
+                        "status": "passed",
+                        "scope": "rust-wire-validation",
+                        "evidence": {
+                            "roundtrip": true,
+                            "validator": "acyclic_actors::validate_create",
+                        },
+                    })),
+                "stream-append-read" => runtime
+                    .block_on(acyclic_sdk_examples::execute_stream_append_read())
+                    .map(|records| json!({
+                        "status": if records.len() == 2 { "passed" } else { "failed" },
+                        "scope": "rust-memory-provider",
+                        "evidence": {
+                            "record_count": records.len(),
+                            "records": records.iter().map(|record| String::from_utf8_lossy(record).into_owned()).collect::<Vec<_>>(),
+                        },
+                    })),
                 acyclic_sdk_examples::filesystem_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::filesystem_scenarios::execute_filesystem_scenario())
                     .map(|receipt| {
@@ -411,7 +432,14 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
     let source_files = source_closure::closure_files(source_root)?;
     ensure_compiled_source_matches(&source_sha256)?;
     let source_revision = git_revision(source_root);
-    let snippets = render_all();
+    let snippets = render_all()
+        .into_iter()
+        .chain(
+            guide_projections::all()
+                .into_iter()
+                .map(guide_projections::rendered),
+        )
+        .collect::<Vec<_>>();
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
     for snippet in snippets {
@@ -554,6 +582,7 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
     );
     let vector_bytes = json_bytes(&vectors);
     let rpc_scenarios = rust_rpc_scenarios();
+    let typed_wire_evidence = typed_wire_evidence()?;
     let seed_graph = json!({
         "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
         "count": rpc_scenarios.len(),
@@ -597,6 +626,7 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
                 "scenarios": rpc_scenarios,
             },
             "seed_graph": seed_graph,
+            "typed_wire_evidence": typed_wire_evidence,
             "fixture_server": {
                 "command": "cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 0",
                 "bind": "127.0.0.1",
@@ -609,6 +639,21 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         },
         "fixtures": entries,
     }))
+}
+
+fn typed_wire_evidence() -> Result<Vec<Value>, String> {
+    let evidence = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("build typed fixture runtime: {error}"))?
+        .block_on(filesystem_harness_scenarios::export())?;
+    if evidence.len() != 35 {
+        return Err(format!(
+            "typed Filesystem/Harness exporter returned {}; expected 35",
+            evidence.len()
+        ));
+    }
+    Ok(evidence)
 }
 
 fn json_bytes(value: &Value) -> Vec<u8> {
@@ -987,15 +1032,36 @@ fn run_rust(
         .join("rust/crates/stream")
         .to_string_lossy()
         .replace('\\', "/");
+    let filesystem = source_root
+        .join("rust/crates/filesystem")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let harness = source_root
+        .join("rust/crates/harness")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let inference = source_root
+        .join("rust/crates/inference")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let machines = source_root
+        .join("rust/crates/machines")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let objects = source_root
+        .join("rust/crates/objects")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let workers = source_root
+        .join("rust/crates/workers")
+        .to_string_lossy()
+        .replace('\\', "/");
     let manifest = format!(
-        "[package]\nname = \"sdk-example-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ path = \"{actors}\" }}\nacyclic-stream = {{ path = \"{stream}\", features = [\"grpc\"] }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n"
+        "[package]\nname = \"sdk-example-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ path = \"{actors}\" }}\nacyclic-fs = {{ path = \"{filesystem}\" }}\nacyclic-harness = {{ path = \"{harness}\", features = [\"grpc\"] }}\nacyclic-inference = {{ path = \"{inference}\" }}\nacyclic-machines = {{ path = \"{machines}\" }}\nacyclic-objects = {{ path = \"{objects}\" }}\nacyclic-stream = {{ path = \"{stream}\", features = [\"grpc\"] }}\nacyclic-workers = {{ path = \"{workers}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n"
     );
     fs::write(staging.join("Cargo.toml"), manifest)
         .map_err(|error| format!("write Rust consumer manifest: {error}"))?;
-    let bundle_snippet = snippet
-        .code
-        .replace("use acyclic_actors::", "use acyclic_sdk_bundle::")
-        .replace("use acyclic_stream::", "use acyclic_sdk_bundle::");
+    let bundle_snippet = snippet.code.clone();
     let main = format!(
         "#![allow(unused_imports)]\nuse std::error::Error;\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn Error>> {{\n{}\nOk(())\n}}\n",
         bundle_snippet
@@ -1139,7 +1205,7 @@ fn run_rust(
             .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
     }
     copy_dir_recursive(&package_root, &consumed_package_root)?;
-    let consumed_package_root_string = cargo_manifest_path(&consumed_package_root);
+    let consumed_package_root_string = consumed_package_root.to_string_lossy().replace('\\', "/");
     let compile_consumer_manifest_bytes = format!(
         "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"{consumed_package_root_string}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
@@ -1464,7 +1530,7 @@ fn run_rust(
 
 fn guide_rust_cases() -> Vec<(&'static str, &'static str, String)> {
     let filesystem = format!(
-        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{{}}\", std::process::id()));
+        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{}\", std::process::id()));
 {}",
         filesystem_scenarios::QUICKSTART_SNIPPET
     );
@@ -1486,6 +1552,16 @@ let recovered = TaskGroup::new(1).try_spawn(async { 11_u8 }).await;
 assert!(matches!(recovered, Admission::Accepted(_)));
 "#.to_owned();
     vec![
+        (
+            "actors-create-roundtrip",
+            "rust/crates/sdk-examples/src/lib.rs",
+            scenarios()[0].render(Language::Rust).code,
+        ),
+        (
+            "stream-append-read",
+            "rust/crates/sdk-examples/src/lib.rs",
+            scenarios()[1].render(Language::Rust).code,
+        ),
         (
             filesystem_scenarios::SCENARIO_ID,
             filesystem_scenarios::SOURCE,
@@ -1563,7 +1639,7 @@ fn run_guide_rust_consumers(
         }
         fs::create_dir_all(staging.join("src"))
             .map_err(|error| format!("create guide staging: {error}"))?;
-        let package_path_text = cargo_manifest_path(&package_root);
+        let package_path_text = package_root.to_string_lossy().replace('\\', '/');
         let manifest = format!(
             r#"[package]
 name = "guide-{scenario_id}"
@@ -1587,7 +1663,7 @@ tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
         );
         fs::write(staging.join("Cargo.toml"), manifest)
             .map_err(|error| format!("write guide consumer manifest: {error}"))?;
-        let code = rewrite_guide_imports(source_code.clone());
+        let code = rewrite_guide_imports(source_code);
         let main = format!(
             r#"#![allow(unused_imports)]
 use std::error::Error;
@@ -1632,7 +1708,7 @@ Ok(())
             .output()
             .map_err(|error| format!("start guide consumer test: {error}"))?;
         if !test.status.success() {
-            let stderr = String::from_utf8_lossy(&test.stderr).into_owned();
+            let stderr = String::from_utf8_lossy(&test.stderr);
             let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), test.stderr);
             return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
         }
@@ -1740,15 +1816,6 @@ fn add_snippet_binding(
             json!(hash(snippet.code.as_bytes())),
         );
     }
-}
-
-fn cargo_manifest_path(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    let text = text
-        .strip_prefix("\\\\?\\")
-        .or_else(|| text.strip_prefix("//?/"))
-        .unwrap_or(&text);
-    text.replace('\\', "/")
 }
 
 fn portable_output_path(path: &Path, qualification: &Path) -> String {
@@ -2984,5 +3051,3 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
-
-

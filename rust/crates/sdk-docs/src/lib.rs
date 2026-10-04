@@ -677,7 +677,13 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
     crates.sort_by(|left, right| left.package_name.cmp(&right.package_name));
     if options.require_rustdoc_json
         && crates.iter().any(|crate_bundle| {
+            // Cargo packages such as the historical CLI can be published as
+            // binaries without a library target. They have no rustdoc graph
+            // to qualify; strictness still applies to every package that can
+            // expose a public Rust library.
+            let crate_dir = options.repository_root.join(&crate_bundle.path);
             crate_bundle.publish
+                && crate_has_library_target(&crate_dir)
                 && (crate_bundle.analysis_mode != "rustdoc-json"
                     || crate_bundle.public_items.is_empty())
         })
@@ -1077,7 +1083,23 @@ pub fn to_website_json(
         "channel": channel,
     });
     if let Some(release) = &bundle.release {
-        projection_source["release"] = serde_json::to_value(release)?;
+        let mut release_projection = serde_json::to_value(release)?;
+        if let Some(release_object) = release_projection.as_object_mut() {
+            // Keep the signed release receipt together with the exact bundle
+            // bytes consumed by the website. The full bundle carries these
+            // values in separate fields; the projection must retain both
+            // identities so a released page cannot be mistaken for a branch
+            // preview with the same API names.
+            release_object.insert(
+                "sourceRevision".to_owned(),
+                serde_json::Value::String(bundle.source_revision.clone()),
+            );
+            release_object.insert(
+                "bundleBlake3".to_owned(),
+                serde_json::Value::String(bundle.bundle_blake3.clone()),
+            );
+        }
+        projection_source["release"] = release_projection;
     }
     if let Some(authority_sha256) = scenario_authority_sha256 {
         projection_source["scenarioAuthoritySha256"] = authority_sha256;
@@ -4998,6 +5020,82 @@ mod tests {
     }
 
     #[test]
+    fn website_projection_preserves_release_identity_and_distinguishes_preview() {
+        let release = ReleaseQualification {
+            schema: "acyclic.sdk.docs.release-qualification.v1".to_owned(),
+            version: "0.3.0".to_owned(),
+            tag: "sdk-v0.3.0".to_owned(),
+            revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            qualified: true,
+        };
+        let released = DocsBundle {
+            schema_version: BUNDLE_SCHEMA_VERSION,
+            source_revision: release.revision.clone(),
+            crates: Vec::new(),
+            diagnostics: Vec::new(),
+            profiles: Vec::new(),
+            scenario_bundle: None,
+            release: Some(release.clone()),
+            bundle_blake3: "bundle-release-blake3".to_owned(),
+        };
+        let released_projection: serde_json::Value = serde_json::from_str(
+            &to_website_json(&released, "https://github.com/example/sdk", "clean", "release")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            released_projection["source"]["revision"],
+            release.revision.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["schema"],
+            release.schema.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["version"],
+            release.version.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["tag"],
+            release.tag.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["revision"],
+            release.revision.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["sourceRevision"],
+            release.revision.as_str()
+        );
+        assert_eq!(
+            released_projection["source"]["release"]["bundleBlake3"],
+            "bundle-release-blake3"
+        );
+
+        let preview = DocsBundle {
+            source_revision: "fedcba9876543210fedcba9876543210fedcba98".to_owned(),
+            release: None,
+            ..released
+        };
+        let preview_projection: serde_json::Value = serde_json::from_str(
+            &to_website_json(
+                &preview,
+                "https://github.com/example/sdk",
+                "working-tree",
+                "branch-preview",
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(preview_projection["source"]["channel"], "branch-preview");
+        assert_eq!(
+            preview_projection["source"]["revision"],
+            "fedcba9876543210fedcba9876543210fedcba98"
+        );
+        assert!(preview_projection["source"].get("release").is_none());
+    }
+
+    #[test]
     fn rustdoc_fixture_retains_enum_variants_fields_and_trait_methods() {
         let value = serde_json::json!({
             "format_version": 60,
@@ -5799,6 +5897,7 @@ mod tests {
             ("cargo-v0.1.5", "0.1.6"),
             ("npm-v0.1.5", "0.1.5+build.2"),
             ("v0.1.5", "0.1.5"),
+            ("untrusted-v0.1.5", "0.1.5"),
         ] {
             let error = validate_release_tag_version(tag, version)
                 .expect_err("mismatched or unscoped release identity must fail closed");
