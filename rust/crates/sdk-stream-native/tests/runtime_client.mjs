@@ -126,14 +126,15 @@ const childrenResponse = await client.childrenPage(Buffer.from([0x0a, 0x06, 0x6e
 assert(childrenResponse.length > 0);
 recordScenario("acyclic.stream.v2.StreamService/ChildrenPage", "unary", ["invocation", "transport", "serialization"]);
 
+const forkAt = await client.tail("native/runtime");
 const forked = await client.fork(
   "native/runtime",
   "native/fork",
-  "2",
+  forkAt,
   Buffer.from("native-runtime-fork"),
 );
 assert.equal(forked.destination, "native/fork");
-assert.equal(forked.forkedAt, "2");
+assert.equal(forked.forkedAt, forkAt);
 recordScenario("acyclic.stream.v2.StreamService/Fork", "unary", ["invocation", "transport", "serialization"]);
 
 const children = await client.children("native", 16);

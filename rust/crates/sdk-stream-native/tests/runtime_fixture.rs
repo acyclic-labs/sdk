@@ -23,6 +23,9 @@ fn native_library_name() -> &'static str {
 }
 
 fn node_module_path() -> PathBuf {
+    if let Ok(path) = std::env::var("ACYCLIC_STREAM_NATIVE_MODULE_OVERRIDE") {
+        return PathBuf::from(path);
+    }
     let test_binary = std::env::current_exe().expect("test executable path");
     let target_root = test_binary
         .parent()
