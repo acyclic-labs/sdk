@@ -35,7 +35,12 @@ typedef struct { uint64_t id; uint8_t *ptr; size_t len; size_t capacity; } Acycl
 typedef struct { uint32_t status; uint64_t start; uint64_t end; uint64_t tail; AcyclicRemoteBuffer message; } AcyclicRemoteAppendResult;
 typedef struct { uint32_t status; uint64_t reader; AcyclicRemoteBuffer message; } AcyclicRemoteOpenResult;
 typedef struct { uint32_t status; uint64_t sequence; AcyclicRemoteBuffer value; AcyclicRemoteBuffer message; } AcyclicRemoteNextResult;
+typedef struct { uint32_t status; AcyclicRemoteBuffer response; AcyclicRemoteBuffer message; } AcyclicRemoteWireResult;
 uint32_t acyclic_remote_abi_version(void);
+size_t acyclic_remote_stream_operation_count(void);
+AcyclicRemoteBuffer acyclic_remote_stream_operation_name(size_t index);
+AcyclicRemoteWireResult acyclic_remote_wire_call(uint64_t client, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
+void acyclic_remote_wire_result_release(AcyclicRemoteWireResult result);
 uint64_t acyclic_remote_client_open(const uint8_t *endpoints, size_t endpoints_len, const uint8_t *token, size_t token_len, const uint8_t *ca, size_t ca_len);
 void acyclic_remote_client_close(uint64_t client);
 AcyclicRemoteAppendResult acyclic_remote_append(uint64_t client, const uint8_t *path, size_t path_len, const uint8_t *value, size_t value_len);
@@ -50,6 +55,13 @@ void acyclic_remote_next_result_release(AcyclicRemoteNextResult result);
 ]]
 local sdk = assert(ffi.load(arg[1]))
 assert(sdk.acyclic_remote_abi_version() == 1)
+local expected = {"inspect_idempotency", "append", "tail", "fork", "read", "follow", "children", "children_page", "commit", "read_commit"}
+assert(sdk.acyclic_remote_stream_operation_count() == #expected, "Rust operation inventory is incomplete")
+for i, name in ipairs(expected) do
+  local item = sdk.acyclic_remote_stream_operation_name(i - 1)
+  assert(item.len == #name and ffi.string(item.ptr, item.len) == name, "Rust operation inventory changed")
+  sdk.acyclic_remote_buffer_release(item)
+end
 local endpoint = assert(arg[2])
 local ca_file = assert(io.open(arg[3], "rb"))
 local ca = ca_file:read("*a")
@@ -61,6 +73,10 @@ local path, payload = "lua-remote-ffi", "rust-owned-remote"
 local appended = sdk.acyclic_remote_append(client, path, #path, payload, #payload)
 assert(appended.status == 0 and appended.end == 1, "remote append failed")
 sdk.acyclic_remote_append_result_release(appended)
+local tail_request = string.char(10, #path) .. path
+local wire = sdk.acyclic_remote_wire_call(client, "tail", 4, tail_request, #tail_request)
+assert(wire.status == 0, "Rust generic wire dispatch failed")
+sdk.acyclic_remote_wire_result_release(wire)
 local opened = sdk.acyclic_remote_reader_open(client, path, #path, 0, 8, 0)
 assert(opened.status == 0 and opened.reader ~= 0, "remote read open failed")
 local next_value = sdk.acyclic_remote_reader_next(opened.reader)
@@ -94,5 +110,5 @@ LuaJIT runtime license: MIT. See https://github.com/LuaJIT/LuaJIT/blob/v2.1/COPY
 EOF
 tar -czf "$output_root/acyclic_sdk_luajit_remote.tar.gz" -C "$output_root" "$library_name" consumer.lua LICENSE-RUST-APACHE-2.0.txt LICENSE-LUAJIT-MIT.txt
 cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote append/read/follow-cancel","rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz"}
+{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote generated Stream operations plus append/read/follow-cancel","rust_operation_inventory":10,"rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz"}
 EOF

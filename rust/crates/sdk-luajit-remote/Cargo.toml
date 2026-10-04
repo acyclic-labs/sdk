@@ -15,6 +15,7 @@ crate-type = ["rlib", "cdylib"]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
 bytes.workspace = true
 futures.workspace = true
+prost.workspace = true
 tokio.workspace = true
 rcgen = "0.14.10"
 tonic.workspace = true
