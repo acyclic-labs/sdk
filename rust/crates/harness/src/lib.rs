@@ -20,6 +20,7 @@ pub mod conversation;
 pub mod core;
 pub mod distributed;
 pub mod durable_host;
+mod durable_mail;
 pub mod durable_tool;
 pub mod effect_host;
 pub mod effects;

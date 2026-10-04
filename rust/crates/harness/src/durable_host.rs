@@ -3,7 +3,6 @@
 use crate::{
     Admission, BatchId, EffectId, Error, IdempotencyKey, InteractionId, OperationId, Outcome,
     Result, TaskId,
-    communication::message_endpoint_operation,
     conversation::{ContentResidencyVerifier, FileRef},
     core::{Authority, AuthorityVerifier, Scope},
     distributed::{ChildOperationPageRequest, DistributedCoordinator, SchedulerPayloadStore},
@@ -15,7 +14,7 @@ use crate::{
         BatchCancellationReport, BatchCancellationStatus, DurableBatchRequest,
         DurableEffectObserver, DurableTaskHost, InputKey, MAX_BATCH_INPUTS, RuntimeScope,
         TaskAdmissionRecord, TaskChild, TaskChildrenPage, TaskRegistry, ToolPolicy,
-        check_tool_approval, read_granted, require_descendant_grant, validate_policy_identity,
+        check_tool_approval, require_descendant_grant, validate_policy_identity,
         validate_task_schemas,
     },
     scheduler::{
@@ -25,10 +24,8 @@ use crate::{
     tool::ToolDefinition,
     workflow::MachineRegistry,
 };
-use acyclic_stream::{
-    AppendOutcome, IdempotencyKey as StreamKey, IdempotencyOutcome, StreamClient, StreamError,
-    StreamProvider, UnixMillisClock,
-};
+use acyclic_stream::{StreamClient, StreamError, StreamProvider, UnixMillisClock};
+#[cfg(test)]
 use bytes::Bytes;
 use futures::TryStreamExt as _;
 use futures::future::BoxFuture;
@@ -37,40 +34,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
-/// Version-one mailbox envelope. The explicit field makes old unversioned
-/// records fail closed instead of being silently reinterpreted.
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MailEvent {
-    #[serde(rename = "schema_version")]
-    schema_version: u8,
-    sender: TaskId,
-    recipient: TaskId,
-    message_id: OperationId,
-    payload: FileRef,
-}
-
-impl MailEvent {
-    fn validate_for(&self, recipient: TaskId) -> Result<()> {
-        if self.schema_version != 1 {
-            return Err(Error::Invalid(
-                "unsupported mail event schema version".into(),
-            ));
-        }
-        if self.sender.into_bytes() == [0; 16]
-            || self.recipient.into_bytes() == [0; 16]
-            || self.message_id.into_bytes() == [0; 16]
-        {
-            return Err(Error::Invalid("mail event identity is empty".into()));
-        }
-        if self.recipient != recipient {
-            return Err(Error::Conflict(
-                "mail event recipient differs from its mailbox".into(),
-            ));
-        }
-        self.payload.validate()
-    }
-}
+#[cfg(test)]
+use crate::durable_mail::MailEvent;
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -315,12 +280,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    fn mailbox(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
-        self.stream
-            .stream(format!("harness/v2/mail/{task_id}"))
-            .map_err(|error| Error::Invalid(error.to_string()))
-    }
-
     fn batch_stream(&self, batch_id: BatchId) -> Result<acyclic_stream::Stream<P>> {
         self.stream
             .stream(format!("harness/v2/batches/{batch_id}"))
@@ -494,14 +453,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    fn event_key(kind: &str, task_id: TaskId, operation_id: OperationId) -> Result<StreamKey> {
-        let identity = format!("harness/v2/{kind}/{task_id}/{operation_id}");
-        StreamKey::new(Bytes::copy_from_slice(
-            blake3::hash(identity.as_bytes()).as_bytes(),
-        ))
-        .map_err(|error| Error::Invalid(error.to_string()))
-    }
-
     fn timer_stream(&self, task_id: TaskId) -> Result<acyclic_stream::Stream<P>> {
         self.stream
             .stream(format!("harness/v2/timers/{task_id}"))
@@ -516,59 +467,15 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         operation_id: OperationId,
         bytes: &[u8],
     ) -> Result<()> {
-        let key = Self::event_key(kind, task_id, operation_id)?;
-        let outcome = match stream
-            .append_batch(vec![Bytes::copy_from_slice(bytes)], None, Some(key.clone()))
-            .await
-        {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => match self.stream.inspect_idempotency(key).await {
-                Ok(Some(observation)) => match observation.outcome {
-                    IdempotencyOutcome::Append(outcome) => outcome,
-                    _ => {
-                        return Err(Error::Conflict(
-                            "control identity has another operation kind".into(),
-                        ));
-                    }
-                },
-                Ok(None) | Err(_) => return Err(Error::Indeterminate(operation_id)),
-            },
-            Err(StreamError::IdempotencyMismatch) => {
-                return Err(Error::Conflict(
-                    "control identity reused with different content".into(),
-                ));
-            }
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
-        match outcome {
-            AppendOutcome::Committed(receipt) if receipt.end == receipt.start + 1 => {
-                let records = stream
-                    .read(receipt.start, 1)
-                    .await?
-                    .try_collect::<Vec<_>>()
-                    .await?;
-                let [record] = records.as_slice() else {
-                    return Err(Error::Conflict(
-                        "control publication differs from its committed record".into(),
-                    ));
-                };
-                if record.sequence != receipt.start
-                    || record.commit_id != receipt.commit_id
-                    || record.value.as_ref() != bytes
-                {
-                    return Err(Error::Conflict(
-                        "control publication differs from its committed record".into(),
-                    ));
-                }
-                Ok(())
-            }
-            AppendOutcome::Committed(_) => {
-                Err(Error::Storage("invalid control append receipt".into()))
-            }
-            AppendOutcome::TailConflict { .. } => Err(Error::Conflict(
-                "unconditional control append conflicted".into(),
-            )),
-        }
+        crate::durable_mail::publish_control_record(
+            &self.stream,
+            stream,
+            kind,
+            task_id,
+            operation_id,
+            bytes,
+        )
+        .await
     }
 }
 
@@ -1030,42 +937,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         payload: FileRef,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            payload.validate()?;
-            let sender_admission = self
-                .admission(OperationId::from_bytes(sender.into_bytes()))
-                .await?;
-            if !sender_admission.grants.contains("mail:send") {
-                return Err(Error::Unauthorized("sender scope lacks mail:send".into()));
-            }
-            let recipient_admission = self
-                .admission(OperationId::from_bytes(recipient.into_bytes()))
-                .await?;
-            if sender_admission.parent != Some(recipient)
-                && recipient_admission.parent != Some(sender)
-            {
-                return Err(Error::Unauthorized(
-                    "message endpoints are not direct parent and child".into(),
-                ));
-            }
-            recipient_admission.limits.validate_file(&payload)?;
-            if !read_granted(&recipient_admission.grants, &payload)? {
-                return Err(Error::Unauthorized(
-                    "recipient cannot read the mailed file".into(),
-                ));
-            }
-            self.reader.verify(&payload).await?;
-            let event = MailEvent {
-                schema_version: 1,
-                sender,
-                recipient,
-                message_id,
-                payload,
-            };
-            event.validate_for(recipient)?;
-            let bytes = crate::contract::canonical_json_bytes(&event)?;
-            let mailbox = self.mailbox(recipient)?;
-            let endpoint_operation = message_endpoint_operation(sender, recipient, message_id);
-            self.publish_control(&mailbox, "mail", recipient, endpoint_operation, &bytes)
+            crate::durable_mail::MailboxStore::new(self.stream.clone(), self.reader.clone())
+                .send(self, sender, recipient, message_id, payload)
                 .await
         })
     }
@@ -1077,81 +950,9 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         limit: usize,
     ) -> BoxFuture<'a, Result<Vec<InboxItem>>> {
         Box::pin(async move {
-            if limit == 0 || limit > 1_024 {
-                return Err(Error::Invalid("inbox page bound is invalid".into()));
-            }
-            let recipient_admission = self
-                .admission(OperationId::from_bytes(task_id.into_bytes()))
-                .await?;
-            if !recipient_admission.grants.contains("mail:read") {
-                return Err(Error::Unauthorized(
-                    "recipient scope lacks mail:read".into(),
-                ));
-            }
-            let mailbox = self.mailbox(task_id)?;
-            let bounds = match mailbox.bounds().await {
-                Ok(bounds) => bounds,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            if after > bounds.tail {
-                return Err(Error::Invalid("inbox cursor is beyond the tail".into()));
-            }
-            let page_limit = u32::try_from(limit)
-                .map_err(|_| Error::Invalid("inbox page bound is invalid".into()))?;
-            let page = match mailbox.read(after, page_limit).await {
-                Ok(records) => records.try_collect::<Vec<_>>().await?,
-                Err(StreamError::NotFound) => return Ok(Vec::new()),
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            let mut items = Vec::with_capacity(page.len());
-            for record in page {
-                let value: Value = serde_json::from_slice(&record.value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                if crate::contract::canonical_json_bytes(&value)? != record.value.as_ref() {
-                    return Err(Error::Storage("mail event is not canonical JSON".into()));
-                }
-                let event: MailEvent = serde_json::from_value(value)
-                    .map_err(|error| Error::Storage(error.to_string()))?;
-                event.validate_for(task_id)?;
-                recipient_admission.limits.validate_file(&event.payload)?;
-                if !read_granted(&recipient_admission.grants, &event.payload)? {
-                    return Err(Error::Unauthorized(
-                        "mail history contains an unreadable payload".into(),
-                    ));
-                }
-                let sender_admission = self
-                    .admission(OperationId::from_bytes(event.sender.into_bytes()))
-                    .await?;
-                if !sender_admission.grants.contains("mail:send")
-                    || (sender_admission.parent != Some(task_id)
-                        && recipient_admission.parent != Some(event.sender))
-                {
-                    return Err(Error::Unauthorized(
-                        "mail history contains an unauthorized endpoint".into(),
-                    ));
-                }
-                // The owner stream supplies immutable delivery time. Keeping it
-                // out of MailEvent preserves exact append bytes on a retry.
-                let delivered_at_epoch_ms = record.committed_at_micros / 1_000;
-                if delivered_at_epoch_ms == 0 {
-                    return Err(Error::Storage(
-                        "mail record is missing its committed delivery timestamp".into(),
-                    ));
-                }
-                items.push(InboxItem {
-                    task_id,
-                    sender: event.sender,
-                    delivered_at_epoch_ms,
-                    sequence: record
-                        .sequence
-                        .checked_add(1)
-                        .ok_or_else(|| Error::Storage("inbox sequence exhausted".into()))?,
-                    message_id: event.message_id.to_string(),
-                    payload: event.payload,
-                });
-            }
-            Ok(items)
+            crate::durable_mail::MailboxStore::new(self.stream.clone(), self.reader.clone())
+                .inbox(self, task_id, after, limit)
+                .await
         })
     }
 
