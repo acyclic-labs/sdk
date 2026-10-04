@@ -443,6 +443,7 @@ impl ControlPlane {
             PluginRootMaterializer {
                 state: self.store.clone(),
                 physical_roots,
+                writeback_approval: None,
             },
         );
         for binding in self.state.roots.values() {
@@ -1820,6 +1821,7 @@ impl ControlPlane {
             },
             root: &root_binding.path,
             store: &self.store,
+            writeback_approval: None,
         };
         let repository = self.distributed.git(repository_id);
         let output = run_git_command(

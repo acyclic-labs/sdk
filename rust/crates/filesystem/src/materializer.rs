@@ -578,6 +578,10 @@ pub struct NativeTreeMaterializationBackend {
     root: PathBuf,
     target: PathBuf,
     backup: PathBuf,
+    /// Retained capability for approved host writeback.  The path remains the
+    /// materializer's addressing mechanism, while this handle pins and
+    /// authenticates the checkout identity for the operation's lifetime.
+    root_handle: Option<std::sync::Arc<crate::native_host::HostRoot>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -589,8 +593,23 @@ impl NativeTreeMaterializationBackend {
         root: impl Into<PathBuf>,
         operation_directory: impl Into<PathBuf>,
     ) -> Result<Self, NativeTreeMaterializationError> {
+        Self::new_with_root(root, operation_directory, None)
+    }
+
+    /// Binds a retained checkout capability to the path materializer.
+    pub fn new_with_root(
+        root: impl Into<PathBuf>,
+        operation_directory: impl Into<PathBuf>,
+        root_handle: Option<std::sync::Arc<crate::native_host::HostRoot>>,
+    ) -> Result<Self, NativeTreeMaterializationError> {
         let root = root.into().canonicalize()?;
         let operation_directory = operation_directory.into().canonicalize()?;
+        if let Some(handle) = &root_handle {
+            let observed = crate::native_host::HostRoot::open(&root)?.identity();
+            if observed != handle.identity() {
+                return Err(NativeTreeMaterializationError::RootIdentityMismatch);
+            }
+        }
         let target = operation_directory.join("target");
         if !target.is_dir()
             || operation_directory == root
@@ -606,6 +625,7 @@ impl NativeTreeMaterializationBackend {
             root,
             target,
             backup,
+            root_handle,
         })
     }
 
@@ -648,6 +668,18 @@ impl NativeTreeMaterializationBackend {
             self.target.join(path),
             self.backup.join(path),
         )
+    }
+
+    fn validate_retained_root(&self) -> Result<(), NativeTreeMaterializationError> {
+        let Some(handle) = &self.root_handle else {
+            return Ok(());
+        };
+        let observed = crate::native_host::HostRoot::open(&self.root)?.identity();
+        if observed == handle.identity() {
+            Ok(())
+        } else {
+            Err(NativeTreeMaterializationError::RootIdentityMismatch)
+        }
     }
 }
 
@@ -744,6 +776,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let backend = self.clone();
         let edit = edit.clone();
         acyclic_native_runtime::run_blocking_io(move || {
+            backend.validate_retained_root()?;
             let edit = &edit;
             let path = edit_path(edit);
             let (live, target, backup) = backend.paths(path);
@@ -787,6 +820,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
+            backend.validate_retained_root()?;
             let edit = &edit;
             let preimage = &preimage;
             let (before, after) = decode_native_witness(&preimage.image)?;
@@ -843,6 +877,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
+            backend.validate_retained_root()?;
             let edit = &edit;
             let preimage = &preimage;
             let path = edit_path(edit);
@@ -936,6 +971,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         let edit = edit.clone();
         let preimage = preimage.clone();
         acyclic_native_runtime::run_blocking_io(move || {
+            backend.validate_retained_root()?;
             let edit = &edit;
             let preimage = &preimage;
             let path = edit_path(edit);
@@ -1500,6 +1536,9 @@ pub enum NativeTreeMaterializationError {
     /// Changed paths overlap and cannot be exchanged independently.
     #[error("native materialization paths overlap")]
     OverlappingPaths,
+    /// The retained host checkout capability no longer identifies the path.
+    #[error("native materialization root identity changed")]
+    RootIdentityMismatch,
 }
 
 /// Materializes and publishes one authenticated workspace generation to a
@@ -1529,6 +1568,8 @@ pub struct NativeWorkspacePublication<'a> {
     pub budget: crate::WorkBudget,
     /// Shared cancellation boundary.
     pub cancellation: &'a crate::CancellationToken,
+    /// Retained host capability used to fence path based publication.
+    pub root_handle: Option<std::sync::Arc<crate::native_host::HostRoot>>,
 }
 
 #[cfg(all(
@@ -1583,6 +1624,7 @@ where
         options,
         budget,
         cancellation,
+        root_handle,
     } = publication;
     if from_generation.id() != from || to_generation.id() != to {
         return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -1600,7 +1642,7 @@ where
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
         }
         let backend = acyclic_native_runtime::run_blocking_io(move || {
-            NativeTreeMaterializationBackend::new(root, operation_directory)
+            NativeTreeMaterializationBackend::new_with_root(root, operation_directory, root_handle)
         })
         .await??;
         return JournaledMaterializer::new(state.clone(), backend)
@@ -1738,7 +1780,11 @@ where
             .await?;
     }
     let (backend, mut plan) = acyclic_native_runtime::run_blocking_io(move || {
-        let backend = NativeTreeMaterializationBackend::new(root, operation_directory)?;
+        let backend = NativeTreeMaterializationBackend::new_with_root(
+            root,
+            operation_directory,
+            root_handle,
+        )?;
         let plan = backend.plan_paths(
             operation_id,
             from,

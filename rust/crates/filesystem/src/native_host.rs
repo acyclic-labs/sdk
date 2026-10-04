@@ -3037,7 +3037,7 @@ fn rename_windows_no_replace(
     };
     use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
-    let one_leaf = |path: &Path, label: &str| {
+    fn one_leaf<'a>(path: &'a Path, label: &str) -> io::Result<&'a OsStr> {
         let mut components = path.components();
         let Some(std::path::Component::Normal(name)) = components.next() else {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, label));
@@ -3046,7 +3046,7 @@ fn rename_windows_no_replace(
             return Err(io::Error::new(io::ErrorKind::InvalidInput, label));
         }
         Ok(name)
-    };
+    }
     let source_name = one_leaf(source_name, "source rename name must be one leaf")?;
     let destination_name = one_leaf(destination_name, "destination rename name must be one leaf")?;
 
@@ -3059,7 +3059,7 @@ fn rename_windows_no_replace(
         ._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
     let source = source_parent.open_with(source_name, &options)?.into_std();
 
-    rename_windows_handle_no_replace(&source, destination_parent, destination_name)
+    rename_windows_handle_no_replace(&source, destination_parent, Path::new(destination_name))
 }
 
 #[cfg(windows)]

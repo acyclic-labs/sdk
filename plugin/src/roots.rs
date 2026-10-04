@@ -442,6 +442,10 @@ pub(crate) type LocalPublicationCoordinator = MultiRootPublicationCoordinator<
 pub(crate) struct PluginRootMaterializer {
     pub(crate) state: LocalCoreStateStore,
     pub(crate) physical_roots: BTreeMap<WorkspaceRootId, PhysicalRoot>,
+    /// Approval issued by the Harness/operator for the current root
+    /// publication.  A publication has no implicit authority merely because
+    /// it originated in the plugin coordinator.
+    pub(crate) writeback_approval: Option<acyclic_fs::HostCheckoutRootWritebackApproval>,
 }
 
 #[derive(Clone)]
@@ -492,23 +496,47 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             transfer_bytes: 8 * 1024 * 1024,
         };
         let cancellation = CancellationToken::new();
-        acyclic_fs::publish_native_workspace_generation(
-            workspace,
-            &self.state,
-            acyclic_fs::NativeWorkspacePublication {
-                root: &physical.path,
-                operation_directory: &directory,
-                operation_id,
-                from,
-                to,
-                excluded_names: &[".git"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
+        let from_generation = workspace
+            .generation(from)
+            .await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let to_generation = workspace
+            .generation(to)
+            .await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        let request = acyclic_fs::HostCheckoutRootWritebackRequest::new_with_options(
+            operation_id,
+            from,
+            to,
+            &physical.path,
+            &directory,
+            &options,
+            &[".git"],
         )
-        .await
         .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        // The approval must have been issued by the Harness/operator and
+        // persisted independently of this request.  The plugin coordinator
+        // cannot authorize its own host writeback.
+        let approval = self.writeback_approval.ok_or_else(|| {
+            PluginRootMaterializerError(
+                "root writeback requires an explicit Harness/operator approval".to_owned(),
+            )
+        })?;
+        let intent = request
+            .authorize(approval)
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
+        intent
+            .publish_native(
+                &from_generation,
+                &to_generation,
+                &self.state,
+                &options,
+                &[".git"],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
         Ok(())
     }
 

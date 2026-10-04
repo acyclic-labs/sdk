@@ -690,7 +690,7 @@ where
         }
     };
     let mut receipt = OperationReceipt {
-        value: receipt.value,
+        value: HostPathRestore::Restored,
         work: receipt
             .work
             .checked_add(check_work)
@@ -791,7 +791,7 @@ fn publish_restore(
     stage_root: &Path,
     replacement: HostPathReplacement,
     host_root: &HostRoot,
-    _restore_guard: Option<crate::native_host::HostRestoreGuard>,
+    restore_guard: Option<crate::native_host::HostRestoreGuard>,
 ) -> Result<(), MaterializeError> {
     let destination_parent = held_parent_from_root(host_root, relative)?;
     let destination_name = relative.file_name().ok_or(MaterializeError::InvalidPath)?;

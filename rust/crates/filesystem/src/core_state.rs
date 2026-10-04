@@ -19,6 +19,8 @@ use crate::{
     WorkspaceContextId, WorkspaceContextStore, WorkspaceId, WorkspaceLineageRecord,
     WorkspaceLineageStore,
 };
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+use crate::{RootWritebackJournal, RootWritebackJournalStore};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -38,6 +40,8 @@ const RECORD_LOCK_RETRY: Duration = Duration::from_millis(5);
 const GIT_COMPAT_NAMESPACE: &str = "git-compat-v9";
 const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
 const MATERIALIZATION_FAMILY: &str = "materialization";
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+const ROOT_WRITEBACK_FAMILY: &str = "root-writeback-v1";
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
 const OWNER_LOCK: &str = "owner.lock";
@@ -1639,6 +1643,42 @@ impl MaterializationJournalStore for LocalCoreStateStore {
             )
         })
         .await
+    }
+}
+
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+impl RootWritebackJournalStore for LocalCoreStateStore {
+    type Error = LocalCoreStateStoreError;
+
+    async fn load(
+        &self,
+        operation_id: OperationId,
+    ) -> Result<Option<RootWritebackJournal>, Self::Error> {
+        self.transaction(move |namespace| {
+            read_locked(&namespace.record(ROOT_WRITEBACK_FAMILY, &operation_id.into_bytes()))
+        })
+        .await
+    }
+
+    async fn compare_and_swap(
+        &self,
+        operation_id: OperationId,
+        expected_revision: u64,
+        replacement: RootWritebackJournal,
+    ) -> Result<bool, Self::Error> {
+        self.transaction(move |namespace| {
+            compare_and_swap(
+                &namespace.record(ROOT_WRITEBACK_FAMILY, &operation_id.into_bytes()),
+                expected_revision,
+                &replacement,
+                |journal| journal.revision,
+            )
+        })
+        .await
+    }
+
+    fn materialization_store(&self) -> &LocalCoreStateStore {
+        self
     }
 }
 

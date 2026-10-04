@@ -832,6 +832,7 @@ pub(crate) struct RootMaterializingGitExecutor<'a> {
     pub(crate) inner: PluginGitExecutor<'a>,
     pub(crate) root: &'a Path,
     pub(crate) store: &'a LocalCoreStateStore,
+    pub(crate) writeback_approval: Option<acyclic_fs::HostCheckoutRootWritebackApproval>,
 }
 
 impl RootMaterializingGitExecutor<'_> {
@@ -862,24 +863,34 @@ impl RootMaterializingGitExecutor<'_> {
         };
         let cancellation = CancellationToken::new();
         let to_generation = target.head().await.map_err(display)?;
-        acyclic_fs::publish_native_generation_transition(
-            &from,
-            &to_generation,
-            self.store,
-            acyclic_fs::NativeWorkspacePublication {
-                root: self.root,
-                operation_directory: &operation_directory,
-                operation_id,
-                from: from.id(),
-                to,
-                excluded_names: &[".git"],
-                options: &options,
-                budget: WorkBudget::UNBOUNDED,
-                cancellation: &cancellation,
-            },
+        let request = acyclic_fs::HostCheckoutRootWritebackRequest::new_with_options(
+            operation_id,
+            from.id(),
+            to,
+            self.root,
+            &operation_directory,
+            &options,
+            &[".git"],
         )
-        .await
         .map_err(display)?;
+        let approval = self.writeback_approval.ok_or_else(|| {
+            PluginGitExecutor::error(
+                "root writeback requires an explicit Harness/operator approval",
+            )
+        })?;
+        let intent = request.authorize(approval).map_err(display)?;
+        intent
+            .publish_native(
+                &from,
+                &to_generation,
+                self.store,
+                &options,
+                &[".git"],
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(display)?;
         self.store
             .remove_materialization_async(operation_id)
             .await

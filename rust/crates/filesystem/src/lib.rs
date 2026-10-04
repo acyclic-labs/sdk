@@ -286,7 +286,11 @@ pub use native_capture::{
     not(target_arch = "wasm32")
 ))]
 pub use native_checkout::{
-    HostCheckout, HostCheckoutError, HostCheckoutRestore, HostRestoreRequest,
+    HostCheckout, HostCheckoutError, HostCheckoutRestore, HostCheckoutRootWritebackApproval,
+    HostCheckoutRootWritebackError, HostCheckoutRootWritebackGrant,
+    HostCheckoutRootWritebackIntent, HostCheckoutRootWritebackRequest,
+    HostCheckoutRootWritebackResult, HostRestoreRequest, RootWritebackJournal,
+    RootWritebackJournalError, RootWritebackJournalStore, RootWritebackOutcome, RootWritebackPhase,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
@@ -315,7 +319,8 @@ pub use native_mount::{
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     reclaim_native_mount_destination_fence, reclaim_stale_native_mount_destination_fences,
-    recover_native_mount_destination, restore_checkout_host_path, seal_checkout,
+    recover_native_mount_destination, restore_checkout_host_path,
+    restore_checkout_host_path_with_root_and_precondition, seal_checkout,
     seal_checkout_with_permit,
 };
 pub use notification::{
