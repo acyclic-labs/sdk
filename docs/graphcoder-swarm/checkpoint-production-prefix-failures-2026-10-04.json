@@ -1,0 +1,26 @@
+{
+  "source_commit": "7d951663e",
+  "qualification": "failed",
+  "scope": "Production local coordinator and separate fault-injection suite; native Windows, not installed artifact qualification",
+  "suites": [
+    {
+      "name": "local_model_swarm",
+      "suite_sha256": "8171ACB671D53E8815D7954FFFCCF14D086F41EAB58113DB1210F6C9449E9850",
+      "log": "C:\\graphcoder-builds\\root-qualification-artifacts\\6ebee3fd3\\production-after-prefix.txt",
+      "log_sha256": "0BBE1165E6C6E2196651303DF9CB75F4948831E3FDDC8664F35AAE8FC16E2A93",
+      "passed": 0,
+      "failed": 1,
+      "ignored": 0
+    },
+    {
+      "name": "local_swarm_faults",
+      "suite_sha256": "CF6D96E07B89F2400F55793A8EA2433DC2FA610464CE60DA7C553EB38FE93F83",
+      "log": "C:\\graphcoder-builds\\root-qualification-artifacts\\6ebee3fd3\\faults-after-prefix.txt",
+      "log_sha256": "4501CE0E6B6DB5F9E2953348DD3BF69FEFA420A6A268FE9D38208E0BC79B2388",
+      "passed": 1,
+      "failed": 4,
+      "ignored": 0
+    }
+  ],
+  "observed_failure": "Captured history revision versus fork publication revision mismatch; fault cases fail before expected child dispatch or during publication replay."
+}
