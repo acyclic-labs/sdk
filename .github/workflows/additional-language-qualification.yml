@@ -9,6 +9,12 @@ on:
         description: Exact Rust source revision to qualify
         required: false
         type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
 
 permissions:
   contents: read
