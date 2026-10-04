@@ -619,22 +619,10 @@ impl StockExecutor {
         prior_output_bytes: u64,
     ) -> Result<Vec<ModelEvent>> {
         let records = journal.replay(input.operation_id).await?;
-        let mut persisted_prepared = None;
+        let persisted_prepared = prepared_model_input(&records, step)?;
         let mut started = None;
         for record in &records {
             match &record.event {
-                ExecutionEvent::ModelInputPrepared {
-                    step: event_step,
-                    manifest,
-                    request,
-                } if *event_step == step => {
-                    if persisted_prepared.is_some() {
-                        return Err(Error::Storage(
-                            "duplicate prepared model input for executor step".into(),
-                        ));
-                    }
-                    persisted_prepared = Some((manifest.clone(), request.clone()));
-                }
                 ExecutionEvent::ModelStarted {
                     step: event_step,
                     request_digest,
@@ -949,20 +937,11 @@ impl StockExecutor {
         completed: &[ModelMessage],
     ) -> Result<()> {
         let records = journal.replay(operation).await?;
-        let (request_file, manifest_file) = records
-            .iter()
-            .find_map(|record| match &record.event {
-                ExecutionEvent::ModelInputPrepared {
-                    step: recorded,
-                    manifest,
-                    request,
-                } if *recorded == step => Some((request, manifest)),
-                _ => None,
-            })
+        let (manifest_file, request_file) = prepared_model_input(&records, step)?
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
-        let mut request: ModelRequest = load_json(journal, request_file).await?;
+        let mut request: ModelRequest = load_json(journal, &request_file).await?;
         let manifest: crate::model_input::ModelInputManifest =
-            load_json(journal, manifest_file).await?;
+            load_json(journal, &manifest_file).await?;
         let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
             request.clone(),
             self.limits,
@@ -990,14 +969,10 @@ impl StockExecutor {
                 continue;
             }
             let feedback = load_json(journal, feedback).await?;
-            // A resumed child may carry the same authenticated envelope in
-            // both its inherited manifest and its local rejection journal.
-            // Preserve first-seen order while deduplicating by the complete
-            // typed envelope; blindly concatenating would fail the boundary
-            // cardinality check and make a valid recursive replay unusable.
-            if !rejections.contains(&feedback) {
-                rejections.push(feedback);
-            }
+            // The manifest covers the request prefix; this step's records
+            // cover only the appended exchange. Equal envelopes at different
+            // steps are distinct occurrences and must retain multiplicity.
+            rejections.push(feedback);
         }
         let boundary = crate::model_input::CompletedModelBoundary::capture_with_policy(
             request,
@@ -1896,9 +1871,7 @@ impl Executor for StockExecutor {
                         )
                         .await?
                     {
-                        if !rejection_evidence.contains(&feedback) {
-                            rejection_evidence.push(feedback);
-                        }
+                        rejection_evidence.push(feedback);
                     }
                 }
                 let completed = prior_messages
@@ -1910,6 +1883,31 @@ impl Executor for StockExecutor {
             Err(Error::Conflict("executor step limit reached".into()))
         })
     }
+}
+
+fn prepared_model_input(
+    records: &[ExecutionRecord],
+    step: u32,
+) -> Result<Option<(FileRef, FileRef)>> {
+    let mut prepared = None;
+    for record in records {
+        if let ExecutionEvent::ModelInputPrepared {
+            step: recorded,
+            manifest,
+            request,
+        } = &record.event
+        {
+            if *recorded == step {
+                if prepared.is_some() {
+                    return Err(Error::Storage(
+                        "duplicate prepared model input for executor step".into(),
+                    ));
+                }
+                prepared = Some((manifest.clone(), request.clone()));
+            }
+        }
+    }
+    Ok(prepared)
 }
 
 pub(crate) async fn stage_json<T: Serialize>(
@@ -3451,6 +3449,219 @@ mod tests {
         let replay = executor.execute(input, &journal).await?;
         assert_eq!(replay.text, "done");
         assert_eq!(model.calls.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repeated_rejection_occurrences_survive_completed_batches_and_fresh_replay()
+    -> Result<()> {
+        struct RepeatedModel {
+            calls: AtomicUsize,
+            inputs: Mutex<Vec<Vec<u8>>>,
+            duplicate_batch: bool,
+        }
+        impl ModelProvider for RepeatedModel {
+            fn generate<'a>(
+                &'a self,
+                prepared: crate::model_input::PreparedModelInput,
+            ) -> futures::stream::BoxStream<'a, Result<ModelEvent>> {
+                self.inputs.lock().unwrap().push(prepared.bytes().to_vec());
+                let step = self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut events = Vec::new();
+                if step < 2 {
+                    let call = ModelEvent::ToolCall {
+                        call_id: "repeat-call".into(),
+                        name: "example.echo".into(),
+                        arguments: json!({"unexpected": true}),
+                    };
+                    events.push(Ok(call.clone()));
+                    if self.duplicate_batch {
+                        events.push(Ok(call));
+                    }
+                } else {
+                    events.push(Ok(ModelEvent::Content {
+                        delta: "done".into(),
+                    }));
+                }
+                events.push(Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                }));
+                Box::pin(futures::stream::iter(events))
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+        let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
+        let make_executor = |provider: Arc<RepeatedModel>| -> Result<StockExecutor> {
+            let mut tools = ToolRegistry::new();
+            tools.register(crate::tool::Tool {
+                definition: crate::tool::ToolDefinition {
+                    name: "example.echo".into(), revision: "1".into(), description: "Echo".into(),
+                    input_schema: json!({"type":"object", "properties":{"value":{"type":"string"}}, "additionalProperties":false}),
+                    output_schema: json!({"type":"object"}),
+                    model_output_schema: json!({"type":"object"}),
+                },
+                executor: tool_executor.clone(),
+                projection: Arc::new(Projection),
+            })?;
+            StockExecutor::new(
+                Model::new("example", "model", "1", Value::Null)?,
+                provider,
+                ContextPipeline::default(),
+                tools,
+            )
+            .with_tool_authority(
+                RuntimeScope::new(
+                    Capabilities::new(["tool:call:example.echo"]),
+                    Limits::default(),
+                )?,
+                None,
+            )
+        };
+        let operation = OperationId::from_bytes([81; 16]);
+        let invocation = |step| {
+            ToolInvocation::for_model_call(
+                operation,
+                step,
+                "repeat-call".into(),
+                "example.echo".into(),
+                json!({"unexpected":true}),
+            )
+        };
+        assert_ne!(invocation(0).operation_id, invocation(1).operation_id);
+        let model = Arc::new(RepeatedModel {
+            calls: AtomicUsize::new(0),
+            inputs: Mutex::new(Vec::new()),
+            duplicate_batch: false,
+        });
+        let executor = make_executor(model.clone())?;
+        let journal = Journal::default();
+        let input = TurnInput {
+            operation_id: operation,
+            input: ModelContent::Text("hello".into()),
+            selected_context: None,
+            max_steps: 3,
+        };
+        assert_eq!(
+            executor.execute(input.clone(), &journal).await?.text,
+            "done"
+        );
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        let inputs = model.inputs.lock().unwrap();
+        assert_eq!(inputs.len(), 3);
+        let request: ModelRequest = serde_json::from_slice(&inputs[2])
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(|message| message.role.as_str())
+                .collect::<Vec<_>>(),
+            ["user", "assistant", "tool", "assistant", "tool"]
+        );
+        assert_eq!(request.messages[2].content, request.messages[4].content);
+        drop(inputs);
+        let records = journal.replay(operation).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    ExecutionEvent::ToolAdmissionRejected {
+                        reason: ToolRejectionKind::InvalidArguments,
+                        ..
+                    }
+                ))
+                .count(),
+            2
+        );
+        let boundary_ref = records
+            .iter()
+            .find_map(|record| match &record.event {
+                ExecutionEvent::ToolBatchCompleted { step: 1, boundary } => Some(boundary),
+                _ => None,
+            })
+            .expect("second completed batch");
+        let boundary: crate::model_input::CompletedModelBoundary =
+            load_json(&journal, boundary_ref).await?;
+        assert_eq!(boundary.rejection_evidence.len(), 2);
+        assert_eq!(
+            boundary.rejection_evidence[0],
+            boundary.rejection_evidence[1]
+        );
+        boundary.verify(Limits::default())?;
+        let fresh = Arc::new(RepeatedModel {
+            calls: AtomicUsize::new(0),
+            inputs: Mutex::new(Vec::new()),
+            duplicate_batch: false,
+        });
+        assert_eq!(
+            make_executor(fresh.clone())?
+                .execute(input, &journal)
+                .await?
+                .text,
+            "done"
+        );
+        assert_eq!(fresh.calls.load(Ordering::SeqCst), 0);
+        assert!(fresh.inputs.lock().unwrap().is_empty());
+        assert_eq!(records, journal.replay(operation).await?);
+
+        // Boundary publication must reject the same corrupt duplicate
+        // preparation history as normal model-step replay.
+        let duplicate_preparation = records
+            .iter()
+            .find_map(|record| match &record.event {
+                event @ ExecutionEvent::ModelInputPrepared { step: 1, .. } => Some(event.clone()),
+                _ => None,
+            })
+            .expect("second prepared request");
+        journal
+            .append(
+                operation,
+                "duplicate:prepared:step1".into(),
+                duplicate_preparation,
+            )
+            .await?;
+        let corrupted_records = journal.replay(operation).await?;
+        assert!(
+            matches!(executor.record_completed_batch(&journal, operation, 1, &[]).await,
+            Err(Error::Storage(message)) if message.contains("duplicate prepared model input"))
+        );
+        assert_eq!(corrupted_records, journal.replay(operation).await?);
+
+        // Reusing a call ID across steps is valid, but sharing one identity
+        // inside a response must fail before admitting any tool operation.
+        let duplicate = Arc::new(RepeatedModel {
+            calls: AtomicUsize::new(0),
+            inputs: Mutex::new(Vec::new()),
+            duplicate_batch: true,
+        });
+        let duplicate_journal = Journal::default();
+        let duplicate_operation = OperationId::from_bytes([82; 16]);
+        assert!(matches!(make_executor(duplicate)?.execute(TurnInput {
+            operation_id: duplicate_operation,
+            input: ModelContent::Text("duplicate".into()),
+            selected_context: None,
+            max_steps: 3,
+        }, &duplicate_journal).await,
+            Err(Error::Invalid(message)) if message.contains("identity repeated")));
+        assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
+        assert!(
+            !duplicate_journal
+                .replay(duplicate_operation)
+                .await?
+                .iter()
+                .any(|record| matches!(
+                    record.event,
+                    ExecutionEvent::ToolStarted { .. }
+                        | ExecutionEvent::ToolCompleted { .. }
+                        | ExecutionEvent::ToolAdmissionRejected { .. }
+                ))
+        );
         Ok(())
     }
 

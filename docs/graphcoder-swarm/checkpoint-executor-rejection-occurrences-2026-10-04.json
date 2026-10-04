@@ -1,0 +1,35 @@
+{
+  "scope": "Exact rejection occurrence ordering and executor replay",
+  "base_commit": "a839a4d5330b3429a893168abbbffe76976a0086",
+  "rust_tree": "a5f6c3630340c003efc11370d5b7812af5cf8d12",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree --lib executor::tests --target-dir <isolated-root>/target/qualification-root-v2 -j2",
+  "result": {
+    "passed": 25,
+    "exit_code": 0,
+    "failed": 0,
+    "filtered": 299,
+    "duration_seconds": 0.14,
+    "ignored": 0
+  },
+  "suite": {
+    "sha256": "3f082c29384248d19c256abe835a0fabf38d7695b495e61c29d34f34771a2e8a",
+    "path": "rust/crates/harness/src/executor.rs"
+  },
+  "artifact": {
+    "sha256": "be247b512b11033e14a7742c41b70948157d2f669577086edac85f424b4f1017",
+    "path": "target/qualification-root-v2/debug/deps/acyclic_harness-8aef833e1de19671.exe"
+  },
+  "coverage": [
+    "Actual serialized provider request bytes retain two equal rejection occurrences across distinct steps",
+    "Completed boundary retains equal feedback entries in order",
+    "Fresh provider replay has zero generate calls and journal remains unchanged",
+    "Duplicate prepared records fail before boundary publication",
+    "Existing event admission rejects same-response call ID reuse before any tool effect"
+  ],
+  "boundaries": [
+    "Mock provider and in-memory executor journal; not a real LocalStream recursive swarm gate",
+    "Earlier 24-case baseline observed a temporary core diagnostic edit during build and is not used for exact source qualification",
+    "An intermediate regression run passed24 and failed1 because existing event admission rejected duplicates before the added redundant check; redundant check was removed and final full focused suite passes",
+    "Does not qualify physical effect recovery, root writeback, installed artifacts, or PTY"
+  ]
+}
