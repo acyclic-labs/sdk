@@ -29,6 +29,14 @@ const SAFE_ENVIRONMENT_KEYS = new Set([
 ]);
 const SECRET_ENVIRONMENT = /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|AUTH|PRIVATE_KEY|ACCESS_KEY)/iu;
 const RUNTIME_ENVIRONMENT = /^(?:PATH|PATHEXT|SystemRoot|TEMP|TMP|CI|NUMBER_OF_PROCESSORS|PROCESSOR_ARCHITECTURE)$/iu;
+const QUALIFICATION_ENVIRONMENT_KEYS = new Set([
+  "PATH", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC",
+  "GRAPHCODER_PACKAGE_ROOT", "GRAPHCODER_PACKAGE_ARTIFACT", "GRAPHCODER_BRIDGE_EXECUTABLE",
+  "GRAPHCODER_BRIDGE_ARGS_JSON", "GRAPHCODER_BRIDGE_ENV_JSON", "GRAPHCODER_BRIDGE_CWD",
+  "GRAPHCODER_IDENTITY_PATH", "GRAPHCODER_REQUIRE_PACKAGE_IDENTITY", "GRAPHCODER_LAZY_OBSERVATION_PATH",
+  "GRAPHCODER_REQUIRE_LAZY_COUNTERS", "GRAPHCODER_NODE", "GRAPHCODER_CONHOST",
+  "GRAPHCODER_PTY_TRANSCRIPT_PATH", "GRAPHCODER_PTY_LIFECYCLE_PATH", "GRAPHCODER_PTY_COMMAND_EXPECTATIONS_JSON",
+]);
 
 const hash = value => createHash("sha256").update(value).digest("hex");
 const readJson = path => JSON.parse(readFileSync(resolve(ROOT, path), "utf8"));
@@ -142,13 +150,14 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   try { descriptor = JSON.parse(descriptorBytes.toString("utf8")); }
   catch (error) { fail(`${lane.id} ${executionKind} descriptor is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
   if (descriptor.id !== suite.id || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
-  if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree) fail(`${lane.id} ${executionKind} receipt is bound to a different source`);
+  if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree || descriptor.source_clean !== true) fail(`${lane.id} ${executionKind} receipt is bound to a different or dirty source`);
+  if (source.canonical_worktree === undefined || descriptor.source_working_tree_sha256 !== workingTreeDigest(source.canonical_worktree)) fail(`${lane.id} ${executionKind} receipt working-tree digest is stale`);
   const command = descriptor.command;
   if (!command || typeof command !== "object" || !Array.isArray(command.args) || typeof command.executable !== "string") fail(`${lane.id} ${executionKind} descriptor command is invalid`);
   if (lane.driver && command.args[0] !== lane.driver) fail(`${lane.id} ${executionKind} descriptor command does not invoke its declared driver as argv[0]`);
   if (basename(command.executable).toLowerCase() !== "node" && basename(command.executable).toLowerCase() !== "node.exe") fail(`${lane.id} ${executionKind} descriptor executable is not Node`);
   if (source.canonical_worktree !== undefined && resolve(command.cwd) !== resolve(source.canonical_worktree)) fail(`${lane.id} ${executionKind} descriptor cwd is not the qualified worktree`);
-  if (!Array.isArray(command.env) || command.env.some(key => typeof key !== "string" || /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY)/iu.test(key))) fail(`${lane.id} ${executionKind} descriptor environment is not filtered`);
+  if (!Array.isArray(command.env) || command.env.some(key => typeof key !== "string" || !QUALIFICATION_ENVIRONMENT_KEYS.has(key) || /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|API_KEY)/iu.test(key))) fail(`${lane.id} ${executionKind} descriptor environment is not filtered`);
   for (const artifact of record.artifacts) {
     if (typeof artifact.path !== "string" || !existsSync(artifact.path)) fail(`${lane.id} ${executionKind} artifact is missing`);
     const metadata = lstatSync(artifact.path);
