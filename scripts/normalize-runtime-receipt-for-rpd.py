@@ -93,6 +93,11 @@ def normalize(inventory: dict[str, Any], receipt: dict[str, Any], language: str)
         item = observed.get(key)
         if item is None:
             raise ValueError(f"runtime receipt is missing {key}")
+        typed = raw.get("typed_request")
+        if not isinstance(typed, dict) or not isinstance(typed.get("serialized_hex"), str):
+            raise ValueError(
+                f"{key}: inventory lacks canonical typed_request.serialized_hex; use the current Rust assembler"
+            )
         status, code = terminal(item, key)
         request_b64 = item.get("request_base64")
         request_hex = b64_hex(request_b64, f"{key}.request_base64")
@@ -108,7 +113,6 @@ def normalize(inventory: dict[str, Any], receipt: dict[str, Any], language: str)
         expected["response_type_observed"] = raw.get("response_type")
         expected["response_type_id_observed"] = raw.get("response_type")
 
-        typed = raw.get("typed_request")
         if isinstance(typed, dict) and isinstance(typed.get("serialized_frames"), list):
             # The additional-language receipts currently expose one aggregate
             # request. Let the canonical verifier reject client streams until
