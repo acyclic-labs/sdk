@@ -60,3 +60,29 @@ test("unknown revision fails before creating a checkout", () => {
   assert.throws(() => createRustSourceSnapshot({ ...f, destination, revision: "missing-ref" }));
   assert.equal(existsSync(destination), false);
 });
+
+test("inherited Git repository settings cannot redirect snapshot checkout", () => {
+  const selected = fixture();
+  const unrelated = fixture();
+  const keys = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"];
+  const prior = new Map(keys.map(key => [key, process.env[key]]));
+  try {
+    process.env.GIT_DIR = join(unrelated.sourceRoot, ".git");
+    process.env.GIT_WORK_TREE = unrelated.sourceRoot;
+    process.env.GIT_COMMON_DIR = join(unrelated.sourceRoot, ".git");
+    process.env.GIT_INDEX_FILE = join(unrelated.sourceRoot, ".git", "index");
+    process.env.GIT_OBJECT_DIRECTORY = join(unrelated.sourceRoot, ".git", "objects");
+    process.env.GIT_ALTERNATE_OBJECT_DIRECTORIES = join(unrelated.sourceRoot, ".git", "objects");
+    const destination = join(selected.scope, "independent");
+    const receipt = createRustSourceSnapshot({ ...selected, destination });
+    assert.equal(receipt.source_revision, selected.revision);
+    assert.equal(receipt.clean, true);
+    assert.equal(readFileSync(join(unrelated.sourceRoot, ".git", "HEAD"), "utf8").startsWith("ref: "), true);
+    assert.equal(existsSync(join(destination, ".git")), true);
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});

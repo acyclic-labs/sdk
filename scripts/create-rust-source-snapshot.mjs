@@ -4,7 +4,12 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 function git(root, args) {
-  const result = spawnSync("git", ["-c", "gc.auto=0", "-C", root, ...args], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  const env = { ...process.env };
+  // Repository selection must follow the explicit root, including for checkout.
+  for (const key of Object.keys(env)) {
+    if (["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"].includes(key.toUpperCase())) delete env[key];
+  }
+  const result = spawnSync("git", ["-c", "gc.auto=0", "-C", root, ...args], { env, encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error(result.error?.message ?? result.stderr.trim() ?? "Git failed");
   return result.stdout.trim();
 }
