@@ -439,14 +439,7 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
     let source_files = source_closure::closure_files(source_root)?;
     ensure_compiled_source_matches(&source_sha256)?;
     let source_revision = git_revision(source_root);
-    let snippets = render_all()
-        .into_iter()
-        .chain(
-            guide_projections::all()
-                .into_iter()
-                .map(guide_projections::rendered),
-        )
-        .collect::<Vec<_>>();
+    let snippets = all_rendered_snippets();
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
     for snippet in snippets {
@@ -1670,6 +1663,7 @@ tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
         );
         fs::write(staging.join("Cargo.toml"), manifest)
             .map_err(|error| format!("write guide consumer manifest: {error}"))?;
+        let snippet_sha256 = hash(source_code.as_bytes());
         let code = rewrite_guide_imports(source_code);
         let main = format!(
             r#"#![allow(unused_imports)]
@@ -1716,7 +1710,7 @@ Ok(())
             .map_err(|error| format!("start guide consumer test: {error}"))?;
         if !test.status.success() {
             let stderr = String::from_utf8_lossy(&test.stderr);
-            let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), test.stderr);
+            let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), &test.stderr);
             return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
         }
         let install = Command::new(&cargo)
@@ -1766,7 +1760,7 @@ Ok(())
             "source_path": source,
             "source_revision": git_revision(source_root),
             "source_sha256": source_sha256,
-            "snippet_sha256": hash(source_code.as_bytes()),
+            "snippet_sha256": snippet_sha256,
             "package_artifact_path": portable_output_path(package_path, qualification),
             "package_artifact_sha256": package_sha256,
             "package_root_path": portable_output_path(&package_root, qualification),
@@ -2809,7 +2803,7 @@ fn write_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
             .get("id")
             .and_then(Value::as_str)
             .ok_or("snippet ID missing")?;
-        let code = render_all()
+        let code = all_rendered_snippets()
             .into_iter()
             .find(|snippet| {
                 snippet.metadata.id == id && snippet.metadata.language.as_str() == language
@@ -2825,6 +2819,23 @@ fn write_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
         serde_json::to_vec_pretty(manifest).map_err(|error| format!("encode manifest: {error}"))?;
     fs::write(output.join(MANIFEST), [bytes.as_slice(), b"\n"].concat())
         .map_err(|error| format!("write manifest: {error}"))
+}
+
+/// Returns every Rust-owned scenario projection in the stable bundle order.
+///
+/// The manifest and the files must be produced from the same registry.  Keep
+/// the guide projections here rather than reconstructing the lookup from the
+/// legacy two-scenario renderer: otherwise the six public family projections
+/// are present in the manifest but disappear when the bundle is written.
+fn all_rendered_snippets() -> Vec<RenderedSnippet> {
+    render_all()
+        .into_iter()
+        .chain(
+            guide_projections::all()
+                .into_iter()
+                .map(guide_projections::rendered),
+        )
+        .collect()
 }
 
 fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
@@ -2957,6 +2968,21 @@ mod tests {
         assert_eq!(extension(Language::Dart), "dart");
         assert_eq!(extension(Language::Php), "php");
         assert_eq!(extension(Language::Php), "php");
+    }
+
+    #[test]
+    fn bundle_renderer_includes_every_rust_owned_guide_projection() {
+        let snippets = all_rendered_snippets();
+        let guide = snippets
+            .iter()
+            .filter(|snippet| snippet.metadata.family != "actors" && snippet.metadata.family != "stream")
+            .collect::<Vec<_>>();
+        assert_eq!(guide.len(), 54, "six guide families across nine languages");
+        assert!(guide.iter().all(|snippet| !snippet.code.is_empty()));
+        assert!(guide.iter().any(|snippet| {
+            snippet.metadata.id == "objects-memory-put-get"
+                && snippet.metadata.language == Language::TypeScript
+        }));
     }
 
     #[test]
