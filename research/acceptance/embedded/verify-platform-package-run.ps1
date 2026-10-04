@@ -97,6 +97,8 @@ foreach ($receiptFile in $receiptFiles) {
         if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { throw "Receipt names missing installed artifact '$($artifact.Name)' for $target" }
         Assert-Equal (Get-Sha256 $artifactPath) ([string]$artifact.Value).ToLowerInvariant() "installed artifact hash $target/$($artifact.Name)"
     }
+    $runtimeProperty = $receipt.artifacts.psobject.Properties[[string]$receipt.runtime_artifact]
+    if ($null -eq $runtimeProperty) { throw "Runtime artifact '$($receipt.runtime_artifact)' is not included in the package for $target" }
     foreach ($name in @("c", "python", "cpp")) {
         $consumer = $receipt.consumers.psobject.Properties[$name].Value
         if ($consumer.status -ne "passed" -or -not [bool]$consumer.invoked -or [int]$consumer.exit_code -ne 0) {
@@ -110,7 +112,14 @@ foreach ($receiptFile in $receiptFiles) {
         $artifactProperty = $receipt.artifacts.psobject.Properties[[string]$consumer.package_artifact]
         if ($null -eq $artifactProperty) { throw "Consumer '$name' references an artifact outside the package for $target" }
         Assert-Equal ([string]$consumer.package_artifact_sha256) ([string]$artifactProperty.Value).ToLowerInvariant() "$name package hash for $target"
-        if (@($consumer.checks).Count -lt 1) { throw "Consumer '$name' has no behavior checks for $target" }
+        $requiredChecks = switch ($name) {
+            "c" { @("layout", "append", "read", "release", "stale_handles") }
+            "python" { @("append", "follow", "owned_buffers", "cancel", "stale_handles") }
+            "cpp" { @("blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install") }
+        }
+        foreach ($check in $requiredChecks) {
+            if (@($consumer.checks) -notcontains $check) { throw "Consumer '$name' is missing behavior check '$check' for $target" }
+        }
     }
     if ($receipt.ctest -ne "passed" -or $receipt.clean_prefix -ne "passed") { throw "CTest or clean-prefix verification did not pass for $target" }
 
