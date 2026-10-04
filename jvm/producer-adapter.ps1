@@ -24,8 +24,9 @@ if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
 $output = [System.IO.Path]::GetFullPath($Output)
 $workspace = Join-Path $output 'workspace'
 $workspaceJvm = Join-Path $workspace 'jvm'
+$workspaceConsumer = Join-Path $workspace 'consumer'
 $mavenLocal = Join-Path $output '.m2'
-$null = New-Item -ItemType Directory -Force -Path $output, $workspace, $mavenLocal
+$null = New-Item -ItemType Directory -Force -Path $output, $workspace, $mavenLocal, $workspaceConsumer
 
 & robocopy (Join-Path $SourceRoot 'jvm') $workspaceJvm /E /XD target obj bin /NFL /NDL /NJH /NJS /NC /NS | Out-Null
 if ($LASTEXITCODE -gt 7) {
@@ -34,6 +35,18 @@ if ($LASTEXITCODE -gt 7) {
 foreach ($name in @('LICENSE', 'NOTICE')) {
   Copy-Item -LiteralPath (Join-Path $SourceRoot $name) -Destination (Join-Path $workspace $name) -Force
 }
+& robocopy (Join-Path $SourceRoot 'jvm\consumer') $workspaceConsumer /E /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+if ($LASTEXITCODE -gt 7) {
+  throw "Could not stage the installed-JAR consumer project (robocopy exit code $LASTEXITCODE)."
+}
+$consumerTests = Join-Path $workspaceConsumer 'src\test\java\dev\acyclic\transport'
+$null = New-Item -ItemType Directory -Force -Path $consumerTests
+foreach ($testName in @('RpcScenarioEvidenceTest.java', 'GeneratedTransportTest.java')) {
+  Copy-Item -LiteralPath (Join-Path $workspaceJvm "src\test\java\dev\acyclic\transport\$testName") -Destination (Join-Path $consumerTests $testName) -Force
+}
+$consumerResources = Join-Path $workspaceConsumer 'src\test\resources\golden'
+$null = New-Item -ItemType Directory -Force -Path $consumerResources
+Copy-Item -LiteralPath (Join-Path $workspaceJvm 'src\test\resources\golden\cross-language-family-fixtures.json') -Destination $consumerResources -Force
 
 $maven = Get-Command mvn -ErrorAction SilentlyContinue
 if ($null -eq $maven) {
@@ -77,13 +90,13 @@ $consumerRoot = Join-Path $output 'qualification\consumers'
 $null = New-Item -ItemType Directory -Force -Path $consumerRoot
 $consumerArtifact = Join-Path $consumerRoot 'jvm-transport.jar'
 Copy-Item -LiteralPath $jar -Destination $consumerArtifact -Force
-& $maven.Source '-B' '-ntp' '-f' $pom `
-  "-Dacyclic.schema.root=$Authority" `
+$consumerPom = Join-Path $workspaceConsumer 'pom.xml'
+& $maven.Source '-B' '-ntp' '-f' $consumerPom `
   "-Dmaven.repo.local=$mavenLocal" `
   "-Dacyclic.source.revision=$sourceRevision" `
   "-Dacyclic.scenario.output=$output" `
   '-Dacyclic.consumer.artifact=qualification/consumers/jvm-transport.jar' `
-  '-Dtest=RpcScenarioEvidenceTest,GeneratedTransportTest' 'test'
+  '-Dtest=RpcScenarioEvidenceTest,GeneratedTransportTest,InstalledJarConsumerTest' 'test'
 if ($LASTEXITCODE -ne 0) {
   throw "JVM RPC scenario evidence failed with exit code $LASTEXITCODE."
 }
