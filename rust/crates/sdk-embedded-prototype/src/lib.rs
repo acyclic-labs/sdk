@@ -169,9 +169,21 @@ struct AcyclicReader {
     cancel_sender: std::sync::mpsc::SyncSender<ReaderMessage>,
     cancelled: Arc<AtomicBool>,
     terminal: AtomicU32,
+    /// Serializes the point at which a pulled record or terminal message becomes observable.
+    /// Cancellation marks `cancelled` before taking this lock, so a pull that has not committed
+    /// a record yet will always observe the cancellation, even if the record is already queued.
+    delivery: Mutex<()>,
     queued: Arc<AtomicUsize>,
     wake: Arc<Notify>,
     task: Mutex<Option<JoinHandle<()>>>,
+    #[cfg(test)]
+    test_hook: Mutex<Option<ReaderTestHook>>,
+}
+
+#[cfg(test)]
+struct ReaderTestHook {
+    message_received: std::sync::mpsc::Sender<()>,
+    allow_commit: Arc<std::sync::Barrier>,
 }
 
 enum ReaderMessage {
@@ -294,8 +306,16 @@ fn cancel_reader(reader: &AcyclicReader) {
         return;
     }
     // Cancellation wins over queued records and terminal messages that have not already been
-    // observed. The compare-and-set makes a terminal result stable on all later pulls.
-    publish_terminal(reader, AcyclicStatus::Cancelled);
+    // observed. Marking the flag before taking the delivery lock means a pull that has received a
+    // record but has not committed it yet will see cancellation at its delivery linearization
+    // point. The compare-and-set makes a terminal result stable on all later pulls.
+    if let Ok(_delivery) = reader.delivery.lock() {
+        publish_terminal(reader, AcyclicStatus::Cancelled);
+    } else {
+        // A poisoned lock can only follow a panic in the delivery section. Preserve the terminal
+        // ABI guarantee even when recovering from that panic.
+        publish_terminal(reader, AcyclicStatus::Cancelled);
+    }
     reader.wake.notify_waiters();
     let _ = reader.cancel_sender.try_send(ReaderMessage::Cancelled);
     if let Ok(mut task) = reader.task.lock() {
@@ -517,9 +537,12 @@ fn spawn_reader(
         cancel_sender: sender,
         cancelled,
         terminal: AtomicU32::new(NO_TERMINAL),
+        delivery: Mutex::new(()),
         queued,
         wake,
         task: Mutex::new(Some(task)),
+        #[cfg(test)]
+        test_hook: Mutex::new(None),
     })
 }
 
@@ -718,6 +741,13 @@ pub extern "C" fn acyclic_embedded_reader_next(reader: u64) -> AcyclicNextResult
         };
         let received = receiver.recv_timeout(POLL_INTERVAL);
         drop(receiver);
+        #[cfg(test)]
+        if let Ok(mut hook) = reader.test_hook.lock() {
+            if let Some(hook) = hook.take() {
+                let _ = hook.message_received.send(());
+                hook.allow_commit.wait();
+            }
+        }
         // Cancellation has a linearization point before this check. A queued record or terminal
         // message must never overwrite a cancellation that raced while the foreign pull waited.
         if let Some(status) = terminal_status(reader.terminal.load(Ordering::Acquire)) {
@@ -726,28 +756,87 @@ pub extern "C" fn acyclic_embedded_reader_next(reader: u64) -> AcyclicNextResult
         match received {
             Ok(ReaderMessage::Record(record)) => {
                 reader.queued.fetch_sub(1, Ordering::AcqRel);
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
+                if reader.cancelled.load(Ordering::Acquire) {
+                    let status = publish_terminal(&reader, AcyclicStatus::Cancelled);
+                    drop(delivery);
+                    return terminal_result(status);
+                }
                 let result = AcyclicNextResult {
                     status: AcyclicStatus::Ok,
                     sequence: record.sequence,
                     value: owned_buffer(record.value.to_vec()),
                     message: empty_buffer(),
                 };
-                if let Some(status) = terminal_status(reader.terminal.load(Ordering::Acquire)) {
-                    acyclic_next_result_release(result);
-                    terminal_result(status)
-                } else {
-                    result
-                }
+                drop(delivery);
+                result
             }
             Ok(ReaderMessage::End) => {
-                terminal_result(publish_terminal(&reader, AcyclicStatus::End))
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
+                let status = if reader.cancelled.load(Ordering::Acquire) {
+                    publish_terminal(&reader, AcyclicStatus::Cancelled)
+                } else {
+                    publish_terminal(&reader, AcyclicStatus::End)
+                };
+                drop(delivery);
+                terminal_result(status)
             }
             Ok(ReaderMessage::Cancelled) => {
-                terminal_result(publish_terminal(&reader, AcyclicStatus::Cancelled))
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
+                let status = publish_terminal(&reader, AcyclicStatus::Cancelled);
+                drop(delivery);
+                terminal_result(status)
             }
             Ok(ReaderMessage::Error(error)) => {
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
+                if reader.cancelled.load(Ordering::Acquire) {
+                    let status = publish_terminal(&reader, AcyclicStatus::Cancelled);
+                    drop(delivery);
+                    return terminal_result(status);
+                }
                 let result = provider_next_error(error);
                 let status = publish_terminal(&reader, result.status);
+                drop(delivery);
                 if status == result.status {
                     result
                 } else {
@@ -755,19 +844,50 @@ pub extern "C" fn acyclic_embedded_reader_next(reader: u64) -> AcyclicNextResult
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
                 if let Some(status) = terminal_status(reader.terminal.load(Ordering::Acquire)) {
+                    drop(delivery);
+                    terminal_result(status)
+                } else if reader.cancelled.load(Ordering::Acquire) {
+                    let status = publish_terminal(&reader, AcyclicStatus::Cancelled);
+                    drop(delivery);
                     terminal_result(status)
                 } else {
-                    AcyclicNextResult {
+                    let result = AcyclicNextResult {
                         status: AcyclicStatus::Pending,
                         sequence: 0,
                         value: empty_buffer(),
                         message: empty_buffer(),
-                    }
+                    };
+                    drop(delivery);
+                    result
                 }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                terminal_result(publish_terminal(&reader, AcyclicStatus::Cancelled))
+                let delivery = match reader.delivery.lock() {
+                    Ok(delivery) => delivery,
+                    Err(_) => {
+                        return AcyclicNextResult {
+                            status: AcyclicStatus::Panic,
+                            sequence: 0,
+                            value: empty_buffer(),
+                            message: message("reader delivery mutex poisoned"),
+                        };
+                    }
+                };
+                let status = publish_terminal(&reader, AcyclicStatus::Cancelled);
+                drop(delivery);
+                terminal_result(status)
             }
         }
     }));
@@ -878,6 +998,19 @@ mod tests {
 
     fn bytes(value: &[u8]) -> (*const u8, usize) {
         (value.as_ptr(), value.len())
+    }
+
+    fn install_message_hook(
+        reader: u64,
+    ) -> (std::sync::mpsc::Receiver<()>, Arc<std::sync::Barrier>) {
+        let (message_received, received) = std::sync::mpsc::channel();
+        let allow_commit = Arc::new(std::sync::Barrier::new(2));
+        let state = reader_lookup(reader).expect("reader remains registered");
+        *state.test_hook.lock().expect("test hook mutex is healthy") = Some(ReaderTestHook {
+            message_received,
+            allow_commit: Arc::clone(&allow_commit),
+        });
+        (received, allow_commit)
     }
 
     #[test]
@@ -1078,13 +1211,23 @@ mod tests {
         let opened = acyclic_embedded_reader_open(engine, path_ptr, path_len, 0, 0, FOLLOW_MODE);
         assert_eq!(opened.status, AcyclicStatus::Ok);
         let reader = opened.reader;
-        std::thread::sleep(Duration::from_millis(5));
-        acyclic_embedded_reader_cancel(reader);
-        for _ in 0..3 {
+        let (message_received, allow_commit) = install_message_hook(reader);
+        let pull = std::thread::spawn(move || {
             let result = acyclic_embedded_reader_next(reader);
-            assert_eq!(result.status, AcyclicStatus::Cancelled);
+            let status = result.status;
             acyclic_next_result_release(result);
-        }
+            status
+        });
+        message_received
+            .recv()
+            .expect("pull received the queued record before commit");
+        acyclic_embedded_reader_cancel(reader);
+        allow_commit.wait();
+        let status = pull.join().expect("reader pull did not panic");
+        assert_eq!(status, AcyclicStatus::Cancelled);
+        let repeated = acyclic_embedded_reader_next(reader);
+        assert_eq!(repeated.status, AcyclicStatus::Cancelled);
+        acyclic_next_result_release(repeated);
         acyclic_embedded_reader_close(reader);
         acyclic_embedded_engine_close(engine);
     }
@@ -1103,19 +1246,60 @@ mod tests {
         let opened = acyclic_embedded_reader_open(engine, path_ptr, path_len, 1, 0, FOLLOW_MODE);
         assert_eq!(opened.status, AcyclicStatus::Ok);
         let reader = opened.reader;
-        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (message_received, allow_commit) = install_message_hook(reader);
         let blocked = std::thread::spawn(move || {
-            entered_tx.send(()).expect("test receiver is alive");
             let result = acyclic_embedded_reader_next(reader);
             let status = result.status;
             acyclic_next_result_release(result);
             status
         });
-        entered_rx.recv().expect("reader entered pull");
-        std::thread::sleep(Duration::from_millis(10));
+        message_received
+            .recv()
+            .expect("pull reached the pending commit point");
         acyclic_embedded_reader_cancel(reader);
+        allow_commit.wait();
         let cancelled = blocked.join().expect("reader pull did not panic");
         assert_eq!(cancelled, AcyclicStatus::Cancelled);
+        assert_eq!(
+            acyclic_embedded_reader_next(reader).status,
+            AcyclicStatus::Cancelled
+        );
+        acyclic_embedded_reader_close(reader);
+        acyclic_embedded_engine_close(engine);
+    }
+
+    #[test]
+    fn cancellation_prevents_a_queued_end_from_overwriting_cancelled() {
+        let engine = acyclic_embedded_engine_open();
+        let path = b"actors/cancel-end";
+        let value = b"one";
+        let (path_ptr, path_len) = bytes(path);
+        let (value_ptr, value_len) = bytes(value);
+        let append =
+            acyclic_embedded_engine_append(engine, path_ptr, path_len, value_ptr, value_len);
+        assert_eq!(append.status, AcyclicStatus::Ok);
+        acyclic_append_result_release(append);
+        let opened = acyclic_embedded_reader_open(engine, path_ptr, path_len, 0, 1, READ_MODE);
+        assert_eq!(opened.status, AcyclicStatus::Ok);
+        let reader = opened.reader;
+        let first = acyclic_embedded_reader_next(reader);
+        assert_eq!(first.status, AcyclicStatus::Ok);
+        acyclic_next_result_release(first);
+
+        let (message_received, allow_commit) = install_message_hook(reader);
+        let pull = std::thread::spawn(move || {
+            let result = acyclic_embedded_reader_next(reader);
+            let status = result.status;
+            acyclic_next_result_release(result);
+            status
+        });
+        message_received
+            .recv()
+            .expect("pull received the queued end before commit");
+        acyclic_embedded_reader_cancel(reader);
+        allow_commit.wait();
+        let status = pull.join().expect("reader pull did not panic");
+        assert_eq!(status, AcyclicStatus::Cancelled);
         assert_eq!(
             acyclic_embedded_reader_next(reader).status,
             AcyclicStatus::Cancelled
