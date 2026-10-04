@@ -84,6 +84,53 @@ test("source closure keeps Rust provenance and Seal/exclusion guards", () => {
   }
 });
 
+test("artifacts bind to the exact Git revision and declared Rust source scope", () => {
+  const main = read("rust/crates/sdk-generation/src/main.rs");
+  for (const marker of [
+    'command_stdout(source_root, "git", &["rev-parse", "HEAD"])',
+    '"source_git_sha_kind"',
+    '"source_file_hashes"',
+    '"source_files"',
+    'fn source_identity_with_filter',
+    '"ls-files", "-co", "--exclude-standard"',
+    'ensure_source_identity_unchanged(&source, &source_after_tools, "generation")',
+    'ensure_source_identity_unchanged(&source, &source_after_tools, "drift check")',
+    'fn compare_fresh_artifacts(',
+    'fn artifact_digest(',
+  ]) {
+    assert.match(main, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), marker);
+  }
+});
+
+test("every required producer family has an orchestrator entry and invocation path", () => {
+  const main = read("rust/crates/sdk-generation/src/main.rs");
+  for (const id of [
+    "sdk-product-artifacts",
+    "sdk-contract-wire",
+    "sdk-contract-validation",
+    "sdk-openapi-prototype",
+    "sdk-examples",
+    "sdk-docs-rustdoc",
+    "sdk-docs",
+    "sdk-language-producers",
+    "sdk-python",
+    "sdk-typescript",
+    "sdk-typescript-rpc-contracts",
+  ]) {
+    assert.match(main, new RegExp(`(?:id:|\\\")${id.replace(/[.*+?^${}()|[\\]\\]/g, "\\\\$&")}`), id);
+  }
+  for (const marker of [
+    "fn run_tools(",
+    "fn run_language_producers(",
+    "fn run_openapi_projections(",
+    "fn run_docs_rustdoc(",
+    "fn tool_command(",
+    "fn generated_package_roots(",
+  ]) {
+    assert.match(main, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")), marker);
+  }
+});
+
 test("all generated producers carry source revision metadata", () => {
   const main = read("rust/crates/sdk-generation/src/main.rs");
   const python = read("rust/crates/sdk-python/src/main.rs");
