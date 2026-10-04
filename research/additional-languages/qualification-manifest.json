@@ -35,6 +35,14 @@
       "tooling": { "package": "ocicl", "install": "distribution package" },
       "artifact": "ag-protoc generated Actors and streaming Lisp sources compiled by SBCL",
       "qualification": "package-archive-and-serialization-streaming-consumer"
+    },
+    {
+      "id": "lua",
+      "toolchain": { "lua": "5.4", "luarocks": "Ubuntu release package", "go": "Ubuntu release package" },
+      "generator": { "repository": "https://github.com/Protocol-Lattice/lua-grpc", "commit": "1247ad7278ec39b3e2db384ede8ca6d1e6204fa1", "rockspec": "lua-grpc-0.1.6-1", "license": "unverified: pinned repository has no LICENSE or COPYING file" },
+      "transport": { "package": "lua-http", "protocol": "HTTP/2", "tls": "lua-http TLS request option", "cancellation": "grpc.context cancellation and deadline" },
+      "artifact": "LuaRocks archive plus Rust-generated descriptor and Lua service binding",
+      "qualification": "pinned-upstream-suite-and-rust-generated-four-shape-consumer"
     }
   ]
 }
