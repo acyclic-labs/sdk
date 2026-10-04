@@ -117,6 +117,7 @@ enum Operation {
     Check,
     Drift,
     Qualify,
+    QualifyEmbedded,
     Inventory,
 }
 
@@ -125,6 +126,9 @@ struct Args {
     operation: Operation,
     source_root: PathBuf,
     output: PathBuf,
+    receipt: Option<PathBuf>,
+    evidence: Option<PathBuf>,
+    package_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -315,6 +319,19 @@ fn run() -> Result<(), CliError> {
         Operation::Check => check(&source_root, &output),
         Operation::Drift => drift(&source_root, &output),
         Operation::Qualify => qualify(&source_root, &output),
+        Operation::QualifyEmbedded => qualify_embedded(
+            &source_root,
+            &output,
+            args.receipt
+                .as_deref()
+                .ok_or_else(|| CliError::new("qualify-embedded requires --receipt PATH"))?,
+            args.evidence
+                .as_deref()
+                .ok_or_else(|| CliError::new("qualify-embedded requires --evidence PATH"))?,
+            args.package_root.as_deref().ok_or_else(|| {
+                CliError::new("qualify-embedded requires --package-root PATH")
+            })?,
+        ),
         Operation::Inventory => inventory_command(&source_root, &output),
     }
 }
@@ -326,20 +343,24 @@ fn parse_args() -> Result<Args, CliError> {
         Some("check") => Operation::Check,
         Some("drift") => Operation::Drift,
         Some("qualify") => Operation::Qualify,
+        Some("qualify-embedded") => Operation::QualifyEmbedded,
         Some("inventory") => Operation::Inventory,
         Some(other) => {
             return Err(CliError::new(format!(
-                "unknown operation {other}; expected generate, check, drift, qualify, or inventory"
+                "unknown operation {other}; expected generate, check, drift, qualify, qualify-embedded, or inventory"
             )));
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|qualify|inventory> --source-root PATH --output PATH",
+                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH]",
             ));
         }
     };
     let mut source_root = None;
     let mut output = None;
+    let mut receipt = None;
+    let mut evidence = None;
+    let mut package_root = None;
     while let Some(flag) = values.next() {
         match flag.as_str() {
             "--source-root" => {
@@ -355,9 +376,30 @@ fn parse_args() -> Result<Args, CliError> {
                         .ok_or_else(|| CliError::new("--output requires a path"))?,
                 ))
             }
+            "--receipt" => {
+                receipt = Some(PathBuf::from(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--receipt requires a path"))?,
+                ))
+            }
+            "--evidence" => {
+                evidence = Some(PathBuf::from(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--evidence requires a path"))?,
+                ))
+            }
+            "--package-root" => {
+                package_root = Some(PathBuf::from(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--package-root requires a path"))?,
+                ))
+            }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|qualify|inventory> --source-root PATH --output PATH",
+                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -367,6 +409,9 @@ fn parse_args() -> Result<Args, CliError> {
         operation,
         source_root: source_root.ok_or_else(|| CliError::new("--source-root is required"))?,
         output: output.ok_or_else(|| CliError::new("--output is required"))?,
+        receipt,
+        evidence,
+        package_root,
     })
 }
 
@@ -374,6 +419,8 @@ fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
     let source = source_identity(source_root)?;
     let authoritative_source = authoritative_source_identity(source_root)?;
     let tools = run_tools(source_root, output, &source, Operation::Generate)?;
+    let source_after_tools = source_identity(source_root)?;
+    ensure_source_identity_unchanged(&source, &source_after_tools, "generation")?;
     let authoritative_after_tools = authoritative_source_identity(source_root)?;
     if authoritative_after_tools.digest != authoritative_source.digest
         || authoritative_after_tools.revision != authoritative_source.revision
@@ -491,6 +538,8 @@ fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
     }
     fs::create_dir_all(&check_root)?;
     let fresh_tools = run_tools(source_root, &check_root, &source, Operation::Check)?;
+    let source_after_tools = source_identity(source_root)?;
+    ensure_source_identity_unchanged(&source, &source_after_tools, "drift check")?;
     let authoritative_after_tools = authoritative_source_identity(source_root)?;
     if authoritative_after_tools.digest != authoritative_source.digest
         || authoritative_after_tools.revision != authoritative_source.revision
@@ -644,6 +693,219 @@ fn qualify(source_root: &Path, output: &Path) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Qualify the Rust-owned embedded boundary without routing it through the
+/// remote RPC inventory. Embedded consumers have a different contract: the
+/// C ABI layout, ownership/lifetime rules, cancellation wakeup and package
+/// loading are the capabilities under test. The receipt and unified evidence
+/// still use the same Rust source and canonical artifact digest bindings as
+/// every other generation lane.
+fn qualify_embedded(
+    source_root: &Path,
+    output: &Path,
+    receipt_path: &Path,
+    evidence_path: &Path,
+    package_root: &Path,
+) -> Result<(), CliError> {
+    let source = canonical_existing_directory(source_root, "source root")?;
+    let output = absolute_path(output)?;
+    let package = canonical_existing_directory(package_root, "embedded package root")?;
+    if package.starts_with(&source) || output.starts_with(&source) {
+        return Err(CliError::new(
+            "embedded qualification output and package must be outside the Rust source root",
+        ));
+    }
+    let receipt: Value = read_json(receipt_path)
+        .map_err(|error| CliError::new(format!("cannot read embedded ABI receipt: {error}")))?;
+    let evidence: Value = read_json(evidence_path).map_err(|error| {
+        CliError::new(format!("cannot read unified embedded evidence: {error}"))
+    })?;
+    let receipt_schema = receipt
+        .get("schema")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded receipt is missing schema"))?;
+    let receipt_status = receipt
+        .get("status")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded receipt is missing status"))?;
+    if receipt_schema != "acyclic.sdk.embedded.release-abi.v1"
+        || receipt_status != "qualified-local-release-package"
+    {
+        return Err(CliError::new("embedded ABI receipt schema or status is invalid"));
+    }
+    let source_record = receipt
+        .get("source")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::new("embedded ABI receipt source binding is missing"))?;
+    let source_revision = source_record
+        .get("revision")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded ABI receipt source revision is missing"))?;
+    if !is_commit_revision(source_revision) {
+        return Err(CliError::new("embedded ABI source revision is not immutable"));
+    }
+    let source_digest = source_record
+        .get("source_digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded ABI source digest is missing"))?;
+    if source_digest.len() != 64 || !source_digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CliError::new("embedded ABI source digest is invalid"));
+    }
+    let consumers = receipt
+        .get("foreign_consumers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::new("embedded consumer receipts are missing"))?;
+    for name in ["c_consumer", "python_ctypes_consumer", "cpp_cross_thread_consumer"] {
+        if consumers
+            .get(name)
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            != Some("passed")
+        {
+            return Err(CliError::new(format!("embedded consumer receipt did not pass: {name}")));
+        }
+    }
+    let actual_consumers = receipt
+        .get("consumer_receipts")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::new("actual embedded consumer receipts are missing"))?;
+    for name in ["c", "python", "cpp"] {
+        let consumer = actual_consumers
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| CliError::new(format!("actual embedded consumer receipt is missing: {name}")))?;
+        if consumer.get("status").and_then(Value::as_str) != Some("passed")
+            || consumer
+                .get("checks")
+                .and_then(Value::as_array)
+                .is_none_or(|checks| checks.is_empty())
+        {
+            return Err(CliError::new(format!("actual embedded consumer receipt did not pass: {name}")));
+        }
+    }
+    if receipt
+        .get("reproducibility")
+        .and_then(|value| value.get("artifact_hashes_equal"))
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        return Err(CliError::new("embedded ABI reproducibility evidence is missing"));
+    }
+    let artifacts = receipt
+        .get("artifacts")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::new("embedded ABI artifact hashes are missing"))?;
+    let mut canonical = String::new();
+    let mut artifact_count = 0usize;
+    for (path, expected) in artifacts {
+        if !is_portable_relative(path) {
+            return Err(CliError::new(format!("embedded artifact path is not portable: {path}")));
+        }
+        let expected = expected
+            .as_str()
+            .ok_or_else(|| CliError::new(format!("embedded artifact hash is invalid: {path}")))?;
+        if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(CliError::new(format!("embedded artifact hash is invalid: {path}")));
+        }
+        let artifact_path = package.join(path);
+        let metadata = fs::symlink_metadata(&artifact_path).map_err(|error| {
+            CliError::new(format!("embedded artifact is missing: {path}: {error}"))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(CliError::new(format!("embedded artifact is not a file: {path}")));
+        }
+        let bytes = fs::read(&artifact_path)?;
+        let actual = hash_bytes(&bytes);
+        if actual != format!("sha256:{}", expected.to_ascii_lowercase()) {
+            return Err(CliError::new(format!("embedded artifact hash mismatch: {path}")));
+        }
+        canonical.push_str(path);
+        canonical.push('\0');
+        canonical.push_str(&actual);
+        canonical.push('\0');
+        artifact_count += 1;
+    }
+    // JSON object iteration is not an ordering contract. Rebuild the digest
+    // from sorted path/hash pairs exactly as the generation manifest does.
+    let mut pairs = artifacts
+        .iter()
+        .map(|(path, hash)| {
+            Ok((
+                path.clone(),
+                hash
+                    .as_str()
+                    .ok_or_else(|| CliError::new("embedded artifact hash is not a string"))?
+                    .to_ascii_lowercase(),
+            ))
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
+    pairs.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut sorted_canonical = String::new();
+    for (path, hash) in pairs {
+        sorted_canonical.push_str(&path);
+        sorted_canonical.push('\0');
+        sorted_canonical.push_str("sha256:");
+        sorted_canonical.push_str(&hash);
+        sorted_canonical.push('\0');
+    }
+    let expected_artifact_digest = hash_bytes(sorted_canonical.as_bytes());
+    let evidence_contract = format!("sha256:{source_digest}");
+    let evidence_ok = evidence.get("schema").and_then(Value::as_str) == Some(EVIDENCE_SCHEMA)
+        && evidence.get("language").and_then(Value::as_str) == Some("cpp")
+        && evidence.get("source_revision").and_then(Value::as_str) == Some(source_revision)
+        && evidence.get("contract_digest").and_then(Value::as_str) == Some(evidence_contract.as_str())
+        && evidence.get("artifact_digest").and_then(Value::as_str) == Some(expected_artifact_digest.as_str())
+        && evidence
+            .get("embedded")
+            .and_then(|value| value.get("status"))
+            .and_then(Value::as_str)
+            == Some("qualified");
+    if !evidence_ok {
+        return Err(CliError::new(
+            format!(
+                "unified embedded evidence is not bound to the Rust source and artifact set (schema={}, language={}, revision={}, contract={}, artifact={}, expected_artifact={})",
+                evidence.get("schema").and_then(Value::as_str).unwrap_or("missing"),
+                evidence.get("language").and_then(Value::as_str).unwrap_or("missing"),
+                evidence.get("source_revision").and_then(Value::as_str).unwrap_or("missing"),
+                evidence.get("contract_digest").and_then(Value::as_str).unwrap_or("missing"),
+                evidence.get("artifact_digest").and_then(Value::as_str).unwrap_or("missing"),
+                expected_artifact_digest,
+            ),
+        ));
+    }
+    let runtime_path = package.join("bin/acyclic_sdk_embedded_prototype.dll");
+    let runtime = fs::read(&runtime_path).map_err(|error| {
+        CliError::new(format!("embedded runtime artifact is missing: {error}"))
+    })?;
+    if runtime.len() < 64
+        || &runtime[0..2] != b"MZ"
+        || runtime
+            .get(0x3c..0x40)
+            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("PE offset")) as usize)
+            .and_then(|offset| runtime.get(offset..offset + 4))
+            != Some(b"PE\0\0")
+        || !runtime
+            .windows(b"acyclic_embedded_abi_version".len())
+            .any(|window| window == b"acyclic_embedded_abi_version")
+    {
+        return Err(CliError::new(
+            "embedded runtime does not have a valid PE signature and ABI export",
+        ));
+    }
+    let report = json!({
+        "schema": "acyclic.sdk.embedded.qualification.v1",
+        "status": "passed",
+        "source_revision": source_revision,
+        "contract_digest": format!("sha256:{source_digest}"),
+        "artifact_digest": expected_artifact_digest,
+        "artifact_count": artifact_count,
+        "consumers": ["c", "python-ctypes", "cpp"],
+        "embedded_scope": ["layout", "ownership", "lifetime", "cancellation", "cross-thread wakeup", "package loading"],
+        "pe": { "mz": true, "pe": true, "export": "acyclic_embedded_abi_version" },
+    });
+    write_json_value(&output.join("embedded-qualification.json"), &report)?;
+    print_json(&report)
+}
+
 fn inventory_command(source_root: &Path, output: &Path) -> Result<(), CliError> {
     let source = source_identity(source_root)?;
     let expectations = evidence_expectations(source_root, output)?;
@@ -669,6 +931,22 @@ fn validate_current_source(
         return Err(CliError::new(
             "current source identity differs from the generated qualification manifest",
         ));
+    }
+    Ok(())
+}
+
+fn ensure_source_identity_unchanged(
+    before: &SourceIdentity,
+    after: &SourceIdentity,
+    phase: &str,
+) -> Result<(), CliError> {
+    if before.revision != after.revision
+        || before.digest != after.digest
+        || before.dirty != after.dirty
+    {
+        return Err(CliError::new(format!(
+            "source checkout changed during {phase}; generators must write only to the output tree"
+        )));
     }
     Ok(())
 }
@@ -824,6 +1102,8 @@ fn is_generated_output_path(path: &str) -> bool {
         || path.starts_with("typescript/packages/harness/generated/")
         || path.starts_with("typescript/packages/machines/generated/")
         || path.starts_with("typescript/packages/inference/generated/")
+        || (path.starts_with("typescript/packages/")
+            && path.ends_with("/src/generated-client.ts"))
         || matches!(
             path.as_str(),
             "rust/crates/actors/src/generated/acyclic.actors.v1.rs"
@@ -1853,6 +2133,12 @@ fn normalize_profile_feature_order(profile_manifest: &mut Value) {
     }
 }
 
+fn replace_sdk_examples_operation(command: &mut [OsString], operation: &str) {
+    if let Some(argument) = command.iter_mut().find(|argument| *argument == "generate") {
+        *argument = OsString::from(operation);
+    }
+}
+
 fn run_tools(
     root: &Path,
     output: &Path,
@@ -1960,6 +2246,26 @@ fn run_tools(
             .iter()
             .map(|part| part.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
+        if let Err(error) = ensure_generation_destination(
+            root,
+            output,
+            spec.id,
+            operation,
+            &command,
+        ) {
+            results.push(ToolResult {
+                id: spec.id.into(),
+                status: "failed".into(),
+                required: spec.required,
+                command: command_text,
+                request: relative_request,
+                stdout_sha256: None,
+                stderr_sha256: None,
+                exit_code: Some(1),
+                message: Some(error.to_string()),
+            });
+            continue;
+        }
         let process = Command::new(&command[0])
             .args(&command[1..])
             .current_dir(root)
@@ -1971,24 +2277,152 @@ fn run_tools(
                 let result = tool_result(
                     spec.id,
                     spec.required,
-                    relative_request,
+                    relative_request.clone(),
                     command_text,
                     process,
                     output,
                 )?;
-                if spec.id == "sdk-examples" && result.status == "passed" {
-                    if let Err(error) = write_source_authority_manifest(output, &source.revision) {
-                        results.push(ToolResult {
-                            id: "sdk-examples-source-authority".into(),
+                if spec.id == "sdk-examples"
+                    && result.status == "passed"
+                    && operation == Operation::Generate
+                {
+                    // The examples producer has three distinct source-bound
+                    // outputs. Keep them in one generation transaction so a
+                    // successful snippet run cannot leave fixtures or the
+                    // qualification receipt stale or absent.
+                    let mut fixtures_command = command.clone();
+                    replace_sdk_examples_operation(&mut fixtures_command, "fixtures");
+                    fixtures_command.insert(
+                        fixtures_command
+                            .iter()
+                            .position(|argument| argument == "fixtures")
+                            .map(|position| position + 1)
+                            .unwrap_or(0),
+                        OsString::from("generate"),
+                    );
+                    let fixtures_command_text = fixtures_command
+                        .iter()
+                        .map(|part| part.to_string_lossy().into_owned())
+                        .collect::<Vec<_>>();
+                    let fixtures_result = match Command::new(&fixtures_command[0])
+                        .args(&fixtures_command[1..])
+                        .current_dir(root)
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .output()
+                    {
+                        Ok(process) => tool_result(
+                            "sdk-examples-fixtures",
+                            true,
+                            relative_request.clone(),
+                            fixtures_command_text,
+                            process,
+                            output,
+                        )?,
+                        Err(error) => ToolResult {
+                            id: "sdk-examples-fixtures".into(),
                             status: "failed".into(),
                             required: true,
-                            command: Vec::new(),
-                            request: "sdk-examples-manifest.json".into(),
+                            command: fixtures_command_text,
+                            request: relative_request.clone(),
                             stdout_sha256: None,
                             stderr_sha256: None,
-                            exit_code: Some(1),
-                            message: Some(error.to_string()),
-                        });
+                            exit_code: None,
+                            message: Some(format!(
+                                "could not start sdk-examples fixtures in {}: {error}",
+                                root.display()
+                            )),
+                        },
+                    };
+                    let fixtures_passed = fixtures_result.status == "passed";
+                    results.push(fixtures_result);
+
+                    if fixtures_passed {
+                        let mut receipts_command = command.clone();
+                        replace_sdk_examples_operation(&mut receipts_command, "receipts");
+                        let receipts_command_text = receipts_command
+                            .iter()
+                            .map(|part| part.to_string_lossy().into_owned())
+                            .collect::<Vec<_>>();
+                        let receipts_result = match Command::new(&receipts_command[0])
+                            .args(&receipts_command[1..])
+                            .current_dir(root)
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .output()
+                        {
+                            Ok(process) => {
+                                let mut receipt = tool_result(
+                                    "sdk-examples-receipts",
+                                    true,
+                                    relative_request.clone(),
+                                    receipts_command_text,
+                                    process,
+                                    output,
+                                )?;
+                                if receipt.status == "passed" {
+                                    let qualification =
+                                        output.join("sdk-qualification-receipt.json");
+                                    match read_json::<Value>(&qualification) {
+                                        Ok(value)
+                                            if value.get("status").and_then(Value::as_str)
+                                                == Some("passed") => {}
+                                        Ok(value) => {
+                                            receipt.status = "failed".into();
+                                            receipt.exit_code = Some(1);
+                                            receipt.message = Some(format!(
+                                                "qualification receipt is not complete: {}",
+                                                value
+                                                    .get("status")
+                                                    .and_then(Value::as_str)
+                                                    .unwrap_or("missing status")
+                                            ));
+                                        }
+                                        Err(error) => {
+                                            receipt.status = "failed".into();
+                                            receipt.exit_code = Some(1);
+                                            receipt.message = Some(format!(
+                                                "read qualification receipt: {error}"
+                                            ));
+                                        }
+                                    }
+                                }
+                                receipt
+                            }
+                            Err(error) => ToolResult {
+                                id: "sdk-examples-receipts".into(),
+                                status: "failed".into(),
+                                required: true,
+                                command: receipts_command_text,
+                                request: relative_request.clone(),
+                                stdout_sha256: None,
+                                stderr_sha256: None,
+                                exit_code: None,
+                                message: Some(format!(
+                                    "could not start sdk-examples receipts in {}: {error}",
+                                    root.display()
+                                )),
+                            },
+                        };
+                        let receipts_passed = receipts_result.status == "passed";
+                        results.push(receipts_result);
+                        if receipts_passed {
+                            if let Err(error) =
+                                write_source_authority_manifest(output, &source.revision)
+                            {
+                                results.push(ToolResult {
+                                    id: "sdk-examples-source-authority".into(),
+                                    status: "failed".into(),
+                                    required: true,
+                                    command: Vec::new(),
+                                    request: "sdk-examples-manifest.json".into(),
+                                    stdout_sha256: None,
+                                    stderr_sha256: None,
+                                    exit_code: Some(1),
+                                    message: Some(error.to_string()),
+                                });
+                            }
+                        }
                     }
                 }
                 results.push(result);
@@ -2012,12 +2446,83 @@ fn run_tools(
     Ok(results)
 }
 
+fn ensure_generation_destination(
+    root: &Path,
+    output: &Path,
+    tool: &str,
+    operation: Operation,
+    command: &[OsString],
+) -> Result<(), CliError> {
+    if operation != Operation::Generate {
+        return Ok(());
+    }
+    // The current migration hazard is the unified TypeScript package writer,
+    // whose legacy command accepted the repository root as its destination.
+    // Other tools legitimately receive the source root as a read-only input
+    // (for example rustdoc's --repo-root), so do not reject those arguments.
+    if tool != "sdk-typescript" {
+        return Ok(());
+    }
+    let root = canonical_existing_directory(root, "source root")?;
+    let output = canonical_existing_directory(output, "generation output")?;
+    if output == root {
+        return Err(CliError::new(format!(
+            "{tool} generation output must be outside the frozen source checkout"
+        )));
+    }
+    // The package writer receives the positional contract
+    // `packages-write <source-root> <output-root> <wire-root> <revision>`
+    // after Cargo's `--` separator. The source root is a read-only input;
+    // the output root and wire root must remain in the isolated tree. Do not
+    // infer the destination from the final argument, which is the Git OID.
+    let separator = command
+        .iter()
+        .position(|argument| argument == "--")
+        .ok_or_else(|| {
+            CliError::new(format!(
+                "{tool} generation command is missing its Cargo argument separator"
+            ))
+        })?;
+    let package_args = command.get(separator + 1..).unwrap_or_default();
+    if package_args.len() != 5 || package_args[0] != "packages-write" {
+        return Err(CliError::new(format!(
+            "{tool} generation command must use packages-write <source-root> <output-root> <wire-root> <revision>"
+        )));
+    }
+    let source_argument = canonical_existing_directory(
+        Path::new(&package_args[1]),
+        "generation source root",
+    )?;
+    if source_argument != root {
+        return Err(CliError::new(format!(
+            "{tool} generation source root must resolve to the frozen source checkout"
+        )));
+    }
+    let destination = canonical_existing_directory(
+        Path::new(&package_args[2]),
+        "generation destination",
+    )?;
+    if destination != output {
+        return Err(CliError::new(format!(
+            "{tool} generation command must target the isolated output tree"
+        )));
+    }
+    let wire = canonical_existing_directory(Path::new(&package_args[3]), "wire output")?;
+    if wire == output || !wire.starts_with(&output) {
+        return Err(CliError::new(format!(
+            "{tool} generation wire output must be nested under the isolated output tree"
+        )));
+    }
+    Ok(())
+}
+
 fn operation_name(operation: Operation) -> &'static str {
     match operation {
         Operation::Generate => "generate",
         Operation::Check => "check",
         Operation::Drift => "drift",
         Operation::Qualify => "qualify",
+        Operation::QualifyEmbedded => "qualify-embedded",
         Operation::Inventory => "inventory",
     }
 }
@@ -2193,10 +2698,18 @@ fn run_product_artifacts(
     let mut stderr = Vec::new();
     let mut first_command = Vec::new();
     let mut failure = None;
-    let operations = if operation == Operation::Generate {
+    let operations = if matches!(operation, Operation::Generate | Operation::Check) {
         ["generate-products", "check-products"].as_slice()
     } else {
         ["check-products"].as_slice()
+    };
+    // Generation and its clean drift check must stage product artifacts under
+    // the isolated output tree. The source checkout is a frozen authority;
+    // only the standalone command may target it by omitting --out.
+    let destination = if matches!(operation, Operation::Generate | Operation::Check) {
+        output
+    } else {
+        root
     };
     for operation in operations {
         let command = vec![
@@ -2211,6 +2724,8 @@ fn run_product_artifacts(
             OsString::from(operation),
             OsString::from("--root"),
             root.as_os_str().to_os_string(),
+            OsString::from("--out"),
+            destination.as_os_str().to_os_string(),
         ];
         if first_command.is_empty() {
             first_command = command.clone();
@@ -3035,11 +3550,9 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
         }
         "sdk-product-artifacts" => {
             for path in [
-                "rust/crates/filesystem/src/generated",
-                "rust/crates/harness/src/generated",
-                "rust/crates/inference",
-                "rust/crates/machines/src/generated",
-                "generated/rust",
+                "rust/crates/sdk-contract-wire",
+                "rust/crates/sdk-contract-options",
+                "rust/crates/sdk-contract-validation",
             ] {
                 if root.join(path).exists() {
                     inputs.push(path.into());
@@ -3204,8 +3717,12 @@ fn tool_command(
     if spec.id == "sdk-typescript" {
         let manifest = spec.manifest.as_ref()?;
         let mode = match operation {
-            Operation::Generate | Operation::Check => "write",
-            Operation::Drift | Operation::Qualify | Operation::Inventory => "check",
+            // `check` runs against a fresh `.check` output tree. Generate
+            // into that tree, then compare the complete artifact set in the
+            // orchestrator; a destination-only check would always fail before
+            // drift comparison because the tree starts empty.
+            Operation::Generate | Operation::Check => "packages-write",
+            Operation::Drift | Operation::Qualify | Operation::QualifyEmbedded | Operation::Inventory => "packages-check",
         };
         return Some(vec![
             cargo_program(),
@@ -3213,9 +3730,17 @@ fn tool_command(
             OsString::from("--manifest-path"),
             manifest.as_os_str().to_os_string(),
             OsString::from("--locked"),
+            OsString::from("--bin"),
+            OsString::from("sdk-typescript"),
             OsString::from("--"),
             OsString::from(mode),
-            output.join("typescript").as_os_str().to_os_string(),
+            // Keep source identity and generated artifacts separate. The
+            // package generator reads the pinned Rust model and emits the
+            // installable package tree under the generation output root.
+            root.as_os_str().to_os_string(),
+            output.as_os_str().to_os_string(),
+            output.join("wire").as_os_str().to_os_string(),
+            OsString::from(source.revision.as_str()),
         ]);
     }
     if let Some(script) = &spec.script {
@@ -3369,6 +3894,22 @@ fn write_source_authority_manifest(output: &Path, expected_revision: &str) -> Re
     write_json_value(&output.join("source-authority.json"), &authority)
 }
 
+fn canonicalize_language_families(
+    families: serde_json::Map<String, Value>,
+    aliases: &BTreeMap<String, String>,
+) -> serde_json::Map<String, Value> {
+    let mut normalized = BTreeMap::new();
+    for (id, family) in families {
+        let canonical = aliases.get(&id).cloned().unwrap_or(id.clone());
+        // Prefer an explicitly canonical entry when both a legacy alias and
+        // the canonical key are present in a package manifest.
+        if id == canonical || !normalized.contains_key(&canonical) {
+            normalized.insert(canonical, family);
+        }
+    }
+    normalized.into_iter().collect()
+}
+
 fn language_inventory(
     root: &Path,
     output: &Path,
@@ -3386,6 +3927,19 @@ fn language_inventory(
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    // Package manifests may retain ecosystem spellings such as `jvm` and
+    // `dotnet`, but the Rust-owned target catalog has one canonical identity
+    // per language.  Normalize aliases before producing qualification rows so
+    // aliases cannot become phantom independent SDK targets.
+    let mut aliases = BTreeMap::new();
+    for (id, family) in &families {
+        if let Some(items) = family.get("aliases").and_then(Value::as_array) {
+            for alias in items.iter().filter_map(Value::as_str) {
+                aliases.insert(alias.to_owned(), id.clone());
+            }
+        }
+    }
+    families = canonicalize_language_families(families, &aliases);
     let targets_path = root.join("languages/generation-targets.json");
     if targets_path.is_file() {
         let targets: Value = read_json(&targets_path)?;
@@ -3394,6 +3948,18 @@ fn language_inventory(
                 let Some(id) = target.get("id").and_then(Value::as_str) else {
                     continue;
                 };
+                if let Some(items) = target.get("aliases").and_then(Value::as_array) {
+                    for alias in items.iter().filter_map(Value::as_str) {
+                        aliases.insert(alias.to_owned(), id.to_owned());
+                    }
+                }
+            }
+            families = canonicalize_language_families(families, &aliases);
+            for target in targets {
+                let Some(raw_id) = target.get("id").and_then(Value::as_str) else {
+                    continue;
+                };
+                let id = aliases.get(raw_id).map(String::as_str).unwrap_or(raw_id);
                 if let Some(existing) = families.get_mut(id) {
                     if existing.get("status").is_none() {
                         if let Some(object) = existing.as_object_mut() {
@@ -3495,19 +4061,42 @@ fn language_inventory(
                 ("snippets", &evidence.snippets),
                 ("install", &evidence.install),
             ] {
-                if !capability_qualified(output, &id, name, capability, expected)
-                    && !capability_excluded(capability)
-                {
-                    missing.push(format!("pending:{name}"));
+                if capability_excluded(capability) {
+                    continue;
+                }
+                match capability_qualification(output, &id, name, capability, expected) {
+                    CapabilityQualification::Qualified => {}
+                    CapabilityQualification::Partial => {
+                        let scope = capability
+                            .scope
+                            .as_deref()
+                            .filter(|scope| !scope.trim().is_empty());
+                        missing.push(match scope {
+                            Some(scope) => format!("partial:{name}:{scope}"),
+                            None => format!("pending:{name}:partial-scope-required"),
+                        });
+                    }
+                    CapabilityQualification::Invalid => missing.push(format!("pending:{name}")),
                 }
             }
             let capability_status = |name: &str, capability: &CapabilityEvidence| {
                 if capability_excluded(capability) {
                     "excluded".to_owned()
-                } else if capability_qualified(output, &id, name, capability, expected) {
-                    "qualified".to_owned()
                 } else {
-                    "pending".to_owned()
+                    match capability_qualification(output, &id, name, capability, expected) {
+                        CapabilityQualification::Qualified => "qualified".to_owned(),
+                        CapabilityQualification::Partial
+                            if capability
+                                .scope
+                                .as_deref()
+                                .is_some_and(|scope| !scope.trim().is_empty()) =>
+                        {
+                            "partial".to_owned()
+                        }
+                        CapabilityQualification::Partial | CapabilityQualification::Invalid => {
+                            "pending".to_owned()
+                        }
+                    }
                 }
             };
             (
@@ -4198,24 +4787,113 @@ fn capability_excluded(capability: &CapabilityEvidence) -> bool {
             .is_some_and(|scope| !scope.trim().is_empty())
 }
 
-fn capability_qualified(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityQualification {
+    Invalid,
+    Partial,
+    Qualified,
+}
+
+fn capability_qualification(
     output: &Path,
     language: &str,
     capability: &str,
     evidence: &CapabilityEvidence,
     expected: &EvidenceExpectations,
-) -> bool {
-    evidence.status == "qualified"
-        && !evidence.tests.is_empty()
-        && evidence
-            .tests
-            .iter()
-            .all(|test| evidence_test_receipt(output, language, capability, expected, test))
+) -> CapabilityQualification {
+    if evidence.status != "qualified" || evidence.tests.is_empty() {
+        return CapabilityQualification::Invalid;
+    }
+    let mut partial = false;
+    for test in &evidence.tests {
+        if !evidence_test_receipt(output, language, capability, expected, test) {
+            return CapabilityQualification::Invalid;
+        }
+        match receipt_has_partial_scope(output, capability, test) {
+            Some(true) => partial = true,
+            Some(false) => {}
+            None => return CapabilityQualification::Invalid,
+        }
+    }
+    if partial {
+        CapabilityQualification::Partial
+    } else {
+        CapabilityQualification::Qualified
+    }
 }
 
-fn consumer_receipt_valid(output: &Path, receipt: &Value, expected: &EvidenceExpectations) -> bool {
+fn receipt_has_partial_scope(output: &Path, capability: &str, value: &str) -> Option<bool> {
+    let digest = value
+        .split_whitespace()
+        .find(|part| is_sha256(part))
+        .and_then(|part| part.strip_prefix("sha256:"))?;
+    let token = value.split_whitespace().find_map(|token| {
+        let token = token.strip_prefix("receipt=").unwrap_or(token);
+        if token.starts_with("sha256:")
+            || token.contains(':')
+            || token.is_empty()
+            || !is_portable_relative(token)
+            || !token.starts_with("qualification/receipts/")
+        {
+            return None;
+        }
+        Some(token)
+    })?;
+    let path = output.join(token);
+    let bytes = fs::read(&path).ok()?;
+    if hash_bytes(&bytes) != format!("sha256:{digest}") {
+        return None;
+    }
+    let receipt: Value = serde_json::from_slice(&bytes).ok()?;
+    let authority_manifest = output.join("wire/rust-authority.json");
+    if !authority_manifest.is_file() {
+        return Some(false);
+    }
+    let authority = authority_rpc_inventory(output).ok()?;
+    let families = receipt.get("families")?.as_array()?;
+    let mut partial = false;
+    for entry in families {
+        let family = entry.get("family")?.as_str()?;
+        let methods = string_set_field(entry, "methods")?;
+        let shapes = string_set_field(entry, "rpc_shapes")?;
+        let authority_methods = authority.get(family)?;
+        if !receipt_family_matches_authority(entry, capability, Some(authority_methods)) {
+            return None;
+        }
+        partial |= receipt_family_is_partial(&methods, &shapes, authority_methods)?;
+    }
+    Some(partial)
+}
+
+fn receipt_family_is_partial(
+    methods: &BTreeSet<String>,
+    shapes: &BTreeSet<String>,
+    authority_methods: &BTreeMap<String, String>,
+) -> Option<bool> {
+    if authority_methods.is_empty() {
+        return Some(false);
+    }
+    let expected_methods = authority_methods.keys().cloned().collect::<BTreeSet<_>>();
+    let expected_shapes = authority_methods.values().cloned().collect::<BTreeSet<_>>();
+    if methods.is_empty() || shapes.is_empty() {
+        return None;
+    }
+    Some(*methods != expected_methods || *shapes != expected_shapes)
+}
+
+#[derive(Debug, Clone)]
+struct ConsumerScenario {
+    shape: String,
+    checks: BTreeSet<String>,
+}
+
+fn consumer_scenario_inventory(
+    output: &Path,
+    receipt: &Value,
+    expected: &EvidenceExpectations,
+) -> Option<BTreeMap<(String, String), ConsumerScenario>> {
     let Some(consumer) = receipt.get("consumer") else {
-        return false;
+        return None;
     };
     if consumer.get("executed").and_then(Value::as_bool) != Some(true)
         || !consumer
@@ -4229,40 +4907,127 @@ fn consumer_receipt_valid(output: &Path, receipt: &Value, expected: &EvidenceExp
         || consumer.get("source_revision").and_then(Value::as_str)
             != Some(expected.source_revision.as_str())
     {
-        return false;
+        return None;
     }
     let Some(path_text) = consumer.get("artifact_path").and_then(Value::as_str) else {
-        return false;
+        return None;
     };
     if !is_portable_relative(path_text) || !path_text.starts_with("qualification/consumers/") {
-        return false;
+        return None;
     }
     let Some(declared_digest) = consumer.get("artifact_sha256").and_then(Value::as_str) else {
-        return false;
+        return None;
     };
     if !is_sha256(declared_digest) {
-        return false;
+        return None;
     }
     let path = output.join(path_text);
     let Ok(metadata) = fs::symlink_metadata(&path) else {
-        return false;
+        return None;
     };
     if !metadata.file_type().is_file() {
-        return false;
+        return None;
     }
     let Some(manifest_artifact) = expected
         .artifacts
         .iter()
         .find(|artifact| artifact.path == path_text)
     else {
-        return false;
+        return None;
     };
     if manifest_artifact.sha256 != declared_digest {
-        return false;
+        return None;
     }
-    fs::read(&path).ok().is_some_and(|bytes| {
+    if !fs::read(&path).ok().is_some_and(|bytes| {
         bytes.len() as u64 == manifest_artifact.bytes && hash_bytes(&bytes) == declared_digest
-    })
+    }) {
+        return None;
+    }
+    let scenarios = consumer.get("scenarios")?.as_array()?;
+    let mut inventory = BTreeMap::new();
+    for scenario in scenarios {
+        let family = scenario.get("family")?.as_str()?.trim();
+        let rpc = scenario.get("rpc")?.as_str()?.trim();
+        let shape = scenario.get("shape")?.as_str()?.trim();
+        if family.is_empty()
+            || rpc.is_empty()
+            || !matches!(shape, "unary" | "client" | "server" | "bidi")
+            || scenario.get("status").and_then(Value::as_str) != Some("passed")
+        {
+            return None;
+        }
+        let output_path = scenario.get("output_path").and_then(Value::as_str)?;
+        let output_digest = scenario.get("output_sha256").and_then(Value::as_str)?;
+        if !is_portable_relative(output_path)
+            || !output_path.starts_with("qualification/consumers/")
+            || !is_sha256(output_digest)
+        {
+            return None;
+        }
+        let output_file = output.join(output_path);
+        let metadata = fs::symlink_metadata(&output_file).ok()?;
+        if !metadata.file_type().is_file() {
+            return None;
+        }
+        let artifact = expected
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.path == output_path && artifact.sha256 == output_digest)?;
+        let bytes = fs::read(&output_file).ok()?;
+        if bytes.len() as u64 != artifact.bytes || hash_bytes(&bytes) != output_digest {
+            return None;
+        }
+        let result: Value = serde_json::from_slice(&bytes).ok()?;
+        if result.get("schema").and_then(Value::as_str)
+            != Some("acyclic.sdk.rpc-scenario-result.v1")
+            || result.get("source_revision").and_then(Value::as_str)
+                != Some(expected.source_revision.as_str())
+            || result.get("status").and_then(Value::as_str) != Some("passed")
+            || result.get("invoked").and_then(Value::as_bool) != Some(true)
+            || result.get("exit_code").and_then(Value::as_i64) != Some(0)
+            || result.get("family").and_then(Value::as_str) != Some(family)
+            || result.get("rpc").and_then(Value::as_str) != Some(rpc)
+            || result.get("shape").and_then(Value::as_str) != Some(shape)
+        {
+            return None;
+        }
+        let transport = result.get("transport").and_then(Value::as_str)?.trim();
+        if !matches!(transport, "grpc" | "http" | "http-json" | "grpc-web") {
+            return None;
+        }
+        let checks = result.get("checks").and_then(Value::as_array)?;
+        let mut check_set = BTreeSet::new();
+        for check in checks {
+            let check = check.as_str()?.trim();
+            if !matches!(
+                check,
+                "invocation" | "transport" | "serialization" | "cancellation" | "recovery"
+            ) || !check_set.insert(check.to_owned())
+            {
+                return None;
+            }
+        }
+        if !check_set.contains("invocation") || !check_set.contains("transport") {
+            return None;
+        }
+        if inventory
+            .insert(
+                (family.to_owned(), rpc.to_owned()),
+                ConsumerScenario {
+                    shape: shape.to_owned(),
+                    checks: check_set,
+                },
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+    Some(inventory)
+}
+
+fn consumer_receipt_valid(output: &Path, receipt: &Value, expected: &EvidenceExpectations) -> bool {
+    consumer_scenario_inventory(output, receipt, expected).is_some()
 }
 
 fn authority_rpc_inventory(
@@ -4280,6 +5045,11 @@ fn authority_rpc_inventory(
             .get("source")
             .and_then(Value::as_str)
             .ok_or_else(|| CliError::new("Rust authority family has no source path"))?;
+        if !is_portable_relative(source) {
+            return Err(CliError::new(format!(
+                "Rust authority family has a non-portable source path: {source}"
+            )));
+        }
         let descriptor = family
             .get("descriptor")
             .and_then(Value::as_str)
@@ -4298,12 +5068,66 @@ fn authority_rpc_inventory(
                 "Rust authority descriptor hash mismatch: {descriptor}"
             )));
         }
+        let methods = descriptor_rpc_methods(&descriptor_bytes, source)?;
+        if let Some(declared) = family.get("rpc_methods") {
+            let declared = declared
+                .as_array()
+                .ok_or_else(|| CliError::new("Rust authority RPC methods are not an array"))?;
+            let mut declared_methods = BTreeMap::new();
+            for item in declared {
+                let rpc = item
+                    .get("rpc")
+                    .and_then(Value::as_str)
+                    .filter(|rpc| !rpc.trim().is_empty())
+                    .ok_or_else(|| CliError::new("Rust authority RPC method has no identity"))?;
+                let shape = item
+                    .get("shape")
+                    .and_then(Value::as_str)
+                    .filter(|shape| matches!(*shape, "unary" | "client" | "server" | "bidi"))
+                    .ok_or_else(|| CliError::new("Rust authority RPC method has invalid shape"))?;
+                if declared_methods
+                    .insert(rpc.to_owned(), shape.to_owned())
+                    .is_some()
+                {
+                    return Err(CliError::new(format!(
+                        "duplicate Rust authority RPC method: {rpc}"
+                    )));
+                }
+            }
+            if declared_methods != methods {
+                return Err(CliError::new(format!(
+                    "Rust authority RPC methods do not match descriptor: {descriptor}"
+                )));
+            }
+        }
+        if let Some(declared) = family.get("rpc_shapes") {
+            let declared = declared
+                .as_array()
+                .ok_or_else(|| CliError::new("Rust authority RPC shapes are not an array"))?;
+            let mut declared_shapes = BTreeSet::new();
+            for shape in declared {
+                let shape = shape
+                    .as_str()
+                    .filter(|shape| matches!(*shape, "unary" | "client" | "server" | "bidi"))
+                    .ok_or_else(|| CliError::new("Rust authority RPC shape is invalid"))?;
+                if !declared_shapes.insert(shape.to_owned()) {
+                    return Err(CliError::new(format!(
+                        "duplicate Rust authority RPC shape: {shape}"
+                    )));
+                }
+            }
+            let actual_shapes = methods.values().cloned().collect::<BTreeSet<_>>();
+            if declared_shapes != actual_shapes {
+                return Err(CliError::new(format!(
+                    "Rust authority RPC shapes do not match descriptor: {descriptor}"
+                )));
+            }
+        }
         let family_name = source
             .split('/')
             .next()
             .filter(|name| !name.is_empty())
             .ok_or_else(|| CliError::new("Rust authority family source has no family name"))?;
-        let methods = descriptor_rpc_methods(&descriptor_bytes, source)?;
         if inventory.insert(family_name.to_owned(), methods).is_some() {
             return Err(CliError::new(format!(
                 "duplicate Rust authority RPC family: {family_name}"
@@ -4330,7 +5154,10 @@ fn receipt_family_matches_authority(
     capability: &str,
     authority_methods: Option<&BTreeMap<String, String>>,
 ) -> bool {
-    if !matches!(capability, "remote" | "embedded" | "docs" | "snippets" | "install") {
+    if !matches!(
+        capability,
+        "remote" | "embedded" | "docs" | "snippets" | "install"
+    ) {
         return false;
     }
     let Some(family) = entry.get("family").and_then(Value::as_str) else {
@@ -4438,6 +5265,10 @@ fn evidence_test_receipt(
                 if authority_manifest_present && authority_inventory.is_none() {
                     return false;
                 }
+                let Some(scenarios) = consumer_scenario_inventory(output, &receipt, expected)
+                else {
+                    return false;
+                };
                 let mut covered = BTreeSet::new();
                 let valid_entries = families.iter().all(|entry| {
                     let Some(family) = entry.get("family").and_then(Value::as_str) else {
@@ -4449,15 +5280,70 @@ fn evidence_test_receipt(
                     if authority_inventory.is_some() && authority_methods.is_none() {
                         return false;
                     }
-                    if receipt_family_matches_authority(entry, capability, authority_methods) {
+                    if !receipt_family_matches_authority(entry, capability, authority_methods) {
+                        false
+                    } else {
+                        let Some(methods) = string_set_field(entry, "methods") else {
+                            return false;
+                        };
+                        let scenario_methods = scenarios
+                            .iter()
+                            .filter_map(|((scenario_family, rpc), shape)| {
+                                (scenario_family == family)
+                                    .then(|| (rpc.clone(), shape.shape.clone()))
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                        if scenario_methods.keys().cloned().collect::<BTreeSet<_>>() != methods {
+                            return false;
+                        }
+                        if let Some(authority_methods) = authority_methods {
+                            if scenario_methods
+                                .iter()
+                                .any(|(rpc, shape)| authority_methods.get(rpc) != Some(shape))
+                            {
+                                return false;
+                            }
+                        }
+                        let Some(features) = string_set_field(entry, "features") else {
+                            return false;
+                        };
+                        for scenario in
+                            scenarios
+                                .iter()
+                                .filter_map(|((scenario_family, _), scenario)| {
+                                    (scenario_family == family).then_some(scenario)
+                                })
+                        {
+                            if features.contains("transport")
+                                && !scenario.checks.contains("transport")
+                            {
+                                return false;
+                            }
+                            if features.contains("serialization")
+                                && !scenario.checks.contains("serialization")
+                            {
+                                return false;
+                            }
+                            if features.contains("cancellation")
+                                && !scenario.checks.contains("cancellation")
+                            {
+                                return false;
+                            }
+                            if features.contains("recovery")
+                                && !scenario.checks.contains("recovery")
+                            {
+                                return false;
+                            }
+                        }
                         covered.insert(family);
                         true
-                    } else {
-                        false
                     }
                 });
                 valid_entries
                     && !covered.is_empty()
+                    && scenarios
+                        .keys()
+                        .all(|(family, _)| covered.contains(family.as_str()))
                     && emitted_contract_families(output)
                         .iter()
                         .all(|family| covered.contains(family.as_str()))
@@ -4829,6 +5715,35 @@ mod tests {
     }
 
     #[test]
+    fn product_artifact_inputs_are_rust_model_owned() {
+        let root = test_directory("product-artifact-inputs");
+        for path in [
+            "rust/crates/sdk-contract-wire",
+            "rust/crates/sdk-contract-options",
+            "rust/crates/sdk-contract-validation",
+            "generated/rust",
+            "rust/crates/machines/src/generated",
+        ] {
+            fs::create_dir_all(root.join(path)).expect("create product input fixture");
+        }
+
+        let inputs = contract_inputs(&root, "sdk-product-artifacts");
+        assert_eq!(
+            inputs,
+            vec![
+                "rust/crates/sdk-contract-wire",
+                "rust/crates/sdk-contract-options",
+                "rust/crates/sdk-contract-validation",
+            ]
+        );
+        assert!(
+            inputs.iter().all(|path| !path.contains("generated")),
+            "product packaging must not declare checked-in generated copies as authority"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
     fn drift_report_is_control_metadata_not_an_artifact() {
         let root = test_directory("drift-report-artifact");
         fs::write(root.join("artifact.json"), b"artifact").expect("write artifact");
@@ -5060,6 +5975,34 @@ mod tests {
     }
 
     #[test]
+    fn generation_rejects_any_source_checkout_mutation() {
+        let clean = SourceIdentity {
+            revision: "head".into(),
+            dirty: false,
+            digest: "sha256:current".into(),
+        };
+        assert!(ensure_source_identity_unchanged(&clean, &clean, "generation").is_ok());
+        for changed in [
+            SourceIdentity {
+                digest: "sha256:changed".into(),
+                ..clean.clone()
+            },
+            SourceIdentity {
+                dirty: true,
+                ..clean.clone()
+            },
+            SourceIdentity {
+                revision: "other".into(),
+                ..clean.clone()
+            },
+        ] {
+            let error = ensure_source_identity_unchanged(&clean, &changed, "generation")
+                .expect_err("source mutation must fail closed");
+            assert!(error.to_string().contains("output tree"));
+        }
+    }
+
+    #[test]
     fn docs_and_examples_are_required_generation_stages() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let specs = tool_specs(&root);
@@ -5287,6 +6230,144 @@ mod tests {
     }
 
     #[test]
+    fn typescript_check_generates_into_fresh_check_output() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let spec = ToolSpec {
+            id: "sdk-typescript",
+            required: true,
+            manifest: some_file(&root, "rust/crates/sdk-typescript/Cargo.toml"),
+            script: None,
+        };
+        let output = root.join("target/sdk-generation-typescript-check");
+        let source = SourceIdentity {
+            revision: "test".into(),
+            dirty: false,
+            digest: "sha256:test".into(),
+        };
+        let command = tool_command(
+            &root,
+            &spec,
+            Operation::Check,
+            &output.join("request.json"),
+            &output,
+            &source,
+        )
+        .expect("TypeScript manifest is present");
+        let args = command
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let separator = args
+            .iter()
+            .position(|argument| argument == "--")
+            .expect("cargo separator");
+        assert_eq!(args[separator + 1], "packages-write");
+        assert_eq!(args[separator + 2], root.to_string_lossy());
+        assert_eq!(args[separator + 3], output.to_string_lossy());
+        assert_eq!(args[separator + 4], output.join("wire").to_string_lossy());
+        assert_eq!(args[separator + 5], "test");
+    }
+
+    #[test]
+    fn generation_commands_cannot_target_the_frozen_source_checkout() {
+        let root = test_directory("generation-destination");
+        let output = root.join("output");
+        fs::create_dir_all(&output).expect("create output directory");
+        fs::create_dir_all(output.join("wire")).expect("create wire output directory");
+        fs::create_dir_all(root.join("rust/crates/sdk-typescript"))
+            .expect("create TypeScript manifest directory");
+        fs::write(
+            root.join("rust/crates/sdk-typescript/Cargo.toml"),
+            b"[package]\nname = \"fixture\"\nversion = \"0.0.0\"\n",
+        )
+        .expect("write TypeScript manifest fixture");
+        let spec = ToolSpec {
+            id: "sdk-typescript",
+            required: true,
+            manifest: some_file(&root, "rust/crates/sdk-typescript/Cargo.toml"),
+            script: None,
+        };
+        let source = SourceIdentity {
+            revision: "test".into(),
+            dirty: false,
+            digest: "sha256:test".into(),
+        };
+        let command = tool_command(
+            &root,
+            &spec,
+            Operation::Generate,
+            &output.join("request.json"),
+            &output,
+            &source,
+        )
+        .expect("TypeScript generation command is present");
+        let separator = command
+            .iter()
+            .position(|argument| argument == "--")
+            .expect("Cargo separator");
+        assert_eq!(command[separator + 1], "packages-write");
+        assert_eq!(command[separator + 2], root.as_os_str());
+        assert_eq!(command[separator + 3], output.as_os_str());
+        assert_eq!(command[separator + 4], output.join("wire").as_os_str());
+        assert_eq!(command[separator + 5], "test");
+
+        let mut source_command = command.clone();
+        source_command[separator + 3] = root.as_os_str().to_os_string();
+        let output_command = command.clone();
+        assert!(ensure_generation_destination(
+            &root,
+            &output,
+            "sdk-typescript",
+            Operation::Generate,
+            &source_command,
+        )
+        .is_err());
+        assert!(ensure_generation_destination(
+            &root,
+            &output,
+            "sdk-typescript",
+            Operation::Generate,
+            &output_command,
+        )
+        .is_ok());
+        let mut source_input_command = command.clone();
+        source_input_command[separator + 2] = output.as_os_str().to_os_string();
+        assert!(ensure_generation_destination(
+            &root,
+            &output,
+            "sdk-typescript",
+            Operation::Generate,
+            &source_input_command,
+        )
+        .is_err());
+        assert!(ensure_generation_destination(
+            &root,
+            &root,
+            "sdk-typescript",
+            Operation::Generate,
+            &output_command,
+        )
+        .is_err());
+        assert!(ensure_generation_destination(
+            &root,
+            &root,
+            "sdk-typescript",
+            Operation::Check,
+            &source_command,
+        )
+        .is_ok());
+        assert!(ensure_generation_destination(
+            &root,
+            &output,
+            "sdk-docs",
+            Operation::Generate,
+            &source_command,
+        )
+        .is_ok());
+        cleanup(&root);
+    }
+
+    #[test]
     fn receipt_evidence_requires_full_sha256_content_digests() {
         assert!(!is_sha256("sha256:deadbeef"));
         assert!(!is_sha256_digest_in("executed case sha256:deadbeef"));
@@ -5308,21 +6389,32 @@ mod tests {
             .expect("consumer directory");
         fs::write(&consumer, b"compiled-consumer-v1").expect("write consumer");
         let consumer_digest = hash_bytes(b"compiled-consumer-v1");
+        let scenario = root.join("qualification/consumers/remote-scenario.json");
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"revision","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"list","shape":"unary","transport":"grpc","checks":["invocation","transport","serialization"]}"#;
+        fs::write(&scenario, scenario_bytes).expect("write scenario result");
+        let scenario_digest = hash_bytes(scenario_bytes);
         let expected = EvidenceExpectations {
             source_revision: "revision".into(),
             contract_digest:
                 "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             artifact_digest:
                 "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
-            artifacts: vec![Artifact {
-                path: "qualification/consumers/remote.bin".into(),
-                sha256: consumer_digest.clone(),
-                bytes: b"compiled-consumer-v1".len() as u64,
-            }],
+            artifacts: vec![
+                Artifact {
+                    path: "qualification/consumers/remote.bin".into(),
+                    sha256: consumer_digest.clone(),
+                    bytes: b"compiled-consumer-v1".len() as u64,
+                },
+                Artifact {
+                    path: "qualification/consumers/remote-scenario.json".into(),
+                    sha256: scenario_digest.clone(),
+                    bytes: scenario_bytes.len() as u64,
+                },
+            ],
         };
         let receipt_bytes = format!(
-            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"revision\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"revision\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\"}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"list\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
-            expected.contract_digest, expected.artifact_digest, consumer_digest
+            "{{\"schema\":\"acyclic.sdk.qualification.receipt.v1\",\"tool\":\"sdk-generation\",\"language\":\"rust\",\"capability\":\"remote\",\"source_revision\":\"revision\",\"contract_digest\":\"{}\",\"artifact_digest\":\"{}\",\"status\":\"passed\",\"exit_code\":0,\"suite\":\"smoke\",\"assertions\":1,\"consumer\":{{\"executed\":true,\"name\":\"fixture-consumer\",\"version\":\"1\",\"source_revision\":\"revision\",\"artifact_path\":\"qualification/consumers/remote.bin\",\"artifact_sha256\":\"{}\",\"scenarios\":[{{\"family\":\"actors\",\"rpc\":\"list\",\"shape\":\"unary\",\"status\":\"passed\",\"output_path\":\"qualification/consumers/remote-scenario.json\",\"output_sha256\":\"{}\"}}]}},\"families\":[{{\"family\":\"actors\",\"methods\":[\"list\"],\"features\":[\"serialization\",\"transport\"],\"rpc_shapes\":[\"unary\"]}}]}}",
+            expected.contract_digest, expected.artifact_digest, consumer_digest, scenario_digest
         );
         fs::write(&receipt, receipt_bytes.as_bytes()).expect("write receipt");
         let digest = hash_bytes(receipt_bytes.as_bytes());
@@ -5333,6 +6425,62 @@ mod tests {
             &expected,
             &format!("case qualification/receipts/remote.json {digest}")
         ));
+        let relabeled_scenario = receipt_bytes.replace(&scenario_digest, &consumer_digest);
+        fs::write(&receipt, relabeled_scenario.as_bytes())
+            .expect("write relabeled scenario receipt");
+        assert!(!evidence_test_receipt(
+            &root,
+            "rust",
+            "remote",
+            &expected,
+            &format!(
+                "case qualification/receipts/remote.json {}",
+                hash_bytes(relabeled_scenario.as_bytes())
+            )
+        ));
+        fs::write(&receipt, receipt_bytes.as_bytes()).expect("restore receipt after hash check");
+        let uninvoked_scenario = std::str::from_utf8(scenario_bytes)
+            .expect("scenario fixture is UTF-8")
+            .replace("\"invoked\":true", "\"invoked\":false")
+            .into_bytes();
+        fs::write(&scenario, &uninvoked_scenario).expect("write uninvoked scenario result");
+        let uninvoked_digest = hash_bytes(&uninvoked_scenario);
+        let uninvoked_receipt = receipt_bytes.replace(&scenario_digest, &uninvoked_digest);
+        fs::write(&receipt, uninvoked_receipt.as_bytes())
+            .expect("write uninvoked scenario receipt");
+        assert!(!evidence_test_receipt(
+            &root,
+            "rust",
+            "remote",
+            &expected,
+            &format!(
+                "case qualification/receipts/remote.json {}",
+                hash_bytes(uninvoked_receipt.as_bytes())
+            )
+        ));
+        fs::write(&scenario, scenario_bytes).expect("restore scenario result");
+        fs::write(&receipt, receipt_bytes.as_bytes()).expect("restore receipt after scenario check");
+        let mut missing_scenarios: Value =
+            serde_json::from_str(&receipt_bytes).expect("parse receipt for scenario mutation");
+        missing_scenarios["consumer"]
+            .as_object_mut()
+            .expect("consumer object")
+            .remove("scenarios");
+        let missing_scenarios =
+            serde_json::to_string(&missing_scenarios).expect("encode missing scenarios receipt");
+        fs::write(&receipt, missing_scenarios.as_bytes()).expect("write missing scenarios receipt");
+        assert!(!evidence_test_receipt(
+            &root,
+            "rust",
+            "remote",
+            &expected,
+            &format!(
+                "case qualification/receipts/remote.json {}",
+                hash_bytes(missing_scenarios.as_bytes())
+            )
+        ));
+        fs::write(&receipt, receipt_bytes.as_bytes())
+            .expect("restore receipt after scenario check");
         assert!(!evidence_test_receipt(
             &root,
             "rust",
@@ -6114,6 +7262,78 @@ mod tests {
     }
 
     #[test]
+    fn authority_inventory_rejects_tampered_descriptor_family_metadata() {
+        let root = test_directory("authority-rpc-metadata");
+        let wire = root.join("wire/actors/v1");
+        fs::create_dir_all(&wire).expect("create authority wire directory");
+        let descriptor = include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sdk-contract-wire/tests/fixtures/actors-v1.descriptor.bin"
+        ));
+        fs::write(wire.join("actors.fds.bin"), descriptor).expect("write Rust descriptor");
+        let descriptor_hash = hash_bytes(descriptor)
+            .strip_prefix("sha256:")
+            .expect("descriptor hash prefix")
+            .to_owned();
+        let actual_methods = descriptor_rpc_methods(descriptor, "actors/v1/actors.proto")
+            .expect("derive methods from Rust descriptor");
+        let mut manifest = json!({
+            "schema": "acyclic.sdk.rust-authority.v1",
+            "authority": "rust",
+            "families": [{
+                "source": "actors/v1/actors.proto",
+                "descriptor": "actors/v1/actors.fds.bin",
+                "descriptor_sha256": descriptor_hash,
+                "rpc_shapes": ["unary"],
+                "rpc_methods": actual_methods.iter().map(|(rpc, shape)| json!({
+                    "rpc": rpc,
+                    "shape": shape,
+                })).collect::<Vec<_>>(),
+            }],
+        });
+        fs::create_dir_all(root.join("wire")).expect("create wire root");
+        fs::write(
+            root.join("wire/rust-authority.json"),
+            serde_json::to_vec(&manifest).expect("encode authority manifest"),
+        )
+        .expect("write authority manifest");
+        assert!(authority_rpc_inventory(&root).is_ok());
+
+        manifest["families"][0]["rpc_methods"][0]["shape"] = json!("server");
+        fs::write(
+            root.join("wire/rust-authority.json"),
+            serde_json::to_vec(&manifest).expect("encode tampered authority manifest"),
+        )
+        .expect("write tampered authority manifest");
+        let error = authority_rpc_inventory(&root).expect_err("tampered method metadata rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("RPC methods do not match descriptor")
+        );
+
+        let actual_methods = descriptor_rpc_methods(descriptor, "actors/v1/actors.proto")
+            .expect("derive methods from Rust descriptor");
+        manifest["families"][0]["rpc_methods"] = json!(
+            actual_methods
+                .iter()
+                .map(|(rpc, shape)| json!({ "rpc": rpc, "shape": shape }))
+                .collect::<Vec<_>>()
+        );
+        manifest["families"][0]["source"] = json!("stream/v2/stream.proto");
+        fs::write(
+            root.join("wire/rust-authority.json"),
+            serde_json::to_vec(&manifest).expect("encode wrong-source authority manifest"),
+        )
+        .expect("write wrong-source authority manifest");
+        assert!(
+            authority_rpc_inventory(&root).is_err(),
+            "descriptor bytes must stay bound to their Rust source file"
+        );
+        cleanup(&root);
+    }
+
+    #[test]
     fn remote_receipts_require_authority_methods_and_stream_shapes() {
         let authority = BTreeMap::from([
             (
@@ -6190,10 +7410,16 @@ mod tests {
 
     #[test]
     fn capability_validator_scopes_transports_and_service_coverage() {
-        let service_authority = BTreeMap::from([(
-            "acyclic.stream.v2.StreamService/Read".to_owned(),
-            "server".to_owned(),
-        )]);
+        let service_authority = BTreeMap::from([
+            (
+                "acyclic.stream.v2.StreamService/Read".to_owned(),
+                "server".to_owned(),
+            ),
+            (
+                "acyclic.stream.v2.StreamService/Append".to_owned(),
+                "unary".to_owned(),
+            ),
+        ]);
         let service_entry = |features: &[&str], methods: &[&str], shapes: &[&str]| {
             json!({
                 "family": "stream",
@@ -6217,9 +7443,15 @@ mod tests {
         );
         assert!(receipt_family_matches_authority(
             &http_stream,
-            "remote",
+            "docs",
             Some(&service_authority)
         ));
+        let partial_methods = string_set_field(&http_stream, "methods").expect("partial methods");
+        let partial_shapes = string_set_field(&http_stream, "rpc_shapes").expect("partial shapes");
+        assert_eq!(
+            receipt_family_is_partial(&partial_methods, &partial_shapes, &service_authority),
+            Some(true)
+        );
 
         let grpc_protocol = json!({
             "family": "protocol",
@@ -6487,6 +7719,29 @@ mod tests {
             inventory[0].outstanding,
             vec!["pending:qualification evidence"]
         );
+        cleanup(&root);
+    }
+
+    #[test]
+    fn language_inventory_canonicalizes_package_and_target_aliases() {
+        let root = test_directory("canonical-language-aliases");
+        fs::create_dir_all(root.join("languages")).expect("create language directory");
+        fs::write(
+            root.join("languages/package-names.json"),
+            br#"{"families":{"jvm":{"registry":"Maven Central","umbrella":"dev.acyclic:sdk-java","aliases":["jvm"]}}}"#,
+        )
+        .expect("write package inventory");
+        fs::write(
+            root.join("languages/generation-targets.json"),
+            br#"{"targets":[{"id":"java","aliases":["jvm"],"status":"candidate","package":{"ecosystem":"Maven Central","artifact":"dev.acyclic:sdk-java"}}]}"#,
+        )
+        .expect("write generation targets");
+        let output = root.join("output");
+        fs::create_dir_all(&output).expect("create output");
+        let inventory = language_inventory(&root, &output, "uncommitted", None)
+            .expect("aliases remain inspectable");
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].id, "java");
         cleanup(&root);
     }
 }

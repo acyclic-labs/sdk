@@ -9,7 +9,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{Command, ExitCode},
 };
 
 use prost::Message;
@@ -1145,7 +1145,7 @@ fn write_or_check(mode: &str, output_dir: &Path) -> Result<(), Error> {
                 )));
             }
         } else {
-            fs::write(&path, content)?;
+            fs::write(&path, &content)?;
         }
     }
     if mode == "check" {
@@ -1163,23 +1163,378 @@ fn write_or_check(mode: &str, output_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn write_or_check_packages(mode: &str, repo_root: &Path) -> Result<(), Error> {
-    let source_revision =
-        env::var("SDK_SOURCE_REVISION").unwrap_or_else(|_| "working-tree".to_owned());
-    if source_revision == "working-tree"
+fn package_files(
+    source_root: &Path,
+    generated_root_override: Option<&Path>,
+    family: &str,
+) -> Result<Vec<(PathBuf, PathBuf)>, Error> {
+    let package_root = source_root.join("typescript").join("packages").join(family);
+    if !package_root.is_dir() {
+        return Err(Error::Missing(format!(
+            "Rust-owned TypeScript package is missing: {}",
+            package_root.display()
+        )));
+    }
+    let mut files = Vec::new();
+    // Keep the package metadata in the staged artifact so a generated facade
+    // can be consumed by the normal package build and release tooling.  The
+    // manifest remains input metadata; the contract and facade are still
+    // emitted from the Rust model below.
+    // package.json is emitted below with Rust provenance and the generated
+    // facade export; copy only human-facing package documentation here.
+    for name in ["README.md", "CHANGELOG.md"] {
+        let source = package_root.join(name);
+        if source.is_file() {
+            files.push((
+                source,
+                PathBuf::from("typescript")
+                    .join("packages")
+                    .join(&family)
+                    .join(name),
+            ));
+        }
+    }
+    let source_root = package_root.join("src");
+    if !source_root.is_dir() {
+        return Err(Error::Missing(format!(
+            "Rust-owned TypeScript package source is missing: {}",
+            source_root.display()
+        )));
+    }
+    collect_package_files(&source_root, &source_root, &mut files, family, "src")?;
+    let generated_root = package_root.join("generated");
+    if !generated_root.is_dir() {
+        return Err(Error::Missing(format!(
+            "Rust-owned TypeScript generated runtime output is missing: {}",
+            generated_root.display()
+        )));
+    }
+    collect_package_files(
+        &generated_root,
+        &generated_root,
+        &mut files,
+        family,
+        "generated",
+    )?;
+    if let Some(root) = generated_root_override {
+        let proto_root = root.join("generated/typescript").join(family);
+        if !proto_root.is_dir() {
+            return Err(Error::Missing(format!(
+                "Rust-owned TypeScript protobuf output is missing: {}",
+                proto_root.display()
+            )));
+        }
+        collect_package_files(
+            &proto_root,
+            &proto_root,
+            &mut files,
+            family,
+            &format!("generated/proto/{family}"),
+        )?;
+        if family == "harness" {
+            let protocol_root = root.join("generated/typescript/protocol");
+            if protocol_root.is_dir() {
+                collect_package_files(
+                    &protocol_root,
+                    &protocol_root,
+                    &mut files,
+                    family,
+                    "generated/proto/protocol",
+                )?;
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn generate_typescript_bindings(
+    source_root: &Path,
+    wire_root: &Path,
+    output_root: &Path,
+) -> Result<(), Error> {
+    if !wire_root.is_dir() {
+        return Err(Error::Missing(format!(
+            "Rust wire output is missing: {}",
+            wire_root.display()
+        )));
+    }
+    let template = output_root.join(".sdk-typescript-buf.gen.yaml");
+    fs::create_dir_all(output_root)?;
+    fs::write(
+        &template,
+        "version: v2\nplugins:\n  - local: [\"bun\", \"x\", \"protoc-gen-es\"]\n    out: generated/typescript\n    strategy: all\n    opt:\n      - target=js+dts\n      - import_extension=js\n",
+    )?;
+    let process = Command::new("bun")
+        .args([
+            "x",
+            "buf",
+            "generate",
+            &wire_root.to_string_lossy(),
+            "--template",
+            &template.to_string_lossy(),
+            "--output",
+            &output_root.to_string_lossy(),
+        ])
+        .current_dir(source_root)
+        .status();
+    let _ = fs::remove_file(&template);
+    let process = process.map_err(|error| {
+        Error::Missing(format!("Buf TypeScript generator could not start: {error}"))
+    })?;
+    if !process.success() {
+        return Err(Error::Missing(format!(
+            "Buf TypeScript generator failed with exit code {:?}",
+            process.code(),
+        )));
+    }
+    Ok(())
+}
+
+fn collect_package_files(
+    root: &Path,
+    current: &Path,
+    files: &mut Vec<(PathBuf, PathBuf)>,
+    family: &str,
+    output_prefix: &str,
+) -> Result<(), Error> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_package_files(root, &path, files, family, output_prefix)?;
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| Error::Missing(format!("package file escaped root: {}", path.display())))?
+            .to_path_buf();
+        if output_prefix == "src" && relative == Path::new("generated-client.ts") {
+            continue;
+        }
+        if output_prefix == "generated" && relative.starts_with("proto") {
+            continue;
+        }
+        files.push((
+            path,
+            PathBuf::from("typescript")
+                .join("packages")
+                .join(family)
+                .join(output_prefix)
+                .join(relative),
+        ));
+    }
+    Ok(())
+}
+
+fn copy_or_check_package_file(mode: &str, source: &Path, destination: &Path) -> Result<(), Error> {
+    // One-root developer refreshes already have these source files in place.
+    // The unified pipeline uses a separate output root and still copies the
+    // complete installable package tree below.
+    if source == destination {
+        return Ok(());
+    }
+    if mode == "write" {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination)?;
+    } else {
+        let current = fs::read(destination).map_err(|error| {
+            Error::Missing(format!(
+                "Rust-owned TypeScript package artifact is missing: {} ({error})",
+                destination.display()
+            ))
+        })?;
+        let expected = fs::read(source)?;
+        if current != expected {
+            return Err(Error::Missing(format!(
+                "Rust-owned TypeScript package artifact drift: {}",
+                destination.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn generated_package_manifest(
+    source: &Path,
+    service: &ServiceMetadata,
+    source_revision: &str,
+) -> Result<String, Error> {
+    let mut manifest: serde_json::Value = serde_json::from_slice(&fs::read(source)?)?;
+    let object = manifest.as_object_mut().ok_or_else(|| {
+        Error::Missing(format!(
+            "package manifest is not an object: {}",
+            source.display()
+        ))
+    })?;
+    let exports = object
+        .entry("exports")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| {
+            Error::Missing(format!(
+                "package exports is not an object: {}",
+                source.display()
+            ))
+        })?;
+    exports.insert(
+        "./generated-client".to_owned(),
+        serde_json::json!({
+            "types": "./src/generated-client.ts",
+            "default": "./src/generated-client.ts"
+        }),
+    );
+    exports.insert(
+        "./provenance".to_owned(),
+        serde_json::json!({
+            "default": "./generated/rust-provenance.json"
+        }),
+    );
+    object.insert(
+        "acyclicGenerated".to_owned(),
+        serde_json::json!({
+            "generator": "sdk-typescript",
+            "generatorVersion": env!("CARGO_PKG_VERSION"),
+            "sourceModelRevision": source_revision,
+            "family": service.family,
+            "sourceContentSha256": service.source_content_sha256,
+            "sourceModelSha256": service.source_model_sha256
+        }),
+    );
+    Ok(format!("{}\n", serde_json::to_string_pretty(&manifest)?))
+}
+
+fn generated_package_provenance(
+    service: &ServiceMetadata,
+    source_revision: &str,
+    generated_client: &str,
+) -> Result<String, Error> {
+    Ok(format!(
+        "{}\n",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema": "acyclic.sdk.typescript.package.provenance.v1",
+            "generator": "sdk-typescript",
+            "generatorVersion": env!("CARGO_PKG_VERSION"),
+            "sourceModelRevision": source_revision,
+            "family": service.family,
+            "rustCrate": service.rust_crate,
+            "sourceArtifact": service.source_artifact,
+            "descriptorSha256": service.descriptor_sha256,
+            "sourceContentSha256": service.source_content_sha256,
+            "sourceModelSha256": service.source_model_sha256,
+            "generatedClientSha256": digest(generated_client.as_bytes())
+        }))?
+    ))
+}
+
+fn write_or_check_generated_package_metadata(
+    mode: &str,
+    source_root: &Path,
+    output_root: &Path,
+    service: &ServiceMetadata,
+    source_revision: &str,
+    generated_client: &str,
+) -> Result<(), Error> {
+    let source_manifest = source_root
+        .join("typescript/packages")
+        .join(&service.family)
+        .join("package.json");
+    let output_root = output_root
+        .join("typescript/packages")
+        .join(&service.family);
+    let output_manifest = output_root.join("package.json");
+    let provenance = output_root.join("generated/rust-provenance.json");
+    let expected_manifest = generated_package_manifest(&source_manifest, service, source_revision)?;
+    let expected_provenance =
+        generated_package_provenance(service, source_revision, generated_client)?;
+    if mode == "write" {
+        fs::create_dir_all(provenance.parent().expect("provenance has parent"))?;
+        fs::write(output_manifest, expected_manifest)?;
+        fs::write(provenance, expected_provenance)?;
+    } else {
+        if fs::read_to_string(&output_manifest).map_err(|error| {
+            Error::Missing(format!("generated package manifest is missing: {error}"))
+        })? != expected_manifest
+        {
+            return Err(Error::Missing(format!(
+                "Rust-generated package manifest drift: {}",
+                output_manifest.display()
+            )));
+        }
+        if fs::read_to_string(&provenance).map_err(|error| {
+            Error::Missing(format!("generated package provenance is missing: {error}"))
+        })? != expected_provenance
+        {
+            return Err(Error::Missing(format!(
+                "Rust-generated package provenance drift: {}",
+                provenance.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn read_wire_model_revision(wire_root: &Path) -> Result<String, Error> {
+    let authority = wire_root.join("rust-authority.json");
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&authority).map_err(|error| {
+        Error::Missing(format!(
+            "Rust wire authority manifest is missing: {} ({error})",
+            authority.display()
+        ))
+    })?)?;
+    let revision = value
+        .get("source_revision")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| {
+            Error::Missing(format!(
+                "Rust wire authority model revision is invalid: {}",
+                authority.display()
+            ))
+        })?;
+    Ok(revision.to_owned())
+}
+
+fn write_or_check_packages(
+    mode: &str,
+    source_root: &Path,
+    output_root: &Path,
+    wire_root: Option<&Path>,
+) -> Result<(), Error> {
+    // The wire authority is the request-bound source identity for staged
+    // packages.  It is a model revision, deliberately kept separate from the
+    // checkout Git revision recorded by sdk-generation's outer manifest.
+    let source_model_revision = wire_root
+        .map(read_wire_model_revision)
+        .transpose()?
+        .unwrap_or_else(|| "working-tree".to_owned());
+    if source_model_revision == "working-tree"
         && matches!(env::var("SDK_RELEASE").as_deref(), Ok("1" | "true" | "yes"))
     {
         return Err(Error::Missing(
-            "release generation requires SDK_SOURCE_REVISION".to_owned(),
+            "release generation requires Rust wire authority output".to_owned(),
         ));
     }
-    for (family, content) in package_generated_files(&model()?)? {
-        let path = repo_root
+    if let Some(wire_root) = wire_root {
+        generate_typescript_bindings(source_root, wire_root, output_root)?;
+    }
+    let manifest = model()?;
+    for (family, content) in package_generated_files(&manifest)? {
+        let path = output_root
             .join("typescript")
             .join("packages")
-            .join(family)
+            .join(&family)
             .join("src")
             .join("generated-client.ts");
+        if mode == "write" {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+        }
         if mode == "check" {
             let current = fs::read_to_string(&path)?;
             if current != content {
@@ -1189,7 +1544,37 @@ fn write_or_check_packages(mode: &str, repo_root: &Path) -> Result<(), Error> {
                 )));
             }
         } else {
-            fs::write(&path, content)?;
+            fs::write(&path, &content)?;
+        }
+        if source_root != output_root {
+            for (source, relative) in package_files(source_root, wire_root.map(|_| output_root), &family)? {
+                copy_or_check_package_file(mode, &source, &output_root.join(relative))?;
+            }
+        }
+        let service = manifest
+            .services
+            .iter()
+            .find(|service| service.family == family)
+            .ok_or_else(|| Error::Missing(format!("missing generated service {family}")))?;
+        if source_root != output_root {
+            write_or_check_generated_package_metadata(
+                mode,
+                source_root,
+                output_root,
+                service,
+                &source_model_revision,
+                &content,
+            )?;
+        }
+    }
+    if wire_root.is_some() {
+        let generated_typescript = output_root.join("generated/typescript");
+        if generated_typescript.is_dir() {
+            fs::remove_dir_all(&generated_typescript)?;
+        }
+        let generated_root = output_root.join("generated");
+        if generated_root.is_dir() && fs::read_dir(&generated_root)?.next().is_none() {
+            fs::remove_dir(&generated_root)?;
         }
     }
     Ok(())
@@ -1210,13 +1595,25 @@ fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     }
-    let output = args
+    let source_root = args
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_OUTPUT));
+    // Package generation receives a source root for provenance and a distinct
+    // output root for installable artifacts. The source root is deliberately
+    // not written by the unified pipeline.
+    let output = args
+        .next()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| source_root.clone());
+    let wire_root = args.next().map(PathBuf::from);
     let result = match mode.as_str() {
-        "packages-write" => write_or_check_packages("write", &output),
-        "packages-check" => write_or_check_packages("check", &output),
+        "packages-write" => {
+            write_or_check_packages("write", &source_root, &output, wire_root.as_deref())
+        }
+        "packages-check" => {
+            write_or_check_packages("check", &source_root, &output, wire_root.as_deref())
+        }
         _ => write_or_check(&mode, &output),
     };
     match result {

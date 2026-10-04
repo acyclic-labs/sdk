@@ -6,10 +6,10 @@ rust-version = "1.98"
 license = "Apache-2.0"
 publish = false
 description = "Deterministic orchestration and qualification for Rust-owned SDK generation"
+default-run = "sdk-generation"
 
-# This bootstrap CLI is intentionally standalone until the parent workspace
-# integrates it. Keeping an empty workspace here makes direct locked builds
-# reproducible without editing the root workspace manifest.
+# Keep the orchestration crate standalone so locked builds remain reproducible
+# without editing the root workspace manifest.
 [workspace]
 
 [dependencies]

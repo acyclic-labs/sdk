@@ -14,6 +14,8 @@ const generated = spawnSync(
     "run",
     "--manifest-path",
     "rust/crates/sdk-typescript/Cargo.toml",
+    "--bin",
+    "sdk-typescript",
     "--quiet",
     "--locked",
     "--offline",
