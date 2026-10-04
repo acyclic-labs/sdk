@@ -39,8 +39,9 @@
     },
     {
       "stage": "source-immutability",
-      "reason": "Five portable policy producers modified tracked source files",
-      "owner": "generation_resume"
+      "reason": "Old Rust product export command wrote generated facade policy files into the frozen checkout",
+      "owner": "generation_resume",
+      "evidence": "logs/sdk-product-artifacts.stdout retains generated paths under the source checkout"
     },
     {
       "stage": "sdk-docs-rustdoc/wasm-bindings",
@@ -94,5 +95,6 @@
     "source_snapshot_preserved": true,
     "generated_output_preserved": true,
     "recorded_at": "2026-10-04T07:00:42.686Z"
-  }
+  },
+  "root_cause_verified_at": "2026-10-04T07:06:15.660Z"
 }
