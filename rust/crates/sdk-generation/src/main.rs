@@ -1103,6 +1103,60 @@ fn verify_rust_snippet_receipts(
                 "{label} package resolution is not tied to the compiled snippet"
             )));
         }
+        let consumer_command = package_resolution
+            .get("consumer_command")
+            .and_then(Value::as_str)
+            .filter(|command| {
+                command.contains("cargo test")
+                    && command.contains("--manifest-path")
+                    && command.contains("--locked")
+                    && command.contains("--offline")
+            })
+            .ok_or_else(|| {
+                CliError::new(format!(
+                    "{label} package resolution is missing a source-bound consumer command"
+                ))
+            })?;
+        if consumer_command.trim().is_empty()
+            || package_resolution
+                .get("consumer_exit_code")
+                .and_then(Value::as_i64)
+                != Some(0)
+            || package_resolution
+                .get("artifact_consumed")
+                .and_then(Value::as_bool)
+                != Some(true)
+            || package_resolution
+                .get("artifact_consumption_command")
+                .and_then(Value::as_str)
+                .is_none_or(|command| command.trim().is_empty())
+        {
+            return Err(CliError::new(format!(
+                "{label} package resolution has no successful retained consumer execution"
+            )));
+        }
+        for stream in ["consumer_stdout", "consumer_stderr"] {
+            verify_resolution_file_binding(output, &label, package_resolution, stream)?;
+        }
+        let package_root = package_resolution
+            .get("package_root_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                CliError::new(format!("{label} package resolution has no package root"))
+            })?;
+        if !is_portable_relative(package_root) {
+            return Err(CliError::new(format!(
+                "{label} package root path is not portable"
+            )));
+        }
+        let package_root_path = output.join(package_root);
+        let package_root_metadata = fs::symlink_metadata(&package_root_path)
+            .map_err(|error| CliError::new(format!("{label} package root is missing: {error}")))?;
+        if package_root_metadata.file_type().is_symlink() {
+            return Err(CliError::new(format!(
+                "{label} package root must not be a symlink"
+            )));
+        }
         verify_resolution_file_binding(output, &label, package_resolution, "consumer_manifest")?;
         verify_resolution_file_binding(output, &label, package_resolution, "consumer_lock")?;
         verify_package_resolution(output, &label, package_resolution)?;
@@ -5259,6 +5313,8 @@ mod tests {
         let snippet_path = root.join("snippets/actors.rs");
         let compile_path = root.join("qualification/consumers/actors-compile.bin");
         let runtime_path = root.join("qualification/consumers/actors-runtime.bin");
+        let consumer_stdout_path = root.join("qualification/consumers/actors-consumer.stdout");
+        let consumer_stderr_path = root.join("qualification/consumers/actors-consumer.stderr");
         let consumer_manifest_path = root.join("qualification/consumers/Cargo.toml");
         let consumer_lock_path = root.join("qualification/consumers/Cargo.lock");
         let package_path = root.join("qualification/packages/actors-sdk.tgz");
@@ -5277,6 +5333,10 @@ mod tests {
         fs::write(&snippet_path, snippet_bytes).expect("write snippet");
         fs::write(&compile_path, compile_bytes).expect("write compile artifact");
         fs::write(&runtime_path, runtime_bytes).expect("write runtime artifact");
+        let consumer_stdout_bytes = b"consumer passed\n";
+        let consumer_stderr_bytes = b"";
+        fs::write(&consumer_stdout_path, consumer_stdout_bytes).expect("write consumer stdout");
+        fs::write(&consumer_stderr_path, consumer_stderr_bytes).expect("write consumer stderr");
         let consumer_manifest_bytes =
             b"[package]\nname = \"rendered-actors\"\nversion = \"0.0.0\"\n\n[dependencies]\nactors-sdk = { path = \"../packages/actors-sdk\" }\n";
         let consumer_lock_bytes = b"# disposable locked consumer\nversion = 4\n\n[[package]]\nname = \"actors-sdk\"\nversion = \"0.1.0\"\n";
@@ -5321,6 +5381,14 @@ mod tests {
             "resolved": true,
             "status": "qualified",
             "command": "cargo test --manifest-path qualification/consumers/Cargo.toml --locked --offline",
+            "consumer_command": "cargo test --manifest-path qualification/consumers/Cargo.toml --locked --offline",
+            "consumer_exit_code": 0,
+            "consumer_stdout_path": "qualification/consumers/actors-consumer.stdout",
+            "consumer_stdout_sha256": hash_bytes(consumer_stdout_bytes),
+            "consumer_stderr_path": "qualification/consumers/actors-consumer.stderr",
+            "consumer_stderr_sha256": hash_bytes(consumer_stderr_bytes),
+            "artifact_consumed": true,
+            "artifact_consumption_command": "cargo test --manifest-path qualification/consumers/Cargo.toml --locked --offline; installed consumer",
             "package_manager": "cargo",
             "source_revision": revision,
             "compiled_snippet_sha256": snippet_digest,
@@ -5383,6 +5451,34 @@ mod tests {
             )
             .is_ok()
         );
+        let mut missing_consumer_log = manifest.clone();
+        missing_consumer_log["snippets"][0]["validation"]["receipt"]["package_resolution"]
+            .as_object_mut()
+            .expect("package resolution object")
+            .remove("consumer_stdout_path");
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &missing_consumer_log,
+                revision
+            )
+            .is_err()
+        );
+        fs::write(&consumer_stdout_path, b"tampered consumer output\n")
+            .expect("tamper consumer stdout");
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &manifest,
+                revision
+            )
+            .is_err()
+        );
+        fs::write(&consumer_stdout_path, consumer_stdout_bytes).expect("restore consumer stdout");
         let mut generic_identity = manifest.clone();
         generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_name"] =
             Value::String("sdk-example-consumer".to_owned());
