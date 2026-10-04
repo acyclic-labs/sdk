@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { tmpdir } from "node:os";
 import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
 import { GraphCoderTerminal } from "../src/terminal.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
@@ -93,6 +96,31 @@ process.stdin.on("data", chunk => {
 `;
 
 describe("JSON-lines process bridge", () => {
+  test("terminates descendants that retain the owned bridge pipes", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "graphcoder-owned-process-"));
+    const marker = join(directory, "descendant-alive");
+    await writeFile(marker, "", "utf8");
+    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
+    const systemRoot = process.env.SystemRoot ?? "";
+    const owner = `const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1]], { env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); process.stdin.resume(); setInterval(() => {}, 100000);`;
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker], env: env() });
+    try {
+      for (let attempt = 0; attempt < 50 && (await stat(marker)).size === 0; attempt += 1) {
+        await new Promise<void>(resolve => setTimeout(resolve, 20));
+      }
+      const before = (await stat(marker)).size;
+      expect(before).toBeGreaterThan(0);
+      bridge.close("descendant cleanup");
+      await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+      const cleaned = (await stat(marker)).size;
+      await new Promise<void>(resolve => setTimeout(resolve, 150));
+      expect((await stat(marker)).size).toBe(cleaned);
+    } finally {
+      bridge.close("descendant cleanup fallback");
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
     const connection = ownConnection({ executable: process.execPath, args: ["-e", script], env: env() });

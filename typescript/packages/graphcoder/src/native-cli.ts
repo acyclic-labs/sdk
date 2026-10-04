@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { spawnOwnedProcess, terminateOwnedProcess } from "./owned-process.js";
 
 const executable = process.env.GRAPHCODER_RUNTIME;
 const args = process.argv.slice(2);
@@ -14,17 +14,27 @@ if (executable === undefined || executable.trim() === "") {
 } else {
   // Do not inherit host credentials or ambient provider settings. The native
   // runtime receives only explicit command-line configuration.
-  const child = spawn(executable, args, {
+  const child = spawnOwnedProcess(executable, args, {
     env: {},
     shell: false,
     stdio: "inherit",
-    windowsHide: true,
   });
+  let finished = false;
+  const cleanup = (): void => {
+    if (finished) return;
+    void terminateOwnedProcess(child);
+  };
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
   child.once("error", error => {
+    finished = true;
     process.stderr.write(`failed to start graphcoder-runtime: ${error.message}\n`);
     process.exitCode = 1;
   });
-  child.once("exit", (code, signal) => {
+  child.once("close", (code, signal) => {
+    finished = true;
+    process.removeListener("SIGINT", cleanup);
+    process.removeListener("SIGTERM", cleanup);
     process.exitCode = code ?? (signal === null ? 1 : 1);
   });
 }
