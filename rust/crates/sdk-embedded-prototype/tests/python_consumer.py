@@ -38,6 +38,22 @@ class NextResult(ctypes.Structure):
 
 OK, END, PENDING, CANCELLED, INVALID, PROVIDER, CAPACITY, PANIC = range(8)
 
+REQUIRED_EXPORTS = (
+    "acyclic_embedded_abi_version",
+    "acyclic_embedded_engine_open",
+    "acyclic_embedded_engine_close",
+    "acyclic_embedded_engine_append",
+    "acyclic_embedded_reader_open",
+    "acyclic_embedded_reader_next",
+    "acyclic_embedded_reader_cancel",
+    "acyclic_embedded_reader_close",
+    "acyclic_buffer_release",
+    "acyclic_append_result_release",
+    "acyclic_open_result_release",
+    "acyclic_open_result_take_reader",
+    "acyclic_next_result_release",
+)
+
 
 def bytes_arg(value: bytes):
     storage = ctypes.create_string_buffer(value)
@@ -46,6 +62,8 @@ def bytes_arg(value: bytes):
 
 def main() -> None:
     dll = ctypes.CDLL(sys.argv[1])
+    missing = [name for name in REQUIRED_EXPORTS if not hasattr(dll, name)]
+    assert not missing, f"installed runtime is missing Rust ABI exports: {missing}"
     dll.acyclic_embedded_abi_version.restype = ctypes.c_uint32
     assert dll.acyclic_embedded_abi_version() == 1
     dll.acyclic_embedded_engine_open.restype = ctypes.c_uint64
