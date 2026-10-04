@@ -6,13 +6,17 @@
 
 use acyclic_actors::{FILE_DESCRIPTOR_SET, validate_create, wire as actors_wire};
 use acyclic_fs::wire::filesystem::v2 as fs_wire;
-use acyclic_harness::{grpc::HarnessGrpcService, wire as harness_wire, wire_api::HarnessWireApi};
+use acyclic_harness::{wire as harness_wire, wire_api::HarnessWireApi};
 use acyclic_objects::wire as objects_wire;
-use acyclic_sdk_examples::fixtures::filesystem_harness::{filesystem_server, harness_server};
-use acyclic_sdk_examples::transport_fixtures;
+use acyclic_sdk_contract_wire::{BindingFamily, transport_control};
+use acyclic_sdk_examples::fixtures::objects_server::ObjectsFixture;
 use acyclic_sdk_examples::tls_fixture::{
     AllRoutesMachinesFixture, InferenceMetadataFixture, InferenceRunsFixture,
     new_method_transcript_log,
+};
+use acyclic_sdk_examples::{
+    fixtures::{filesystem_harness, fixture_clock, harness_backend},
+    transport_fixtures,
 };
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
@@ -40,6 +44,35 @@ use tokio::sync::Notify;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
+
+#[allow(
+    missing_docs,
+    clippy::pedantic,
+    clippy::too_many_lines,
+    clippy::large_enum_variant
+)]
+mod generated_control {
+    pub mod acyclic {
+        pub mod protocol {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/control/acyclic.protocol.v1.rs"));
+            }
+        }
+        pub mod transport {
+            pub mod v1 {
+                include!(concat!(env!("OUT_DIR"), "/control/acyclic.transport.v1.rs"));
+            }
+        }
+    }
+}
+
+use generated_control::acyclic::{
+    protocol::v1 as control_protocol,
+    transport::v1::{
+        protocol_service_client::ProtocolServiceClient,
+        protocol_service_server::{ProtocolService, ProtocolServiceServer},
+    },
+};
 
 const DEFAULT_MAX_REQUESTS: usize = 32;
 const MAX_REQUEST_BUDGET: usize = 4_096;
@@ -88,6 +121,79 @@ struct BudgetInterceptor {
     requests: Arc<AtomicUsize>,
     max_requests: usize,
     shutdown: Arc<Notify>,
+}
+
+#[derive(Clone, Copy)]
+struct ProtocolFixture;
+
+#[tonic::async_trait]
+impl ProtocolService for ProtocolFixture {
+    async fn handshake(
+        &self,
+        request: Request<control_protocol::HandshakeRequest>,
+    ) -> Result<Response<control_protocol::HandshakeResponse>, Status> {
+        let family = authorized_control_family(&request)?;
+        let expected_version = transport_control::control_protocol_version(family);
+        let protocol =
+            request.get_ref().protocol.as_ref().ok_or_else(|| {
+                Status::unauthenticated("handshake protocol identity is required")
+            })?;
+        if protocol.version != expected_version {
+            return Err(Status::failed_precondition(format!(
+                "protocol version does not match Rust-owned {} identity",
+                family.name()
+            )));
+        }
+        let expected_digest = transport_control::archived_descriptor_digest(family);
+        if protocol.descriptor_digest != expected_digest {
+            return Err(Status::failed_precondition(format!(
+                "descriptor digest does not match archived {} identity",
+                family.name()
+            )));
+        }
+        let supported = control_protocol::CapabilitySet {
+            capabilities: vec![control_protocol::Capability {
+                name: family.name().to_owned(),
+                version: expected_version.to_owned(),
+            }],
+        };
+        if let Some(required) = request.get_ref().required.as_ref() {
+            if required.capabilities.iter().any(|capability| {
+                capability.name != family.name() || capability.version != expected_version
+            }) {
+                return Err(Status::failed_precondition(
+                    "required capability is not supported by this Rust-owned family",
+                ));
+            }
+        }
+        Ok(Response::new(control_protocol::HandshakeResponse {
+            protocol: Some(control_protocol::ProtocolIdentity {
+                version: expected_version.to_owned(),
+                descriptor_digest: expected_digest,
+            }),
+            supported: Some(supported),
+        }))
+    }
+}
+
+fn authorized_control_family<T>(request: &Request<T>) -> Result<BindingFamily, Status> {
+    let family = request
+        .metadata()
+        .get(transport_control::FAMILY_METADATA_KEY)
+        .ok_or_else(|| Status::unauthenticated("acyclic-family metadata is required"))?
+        .to_str()
+        .map_err(|_| Status::unauthenticated("acyclic-family metadata must be ASCII"))?;
+    let family = BindingFamily::ALL
+        .iter()
+        .copied()
+        .find(|candidate| candidate.name() == family)
+        .ok_or_else(|| Status::permission_denied("requested SDK family is not registered"))?;
+    if !matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+        return Err(Status::permission_denied(
+            "fixture control endpoint authorizes Actors and Workers only",
+        ));
+    }
+    Ok(family)
 }
 
 impl tonic::service::Interceptor for BudgetInterceptor {
@@ -216,7 +322,7 @@ struct FilesystemFixture;
 
 #[tonic::async_trait]
 impl fs_wire::filesystem_service_server::FilesystemService for FilesystemFixture {
-    type ExportStream = stream::Empty<Result<fs_wire::ExportChunk, Status>>;
+    type ExportStream = stream::Iter<std::vec::IntoIter<Result<fs_wire::ExportChunk, Status>>>;
 
     async fn handshake(
         &self,
@@ -363,7 +469,14 @@ impl fs_wire::filesystem_service_server::FilesystemService for FilesystemFixture
         request: Request<fs_wire::ExportRequest>,
     ) -> Result<Response<Self::ExportStream>, Status> {
         let _request = request.into_inner();
-        Ok(Response::new(stream::empty()))
+        Ok(Response::new(stream::iter(vec![Ok(
+            fs_wire::ExportChunk {
+                cursor: b"fixture-export-cursor-1".to_vec(),
+                object_id: b"fixture-export-object-1".to_vec(),
+                contents: b"rust-owned-filesystem-export".to_vec(),
+                terminal: true,
+            },
+        )])))
     }
     async fn import(
         &self,
@@ -431,7 +544,17 @@ impl fs_wire::filesystem_service_server::FilesystemService for FilesystemFixture
 }
 
 #[derive(Clone)]
-struct HarnessFixtureApi;
+struct HarnessFixtureApi {
+    journal: Arc<Mutex<Option<harness_wire::CommandEnvelope>>>,
+}
+
+impl HarnessFixtureApi {
+    fn new() -> Self {
+        Self {
+            journal: Arc::new(Mutex::new(None)),
+        }
+    }
+}
 
 impl HarnessWireApi for HarnessFixtureApi {
     fn authorize_operation_control<'a>(
@@ -459,7 +582,9 @@ impl HarnessWireApi for HarnessFixtureApi {
         &'a self,
         command: harness_wire::CommandEnvelope,
     ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::Admission>> {
+        let journal = Arc::clone(&self.journal);
         async move {
+            *journal.lock().await = Some(command.clone());
             Ok(harness_wire::Admission {
                 operation: command.operation,
                 state: harness_wire::AdmissionState::Accepted as i32,
@@ -478,7 +603,50 @@ impl HarnessWireApi for HarnessFixtureApi {
             futures::stream::BoxStream<'static, acyclic_harness::Result<harness_wire::Delivery>>,
         >,
     > {
-        async { Ok(Box::pin(stream::empty()) as _) }.boxed()
+        let journal = Arc::clone(&self.journal);
+        async move {
+            let command = journal.lock().await.clone();
+            let Some(command) = command else {
+                return Ok(Box::pin(stream::empty()) as _);
+            };
+            let operation_id = command
+                .operation
+                .as_ref()
+                .map(|operation| operation.operation_id.clone())
+                .unwrap_or_default();
+            let scope = command
+                .scope
+                .as_ref()
+                .map(|scope| harness_wire::RecordedScope {
+                    id: scope.id.clone(),
+                    capabilities: scope.capabilities.clone(),
+                    issuer: scope.issuer.clone(),
+                    agent_id: scope.agent_id.clone(),
+                });
+            let event = harness_wire::EventEnvelope {
+                protocol: command.protocol.clone(),
+                authority: command.authority.clone(),
+                revision: 1,
+                operation_id,
+                intent_digest: command.intent_digest.clone(),
+                scope,
+                causal_parent: command.causal_parent.clone(),
+                event_type: "fixture.command.accepted".to_owned(),
+                canonical_payload_json: br#"{"status":"accepted"}"#.to_vec(),
+                attestation: vec![1; 32],
+            };
+            Ok(Box::pin(stream::once(async move {
+                Ok(harness_wire::Delivery {
+                    authority: command.authority,
+                    generation: "rust-fixture-generation-v1".to_owned(),
+                    from_revision: 1,
+                    through_revision: 1,
+                    events: vec![event],
+                    live: false,
+                })
+            })) as _)
+        }
+        .boxed()
     }
 
     fn observe<'a>(
@@ -528,123 +696,6 @@ impl HarnessWireApi for HarnessFixtureApi {
             })
         }
         .boxed()
-    }
-}
-#[derive(Clone)]
-struct ObjectsFixture;
-
-#[tonic::async_trait]
-impl objects_wire::buckets_service_server::BucketsService for ObjectsFixture {
-    async fn create_bucket(
-        &self,
-        request: Request<objects_wire::CreateBucketRequest>,
-    ) -> Result<Response<objects_wire::Bucket>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn head_bucket(
-        &self,
-        request: Request<objects_wire::HeadBucketRequest>,
-    ) -> Result<Response<objects_wire::Bucket>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn delete_bucket(
-        &self,
-        request: Request<objects_wire::DeleteBucketRequest>,
-    ) -> Result<Response<objects_wire::DeleteBucketResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-}
-
-#[tonic::async_trait]
-impl objects_wire::objects_service_server::ObjectsService for ObjectsFixture {
-    async fn put_object(
-        &self,
-        request: Request<tonic::Streaming<objects_wire::PutObjectRequest>>,
-    ) -> Result<Response<objects_wire::ObjectInfo>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    type GetObjectStream = futures::stream::Empty<Result<objects_wire::GetObjectResponse, Status>>;
-
-    async fn get_object(
-        &self,
-        request: Request<objects_wire::GetObjectRequest>,
-    ) -> Result<Response<Self::GetObjectStream>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(futures::stream::empty()))
-    }
-
-    async fn head_object(
-        &self,
-        request: Request<objects_wire::HeadObjectRequest>,
-    ) -> Result<Response<objects_wire::HeadObjectResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn delete_object(
-        &self,
-        request: Request<objects_wire::DeleteObjectRequest>,
-    ) -> Result<Response<objects_wire::DeleteObjectResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn list_objects(
-        &self,
-        request: Request<objects_wire::ListObjectsRequest>,
-    ) -> Result<Response<objects_wire::ListObjectsResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-}
-
-#[tonic::async_trait]
-impl objects_wire::multipart_service_server::MultipartService for ObjectsFixture {
-    async fn create_multipart(
-        &self,
-        request: Request<objects_wire::CreateMultipartRequest>,
-    ) -> Result<Response<objects_wire::MultipartUpload>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn upload_part(
-        &self,
-        request: Request<tonic::Streaming<objects_wire::UploadPartRequest>>,
-    ) -> Result<Response<objects_wire::UploadedPart>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn list_parts(
-        &self,
-        request: Request<objects_wire::ListPartsRequest>,
-    ) -> Result<Response<objects_wire::ListPartsResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn complete_multipart(
-        &self,
-        request: Request<objects_wire::CompleteMultipartRequest>,
-    ) -> Result<Response<objects_wire::ObjectInfo>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
-    }
-
-    async fn abort_multipart(
-        &self,
-        request: Request<objects_wire::AbortMultipartRequest>,
-    ) -> Result<Response<objects_wire::AbortMultipartResponse>, Status> {
-        let _request = request.into_inner();
-        Ok(Response::new(Default::default()))
     }
 }
 #[derive(Clone)]
@@ -719,7 +770,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source_sha256 = source_sha256();
     let shutdown = Arc::new(Notify::new());
     let grpc_requests = Arc::new(AtomicUsize::new(0));
-    let stream = Arc::new(MemoryStream::default());
+    let stream = Arc::new(MemoryStream::new_with_clock(
+        acyclic_stream::MemoryLimits::default(),
+        fixture_clock::stream_clock(),
+    ));
     let app = App {
         stream: (*stream).clone(),
         requests: Arc::new(Mutex::new(0)),
@@ -733,6 +787,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         shutdown: Arc::clone(&shutdown),
     };
     let grpc_shutdown = Arc::clone(&shutdown);
+    let filesystem_service = filesystem_harness::filesystem_server()
+        .map_err(|error| format!("construct filesystem fixture service: {error}"))?;
+    let harness_service = harness_backend::harness_server();
     let grpc_task = tokio::spawn(async move {
         let interceptor = BudgetInterceptor {
             requests: Arc::clone(&grpc_app.requests),
@@ -753,24 +810,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),
         );
+        let control = tonic::service::interceptor::InterceptedService::new(
+            ProtocolServiceServer::new(ProtocolFixture),
+            interceptor.clone(),
+        );
+        let objects_fixture = ObjectsFixture::new();
         let objects_buckets = tonic::service::interceptor::InterceptedService::new(
-            objects_wire::buckets_service_server::BucketsServiceServer::new(ObjectsFixture),
+            objects_wire::buckets_service_server::BucketsServiceServer::new(
+                objects_fixture.clone(),
+            ),
             interceptor.clone(),
         );
         let objects = tonic::service::interceptor::InterceptedService::new(
-            objects_wire::objects_service_server::ObjectsServiceServer::new(ObjectsFixture),
+            objects_wire::objects_service_server::ObjectsServiceServer::new(
+                objects_fixture.clone(),
+            ),
             interceptor.clone(),
         );
         let objects_multipart = tonic::service::interceptor::InterceptedService::new(
-            objects_wire::multipart_service_server::MultipartServiceServer::new(ObjectsFixture),
+            objects_wire::multipart_service_server::MultipartServiceServer::new(objects_fixture),
             interceptor.clone(),
         );
         let harness = tonic::service::interceptor::InterceptedService::new(
-            harness_server(),
+            harness_service,
             interceptor.clone(),
         );
         let filesystem = tonic::service::interceptor::InterceptedService::new(
-            filesystem_server().expect('canonical filesystem fixture service'),
+            filesystem_service
+                .max_decoding_message_size(MAX_BODY_BYTES)
+                .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),
         );
         let streams = tonic::service::interceptor::InterceptedService::new(
@@ -819,6 +887,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor,
         );
         Server::builder()
+            .add_service(control)
             .add_service(actors)
             .add_service(workers)
             .add_service(objects_buckets)
@@ -960,6 +1029,9 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
         }
     };
     let is_shutdown = request.path == "/shutdown";
+    let is_control_handshake = request.method == "GET"
+        && request.path.starts_with("/v1/sdk/")
+        && request.path.ends_with("/handshake");
     let result = if request.path == "/health" && request.method == "GET" {
         Ok(json!({
             "schema": "acyclic.sdk.fixture-response.v1",
@@ -980,6 +1052,8 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
             "schema": "acyclic.sdk.fixture-response.v1",
             "status": "shutdown",
         }))
+    } else if is_control_handshake {
+        control_handshake_http(&request.path)
     } else {
         dispatch(&app, &request).await
     };
@@ -1044,6 +1118,45 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
             message: format!("unknown fixture route {path}"),
         }),
     }
+}
+
+fn control_handshake_http(path: &str) -> Result<Value, HttpError> {
+    let family_name = path
+        .strip_prefix("/v1/sdk/")
+        .and_then(|path| path.strip_suffix("/handshake"))
+        .filter(|family| transport_control::handshake_http_route(family).as_deref() == Some(path));
+    let family = family_name
+        .and_then(|name| {
+            BindingFamily::ALL
+                .iter()
+                .copied()
+                .find(|family| family.name() == name)
+        })
+        .filter(|family| matches!(family, BindingFamily::Actors | BindingFamily::Workers))
+        .ok_or_else(|| HttpError {
+            status: 404,
+            message: "unknown SDK control family".to_owned(),
+        })?;
+    let descriptor_digest = transport_control::archived_descriptor_digest(family);
+    Ok(json!({
+        "schema": "acyclic.sdk.handshake-response.v1",
+        "rpc": transport_control::HANDSHAKE_RPC_PATH,
+        "family": family.name(),
+        "protocol": {
+            "version": transport_control::control_protocol_version(family),
+            "descriptor_digest": descriptor_digest,
+        },
+        "supported": {
+            "capabilities": [{
+                "name": family.name(),
+                "version": transport_control::control_protocol_version(family),
+            }]
+        },
+        "source": {
+            "path": "rust/crates/sdk-contract-wire/src/family_registry.rs",
+            "revision": env!("SDK_EXAMPLES_SOURCE_SHA256"),
+        },
+    }))
 }
 
 fn actors_create(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
@@ -1672,5 +1785,109 @@ mod tests {
         assert_eq!(response["actor"]["actorId"], "fixture-actor");
         assert_eq!(response["actor"]["homeRegion"], "eu");
         assert_eq!(response["actor"]["state"], "ACTOR_STATE_ACTIVE");
+    }
+
+    #[tokio::test]
+    async fn control_handshake_requires_family_metadata_and_returns_archived_identity() {
+        let family = BindingFamily::Actors;
+        let request = control_protocol::HandshakeRequest {
+            protocol: Some(control_protocol::ProtocolIdentity {
+                version: family.package().to_owned(),
+                descriptor_digest: format!(
+                    "{:x}",
+                    Sha256::digest(family.archived_runtime_descriptor())
+                ),
+            }),
+            required: Some(control_protocol::CapabilitySet {
+                capabilities: vec![control_protocol::Capability {
+                    name: family.name().to_owned(),
+                    version: family.package().to_owned(),
+                }],
+            }),
+        };
+        let mut request = Request::new(request);
+        request.metadata_mut().insert(
+            transport_control::FAMILY_METADATA_KEY,
+            family.name().parse().unwrap(),
+        );
+        let response = ProtocolFixture
+            .handshake(request)
+            .await
+            .expect("authorized control handshake")
+            .into_inner();
+        assert_eq!(response.protocol.unwrap().version, family.package());
+        assert_eq!(response.supported.unwrap().capabilities.len(), 1);
+
+        let unauthorized = Request::new(control_protocol::HandshakeRequest::default());
+        assert_eq!(
+            ProtocolFixture
+                .handshake(unauthorized)
+                .await
+                .unwrap_err()
+                .code(),
+            tonic::Code::Unauthenticated
+        );
+    }
+
+    #[tokio::test]
+    async fn registered_control_grpc_service_round_trips_over_loopback() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let shutdown = Arc::new(Notify::new());
+        let server_shutdown = Arc::clone(&shutdown);
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(ProtocolServiceServer::new(ProtocolFixture))
+                .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
+                    server_shutdown.notified().await
+                })
+                .await
+                .unwrap();
+        });
+
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{address}"))
+            .unwrap()
+            .connect()
+            .await
+            .unwrap();
+        let family = BindingFamily::Workers;
+        let mut request = Request::new(control_protocol::HandshakeRequest {
+            protocol: Some(control_protocol::ProtocolIdentity {
+                version: family.package().to_owned(),
+                descriptor_digest: format!(
+                    "{:x}",
+                    Sha256::digest(family.archived_runtime_descriptor())
+                ),
+            }),
+            required: None,
+        });
+        request.metadata_mut().insert(
+            transport_control::FAMILY_METADATA_KEY,
+            family.name().parse().unwrap(),
+        );
+        let response = ProtocolServiceClient::new(channel)
+            .handshake(request)
+            .await
+            .unwrap()
+            .into_inner();
+        assert_eq!(response.protocol.unwrap().version, family.package());
+        assert_eq!(
+            response.supported.unwrap().capabilities[0].name,
+            family.name()
+        );
+        shutdown.notify_waiters();
+    }
+
+    #[test]
+    fn http_control_handshake_uses_the_registered_family_route() {
+        let response =
+            control_handshake_http("/v1/sdk/workers/handshake").expect("Workers control route");
+        assert_eq!(response["family"], "workers");
+        assert_eq!(response["rpc"], transport_control::HANDSHAKE_RPC_PATH);
+        assert_eq!(
+            response["protocol"]["version"],
+            BindingFamily::Workers.package()
+        );
+        assert!(control_handshake_http("/v1/sdk/objects/handshake").is_err());
     }
 }
