@@ -282,6 +282,29 @@ jobs:
             $found = Get-ChildItem -LiteralPath (Join-Path $expanded "runtimes/$rid/native") -File -ErrorAction SilentlyContinue
             if (-not $found) { throw "Package is missing native RID asset $rid" }
           }
+          $reproRoot = Join-Path $env:RUNNER_TEMP 'dotnet-embedded-package-repro'
+          pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output $reproRoot -NativeRoot $nativeRoot -PackageOnly
+          $reproPackage = Join-Path $reproRoot 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
+          if (-not (Test-Path -LiteralPath $reproPackage -PathType Leaf)) { throw 'The reproducibility package was not produced.' }
+          $packageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nupkg).Hash.ToLowerInvariant()
+          $reproHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $reproPackage).Hash.ToLowerInvariant()
+          if ($packageHash -ne $reproHash) {
+            throw "Canonical NuGet package bytes are not reproducible: $packageHash != $reproHash"
+          }
+          $nativeManifestPath = Join-Path $nativeRoot 'native-manifest.json'
+          $nativeManifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nativeManifestPath).Hash.ToLowerInvariant()
+          [ordered]@{
+            schema = 'acyclic.sdk.dotnet.embedded.package-reproducibility.v1'
+            status = 'passed'
+            source_revision = $sourceRevision
+            source_revision_kind = 'git-oid'
+            native_manifest = 'native/native-manifest.json'
+            native_manifest_sha256 = $nativeManifestHash
+            package = 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
+            package_sha256 = $packageHash
+            repeated_pack_sha256 = $reproHash
+            canonical_archive = $true
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:PACKAGE_ROOT 'package-reproducibility.json') -Encoding utf8NoBOM
 
       - name: Upload package and producer manifest
         if: always()
