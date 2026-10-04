@@ -310,7 +310,7 @@ fn expected_tool_definitions() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "acyclic.stage_file".into(),
-            revision: "1".into(),
+            revision: "2".into(),
             description:
                 "Stage a bounded UTF-8 file in the agent-private volume and return its immutable FileRef"
                     .into(),
@@ -333,7 +333,7 @@ fn expected_tool_definitions() -> Vec<ToolDefinition> {
             }),
             model_output_schema: json!({
                 "type": "object",
-                "properties": {"file": {"type": "object"}},
+                "properties": {"file": {"type": "object", "x-acyclic-file-ref": true}},
                 "required": ["file"],
                 "additionalProperties": false
             }),
@@ -351,8 +351,8 @@ const EXPECTED_TOOL_DIGESTS: [[u8; 32]; 3] = [
         78, 187, 99, 150, 157, 159, 6, 75, 195, 230, 92, 18,
     ],
     [
-        1, 252, 178, 68, 58, 106, 247, 126, 121, 15, 84, 134, 70, 224, 178, 53, 2, 130, 254, 206,
-        0, 143, 217, 110, 205, 97, 84, 255, 225, 181, 122, 5,
+        93, 91, 47, 255, 173, 159, 13, 121, 7, 40, 132, 189, 227, 227, 42, 151, 47, 170, 244,
+        55, 209, 221, 160, 250, 253, 238, 8, 129, 119, 156, 28, 229,
     ],
 ];
 
@@ -395,15 +395,15 @@ const EXPECTED_TOOL_SCHEMA_DIGESTS: [[[u8; 32]; 3]; 3] = [
             241, 246, 104, 233, 188, 51, 174, 240, 6, 77, 86, 14, 225, 246,
         ],
         [
-            107, 183, 68, 19, 75, 57, 66, 174, 235, 186, 243, 173, 212, 198, 101, 42, 192, 200,
-            241, 246, 104, 233, 188, 51, 174, 240, 6, 77, 86, 14, 225, 246,
+            184, 253, 244, 28, 167, 93, 165, 185, 120, 56, 166, 238, 179, 34, 227, 120, 108, 157,
+            58, 72, 248, 85, 6, 106, 252, 185, 231, 80, 143, 87, 67, 251,
         ],
     ],
 ];
 
 const EXPECTED_BINDING_DIGEST: [u8; 32] = [
-    146, 71, 57, 48, 107, 132, 160, 90, 189, 120, 218, 94, 0, 115, 93, 68, 33, 60, 242, 88, 117,
-    153, 97, 92, 86, 4, 26, 153, 137, 196, 57, 112,
+    61, 248, 215, 37, 140, 208, 252, 226, 125, 189, 207, 103, 91, 156, 34, 112, 186, 195, 151,
+    4, 160, 159, 196, 104, 0, 203, 105, 16, 242, 138, 125, 232,
 ];
 
 fn assert_request_allowlist(request: &ModelRequest) -> Result<()> {
@@ -504,15 +504,24 @@ fn assert_manifest_matches_request(
         assert_eq!(entry.position, position);
         assert_eq!(entry.role, message.role);
         assert_eq!(entry.digest, prepared.manifest().messages[position].digest);
-        assert_eq!(
-            entry.files,
-            message
-                .content
-                .file_refs()
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        );
+        let mut expected_files = message.content.file_refs().into_iter().cloned().collect::<Vec<_>>();
+        let parts = match &message.content {
+            ModelContent::Text(_) => &[][..],
+            ModelContent::Part(part) => std::slice::from_ref(part),
+            ModelContent::Parts(parts) => parts.as_slice(),
+        };
+        // The frozen stage_file v2 schema above declares exactly this output
+        // position. Keep this expectation independent of the runtime walker.
+        for part in parts {
+            if let ModelContentPart::ToolResult { name, value, .. } = part
+                && name == "acyclic.stage_file"
+                && let Some(file) = value.get("file")
+            {
+                expected_files.push(serde_json::from_value(file.clone())
+                    .expect("stage_file v2 output must carry a valid immutable FileRef"));
+            }
+        }
+        assert_eq!(entry.files, expected_files);
     }
     Ok(())
 }
