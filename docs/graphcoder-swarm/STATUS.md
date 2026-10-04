@@ -4,6 +4,10 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At source `bc110358c`, 21 Windows native fork regressions pass after reports and seeds share one history-capture validator. Wire formats, proof digests and strict/rebound scopes remain unchanged. See [focused validation evidence](checkpoint-fork-validation-cut-native-2026-10-04.json).
+
+Independent review holds the integrated lazy/coordinator slice: failure publication can overwrite terminal cancellation/completion, duplicate activation can dispatch a child more than once, and a concurrent empty-registry opener fails instead of reconciling the winner. These require deterministic concurrent/restart tests and implementation repairs; passing focused projection tests do not close them.
+
 At source `d595f3ba4`, 10 Windows native lazy-projection regressions pass with no ignored cases after integration. Registry refresh reads an unseen suffix, metadata inspection avoids cold child activation, and cancellation releases the refresh fence before host propagation. See [focused source and artifact evidence](checkpoint-integrated-lazy-native-2026-10-04.json). Independent review, installed counters and full coordinator qualification remain required.
 
 At source `173cb1b85`, 12 Windows native exact-input tests pass with no ignored cases, including the physical corruption/deletion test enabled by `test-support`. These capture serialized provider requests and exercise generation-pinned content, explicit limits, schema denials and restart replay. See [source, suite and artifact evidence](checkpoint-exact-input-native-2026-10-04.json). Full recursive coordinator, WASM and installed qualification remain separate gates.

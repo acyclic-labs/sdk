@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Centralized fork validation](checkpoint-fork-validation-cut-native-2026-10-04.json) records 21/21 Windows native cases at `bc110358c`, with no ignored cases. Reports and seeds share the existing pure history-capture validation without changing wire formats, proof digests or strict/rebound scopes. Logs, source and executable digests are archived. Production activation, terminal-state fencing, fault recovery and the complete matrix remain required.
+
 [Integrated lazy projection regressions](checkpoint-integrated-lazy-native-2026-10-04.json) records 10/10 Windows native cases at `d595f3ba4`, with no ignored cases. Concurrent registry reads/publication, cold metadata inspection and cancellation reentrancy are covered. The log, suite and native executable digests are archived. This is focused integrated evidence; independent review, installed lazy counters, production swarming and fault recovery remain required.
 
 [Fresh exact-input native tests](checkpoint-exact-input-native-2026-10-04.json) records 12/12 cases at `173cb1b85`, with no ignored tests and physical corruption/deletion coverage enabled. Serialized provider capture, Unicode/whitespace, tool exchange pairing, credential/UI/sibling exclusion, explicit limits and immutable generation references pass. Fixture-level recursive provider conformance is not full recursive coordinator qualification. The source tests, fixture, lockfile, logs and native executable digests are recorded; WASM, swarm faults, installed artifacts and PTY remain required.
