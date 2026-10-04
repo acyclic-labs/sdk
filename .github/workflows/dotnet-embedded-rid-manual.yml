@@ -36,7 +36,7 @@ concurrency:
 jobs:
   native:
     name: native ${{ matrix.rid }}
-    if: inputs.target == 'all' || inputs.target == matrix.rust_target
+
     strategy:
       fail-fast: false
       matrix:
@@ -86,13 +86,13 @@ jobs:
           persist-credentials: false
 
       - name: Install pinned Rust toolchain
-        if: matrix.kind == 'native'
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'native'
         uses: ./.github/actions/rust-toolchain
         with:
           targets: ${{ matrix.rust_target }}
 
       - name: Install native ARM64 Windows linker
-        if: matrix.rust_target == 'aarch64-pc-windows-msvc'
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.rust_target == 'aarch64-pc-windows-msvc'
         uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
         with:
           version: 20.1.8
@@ -101,17 +101,17 @@ jobs:
           env: false
 
       - name: Select native ARM64 Windows linker
-        if: matrix.rust_target == 'aarch64-pc-windows-msvc'
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.rust_target == 'aarch64-pc-windows-msvc'
         shell: pwsh
         run: Add-Content -Path $env:GITHUB_ENV -Value "CC_aarch64_pc_windows_msvc=$env:RUNNER_TEMP\llvm\bin\clang.exe"
 
       - name: Build native asset
-        if: matrix.kind == 'native'
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'native'
         shell: pwsh
         run: pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output (Join-Path $env:RUNNER_TEMP 'dotnet-embedded') -Target '${{ matrix.rust_target }}' -NativeOnly
 
       - name: Build dynamic musl asset in pinned Alpine
-        if: matrix.kind == 'musl'
+        if: (inputs.target == 'all' || inputs.target == matrix.rust_target) && matrix.kind == 'musl'
         shell: bash
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
@@ -133,7 +133,7 @@ jobs:
             '
 
       - name: Upload native asset
-        if: always()
+        if: always() && (inputs.target == 'all' || inputs.target == matrix.rust_target)
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
         with:
           name: dotnet-embedded-native-${{ matrix.rid }}
@@ -231,10 +231,12 @@ jobs:
             runner: blacksmith-4vcpu-ubuntu-2404
             kind: musl
             musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+            dotnet_image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
           - rid: linux-musl-arm64
             runner: blacksmith-4vcpu-ubuntu-2404-arm
             kind: musl
             musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
+            dotnet_image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
           - rid: osx-x64
             runner: blacksmith-6vcpu-macos-15
             kind: dotnet
@@ -242,7 +244,7 @@ jobs:
             runner: blacksmith-6vcpu-macos-15
             kind: dotnet
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -298,13 +300,13 @@ jobs:
           '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8NoBOM
           dotnet run --project $project --configuration Release
 
-      - name: Run installed Rust-backed musl consumer
+      - name: Run installed Rust-backed musl .NET consumer
         if: matrix.kind == 'musl'
         shell: bash
         env:
           PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
           RID: ${{ matrix.rid }}
-          ALPINE_IMAGE: ${{ matrix.musl_image }}
+          DOTNET_IMAGE: ${{ matrix.dotnet_image }}
         run: |
           set -euo pipefail
           docker run --rm --user 0 \
@@ -312,13 +314,35 @@ jobs:
             --volume "$PACKAGE_ROOT:/pkg" \
             --workdir /src \
             --env RID="$RID" \
-            "$ALPINE_IMAGE" sh -euxc '
-              apk add --no-cache python3 unzip
-              mkdir -p /tmp/embedded-package
+            "$DOTNET_IMAGE" sh -euxc '
+              test "$(dotnet --version)" = "8.0.425"
+              mkdir -p /tmp/embedded-consumer
               package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
               test -n "$package"
-              unzip -q "$package" -d /tmp/embedded-package
-              runtime="/tmp/embedded-package/runtimes/$RID/native/libacyclic_sdk_embedded_prototype.so"
-              test -f "$runtime"
-              python3 rust/crates/sdk-embedded-prototype/tests/python_consumer.py "$runtime"
+              dotnet new console --framework net8.0 --output /tmp/embedded-consumer --force --no-restore
+              source="$(dirname "$package")"
+              dotnet add /tmp/embedded-consumer package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source "$source"
+              sed -i "s#</Project>#  <PropertyGroup><RuntimeIdentifier>$RID</RuntimeIdentifier></PropertyGroup></Project>#" /tmp/embedded-consumer/embedded-consumer.csproj
+              cat > /tmp/embedded-consumer/Program.cs <<'CS'
+              using Acyclic.Sdk.Embedded;
+              using System.Linq;
+              using System.Runtime.InteropServices;
+
+              using var engine = new EmbeddedStreamEngine();
+              var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x4D, 0x55, 0x53, 0x4C };
+              var appended = engine.Append("installed-musl-consumer", value);
+              var count = 0;
+              await foreach (var item in engine.ReadAsync("installed-musl-consumer", appended.Start, 1))
+              {
+                  if (!item.Value.SequenceEqual(value))
+                      throw new InvalidOperationException("Rust value did not round-trip through the musl RID package.");
+                  count++;
+              }
+              if (count != 1)
+                  throw new InvalidOperationException($"Expected one Rust record, received {count}.");
+              if (!RuntimeInformation.RuntimeIdentifier.StartsWith("linux-musl", StringComparison.Ordinal))
+                  throw new InvalidOperationException($"Unexpected resolved RID: {RuntimeInformation.RuntimeIdentifier}");
+              Console.WriteLine($"Installed musl RID consumer passed: {RuntimeInformation.RuntimeIdentifier}");
+              CS
+              dotnet run --project /tmp/embedded-consumer --configuration Release
             '
