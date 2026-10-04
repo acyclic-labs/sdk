@@ -18,11 +18,11 @@ source checkout so a clean-prefix consumer cannot accidentally see source or
 build files:
 
 ```powershell
-pwsh -File cpp/embedded-consumer/portable-package-test.ps1
+pwsh -File cpp/embedded-consumer/portable-package-test.ps1 -BuildDirectory (Join-Path $env:TEMP 'acyclic-embedded-package')
 ```
 
 ```bash
-bash cpp/embedded-consumer/portable-package-test.sh
+BUILD_DIRECTORY="${TMPDIR:-/tmp}/acyclic-embedded-package" bash cpp/embedded-consumer/portable-package-test.sh
 ```
 
 The recipe builds the locked Rust crate in release mode, generates the header,
