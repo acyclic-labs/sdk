@@ -89,14 +89,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut output = None;
     while let Some(argument) = args.next() {
         match argument.to_string_lossy().as_ref() {
-            "--source-root" => source_root = args.next().map(PathBuf::from),
-            "--output" => output = args.next().map(PathBuf::from),
+            "--source-root" => {
+                source_root = Some(PathBuf::from(
+                    args.next().ok_or("--source-root requires a path")?,
+                ))
+            }
+            "--output" => {
+                output = Some(PathBuf::from(
+                    args.next().ok_or("--output requires a path")?,
+                ))
+            }
             unknown => return Err(format!("unknown sdk-rpc-contracts argument: {unknown}").into()),
         }
     }
-    let source_root = source_root.ok_or("--source-root is required")?;
+    if source_root.is_none() && output.is_none() {
+        println!("{}", serde_json::to_string_pretty(&inventory()?)?);
+        return Ok(());
+    }
+    let source_root = source_root.ok_or("--source-root is required with --output")?;
     if !source_root.is_dir() {
-        return Err(format!("RPC inventory source root is missing: {}", source_root.display()).into());
+        return Err(format!(
+            "RPC inventory source root is missing: {}",
+            source_root.display()
+        )
+        .into());
     }
     let rendered = format!("{}\n", serde_json::to_string_pretty(&inventory()?)?);
     let output = output.ok_or("--output is required")?;
