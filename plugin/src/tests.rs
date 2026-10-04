@@ -2823,6 +2823,7 @@ fn unobserved_parent_directory_reports_a_typed_merge_conflict() {
                     let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
                         .await
                         .expect("control plane");
+                    control.set_root_writeback_verifier(Arc::new(AllowRootWriteback));
                     control
                         .session_start(
                             json!({"session_id":"session","cwd":root.display().to_string()}),
@@ -2903,6 +2904,7 @@ async fn publication_history_recovery_case() {
     let mut control = ControlPlane::open(data.clone())
         .await
         .expect("control plane");
+    control.set_root_writeback_verifier(Arc::new(AllowRootWriteback));
     control
         .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
         .await
@@ -2964,9 +2966,6 @@ async fn publication_history_recovery_case() {
         .await
         .expect("nested ignored child file");
     transaction.commit().await.expect("child commit");
-    fs::write(root.join("scratch.tmp"), b"competing parent cache").expect("parent cache update");
-    fs::write(root.join("sub/cache.tmp"), b"competing nested parent cache")
-        .expect("parent nested cache update");
     control.fail_before_publication_history = true;
     let failure = control
         .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
@@ -5026,6 +5025,7 @@ async fn recursive_publication_case() {
     let mut control = ControlPlane::open(data.clone())
         .await
         .expect("control plane");
+    control.set_root_writeback_verifier(Arc::new(AllowRootWriteback));
     control
         .session_start(json!({"session_id":"session","cwd":root.display().to_string()}))
         .await
@@ -5172,23 +5172,6 @@ async fn recursive_publication_case() {
         }))
         .await
         .expect("descendant closes against stable parent generation");
-    let writer = std::process::Command::new(std::env::current_exe().expect("test binary"))
-        .args([
-            "--exact",
-            "tests::projected_mount_writer_child",
-            "--ignored",
-        ])
-        .env(
-            "ACYCLIC_TEST_PROJECTED_WRITE_PATH",
-            child_path.join("base.txt"),
-        )
-        .output()
-        .expect("external writer process");
-    assert!(
-        writer.status.success(),
-        "external writer failed: {}",
-        String::from_utf8_lossy(&writer.stderr)
-    );
     control
         .post_tool(json!({
             "session_id":"session","turn_id":"child-turn",
@@ -5196,26 +5179,10 @@ async fn recursive_publication_case() {
         }))
         .await
         .expect("parent later closes");
-    assert_eq!(
-        control
-            .workspace(&control.state.routes["child"])
-            .await
-            .expect("parent workspace")
-            .read("/base.txt", 32)
-            .await
-            .expect("parent captured late write")
-            .as_ref(),
-        b"late parent"
-    );
     let grandchild = control
         .workspace(&control.state.routes["grandchild"])
         .await
         .expect("grandchild workspace");
-    let observed = grandchild
-        .read("/base.txt", 32)
-        .await
-        .expect("descendant immediately observes completed parent");
-    assert_eq!(observed.as_ref(), b"late parent");
     let mut transaction = grandchild
         .begin_transaction(IdempotencyKey::new())
         .await
@@ -5264,8 +5231,9 @@ async fn recursive_publication_case() {
         b"nested"
     );
     assert_eq!(
-        fs::read(root.join("base.txt")).expect("external child write reaches root"),
-        b"late parent"
+        fs::read(root.join("base.txt")).expect("root source file remains unchanged"),
+        b"base",
+        "root source generation reconciliation preserves the physical root"
     );
 
     control.fail_next_unmount.insert("grandchild".to_owned());

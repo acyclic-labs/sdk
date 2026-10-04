@@ -743,7 +743,9 @@ impl ControlPlane {
         abort: bool,
     ) -> Result<Value, String> {
         self.ensure_agent_idle(caller)?;
-        self.sync_agent(caller).await?;
+        if !abort {
+            self.sync_agent(caller).await?;
+        }
         let parent_context_id = self.context_for_agent(caller)?;
         let operation_id = self
             .pending_conflict_for_parent(parent_context_id)
