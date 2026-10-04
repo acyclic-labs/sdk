@@ -8,7 +8,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join, relative, resolve } from "node:path";
+import { basename, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnOwnedProcess, terminateOwnedProcessTree, trackOwnedProcess } from "./graphcoder-process-ownership.mjs";
 import { assertCanonicalParents, ensureOwnedDirectory, isWithin } from "./graphcoder-path-ownership.mjs";
@@ -132,16 +132,28 @@ function readLaneReceipt(path, lane, executionKind, source, platform) {
   catch (error) { fail(`${lane.id} ${executionKind} receipt is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
   const suite = record?.suite;
   if (!suite || suite.status !== "passed") fail(`${lane.id} ${executionKind} receipt is not passed`);
-  if (suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
+  if (suite.id !== record.suite?.id || suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
   if (!Array.isArray(record.artifacts) || record.artifacts.length === 0) fail(`${lane.id} ${executionKind} receipt has no artifact evidence`);
   const descriptorPath = suite.descriptor_path;
   if (typeof descriptorPath !== "string" || !existsSync(descriptorPath)) fail(`${lane.id} ${executionKind} descriptor is missing`);
+  const descriptorBytes = readFileSync(descriptorPath);
+  if (suite.descriptor_sha256 !== hash(descriptorBytes)) fail(`${lane.id} ${executionKind} descriptor digest does not match its bytes`);
   let descriptor;
-  try { descriptor = JSON.parse(readFileSync(descriptorPath, "utf8")); }
+  try { descriptor = JSON.parse(descriptorBytes.toString("utf8")); }
   catch (error) { fail(`${lane.id} ${executionKind} descriptor is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+  if (descriptor.id !== suite.id || descriptor.execution_kind !== executionKind || descriptor.platform !== platform) fail(`${lane.id} ${executionKind} descriptor identity is invalid`);
   if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree) fail(`${lane.id} ${executionKind} receipt is bound to a different source`);
-  if (lane.driver && !JSON.stringify(descriptor.command ?? {}).includes(lane.driver)) fail(`${lane.id} ${executionKind} receipt command does not invoke its declared driver`);
+  const command = descriptor.command;
+  if (!command || typeof command !== "object" || !Array.isArray(command.args) || typeof command.executable !== "string") fail(`${lane.id} ${executionKind} descriptor command is invalid`);
+  if (lane.driver && command.args[0] !== lane.driver) fail(`${lane.id} ${executionKind} descriptor command does not invoke its declared driver as argv[0]`);
+  if (basename(command.executable).toLowerCase() !== "node" && basename(command.executable).toLowerCase() !== "node.exe") fail(`${lane.id} ${executionKind} descriptor executable is not Node`);
+  if (source.canonical_worktree !== undefined && resolve(command.cwd) !== resolve(source.canonical_worktree)) fail(`${lane.id} ${executionKind} descriptor cwd is not the qualified worktree`);
+  if (!Array.isArray(command.env) || command.env.some(key => typeof key !== "string" || /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY)/iu.test(key))) fail(`${lane.id} ${executionKind} descriptor environment is not filtered`);
   for (const artifact of record.artifacts) {
+    if (typeof artifact.path !== "string" || !existsSync(artifact.path)) fail(`${lane.id} ${executionKind} artifact is missing`);
+    const metadata = lstatSync(artifact.path);
+    if (!metadata.isFile() || metadata.isSymbolicLink()) fail(`${lane.id} ${executionKind} artifact is not a regular file`);
+    if (typeof artifact.sha256 !== "string" || artifact.sha256 !== hash(readFileSync(artifact.path))) fail(`${lane.id} ${executionKind} artifact digest does not match its bytes`);
     if (artifact.source_commit !== source.commit || artifact.source_tree !== source.tree || artifact.fresh !== true) fail(`${lane.id} ${executionKind} artifact provenance is stale or not fresh`);
   }
   return { lane: lane.id, execution_kind: executionKind, receipt_path: receiptPath, suite_id: suite.id, descriptor_path: descriptorPath };
