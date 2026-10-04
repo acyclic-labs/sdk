@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Exact-input stage-file v2 qualification](checkpoint-exact-input-stage-v2-native-2026-10-04.json) records 12/12 Windows native cases at clean source `b3dff5345`, with no ignored cases. Definitions and digests remain frozen explicit expectations; the independently asserted manifest includes schema-declared immutable tool-result references. Suite sources, log and native executables are copied into a source-specific archive with recorded digests. This focused input checkpoint does not close recursive coordinator, WASM, process ownership, terminal or installed-artifact gates.
+
 [Centralized fork validation](checkpoint-fork-validation-cut-native-2026-10-04.json) records 21/21 Windows native cases at `bc110358c`, with no ignored cases. Reports and seeds share the existing pure history-capture validation without changing wire formats, proof digests or strict/rebound scopes. Logs, source and executable digests are archived. Production activation, terminal-state fencing, fault recovery and the complete matrix remain required.
 
 [Integrated lazy projection regressions](checkpoint-integrated-lazy-native-2026-10-04.json) records 10/10 Windows native cases at `d595f3ba4`, with no ignored cases. Concurrent registry reads/publication, cold metadata inspection and cancellation reentrancy are covered. The log, suite and native executable digests are archived. This is focused integrated evidence; independent review, installed lazy counters, production swarming and fault recovery remain required.

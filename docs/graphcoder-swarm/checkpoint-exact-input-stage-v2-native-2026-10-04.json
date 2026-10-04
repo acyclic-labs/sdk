@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "kind": "focused-native-checkpoint",
+  "status": "passed",
+  "source": {
+    "commit": "b3dff53450e1ce8f658b07bb57896188b1323514",
+    "tree": "a14a9f8af63cd9f961bb0f038ac2a18364619ea0",
+    "worktree": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk",
+    "clean_before": true,
+    "clean_after": true
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "platform": "windows-x86_64-native",
+  "command": {
+    "executable": "cargo",
+    "args": [
+      "test",
+      "-p",
+      "acyclic-harness",
+      "--features",
+      "filesystem-local,test-support",
+      "--test",
+      "model_input_conformance_v3",
+      "--test",
+      "model_input_rejection_conformance_v3",
+      "--test",
+      "persistent_model_input_admission_v3",
+      "--",
+      "--nocapture"
+    ]
+  },
+  "suites": [
+    {
+      "name": "model_input_conformance_v3",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "model_input_rejection_conformance_v3",
+      "passed": 3,
+      "failed": 0,
+      "ignored": 0
+    },
+    {
+      "name": "persistent_model_input_admission_v3",
+      "passed": 6,
+      "failed": 0,
+      "ignored": 0
+    }
+  ],
+  "evidence": [
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\exact-input-b3dff5345.log",
+      "sha256": "4c34b2960be5528c0a6158831e2807bb5917e582434c1b6314934c3e2e94a5f0",
+      "source_path": "C:\\graphcoder-builds\\exact-input-b3dff5345.log"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\model_input_conformance_v3.rs",
+      "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\model_input_conformance_v3.rs"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\model_input_rejection_conformance_v3.rs",
+      "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\model_input_rejection_conformance_v3.rs"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\persistent_model_input_admission_v3.rs",
+      "sha256": "60d0d8fb6e263425c7967f13c4ad6d2e058fba175ca42e3b8321c5bbb5754034",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\persistent_model_input_admission_v3.rs"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\model_input_conformance_v3-01bd8d857976bf1f.exe",
+      "sha256": "bfc21f7c2c31d54ec08bfae7907bb20b8424263a06b5d269ccbce9e274884577",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\model_input_conformance_v3-01bd8d857976bf1f.exe"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\model_input_rejection_conformance_v3-52e7a356a9d9f22c.exe",
+      "sha256": "0759a6f5ba1a4b89e5ae2ff6794ce51c6a82e324f71839fe8d4a0e2bbb7cfdc1",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\model_input_rejection_conformance_v3-52e7a356a9d9f22c.exe"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\b3dff5345\\exact-input-stage-v2\\persistent_model_input_admission_v3-32296dede51fc4e9.exe",
+      "sha256": "bf1084c0d415395d2a9f73f0acdf423a8436c305c9a44cacd0669679599a548f",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\persistent_model_input_admission_v3-32296dede51fc4e9.exe"
+    }
+  ],
+  "boundaries": [
+    "Focused actual serialized provider input tests; not full recursive swarm or installed artifact qualification.",
+    "Stage-file v2 definitions and digests remain frozen explicit expectations. Prior v1 fixture failures and a run invalidated by concurrent manifest changes do not qualify this source."
+  ]
+}

@@ -4,6 +4,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At clean source `b3dff5345`, the 12 Windows native exact-input tests pass after pinning the explicit stage-file v2 definitions, schema digests and model binding digest. The manifest assertions independently include the declared immutable tool-result reference. Executables, suite sources and the complete log are archived in [stage-file v2 evidence](checkpoint-exact-input-stage-v2-native-2026-10-04.json). The initial v1 golden failures and the subsequent run invalidated by concurrent manifest edits do not qualify this source. Full recursive swarm, WASM and installed execution remain separate gates.
+
 At source `ba66f9a12`, the production recursive `local_model_swarm` run fails with Windows `STATUS_STACK_OVERFLOW` (`0xc00000fd`) after the schema-declared inherited-file grant repair. The test runs with normal stack settings; this is a required runtime failure, not a qualified swarm. Runtime diagnosis must preserve recursive depth and real effects rather than increase fixture stack size or narrow the scenario.
 
 At source `99ae53078`, 13 Windows native local coordinator regressions pass with no ignored cases, including concurrent empty-registry openers, cancellation/completion preservation across late failure and restart, and direct-parent project selection. The production entrypoint's three Node contract tests also pass after removing its implicit working-directory fallback. This remains focused coordinator evidence, not full recursive swarm qualification. The native suite executable SHA256 is `4f0b43c6b832318be7b25aea06223981baecc0a35faa66dfe88e24e8011c0d32`.
