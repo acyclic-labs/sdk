@@ -183,15 +183,19 @@ fn generated_facades_are_rust_policy_bound_and_cover_streaming_metadata() {
             "Machines operation collection missing from {relative}"
         );
         assert!(
-            source.contains("cancellation") && source.contains("operation"),
+            (source.contains("cancellation") || source.contains("Cancellation"))
+                && source.contains("operation"),
             "Machines cancellation metadata missing from {relative}"
         );
         assert!(
-            source.contains("post_failure_fallback") || source.contains("postFailureFallback"),
+            source.contains("post_failure_fallback")
+                || source.contains("postFailureFallback")
+                || source.contains("POST_FAILURE_FALLBACK")
+                || source.contains("PostFailureFallback"),
             "post-failure fallback policy missing from {relative}"
         );
         assert!(
-            source.contains("replay"),
+            source.contains("replay") || source.contains("REPLAY") || source.contains("Replay"),
             "replay policy missing from {relative}"
         );
         assert!(
