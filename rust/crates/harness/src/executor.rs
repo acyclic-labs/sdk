@@ -536,9 +536,7 @@ impl StockExecutor {
                 }
                 ExecutionEvent::ModelStarted { step, .. } => {
                     if !prepared_steps.contains(step) {
-                        return Err(Error::Storage(
-                            "model start is missing preparation".into(),
-                        ));
+                        return Err(Error::Storage("model start is missing preparation".into()));
                     }
                     if !started_steps.insert(*step) {
                         return Err(Error::Storage(
@@ -741,7 +739,7 @@ impl StockExecutor {
                 },
                 self.limits,
                 self.provider.model_option_policy(),
-)?
+            )?
             .with_rejection_evidence(context.rejection_evidence.clone())?;
             prepared.validate_complete_exchange()?;
             self.provider.admit(prepared.request())?;
@@ -963,9 +961,20 @@ impl StockExecutor {
             })
             .ok_or_else(|| Error::Storage("completed batch has no pinned request".into()))?;
         let mut request: ModelRequest = load_json(journal, request_file).await?;
-        request.messages.extend_from_slice(completed);
         let manifest: crate::model_input::ModelInputManifest =
             load_json(journal, manifest_file).await?;
+        let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
+            request.clone(),
+            self.limits,
+            self.provider.model_option_policy(),
+        )?
+        .with_rejection_evidence(manifest.rejection_evidence.clone())?;
+        if manifest != *prepared.manifest() {
+            return Err(Error::Conflict(
+                "completed batch model input bindings changed".into(),
+            ));
+        }
+        request.messages.extend_from_slice(completed);
         let mut rejections = manifest.rejection_evidence;
         for record in &records {
             let ExecutionEvent::ToolAdmissionRejected {
@@ -990,9 +999,10 @@ impl StockExecutor {
                 rejections.push(feedback);
             }
         }
-        let boundary = crate::model_input::CompletedModelBoundary::capture_with_rejections(
+        let boundary = crate::model_input::CompletedModelBoundary::capture_with_policy(
             request,
             self.limits,
+            self.provider.model_option_policy(),
             &rejections,
         )?;
         let key = format!("model:{step}:completed-batch");
@@ -1876,14 +1886,15 @@ impl Executor for StockExecutor {
                     };
                     message.content.validate_limits(self.limits)?;
                     prior_messages.push(message);
-                    if let Some(feedback) = self.resolve_tool_call(
-                        journal,
-                        input.operation_id,
-                        step,
-                        invocation,
-                        &mut prior_messages,
-                    )
-                    .await?
+                    if let Some(feedback) = self
+                        .resolve_tool_call(
+                            journal,
+                            input.operation_id,
+                            step,
+                            invocation,
+                            &mut prior_messages,
+                        )
+                        .await?
                     {
                         if !rejection_evidence.contains(&feedback) {
                             rejection_evidence.push(feedback);
@@ -3154,14 +3165,16 @@ mod tests {
         ));
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);
         let records = journal.replay(input.operation_id).await?;
-        assert!(records.iter().any(|record| matches!(
-            record.event,
-            ExecutionEvent::ModelStarted { step: 0, .. }
-        )));
-        assert!(!records.iter().any(|record| matches!(
-            record.event,
-            ExecutionEvent::Model { step: 0, .. }
-        )));
+        assert!(
+            records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { step: 0, .. }))
+        );
+        assert!(
+            !records
+                .iter()
+                .any(|record| matches!(record.event, ExecutionEvent::Model { step: 0, .. }))
+        );
         Ok(())
     }
 
@@ -4107,11 +4120,8 @@ mod tests {
             })
             .ok_or_else(|| Error::Storage("persisted model input is missing".into()))?;
         let persisted_bytes = journal.load(&request_ref).await?;
-        let persisted_manifest = load_json::<crate::model_input::ModelInputManifest>(
-            &journal,
-            &manifest_ref,
-        )
-        .await?;
+        let persisted_manifest =
+            load_json::<crate::model_input::ModelInputManifest>(&journal, &manifest_ref).await?;
         let seen = second_model
             .seen
             .lock()
@@ -4496,7 +4506,9 @@ mod tests {
             .map_err(|_| Error::Storage("journal lock poisoned".into()))?
             .remove(&missing_key);
         assert!(matches!(
-            missing_executor.execute(missing_input, &missing_journal).await,
+            missing_executor
+                .execute(missing_input, &missing_journal)
+                .await,
             Err(Error::NotFound(_))
         ));
         assert_eq!(missing_model.calls.load(Ordering::SeqCst), 1);
@@ -4542,7 +4554,9 @@ mod tests {
         entry.1 = b"null".to_vec();
         drop(stored);
         assert!(matches!(
-            corrupt_executor.execute(corrupt_input, &corrupt_journal).await,
+            corrupt_executor
+                .execute(corrupt_input, &corrupt_journal)
+                .await,
             Err(Error::Storage(_))
         ));
         assert_eq!(corrupt_model.calls.load(Ordering::SeqCst), 1);

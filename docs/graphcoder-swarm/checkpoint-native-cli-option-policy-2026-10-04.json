@@ -1,0 +1,33 @@
+{
+  "scope": "Native GraphCoder CLI including staged tool exchange and cold response replay",
+  "base_commit": "102029ae3d6e7c6f3ebc5ca4a5e5d77c0c0571e2",
+  "rust_tree": "93b0e16f41f876ae14cf4355ff5ff1b6d3ea52ca",
+  "command": "cargo test -p acyclic-graphcoder-cli --features acyclic-harness/native-process-tree --target-dir <isolated-root>/target/qualification-root-v2 -j2",
+  "result": {
+    "duration_seconds": 33.82,
+    "filtered": 0,
+    "exit_code": 0,
+    "ignored": 0,
+    "failed": 0,
+    "passed": 7
+  },
+  "artifact": {
+    "sha256": "ee074677ccb41b189a471b7afa62f5d4bc3a32bd43ce7487e9348449586db732",
+    "path": "target/qualification-root-v2/debug/deps/graphcoder_runtime-fe9969d8db0e8209.exe"
+  },
+  "source": {
+    "rust/crates/graphcoder-cli/src/main.rs": "b78d4600c390549edafbb4a012f58e9282a688a8ad83b442b627ca8906bd6186",
+    "rust/crates/harness/src/executor.rs": "cf723e9fd7b1e0082cfd6790a056ee4d95d130a735ffb154b4aa7b3c90e0b56c"
+  },
+  "boundaries": [
+    "Actual Windows native execution with mocked provider and real persistent filesystem",
+    "Completed batch pins provider option policy and checks original manifest before publication",
+    "Initial stage result explicitly asserted successful before cold reopen",
+    "Does not qualify recursive swarm faults, all fault windows, installed artifacts, or PTY"
+  ],
+  "prior_attempt": {
+    "reason": "Initial test assertion accessed enum field directly; corrected to matching successful variant before final run",
+    "phase": "compilation",
+    "exit_code": 1
+  }
+}

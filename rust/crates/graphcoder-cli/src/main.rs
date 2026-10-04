@@ -15,7 +15,7 @@ use acyclic_harness::{
     filesystem::{LocalSessionPhase, PersistentLocalSwarm},
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
-        ModelProvider, ModelRequest,
+        ModelProvider,
     },
     registry::ComponentIdentity,
 };
@@ -1380,7 +1380,7 @@ mod tests {
         );
         // Commit the durable operation, then drop the response as if the
         // connection failed after execution and before transport delivery.
-        let _dropped_response = runtime
+        let dropped_response = runtime
             .dispatch(WireRequest {
                 request_id: "stage-1".into(),
                 method: "start_session".into(),
@@ -1391,6 +1391,10 @@ mod tests {
                 }),
             })
             .await;
+        assert!(
+            matches!(dropped_response, WireResponse::Ok { ok: true, .. }),
+            "{dropped_response:?}"
+        );
         drop(runtime);
         let reopened = Arc::new(
             Runtime::open(&runtime_args(root.path().to_owned(), "stage"))
