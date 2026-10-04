@@ -544,7 +544,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                     builder = builder.history(acyclic_fs::JoinHistory::Rebase);
                 }
                 let plan = builder.plan().await.map_err(display)?;
-                if plan.target_head().id() != expected_generation {
+                if plan.target_head() != expected_generation {
                     return Err(Self::error(
                         "Git join target changed while preparing the provider plan",
                     ));
