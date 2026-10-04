@@ -41,7 +41,7 @@
     },
     "pty_runner": {
       "path": "scripts/graphcoder-production-pty-winpty.py",
-      "sha256": "20b875528113b655946b8c2ff48dcde9cb571193422331544596a24359375633"
+      "sha256": "709b5bce362f52044478e8ad0ed4aa72936383622741a588b10aaa84da9cdd2b"
     }
   },
   "results": {
@@ -58,6 +58,14 @@
       "transcript": "target/qualification-installed-20261004-r2/pty-winpty-transcript-r2-smoke2.txt",
       "transcript_sha256": "f4886973f9a6de8cbd43f8d02dbb80568e727b101e3ccf3aa2ecfd83158abdf7",
       "observed": "Installed package crossed a real winpty boundary, produced typed start/activity/messages/approvals/changes/file records, and exited through the typed quit record with cleanup."
+    },
+    "causal_cleanup": {
+      "status": "pass",
+      "transcript": "target/qualification-installed-20261004-r2/pty-winpty-transcript-r2-final2.txt",
+      "transcript_sha256": "84572677424352ecd76976f4a6168161b818cad0a960ec4bc3ba973a4cc75822",
+      "lifecycle_receipt": "target/qualification-installed-20261004-r2/pty-winpty-lifecycle-r2-final2.json",
+      "lifecycle_sha256": "e0cae0672b3ffd0beed62a8ae743498a2add8e038d628c5c25b28da9868bb74a",
+      "observed": "The child exited naturally after the typed quit receipt; winpty's socket was closed, the reader thread joined, no forced kill was used, and alive_after_cleanup was false."
     },
     "strict_pty_full_flow": {
       "status": "unmet",

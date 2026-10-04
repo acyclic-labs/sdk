@@ -8,9 +8,11 @@ adapter. The bridge remains explicitly configured through the environment.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
+import socket
 import sys
 import threading
 import time
@@ -165,6 +167,55 @@ def explicit_environment() -> dict[str, str]:
     return {**platform, **{key: os.environ[key] for key in EXPLICIT_ENVIRONMENT if os.environ.get(key)}}
 
 
+def verify_package_identity() -> None:
+    """Verify that the PTY process consumed the requested installed exports."""
+    if os.environ.get("GRAPHCODER_REQUIRE_PACKAGE_IDENTITY") != "1":
+        return
+    identity_name = os.environ.get("GRAPHCODER_IDENTITY_PATH")
+    if not identity_name:
+        fail("package identity is required but GRAPHCODER_IDENTITY_PATH is missing")
+    identity_path = Path(identity_name)
+    if not identity_path.is_file() or identity_path.is_symlink():
+        fail(f"package identity was not durably recorded: {identity_path}")
+    try:
+        identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"package identity is unreadable: {error}")
+    package_root = Path(os.environ.get("GRAPHCODER_PACKAGE_ROOT", "")).resolve()
+    if identity.get("root") != str(package_root):
+        fail("package identity root does not match GRAPHCODER_PACKAGE_ROOT")
+    artifact = identity.get("artifact")
+    archive_name = os.environ.get("GRAPHCODER_PACKAGE_ARTIFACT")
+    if not isinstance(artifact, dict) or not archive_name:
+        fail("package identity omitted the installed archive")
+    archive = Path(archive_name)
+    if not archive.is_file() or archive.is_symlink():
+        fail(f"installed package archive is not a regular file: {archive}")
+    observed = hashlib.sha256(archive.read_bytes()).hexdigest()
+    if artifact.get("sha256") != observed:
+        fail("package identity archive digest does not match the consumed archive")
+    exports = identity.get("exports")
+    required_exports = {
+        "@acyclic-labs/graphcoder/bridge",
+        "@acyclic-labs/graphcoder/node",
+        "@acyclic-labs/graphcoder/terminal",
+    }
+    if not isinstance(exports, dict) or not required_exports.issubset(exports):
+        fail("installed package identity omitted a required public export")
+    for name in required_exports:
+        export_path = Path(exports[name])
+        if not export_path.is_file() or export_path.is_symlink():
+            fail(f"installed package export is not a regular file: {name}")
+
+
+def write_lifecycle(path_name: str | None, lifecycle: dict[str, object]) -> None:
+    if not path_name:
+        return
+    path = Path(path_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{json.dumps(lifecycle, indent=2, sort_keys=True)}\n", encoding="utf-8")
+
+
 def wait_for_prompt(process: PtyProcess, output: list[str], previous: int) -> None:
     deadline = time.monotonic() + PROMPT_TIMEOUT_SECONDS
     while prompt_count("".join(output)) <= previous:
@@ -191,6 +242,15 @@ def wait_for_record(process: PtyProcess, output: list[str], previous: int) -> No
         time.sleep(0.05)
 
 
+def wait_for_exit_record(output: list[str]) -> None:
+    """Allow the reader to drain the final typed quit receipt after EOF."""
+    deadline = time.monotonic() + 2.0
+    while '"exited":true' not in clean("".join(output)):
+        if time.monotonic() >= deadline:
+            fail("PTY transcript omitted the typed exit record after process exit")
+        time.sleep(0.05)
+
+
 def run(commands: list[str], smoke: bool = False) -> int:
     if os.name != "nt":
         fail("Windows PTY qualification requires a Windows host")
@@ -200,6 +260,23 @@ def run(commands: list[str], smoke: bool = False) -> int:
     node = os.environ.get("GRAPHCODER_NODE", sys.executable.replace("python.exe", "node.exe"))
     entrypoint = sdk_root / "scripts" / "graphcoder-production-entrypoint.mjs"
     process = PtyProcess.spawn([node, str(entrypoint)], cwd=str(sdk_root), env=explicit_environment())
+    # winpty's reader socket is blocking by default. A bounded timeout lets
+    # the owned reader observe the stop event after close instead of leaving a
+    # daemon thread behind on an otherwise successful run.
+    process.fileobj.settimeout(0.2)
+    lifecycle: dict[str, object] = {
+        "pid": getattr(process, "pid", None),
+        "smoke": smoke,
+        "command_count": len(commands),
+        "quit_sent": False,
+        "natural_exit_observed": False,
+        "termination_requested": False,
+        "forced_kill": False,
+        "alive_after_cleanup": None,
+        "pty_closed": False,
+        "close_error": None,
+        "reader_alive_after_join": None,
+    }
     output: list[str] = []
     stop = threading.Event()
 
@@ -207,8 +284,10 @@ def run(commands: list[str], smoke: bool = False) -> int:
         while not stop.is_set():
             try:
                 output.append(process.read(4096))
-            except EOFError:
-                return
+            except (EOFError, socket.timeout):
+                if stop.is_set():
+                    return
+                continue
 
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
@@ -219,11 +298,14 @@ def run(commands: list[str], smoke: bool = False) -> int:
             process.write(expand(raw_command, "".join(output)) + "\r")
             wait_for_record(process, output, previous)
         process.write("quit\r")
+        lifecycle["quit_sent"] = True
         deadline = time.monotonic() + PROMPT_TIMEOUT_SECONDS
         while process.isalive() and time.monotonic() < deadline:
             time.sleep(0.05)
         if process.isalive():
             fail("PTY process did not exit after quit")
+        lifecycle["natural_exit_observed"] = True
+        wait_for_exit_record(output)
         transcript = "".join(output)
         records = terminal_records(transcript)
         if smoke:
@@ -246,11 +328,13 @@ def run(commands: list[str], smoke: bool = False) -> int:
             if missing:
                 fail(f"missing transcript markers: {', '.join(missing)}")
             assert_typed_records(transcript)
+        verify_package_identity()
         sys.stdout.write(transcript)
         return 0
     finally:
         stop.set()
         if process.isalive():
+            lifecycle["termination_requested"] = True
             try:
                 process.terminate()
             except (OSError, PermissionError):
@@ -259,12 +343,32 @@ def run(commands: list[str], smoke: bool = False) -> int:
                 # original qualification failure for the caller.
                 try:
                     process.kill()
+                    lifecycle["forced_kill"] = True
                 except (OSError, PermissionError):
                     pass
+        deadline = time.monotonic() + 2.0
+        while process.isalive() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        lifecycle["alive_after_cleanup"] = process.isalive()
+        try:
+            # Closing winpty's socket is required to release the reader thread
+            # after the child has exited; isalive() alone does not unblock recv.
+            process.close()
+            lifecycle["pty_closed"] = True
+        except Exception as error:  # pragma: no cover - platform failure
+            lifecycle["close_error"] = str(error)
         reader.join(timeout=2)
+        lifecycle["reader_alive_after_join"] = reader.is_alive()
         transcript_path = os.environ.get("GRAPHCODER_PTY_TRANSCRIPT_PATH")
         if transcript_path:
             Path(transcript_path).write_text("".join(output), encoding="utf-8")
+        write_lifecycle(os.environ.get("GRAPHCODER_PTY_LIFECYCLE_PATH"), lifecycle)
+        if lifecycle["alive_after_cleanup"]:
+            fail("PTY child remained alive after bounded cleanup")
+        if lifecycle["close_error"] is not None:
+            fail(f"PTY socket close failed: {lifecycle['close_error']}")
+        if lifecycle["reader_alive_after_join"]:
+            fail("PTY reader thread remained alive after socket close")
 
 
 if __name__ == "__main__":
