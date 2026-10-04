@@ -158,7 +158,9 @@ impl ModelProvider for CancellationProvider {
         self.dispatches.fetch_add(1, Ordering::SeqCst);
         if latest_declared_child_task(prepared.request()) == Some("cancel-child") {
             self.child_dispatches.fetch_add(1, Ordering::SeqCst);
-            self.child_started.notify_waiters();
+            // There is one test observer; retain a permit if dispatch wins
+            // the race with its first subscription.
+            self.child_started.notify_one();
             let guard = ChildStreamGuard {
                 dropped: self.child_stream_dropped.clone(),
                 stopped: self.child_stopped.clone(),
@@ -726,7 +728,15 @@ async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
         }
     })
     .await;
-    assert!(started.is_ok(), "child provider was never dispatched");
+    if started.is_err() {
+        // A failed fixture must not detach its owning swarm task. Preserve
+        // dispatch counters in the failure instead of leaking the run.
+        running.abort();
+        let _ = running.await;
+        panic!("child dispatch notification timed out: total={}, child={}",
+            provider.dispatches.load(Ordering::SeqCst),
+            provider.child_dispatches.load(Ordering::SeqCst));
+    }
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
     assert!(!provider.child_stream_dropped.load(Ordering::SeqCst));
 
