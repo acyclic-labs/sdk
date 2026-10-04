@@ -377,7 +377,7 @@ jobs:
   gate:
     name: SDK Qualification
     if: always()
-    needs: [plan, qualification, windows]
+    needs: [plan, qualification, windows, rust_source, rust_embedded, rust_stream_native]
     runs-on: blacksmith-2vcpu-ubuntu-2404
     timeout-minutes: 2
     steps:
@@ -387,6 +387,10 @@ jobs:
           MATRIX: ${{ needs.plan.outputs.matrix }}
           RESULT: ${{ needs.qualification.result }}
           WINDOWS_RESULT: ${{ needs.windows.result }}
+          RUST_SOURCE_RESULT: ${{ needs.rust_source.result }}
+          RUST_EMBEDDED_RESULT: ${{ needs.rust_embedded.result }}
+          RUST_STREAM_RESULT: ${{ needs.rust_stream_native.result }}
+          REQUIRE_RUST_RESULTS: ${{ github.event_name == 'release' || github.event_name == 'workflow_dispatch' }}
         run: |
           test "$PLAN_RESULT" = success
           test "$WINDOWS_RESULT" = success || test "$WINDOWS_RESULT" = skipped
@@ -395,3 +399,27 @@ jobs:
           else
             test "$RESULT" = success
           fi
+          if test "$REQUIRE_RUST_RESULTS" = true; then
+            test "$RUST_SOURCE_RESULT" = success
+            test "$RUST_EMBEDDED_RESULT" = success
+            test "$RUST_STREAM_RESULT" = success
+          fi
+
+  rust_source:
+    name: Rust source generation and documentation
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/rust-source-qualification.yml
+    with:
+      ref: ${{ github.sha }}
+
+  rust_embedded:
+    name: Installed Rust embedded packages
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/embedded-abi-release.yml
+
+  rust_stream_native:
+    name: Installed native Stream packages
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/stream-native-packages.yml
+    with:
+      source_revision: ${{ github.sha }}
