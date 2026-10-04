@@ -2591,6 +2591,95 @@ fn run_tools(
             )?);
             continue;
         }
+        if spec.id == "sdk-language-producers"
+            && operation == Operation::Generate
+            && !output.join("source-authority.json").is_file()
+        {
+            // Producer recipes consume the Rust source-authority manifest, but
+            // executable examples must remain after package generation so
+            // their snippets can install and exercise the generated trees.
+            // Render the examples manifest once as a metadata bootstrap; the
+            // normal examples stage below still performs the executable
+            // snippets, fixtures, and qualification receipts transaction.
+            let bootstrap_request = request_directory.join("sdk-examples.json");
+            let bootstrap_spec = tool_specs(root)
+                .into_iter()
+                .find(|candidate| candidate.id == "sdk-examples")
+                .ok_or_else(|| {
+                    CliError::new("sdk-examples tool is required for source authority")
+                })?;
+            let bootstrap_request_document = RequestEnvelope {
+                schema: REQUEST_SCHEMA,
+                operation: operation_name(operation).into(),
+                tool: "sdk-examples".into(),
+                source_root: root.to_string_lossy().into_owned(),
+                output: output.to_string_lossy().into_owned(),
+                source: source.clone(),
+                contract_scope: "explicit",
+                contract_inputs: contract_inputs(root, "sdk-examples"),
+                generated_package_roots: None,
+            };
+            write_json(&bootstrap_request, &bootstrap_request_document)?;
+            let bootstrap_command = tool_command(
+                root,
+                &bootstrap_spec,
+                operation,
+                &bootstrap_request,
+                output,
+                source,
+            )
+            .ok_or_else(|| CliError::new("sdk-examples bootstrap command is unavailable"))?;
+            let bootstrap_text = bootstrap_command
+                .iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let bootstrap_result = match Command::new(&bootstrap_command[0])
+                .args(&bootstrap_command[1..])
+                .current_dir(root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+            {
+                Ok(process) => tool_result(
+                    "sdk-examples-source-bootstrap",
+                    true,
+                    relative_request.clone(),
+                    bootstrap_text,
+                    process,
+                    output,
+                )?,
+                Err(error) => ToolResult {
+                    id: "sdk-examples-source-bootstrap".into(),
+                    status: "failed".into(),
+                    required: true,
+                    command: bootstrap_text,
+                    request: relative_request.clone(),
+                    stdout_sha256: None,
+                    stderr_sha256: None,
+                    exit_code: None,
+                    message: Some(format!(
+                        "could not start sdk-examples source bootstrap: {error}"
+                    )),
+                },
+            };
+            let bootstrap_passed = bootstrap_result.status == "passed";
+            results.push(bootstrap_result);
+            if bootstrap_passed {
+                if let Err(error) = write_source_authority_manifest(output, &source.revision) {
+                    results.push(ToolResult {
+                        id: "sdk-examples-source-authority-bootstrap".into(),
+                        status: "failed".into(),
+                        required: true,
+                        command: Vec::new(),
+                        request: relative_request.clone(),
+                        stdout_sha256: None,
+                        stderr_sha256: None,
+                        exit_code: Some(1),
+                        message: Some(error.to_string()),
+                    });
+                }
+            }
+        }
         if spec.id == "sdk-language-producers" {
             results.push(run_language_producers(
                 root,
