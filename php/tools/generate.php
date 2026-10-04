@@ -28,6 +28,63 @@ function sha256File(string $path): string
     return $digest;
 }
 
+function pascalIdentifier(string $value): string
+{
+    return implode('', array_map('ucfirst', preg_split('/[^a-zA-Z0-9]+/', $value, -1, PREG_SPLIT_NO_EMPTY)));
+}
+
+function phpValueType(string $wireKind): string
+{
+    return match ($wireKind) {
+        'string', 'bytes' => 'string',
+        'signed_integer', 'unsigned_integer', 'enum' => 'int',
+        default => 'mixed',
+    };
+}
+
+function phpValidationLines(array $item): array
+{
+    $id = (string) $item['id'];
+    $wireKind = (string) $item['wire_kind'];
+    $lines = [];
+    if (in_array($wireKind, ['string', 'bytes'], true)) {
+        $lines[] = "if (!is_string(\$value)) { throw new \\InvalidArgumentException('{$id}: expected string'); }";
+        foreach ($item['rules'] as $rule) {
+            if (($rule['kind'] ?? null) === 'non_empty') {
+                $lines[] = "if (\$value === '') { throw new \\InvalidArgumentException('{$id}: value must be non-empty'); }";
+            }
+            if (($rule['kind'] ?? null) === 'utf8') {
+                $lines[] = "if (preg_match('//u', \$value) !== 1) { throw new \\InvalidArgumentException('{$id}: value must be valid UTF-8'); }";
+            }
+            if (($rule['kind'] ?? null) === 'fixed_length') {
+                $lines[] = "if (strlen(\$value) !== {$rule['length']}) { throw new \\InvalidArgumentException('{$id}: invalid byte length'); }";
+            }
+        }
+    } elseif (in_array($wireKind, ['signed_integer', 'unsigned_integer', 'enum'], true)) {
+        $lines[] = "if (!is_int(\$value)) { throw new \\InvalidArgumentException('{$id}: expected int'); }";
+    }
+    foreach ($item['rules'] as $rule) {
+        switch ($rule['kind'] ?? null) {
+            case 'strictly_positive':
+                $lines[] = "if (\$value <= 0) { throw new \\InvalidArgumentException('{$id}: must be positive'); }";
+                break;
+            case 'non_negative':
+                $lines[] = "if (\$value < 0) { throw new \\InvalidArgumentException('{$id}: must be non-negative'); }";
+                break;
+            case 'max_items':
+                $lines[] = "if (\$value > {$rule['max']}) { throw new \\InvalidArgumentException('{$id}: exceeds maximum'); }";
+                break;
+            case 'bounded_integer':
+                $lines[] = "if (\$value < {$rule['min']} || \$value > {$rule['max']}) { throw new \\InvalidArgumentException('{$id}: outside bounds'); }";
+                break;
+            case 'exact_oneof':
+                $lines[] = "if (!is_array(\$value) || count(\$value) !== 1) { throw new \\InvalidArgumentException('{$id}: exactly one arm is required'); }";
+                break;
+        }
+    }
+    return $lines;
+}
+
 if (($lock['generator_version'] ?? null) !== '1.82.0') {
     throw new RuntimeException('generator.lock.json has an unexpected grpc_php_plugin version');
 }
@@ -154,6 +211,65 @@ if ($manifestPath !== null) {
         'language' => 'php',
         'profile' => $profile,
     ];
+    $semanticTypes = $typePolicy['semantic_types'] ?? null;
+    if (!is_array($semanticTypes) || $semanticTypes === []) {
+        throw new RuntimeException('Rust type policy semantic_types must be non-empty');
+    }
+    $typePolicyClasses = [
+        '<?php',
+        'declare(strict_types=1);',
+        '',
+        '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
+        'namespace Acyclic\\TypePolicy;',
+        '',
+    ];
+    foreach ($semanticTypes as $item) {
+        $className = pascalIdentifier((string) $item['id']);
+        $valueType = phpValueType((string) $item['wire_kind']);
+        $typePolicyClasses[] = "final readonly class {$className}";
+        $typePolicyClasses[] = '{';
+        $typePolicyClasses[] = "    private function __construct(public {$valueType} \$value)";
+        $typePolicyClasses[] = '    {';
+        foreach (phpValidationLines($item) as $line) {
+            $typePolicyClasses[] = '        ' . $line;
+        }
+        $typePolicyClasses[] = '    }';
+        $typePolicyClasses[] = '';
+        $typePolicyClasses[] = "    public static function from({$valueType} \$value): self";
+        $typePolicyClasses[] = '    {';
+        $typePolicyClasses[] = '        return new self($value);';
+        $typePolicyClasses[] = '    }';
+        $typePolicyClasses[] = '}';
+        $typePolicyClasses[] = '';
+    }
+    $typePolicyClasses[] = '';
+    $typePolicyDirectory = $root . '/src/Acyclic/TypePolicy';
+    if (!is_dir($typePolicyDirectory) && !mkdir($typePolicyDirectory, 0777, true) && !is_dir($typePolicyDirectory)) {
+        throw new RuntimeException('unable to create Rust type policy directory');
+    }
+    // The protobuf output directory is cleaned immediately before protoc runs;
+    // emit the Rust-owned class after that cleanup below.
+    file_put_contents($root . '/type-policy.phpstan.neon', "parameters:\n    level: max\n    paths:\n        - src/Acyclic/TypePolicy/Types.php\n");
+    file_put_contents($root . '/type-policy.psalm.xml', "<?xml version=\"1.0\"?>\n<psalm errorLevel=\"1\"><projectFiles><directory name=\"src/Acyclic/TypePolicy\" /></projectFiles></psalm>\n");
+    $negativeCases = [];
+    foreach ($semanticTypes as $item) {
+        $ruleKinds = array_map(static fn (array $rule): string => (string) $rule['kind'], $item['rules']);
+        $value = in_array('non_empty', $ruleKinds, true) ? "''"
+            : (in_array('fixed_length', $ruleKinds, true) ? "'x'"
+                : (in_array('strictly_positive', $ruleKinds, true) ? '0'
+                    : (in_array('non_negative', $ruleKinds, true) ? '-1'
+                    : (in_array('exact_oneof', $ruleKinds, true) ? '[]' : null))));
+        if ($value !== null) {
+            $negativeCases[] = [pascalIdentifier((string) $item['id']), $value];
+        }
+    }
+    $negative = ["<?php", "declare(strict_types=1);", "require dirname(__DIR__) . '/src/Acyclic/TypePolicy/Types.php';", ''];
+    foreach ($negativeCases as [$className, $value]) {
+        $negative[] = "try { \\Acyclic\\TypePolicy\\{$className}::from({$value}); throw new RuntimeException('negative type policy case unexpectedly accepted: {$className}'); } catch (InvalidArgumentException) { }";
+    }
+    $negative[] = "echo 'Rust type policy negative checks passed', PHP_EOL;";
+    file_put_contents($root . '/tests/type_policy_negative.php', implode(PHP_EOL, $negative) . PHP_EOL);
+    $typePolicyMetadata['artifacts'] = ['src/Acyclic/TypePolicy/Types.php', 'type-policy.phpstan.neon', 'type-policy.psalm.xml', 'tests/type_policy_negative.php'];
 }
 
 function executable(string $name): string
@@ -223,6 +339,15 @@ $arguments = [
 
 chdir($root);
 runCommand($arguments);
+
+if ($typePolicyMetadata !== null) {
+    if (!is_dir($typePolicyDirectory) && !mkdir($typePolicyDirectory, 0777, true) && !is_dir($typePolicyDirectory)) {
+        throw new RuntimeException('unable to create Rust type policy directory after generation');
+    }
+    if (file_put_contents($typePolicyDirectory . '/Types.php', implode(PHP_EOL, $typePolicyClasses)) === false) {
+        throw new RuntimeException('unable to write generated Rust type policy classes');
+    }
+}
 
 $rustFamilyGoldens = null;
 if ($manifestPath !== null) {

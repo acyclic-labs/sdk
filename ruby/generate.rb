@@ -31,6 +31,48 @@ def run!(argv)
   abort "generation failed" unless system(*argv)
 end
 
+def pascal_identifier(value)
+  value.split(/[^a-zA-Z0-9]+/).reject(&:empty?).map(&:capitalize).join
+end
+
+def ruby_value_type(wire_kind)
+  case wire_kind
+  when "string", "bytes" then "String"
+  when "signed_integer", "unsigned_integer", "enum" then "Integer"
+  else "untyped"
+  end
+end
+
+def ruby_validation_lines(item)
+  id = item.fetch("id")
+  wire_kind = item.fetch("wire_kind")
+  lines = []
+  if ["string", "bytes"].include?(wire_kind)
+    lines << "raise ArgumentError, \"#{id}: expected String\" unless value.is_a?(String)"
+    lines << "raise ArgumentError, \"#{id}: value must be non-empty\" if value.empty?" if item.fetch("rules").any? { |rule| rule["kind"] == "non_empty" }
+    lines << "raise ArgumentError, \"#{id}: value must be valid UTF-8\" unless value.valid_encoding?" if wire_kind == "string" && item.fetch("rules").any? { |rule| rule["kind"] == "utf8" }
+  elsif ["signed_integer", "unsigned_integer", "enum"].include?(wire_kind)
+    lines << "raise ArgumentError, \"#{id}: expected Integer\" unless value.is_a?(Integer)"
+  end
+  item.fetch("rules").each do |rule|
+    case rule.fetch("kind")
+    when "fixed_length"
+      lines << "raise ArgumentError, \"#{id}: expected #{rule.fetch("length")} bytes\" unless value.bytesize == #{rule.fetch("length")}"
+    when "strictly_positive"
+      lines << "raise ArgumentError, \"#{id}: must be positive\" unless value > 0"
+    when "non_negative"
+      lines << "raise ArgumentError, \"#{id}: must be non-negative\" unless value >= 0"
+    when "max_items"
+      lines << "raise ArgumentError, \"#{id}: exceeds maximum\" unless value <= #{rule.fetch("max")}"
+    when "bounded_integer"
+      lines << "raise ArgumentError, \"#{id}: outside bounds\" unless value.between?(#{rule.fetch("min")}, #{rule.fetch("max")})"
+    when "exact_oneof"
+      lines << "raise ArgumentError, \"#{id}: exactly one arm is required\" unless value.respond_to?(:keys) && value.keys.length == 1"
+    end
+  end
+  lines
+end
+
 lock = JSON.parse(File.read(File.join(__dir__, "generator.lock.json")))
 abort "unexpected generator lock" unless lock.fetch("generator_version") == "1.82.0"
 
@@ -88,7 +130,7 @@ if manifest_path
   abort "unexpected Rust type policy schema" unless type_policy["schema"] == "acyclic.sdk.type-policy.v1"
   profile = type_policy["languages"].find { |entry| entry.is_a?(Hash) && entry["language"] == "ruby" }
   abort "Rust type policy has no Ruby profile" unless profile.is_a?(Hash) && profile["nominal_types"] && profile["refinements"] && profile["unions"]
-  type_policy_destination = File.join(ROOT, "type-policy.json")
+  type_policy_destination = File.join(__dir__, "type-policy.json")
   File.binwrite(type_policy_destination, type_policy_bytes)
   type_policy_metadata = {
     "path" => "type-policy.json",
@@ -97,6 +139,65 @@ if manifest_path
     "language" => "ruby",
     "profile" => profile
   }
+
+  semantic_types = type_policy.fetch("semantic_types")
+  abort "Rust type policy semantic_types must be non-empty" unless semantic_types.is_a?(Array) && !semantic_types.empty?
+  generated_type_policy = [
+    "# frozen_string_literal: true",
+    "# Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.",
+    "module Acyclic",
+    "  module TypePolicy",
+    *semantic_types.map do |item|
+      class_name = pascal_identifier(item.fetch("id"))
+      [
+        "    class #{class_name}",
+        "      attr_reader :value",
+        "      def self.from(value)",
+        "        new(value)",
+        "      end",
+        "      private_class_method :new",
+        "      def initialize(value)",
+        *ruby_validation_lines(item).map { |line| "        #{line}" },
+        "        @value = value",
+        "        freeze",
+        "      end",
+        "    end",
+      ].join("\n")
+    end,
+    "  end",
+    "end",
+    "",
+  ].join("\n")
+  FileUtils.mkdir_p(File.join(__dir__, "lib", "acyclic_sdk"))
+  File.write(File.join(__dir__, "lib", "acyclic_sdk", "type_policy.rb"), generated_type_policy)
+  rbs = ["module Acyclic", "  module TypePolicy"]
+  rbi = ["# typed: strict", "module Acyclic", "  module TypePolicy"]
+  semantic_types.each do |item|
+    class_name = pascal_identifier(item.fetch("id"))
+    value_type = ruby_value_type(item.fetch("wire_kind"))
+    rbs += ["    class #{class_name}", "      attr_reader value: #{value_type}", "      def self.from: (#{value_type} value) -> #{class_name}", "    end"]
+    rbi += ["    class #{class_name}", "      extend T::Sig", "      sig { returns(#{value_type}) }", "      def value; end", "      sig { params(value: #{value_type}).returns(#{class_name}) }", "      def self.from(value); end", "    end"]
+  end
+  rbs += ["  end", "end", ""]
+  rbi += ["  end", "end", ""]
+  # OUT is rebuilt by protoc below; keep these values in memory and emit the
+  # declarations again after protobuf generation has created the directory.
+  negative_cases = semantic_types.filter_map do |item|
+    rule_kinds = item.fetch("rules").map { |rule| rule.fetch("kind") }
+    value = if rule_kinds.include?("non_empty") then "\"\""
+            elsif rule_kinds.include?("fixed_length") then "\"x\""
+            elsif rule_kinds.include?("strictly_positive") then "0"
+            elsif rule_kinds.include?("non_negative") then "-1"
+            elsif rule_kinds.include?("exact_oneof") then "{}"
+            end
+    value && [pascal_identifier(item.fetch("id")), value]
+  end
+  negative_test = ["# Generated negative contract checks from the Rust type policy.", "require \"minitest/autorun\"", "require_relative \"../lib/acyclic_sdk/type_policy\"", "class RustTypePolicyNegativeTest < Minitest::Test"]
+  negative_cases.each { |class_name, value| negative_test += ["  def test_rejects_invalid_#{class_name.downcase}", "    assert_raises(ArgumentError) { Acyclic::TypePolicy::#{class_name}.from(#{value}) }", "  end"] }
+  negative_test += ["end", ""]
+  FileUtils.mkdir_p(File.join(__dir__, "test"))
+  File.write(File.join(__dir__, "test", "type_policy_negative_test.rb"), negative_test.join("\n"))
+  type_policy_metadata["artifacts"] = ["lib/acyclic_sdk/type_policy.rb", "generated/type_policy.rbs", "generated/type_policy.rbi", "test/type_policy_negative_test.rb"]
 end
 expected_descriptor_hashes.each do |relative, expected|
   descriptor = schema_roots.map { |root| File.join(root, relative) }.find { |path| File.file?(path) }
@@ -115,6 +216,11 @@ run!([
   "--grpc_out=#{OUT}",
   *schema_names
 ])
+
+if type_policy
+  File.write(File.join(OUT, "type_policy.rbs"), rbs.join("\n"))
+  File.write(File.join(OUT, "type_policy.rbi"), rbi.join("\n"))
+end
 
 rust_family_goldens = nil
 if manifest_path

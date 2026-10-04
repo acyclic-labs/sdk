@@ -14,6 +14,56 @@ String executable(String key, String fallback) {
   return value == null || value.isEmpty ? fallback : value;
 }
 
+String pascalIdentifier(String value) => value
+    .split(RegExp(r'[^a-zA-Z0-9]+'))
+    .where((part) => part.isNotEmpty)
+    .map((part) => '${part[0].toUpperCase()}${part.substring(1)}')
+    .join();
+
+String dartValueType(String wireKind) {
+  switch (wireKind) {
+    case 'string':
+      return 'String';
+    case 'bytes':
+      return 'List<int>';
+    case 'signed_integer':
+    case 'unsigned_integer':
+    case 'enum':
+      return 'int';
+    default:
+      return 'Object?';
+  }
+}
+
+List<String> dartValidationLines(Map item) {
+  final id = item['id'] as String;
+  final wireKind = item['wire_kind'] as String;
+  final rules = (item['rules'] as List).whereType<Map>().toList();
+  final lines = <String>[];
+  if (wireKind == 'string') {
+    lines.add("if (value.isEmpty) { throw ArgumentError('$id: value must be non-empty'); }");
+  } else if (wireKind == 'bytes') {
+    lines.add("if (value.isEmpty) { throw ArgumentError('$id: value must be non-empty'); }");
+  }
+  for (final rule in rules) {
+    switch (rule['kind']) {
+      case 'fixed_length':
+        lines.add("if (value.length != ${rule['length']}) { throw ArgumentError('$id: invalid byte length'); }");
+      case 'strictly_positive':
+        lines.add("if (value <= 0) { throw ArgumentError('$id: must be positive'); }");
+      case 'non_negative':
+        lines.add("if (value < 0) { throw ArgumentError('$id: must be non-negative'); }");
+      case 'max_items':
+        lines.add("if (value > ${rule['max']}) { throw ArgumentError('$id: exceeds maximum'); }");
+      case 'bounded_integer':
+        lines.add("if (value < ${rule['min']} || value > ${rule['max']}) { throw ArgumentError('$id: outside bounds'); }");
+      case 'exact_oneof':
+        lines.add("if (value is! Map || value.length != 1) { throw ArgumentError('$id: exactly one arm is required'); }");
+    }
+  }
+  return lines;
+}
+
 String? dartPlugin() {
   final explicit = Platform.environment['PROTOC_GEN_DART'];
   if (explicit != null && explicit.isNotEmpty) {
@@ -322,12 +372,74 @@ Future<void> main(List<String> arguments) async {
     }
     final destination = File('${package.path}${Platform.pathSeparator}type-policy.json');
     destination.writeAsBytesSync(typePolicyBytes);
+    final semanticTypes = decoded['semantic_types'];
+    if (semanticTypes is! List || semanticTypes.isEmpty) {
+      stderr.writeln('Rust type policy semantic_types must be non-empty');
+      exitCode = 2;
+      return;
+    }
+    final policySource = <String>[
+      '// Generated exclusively from rust/crates/sdk-contract-wire/src/type_policy.rs.',
+      '',
+    ];
+    final negativeTests = <String>[
+      "import 'package:test/test.dart';",
+      "import '../lib/src/type_policy.dart';",
+      '',
+      'void main() {',
+    ];
+    for (final raw in semanticTypes.whereType<Map>()) {
+      final className = pascalIdentifier(raw['id'] as String);
+      final valueType = dartValueType(raw['wire_kind'] as String);
+      policySource.addAll([
+        'sealed class $className {',
+        '  const $className._();',
+        '  $valueType get value;',
+        '  factory $className.from($valueType value) => ${className}Value.from(value);',
+        '}',
+        '',
+        'final class ${className}Value extends $className {',
+        '  @override final $valueType value;',
+        '  const ${className}Value._(this.value) : super._();',
+        '  factory ${className}Value.from($valueType value) {',
+        ...dartValidationLines(raw).map((line) => '    $line'),
+        '    return ${className}Value._(value);',
+        '  }',
+        '}',
+        '',
+      ]);
+      final rules = (raw['rules'] as List).whereType<Map>().map((rule) => rule['kind']).toSet();
+      String? invalid;
+      if (rules.contains('non_empty')) {
+        invalid = raw['wire_kind'] == 'bytes' ? '<int>[]' : "''";
+      } else if (rules.contains('fixed_length')) {
+        invalid = raw['wire_kind'] == 'bytes' ? '<int>[0]' : "'x'";
+      } else if (rules.contains('strictly_positive')) {
+        invalid = '0';
+      } else if (rules.contains('non_negative')) {
+        invalid = '-1';
+      } else if (rules.contains('exact_oneof')) {
+        invalid = '<String, Object?>{}';
+      }
+      if (invalid != null) {
+        negativeTests.add("  test('rejects invalid $className', () { expect(() => $className.from($invalid), throwsArgumentError); });");
+      }
+    }
+    negativeTests.addAll(['}', '']);
+    File('${package.path}${Platform.pathSeparator}lib${Platform.pathSeparator}src${Platform.pathSeparator}type_policy.dart')
+        .writeAsStringSync('${policySource.join('\n')}\n');
+    File('${package.path}${Platform.pathSeparator}test${Platform.pathSeparator}type_policy_negative_test.dart')
+        .writeAsStringSync('${negativeTests.join('\n')}\n');
     typePolicyMetadata = {
       'path': 'type-policy.json',
       'sha256': sha256.convert(typePolicyBytes).toString(),
       'schema': decoded['schema'],
       'language': 'dart',
       'profile': profile,
+      'artifacts': [
+        'lib/src/type_policy.dart',
+        'test/type_policy_negative_test.dart',
+      ],
     };
   }
   final fixtureDestination = File(
