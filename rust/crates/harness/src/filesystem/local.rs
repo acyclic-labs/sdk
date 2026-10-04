@@ -1220,7 +1220,6 @@ impl PersistentLocalHarness {
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let execution_authority = issuer.verifier();
         let interaction_issuer = issuer.clone();
-        let mut storage = DurableHarnessStorage::from_published_fork(
         let execution_authority = issuer.verifier();
         let interaction_issuer = issuer.clone();
         let mut storage = DurableHarnessStorage::from_published_fork(
