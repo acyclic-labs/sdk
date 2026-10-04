@@ -419,12 +419,6 @@ async fn open_swarm(
     .await
 }
 
-async fn root_operation(swarm: &PersistentLocalSwarm) -> Result<OperationId> {
-    Ok(OperationId::from_bytes(
-        swarm.root_task().await?.into_bytes(),
-    ))
-}
-
 #[tokio::test]
 async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispatch() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
@@ -442,9 +436,8 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
     )
     .await?;
 
-    let root_operation = root_operation(&swarm).await?;
     let output = swarm
-        .run_root(root_operation, "start budget children")
+        .run_root(operation(0x01), "start budget children")
         .await?;
     assert_eq!(output.text, "root result");
     let usage = swarm.budget_usage().await?.expect("budget projection");
@@ -476,7 +469,7 @@ async fn persistent_local_budget_binds_owner_source_and_reopens_without_redispat
     assert_eq!(reopened.budget_usage().await?.expect("budget"), usage);
     assert_eq!(
         reopened
-            .run_root(root_operation, "start budget children")
+            .run_root(operation(0x01), "start budget children")
             .await?,
         output
     );
@@ -501,12 +494,11 @@ async fn persistent_local_budget_holds_one_sibling_active_and_releases_after_com
         source,
     )
     .await?;
-    let root_operation = root_operation(&swarm).await?;
     let run = tokio::spawn({
         let swarm = swarm.clone();
         async move {
             swarm
-                .run_root(root_operation, "exercise sibling capacity")
+                .run_root(operation(0x02), "exercise sibling capacity")
                 .await
         }
     });
@@ -550,9 +542,8 @@ async fn persistent_local_budget_retains_capacity_when_measurement_is_uncertain(
         source.clone(),
     )
     .await?;
-    let root_operation = root_operation(&swarm).await?;
     let _ = swarm
-        .run_root(root_operation, "retain uncertain child reservation")
+        .run_root(operation(0x03), "retain uncertain child reservation")
         .await;
     let usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(usage.active_agents, 2);
@@ -593,9 +584,8 @@ async fn persistent_local_budget_cancels_before_release_for_non_storage_provider
         source,
     )
     .await?;
-    let root_operation = root_operation(&swarm).await?;
     let _ = swarm
-        .run_root(root_operation, "release after explicit provider denial")
+        .run_root(operation(0x04), "release after explicit provider denial")
         .await;
     let usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(usage.active_agents, 1);
@@ -625,9 +615,8 @@ async fn persistent_local_budget_recursive_reopen_does_not_charge_grandchild_aga
         source.clone(),
     )
     .await?;
-    let root_operation = root_operation(&swarm).await?;
     let output = swarm
-        .run_root(root_operation, "recursive budget recovery")
+        .run_root(operation(0x05), "recursive budget recovery")
         .await?;
     let first_usage = swarm.budget_usage().await?.expect("budget projection");
     assert_eq!(swarm.sessions().await.len(), 3);
@@ -652,7 +641,7 @@ async fn persistent_local_budget_recursive_reopen_does_not_charge_grandchild_aga
     assert_eq!(reopened.budget_usage().await?.expect("budget"), first_usage);
     assert_eq!(
         reopened
-            .run_root(root_operation, "recursive budget recovery")
+            .run_root(operation(0x05), "recursive budget recovery")
             .await?,
         output
     );
@@ -679,9 +668,8 @@ async fn persistent_local_budget_usage_failure_is_bound_to_exact_dispatch_identi
     )
     .await?;
 
-    let root_operation = root_operation(&swarm).await?;
     let _ = swarm
-        .run_root(root_operation, "fail only child A measurement")
+        .run_root(operation(0x06), "fail only child A measurement")
         .await;
     let reads = source.reads();
     assert!(reads
