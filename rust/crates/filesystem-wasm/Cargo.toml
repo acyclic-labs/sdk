@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 acyclic-fs = { version = "=0.2.0", path = "../filesystem", default-features = false, features = ["memory"] }
 acyclic-objects = { version = "=0.2.0", path = "../objects", default-features = false }
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
+acyclic-sdk-contract-wire = { version = "=0.1.0", path = "../sdk-contract-wire" }
 blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true

@@ -66,6 +66,15 @@ mod bindings {
         browser_error("AcyclicCompatibilityWireError", &error.to_string())
     }
 
+    /// Validate one remote bearer credential using the shared Rust policy.
+    #[wasm_bindgen]
+    pub fn validate_remote_web_credential(token: &str) -> Result<(), JsValue> {
+        use acyclic_sdk_contract_wire::{credential, BEARER_NO_CRLF};
+        credential::validate(BEARER_NO_CRLF, token)
+            .then_some(())
+            .ok_or_else(|| JsValue::from_str("invalid bearer credential"))
+    }
+
     fn browser_work(value: acyclic_fs::WorkCounters) -> BrowserWorkCounters {
         BrowserWorkCounters {
             authority_records_read: value.authority_records_read,
