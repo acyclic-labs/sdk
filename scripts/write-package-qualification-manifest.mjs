@@ -9,7 +9,7 @@
  * conformance evidence without reconstructing the runner directory layout.
  */
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -93,7 +93,13 @@ const embeddedCandidates = [
 const embedded = embeddedCandidates
   .map((name) => join(embeddedRoot, name))
   .filter((path) => existsSync(path) && statSync(path).isFile())
-  .map((path) => ({ path: relative(sourceRoot, path).replaceAll("\\", "/"), sha256: sha256(path) }));
+  .map((path) => {
+    const destinationRoot = join(artifactRoot, "embedded");
+    mkdirSync(destinationRoot, { recursive: true });
+    const destination = join(destinationRoot, path.split(/[\\/]/).pop());
+    copyFileSync(path, destination);
+    return { path: rel(destination), sha256: sha256(destination) };
+  });
 
 const sourceCommitPath = requireFile(join(filesystem, "SOURCE_COMMIT"));
 const sourceRevision = readFileSync(sourceCommitPath, "utf8").trim();
