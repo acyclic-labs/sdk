@@ -293,6 +293,11 @@ final class RpcScenarioEvidenceTest {
     if (!(response instanceof Message message)) {
       throw new AssertionError(rpc + " returned a non-protobuf response");
     }
+    // The Rust descriptor is the authority for whether an operation's output
+    // message has fields. A genuinely fieldless protobuf response is valid;
+    // for every typed response, a default instance is evidence that the
+    // fixture never exercised the Rust wire contract.
+    if (message.getDescriptorForType().getFields().isEmpty()) return;
     if (message.getAllFields().isEmpty() || message.getSerializedSize() == 0) {
       throw new AssertionError(rpc + " returned a default protobuf response with no populated Rust wire fields");
     }
