@@ -564,10 +564,6 @@ impl Runtime {
         };
         let mut items = Vec::with_capacity(messages.len());
         for message in messages {
-            let sender = message.sender.ok_or_else(|| DispatchError {
-                code: "storage",
-                message: "mail projection is missing authenticated sender metadata".into(),
-            })?;
             let content = serde_json::to_value(&message.payload).map_err(|error| {
                 DispatchError::invalid(format!(
                     "message content reference is not serializable: {error}"
@@ -577,13 +573,10 @@ impl Runtime {
                 "id": message.message_id,
                 "sequence": message.sequence.to_string(),
                 "session_id": task.to_string(),
-                "sender_id": sender.to_string(),
+                "sender_id": message.sender.to_string(),
                 "recipient_id": task.to_string(),
                 "content": content,
-                "delivered_at": message
-                    .delivered_at_epoch_ms
-                    .map(|value| Value::String(value.to_string()))
-                    .unwrap_or(Value::Null),
+                "delivered_at": message.delivered_at_epoch_ms.to_string(),
             });
             if let Some(generation) = generation.as_ref() {
                 let body = self

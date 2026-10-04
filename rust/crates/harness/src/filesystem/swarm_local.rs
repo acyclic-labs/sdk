@@ -1748,6 +1748,10 @@ pub struct LocalSwarmMessage {
     pub payload: FileRef,
 }
 
+fn staged_message_path(sender: TaskId, recipient: TaskId, message_id: OperationId) -> String {
+    format!("system/swarm/messages/{sender}/{recipient}/{message_id}.txt")
+}
+
 /// Result of one child activation and turn.
 #[derive(Clone, Debug)]
 pub struct LocalForkOutcome {
@@ -2337,6 +2341,11 @@ impl PersistentLocalSwarm {
         after_sequence: u64,
         limit: usize,
     ) -> Result<Vec<crate::scheduler::InboxItem>> {
+        // The swarm handle is the owner boundary for this projection. Require
+        // the task to be in its retained local admission index before
+        // delegating to the host's capability checks; a caller cannot use the
+        // public projection as a mailbox lookup for an unrelated task.
+        self.session(task).await?;
         let host = self
             .bindings
             .communication_host
@@ -2497,7 +2506,7 @@ impl PersistentLocalSwarm {
             .storage()
             .stage(
                 message_id,
-                &format!("system/swarm/messages/{message_id}.txt"),
+                &staged_message_path(sender, recipient, message_id),
                 body,
                 "text/plain",
                 "message.txt",
@@ -4338,5 +4347,21 @@ mod tests {
         assert!(error.to_string().contains("completed model boundary"));
         assert_eq!(swarm.sessions().await.len(), 1);
         Ok(())
+    }
+
+    #[test]
+    fn staged_message_paths_are_scoped_to_both_endpoints() {
+        let message_id = OperationId::from_bytes([23; 16]);
+        let parent = TaskId::from_bytes([1; 16]);
+        let first_child = TaskId::from_bytes([2; 16]);
+        let second_child = TaskId::from_bytes([3; 16]);
+        assert_ne!(
+            staged_message_path(parent, first_child, message_id),
+            staged_message_path(parent, second_child, message_id)
+        );
+        assert_ne!(
+            staged_message_path(parent, first_child, message_id),
+            staged_message_path(first_child, parent, message_id)
+        );
     }
 }

@@ -1098,13 +1098,17 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 }
                 self.admission(OperationId::from_bytes(event.sender.into_bytes()))
                     .await?;
+                let delivered_at_epoch_ms = event.delivered_at_epoch_ms.or_else(|| {
+                    let committed_at_epoch_ms = record.committed_at_micros / 1_000;
+                    (committed_at_epoch_ms > 0).then_some(committed_at_epoch_ms)
+                })
+                .ok_or_else(|| {
+                    Error::Storage("mail record is missing its committed delivery timestamp".into())
+                })?;
                 items.push(InboxItem {
                     task_id,
-                    sender: Some(event.sender),
-                    delivered_at_epoch_ms: event.delivered_at_epoch_ms.or_else(|| {
-                        let committed_at_epoch_ms = record.committed_at_micros / 1_000;
-                        (committed_at_epoch_ms > 0).then_some(committed_at_epoch_ms)
-                    }),
+                    sender: event.sender,
+                    delivered_at_epoch_ms,
                     sequence: record
                         .sequence
                         .checked_add(1)

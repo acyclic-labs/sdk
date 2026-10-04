@@ -64,16 +64,22 @@ pub struct LocalTaskCancellationSource {
 }
 
 impl LocalTaskCancellationSource {
-    /// Registers or resets one admitted task's live cancellation scope.
+    /// Registers one admitted task's live cancellation scope. Re-registering
+    /// an active task preserves its sender so existing waits remain attached
+    /// to the same cancellation channel; call `remove` before a new scope.
     pub fn register(&self, task_id: TaskId) -> Result<()> {
         if task_id.into_bytes() == [0; 16] {
             return Err(Error::Invalid("cancellation task identity is nil".into()));
         }
-        let (sender, _) = watch::channel(false);
-        self.scopes
+        let mut scopes = self
+            .scopes
             .lock()
-            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?
-            .insert(task_id, sender);
+            .map_err(|_| Error::Storage("cancellation registry lock poisoned".into()))?;
+        if scopes.contains_key(&task_id) {
+            return Ok(());
+        }
+        let (sender, _) = watch::channel(false);
+        scopes.insert(task_id, sender);
         Ok(())
     }
 
@@ -243,6 +249,10 @@ pub struct WaitMessageOutput {
     pub sequence: u64,
     /// Sender-defined idempotency identity.
     pub message_id: String,
+    /// Authenticated sender retained by the owner mailbox.
+    pub sender: TaskId,
+    /// Owner-clock delivery timestamp.
+    pub delivered_at_epoch_ms: u64,
     /// Version-pinned message content.
     pub payload: FileRef,
 }
@@ -611,6 +621,8 @@ fn wait_output(completion: WaitCompletion) -> WaitToolOutput {
                 .map(|item| WaitMessageOutput {
                     sequence: item.sequence,
                     message_id: item.message_id,
+                    sender: item.sender,
+                    delivered_at_epoch_ms: item.delivered_at_epoch_ms,
                     payload: item.payload,
                 })
                 .collect(),
@@ -670,7 +682,7 @@ fn wait_input_schema() -> Value {
 fn wait_output_schema() -> Value {
     json!({"oneOf":[
         {"type":"object","additionalProperties":false,"required":["kind","outcomes"],"properties":{"kind":{"const":"tasks"},"outcomes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task_id","status"],"properties":{"task_id":{"type":"string"},"status":{"type":"string","enum":["succeeded","failed","cancelled","indeterminate"]},"value":{},"message":{"type":"string"},"operation_id":{"type":"string"}}}}}},
-        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"payload":file_ref_schema()}}}}},
+        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","sender","delivered_at_epoch_ms","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"sender":{"type":"string"},"delivered_at_epoch_ms":{"type":"integer","minimum":1},"payload":file_ref_schema()}}}}},
         {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"enum":["deadline","cancelled","timed_out"]}}}
     ]})
 }
@@ -744,9 +756,15 @@ mod tests {
         let sibling = task(9);
         source.register(owner)?;
         source.register(sibling)?;
-        assert!(!*source.receiver(owner).expect("owner scope").borrow());
+        let owner_receiver = source.receiver(owner).expect("owner scope");
+        assert!(!*owner_receiver.borrow());
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
+        // Re-registering an admitted task must not replace the sender held by
+        // an in-flight wait. The original receiver still observes the
+        // durable cancellation signal.
+        source.register(owner)?;
         source.cancel(owner)?;
+        assert!(*owner_receiver.borrow());
         assert!(*source.receiver(owner).expect("owner scope").borrow());
         assert!(!*source.receiver(sibling).expect("sibling scope").borrow());
         assert!(matches!(source.cancel(task(10)), Err(Error::NotFound(_))));

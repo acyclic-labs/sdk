@@ -476,16 +476,16 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         items[1].message_id,
         OperationId::from_bytes([4; 16]).to_string()
     );
-    assert_eq!(items[0].sender, Some(parent));
-    assert_eq!(items[1].sender, Some(parent));
-    assert!(items[0].delivered_at_epoch_ms.is_some());
-    assert!(items[1].delivered_at_epoch_ms.is_some());
+    assert_eq!(items[0].sender, parent);
+    assert_eq!(items[1].sender, parent);
+    assert!(items[0].delivered_at_epoch_ms > 0);
+    assert!(items[1].delivered_at_epoch_ms > 0);
     let second_child_items = DurableCommunication::new(reopened.clone())
         .inbox(second_child, 0, 8)
         .await?;
     assert_eq!(second_child_items.len(), 1);
-    assert_eq!(second_child_items[0].sender, Some(parent));
-    assert!(second_child_items[0].delivered_at_epoch_ms.is_some());
+    assert_eq!(second_child_items[0].sender, parent);
+    assert!(second_child_items[0].delivered_at_epoch_ms > 0);
     assert_eq!(
         second_child_items[0].message_id,
         request.message_id.to_string()

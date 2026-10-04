@@ -233,6 +233,12 @@ pub fn validate_inbox_page(
                 "inbox delivery sequence is not contiguous".into(),
             ));
         }
+        nonzero_task(item.sender, "inbox sender")?;
+        if item.delivered_at_epoch_ms == 0 {
+            return Err(Error::Invalid(
+                "inbox delivery timestamp is invalid".into(),
+            ));
+        }
         let identity = OperationId::parse(&item.message_id)
             .map_err(|_| Error::Invalid("inbox message identity is not canonical".into()))?;
         nonzero_operation(identity, "inbox message")?;
@@ -934,22 +940,22 @@ impl DurableCommunication {
         request: WaitRequest,
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
-        let now = unix_millis()?;
+        let initial_now = unix_millis()?;
         // A request whose timeout has already elapsed is a valid replay of a
         // previously admitted wait. Preserve the typed terminal result rather
         // than turning recovery into an invalid-input error. Zero remains
         // invalid through the ordinary validation path.
         let expired = request
             .timeout_epoch_ms
-            .is_some_and(|deadline| deadline <= now);
+            .is_some_and(|deadline| deadline <= initial_now);
         let deadline_expired = matches!(
             &request.target,
-            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= now
+            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= initial_now
         );
         if expired || deadline_expired {
             request.validate(None)?;
         } else {
-            request.validate(Some(now))?;
+            request.validate(Some(initial_now))?;
         }
         if cancellation.is_some() && request.cancellation_id.is_none() {
             return Err(Error::Invalid(
@@ -964,10 +970,24 @@ impl DurableCommunication {
         self.authorize_wait(&request).await?;
         if let Some(waits) = &self.waits {
             if let Some(completion) = waits.open(request.clone()).await? {
-                request.validate_completion_at(&completion, Some(now))?;
+                request.validate_completion_at(&completion, Some(unix_millis()?))?;
                 return Ok(completion);
             }
         }
+
+        // Authorization and durable admission may cross the caller's
+        // deadline. Re-read the owner clock after admission so an operation
+        // that became due while being admitted is retained as a typed
+        // terminal result instead of entering the observation path with a
+        // stale duration.
+        let now = unix_millis()?;
+        let expired = request
+            .timeout_epoch_ms
+            .is_some_and(|deadline| deadline <= now);
+        let deadline_expired = matches!(
+            &request.target,
+            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= now
+        );
         if expired {
             return self.finish(request, WaitCompletion::TimedOut).await;
         }
@@ -1248,6 +1268,7 @@ mod tests {
         inbox: Vec<InboxItem>,
         outcomes: BTreeMap<TaskId, Outcome<Value>>,
         observed_outcomes: Mutex<Vec<TaskId>>,
+        observe_delay: Duration,
     }
 
     impl DurableTaskHost for RecordingHost {
@@ -1255,7 +1276,11 @@ mod tests {
             &'a self,
             task_id: TaskId,
         ) -> futures::future::BoxFuture<'a, Result<TaskAdmissionRecord>> {
+            let delay = self.observe_delay;
             Box::pin(async move {
+                if !delay.is_zero() {
+                    tokio::time::sleep(delay).await;
+                }
                 self.admissions
                     .get(&task_id)
                     .cloned()
@@ -1344,14 +1369,15 @@ mod tests {
             inbox: Vec::new(),
             outcomes,
             observed_outcomes: Mutex::new(Vec::new()),
+            observe_delay: Duration::ZERO,
         }))
     }
 
     fn item(sequence: u64, id: u8) -> Result<InboxItem> {
         Ok(InboxItem {
             task_id: task(2),
-            sender: None,
-            delivered_at_epoch_ms: None,
+            sender: task(1),
+            delivered_at_epoch_ms: 1,
             sequence,
             message_id: operation(id).to_string(),
             payload: payload()?,
@@ -1380,6 +1406,12 @@ mod tests {
         assert!(validate_inbox_page(task(2), 0, 2, &[first.clone(), first.clone()]).is_err());
         assert!(validate_inbox_page(task(2), 1, 2, &[first.clone()]).is_err());
         assert!(validate_inbox_page(task(3), 0, 2, &[first]).is_err());
+        let mut invalid_sender = item(1, 12)?;
+        invalid_sender.sender = TaskId::from_bytes([0; 16]);
+        assert!(validate_inbox_page(task(2), 0, 1, &[invalid_sender]).is_err());
+        let mut invalid_timestamp = item(1, 13)?;
+        invalid_timestamp.delivered_at_epoch_ms = 0;
+        assert!(validate_inbox_page(task(2), 0, 1, &[invalid_timestamp]).is_err());
         Ok(())
     }
 
@@ -1722,6 +1754,39 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn wait_rechecks_clock_after_slow_durable_admission() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("recording host is uniquely owned")
+            .observe_delay = Duration::from_millis(30);
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::StreamClient::new(provider);
+        let waits = Arc::new(StreamWaitStore::new(stream.clone()));
+        let deadline = unix_millis()?.saturating_add(5);
+        let completion = DurableCommunication::new(host)
+            .with_wait_store(waits)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(48),
+                    waiter: task(1),
+                    target: WaitTarget::Deadline {
+                        deadline_epoch_ms: deadline,
+                    },
+                    timeout_epoch_ms: None,
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::Deadline);
+        let journal = stream
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(journal.bounds().await?.tail, 2);
+        Ok(())
+    }
+
     #[test]
     fn future_deadline_must_fit_the_wait_horizon() -> Result<()> {
         let now = unix_millis()?;
@@ -1925,6 +1990,10 @@ mod tests {
         let store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
             provider.clone(),
         )));
+        // Explicit cancellation is scoped to an existing durable wait
+        // admission; it cannot mint a cancellation record for an unknown
+        // operation identity.
+        assert_eq!(store.open(request.clone()).await?, None);
         let communication = DurableCommunication::new(host).with_wait_store(store);
         assert_eq!(
             communication.cancel(request.clone()).await?,
