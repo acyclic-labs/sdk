@@ -41,6 +41,19 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/graphcoder": {
+      "name": "@acyclic-labs/graphcoder",
+      "version": "0.2.0",
+      "bin": {
+        "graphcoder": "dist/cli.js",
+        "graphcoder-native": "dist/native-cli.js",
+      },
+      "devDependencies": {
+        "@types/node": "26.4.1",
+        "bun-types": "1.4.0",
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/harness": {
       "name": "@acyclic-labs/harness",
       "version": "0.2.0",
@@ -158,6 +171,8 @@
     "@acyclic-labs/actors": ["@acyclic-labs/actors@workspace:typescript/packages/actors"],
 
     "@acyclic-labs/fs": ["@acyclic-labs/fs@workspace:typescript/packages/filesystem"],
+
+    "@acyclic-labs/graphcoder": ["@acyclic-labs/graphcoder@workspace:typescript/packages/graphcoder"],
 
     "@acyclic-labs/harness": ["@acyclic-labs/harness@workspace:typescript/packages/harness"],
 
