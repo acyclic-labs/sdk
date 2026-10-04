@@ -59,7 +59,6 @@ jobs:
         # Measured locally at 2.7 seconds; no downstream runtimes or packages.
         run: |
           node scripts/test-plan-qualification.mjs
-          node --test scripts/test-platform-qualification.mjs
 
   qualify:
     # Full source and downstream qualification runs on releases or explicit requests.
@@ -188,7 +187,10 @@ jobs:
           - package: swift
             runner: blacksmith-4vcpu-ubuntu-2404
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 10
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_TARGET_DIR: ${{ runner.temp }}/platform-receipt-target
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -198,29 +200,70 @@ jobs:
           fetch-tags: false
           persist-credentials: false
 
-      - name: Verify pinned package lane and record pending host scope
+      - name: Provision official pinned package toolchain
+        shell: bash
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+        run: bash scripts/provision-native-toolchains.sh '${{ matrix.package }}'
+
+      - name: Verify pinned package lane and run the generated consumer
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/platform-package/${{ matrix.package }}"
-          status='pending-host-toolchain'
           if [[ "${{ matrix.package }}" == cpp ]]; then
             test -f cpp/Generate.ps1
             grep -q 'ExpectedProtoc = "36.2"' cpp/Generate.ps1
             grep -q 'ExpectedGrpc = "1.80.0"' cpp/Generate.ps1
             cp cpp/README.md "$RUNNER_TEMP/platform-package/${{ matrix.package }}/README.md"
             cp cpp/Generate.ps1 "$RUNNER_TEMP/platform-package/${{ matrix.package }}/Generate.ps1"
-            pins='{"protobuf":"36.2","grpc":"1.80.0"}'
-            if [[ -n "${SDK_CPP_PROTOC:-}" && -n "${SDK_CPP_GRPC_PLUGIN:-}" ]]; then
-              pwsh -NoProfile -File cpp/Generate.ps1 \
-                -Protoc "$SDK_CPP_PROTOC" \
-                -GrpcCppPlugin "$SDK_CPP_GRPC_PLUGIN" \
-                -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
-              cmake -S cpp -B "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" \
-                -DACYCLIC_CPP_GENERATED_DIR="$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
-              cmake --build "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" --config Release
-              status='pending-conformance'
+            : "${SDK_CPP_PROTOC:?SDK_CPP_PROTOC must point at pinned protoc 36.2}"
+            : "${SDK_CPP_GRPC_PLUGIN:?SDK_CPP_GRPC_PLUGIN must point at pinned grpc_cpp_plugin 1.80.0}"
+            test -x "$SDK_CPP_PROTOC"
+            test -x "$SDK_CPP_GRPC_PLUGIN"
+            evidence="$RUNNER_TEMP/platform-package/${{ matrix.package }}/evidence"
+            mkdir -p "$evidence"
+            pwsh -NoProfile -File cpp/Generate.ps1 \
+              -Protoc "$SDK_CPP_PROTOC" \
+              -GrpcCppPlugin "$SDK_CPP_GRPC_PLUGIN" \
+              -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" \
+              >"$evidence/generation.stdout" 2>"$evidence/generation.stderr"
+            cmake_args=(-DACYCLIC_GENERATED_ROOT="$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated")
+            if [[ -n "${SDK_CPP_PREFIX_PATH:-}" ]]; then
+              cmake_args+=("-DCMAKE_PREFIX_PATH=$SDK_CPP_PREFIX_PATH")
             fi
+            cmake -S cpp/consumer -B "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" "${cmake_args[@]}" \
+              >"$evidence/configure.stdout" 2>"$evidence/configure.stderr"
+            cmake --build "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" --config Release \
+              >"$evidence/build.stdout" 2>"$evidence/build.stderr"
+            fixture_log="$evidence/fixture-server.log"
+            cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --locked --bin fixture-server -- \
+              --port 0 --grpc-port 0 --max-requests 32 >"$fixture_log" 2>&1 &
+            fixture_pid=$!
+            trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+            fixture_address=''
+            for _ in $(seq 1 60); do
+              fixture_address=$(python -c 'import json,sys; p=sys.argv[1]; rows=open(p,encoding="utf-8",errors="replace").read().splitlines(); print(next((json.loads(row)["grpc_address"] for row in rows if row.lstrip().startswith("{") and "grpc_address" in row), ""))' "$fixture_log" 2>/dev/null || true)
+              [[ -n "$fixture_address" ]] && break
+              sleep 1
+            done
+            test -n "$fixture_address"
+            fixture_address="${fixture_address#http://}"
+            export FIXTURE_GRPC_ADDRESS="$fixture_address"
+            ctest --test-dir "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" --build-config Release --output-on-failure \
+              >"$evidence/ctest.stdout" 2>"$evidence/ctest.stderr"
+            consumer_bin=$(find "$RUNNER_TEMP/platform-package/${{ matrix.package }}/build" -type f -name acyclic_sdk_cpp_consumer -perm -111 | head -n 1)
+            test -n "$consumer_bin"
+            "$consumer_bin" >"$evidence/consumer.stdout" 2>"$evidence/consumer.stderr"
+            python -c 'import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); names=["generation","configure","build","ctest","consumer"]; checks=[]; digest=lambda p:"sha256:"+hashlib.sha256(p.read_bytes()).hexdigest(); [checks.append({"command":n,"exit_code":0,"stdout_sha256":digest(root/(n+".stdout")),"stderr_sha256":digest(root/(n+".stderr"))}) for n in names]; json.dump({"status":"passed","checks":checks},open(sys.argv[2],"w",encoding="utf-8"),indent=2)' "$evidence" "$RUNNER_TEMP/platform-package/${{ matrix.package }}/tests.json"
+            cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked --bin sdk-platform-receipt -- \
+              write --source-root "$GITHUB_WORKSPACE" \
+              --generated "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" \
+              --consumer "$consumer_bin" \
+              --tests "$RUNNER_TEMP/platform-package/${{ matrix.package }}/tests.json" \
+              --output "$RUNNER_TEMP/platform-package/${{ matrix.package }}/qualification.json" \
+              --language cpp --toolchain 'protobuf=36.2;protobufRevision=2c74169b34066ceb8ddb6b882fcb3fb32d737a55;grpc=1.80.0;grpcRevision=f5e2d6e856176c2f6b7691032adfefe21e5f64c1' \
+              --tools "$SDK_CPP_PROTOC;$SDK_CPP_GRPC_PLUGIN"
           else
             test -f swift/Generate.ps1
             grep -q 'ExpectedProtoc = "36.2"' swift/Generate.ps1
@@ -228,31 +271,67 @@ jobs:
             grep -q 'ExpectedGrpcSwift = "2.4.1"' swift/Generate.ps1
             cp swift/README.md "$RUNNER_TEMP/platform-package/${{ matrix.package }}/README.md"
             cp swift/Generate.ps1 "$RUNNER_TEMP/platform-package/${{ matrix.package }}/Generate.ps1"
-            pins='{"protobuf":"36.2","swiftProtobuf":"1.38.1","grpcSwift":"2.4.1"}'
-            if [[ -n "${SDK_SWIFT_PROTOC:-}" && -n "${SDK_SWIFT_PLUGIN:-}" && -n "${SDK_GRPC_SWIFT_PLUGIN:-}" ]]; then
-              pwsh -NoProfile -File swift/Generate.ps1 \
-                -Protoc "$SDK_SWIFT_PROTOC" \
-                -SwiftPlugin "$SDK_SWIFT_PLUGIN" \
-                -GrpcSwiftPlugin "$SDK_GRPC_SWIFT_PLUGIN" \
-                -WritePackageManifest \
-                -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
-              if command -v swift >/dev/null 2>&1; then
-                swift build --package-path "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated"
-                status='pending-conformance'
-              else
-                status='pending-swiftpm-host'
-              fi
-            fi
+            cp swift/consumer/main.swift "$RUNNER_TEMP/platform-package/${{ matrix.package }}/consumer.swift"
+            : "${SDK_SWIFT_PROTOC:?SDK_SWIFT_PROTOC must point at pinned protoc 36.2}"
+            : "${SDK_SWIFT_PLUGIN:?SDK_SWIFT_PLUGIN must point at pinned protoc-gen-swift 1.38.1}"
+            : "${SDK_GRPC_SWIFT_PLUGIN:?SDK_GRPC_SWIFT_PLUGIN must point at pinned protoc-gen-grpc-swift 2.4.1}"
+            test -x "$SDK_SWIFT_PROTOC"
+            test -x "$SDK_SWIFT_PLUGIN"
+            test -x "$SDK_GRPC_SWIFT_PLUGIN"
+            command -v swift >/dev/null
+            evidence="$RUNNER_TEMP/platform-package/${{ matrix.package }}/evidence"
+            mkdir -p "$evidence"
+            wire_root="$RUNNER_TEMP/platform-package/${{ matrix.package }}/rust-wire"
+            cargo run --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --locked -- \
+              generate --out "$wire_root" \
+              >"$evidence/rust-wire.stdout" 2>"$evidence/rust-wire.stderr"
+            pwsh -NoProfile -File swift/Generate.ps1 \
+              -Protoc "$SDK_SWIFT_PROTOC" \
+              -SwiftPlugin "$SDK_SWIFT_PLUGIN" \
+              -GrpcSwiftPlugin "$SDK_GRPC_SWIFT_PLUGIN" \
+              -ProtoRoot "$wire_root" \
+              -WritePackageManifest \
+              -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" \
+              >"$evidence/generation.stdout" 2>"$evidence/generation.stderr"
+            swift build --package-path "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" -c release \
+              >"$evidence/swiftpm.stdout" 2>"$evidence/swiftpm.stderr"
+            fixture_log="$evidence/fixture-server.log"
+            cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --locked --bin fixture-server -- \
+              --port 0 --grpc-port 0 --max-requests 32 >"$fixture_log" 2>&1 &
+            fixture_pid=$!
+            trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+            fixture_address=''
+            for _ in $(seq 1 60); do
+              fixture_address=$(python -c 'import json,sys; p=sys.argv[1]; rows=open(p,encoding="utf-8",errors="replace").read().splitlines(); print(next((json.loads(row)["grpc_address"] for row in rows if row.lstrip().startswith("{") and "grpc_address" in row), ""))' "$fixture_log" 2>/dev/null || true)
+              [[ -n "$fixture_address" ]] && break
+              sleep 1
+            done
+            test -n "$fixture_address"
+            fixture_address=$(printf '%s' "$fixture_address" | sed 's#^http://##')
+            export FIXTURE_GRPC_ADDRESS="$fixture_address"
+            consumer_bin="$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated/.build/release/AcyclicFixtureConsumer"
+            test -x "$consumer_bin"
+            "$consumer_bin" >"$evidence/consumer.stdout" 2>"$evidence/consumer.stderr"
+            python -c 'import hashlib,json,pathlib,sys; root=pathlib.Path(sys.argv[1]); names=["rust-wire","generation","swiftpm","consumer"]; checks=[]; digest=lambda p:"sha256:"+hashlib.sha256(p.read_bytes()).hexdigest(); [checks.append({"command":n,"exit_code":0,"stdout_sha256":digest(root/(n+".stdout")),"stderr_sha256":digest(root/(n+".stderr"))}) for n in names]; json.dump({"status":"passed","checks":checks},open(sys.argv[2],"w",encoding="utf-8"),indent=2)' "$evidence" "$RUNNER_TEMP/platform-package/${{ matrix.package }}/tests.json"
+            cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked --bin sdk-platform-receipt -- \
+              write --source-root "$GITHUB_WORKSPACE" \
+              --generated "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" \
+              --consumer "$consumer_bin" \
+              --tests "$RUNNER_TEMP/platform-package/${{ matrix.package }}/tests.json" \
+              --output "$RUNNER_TEMP/platform-package/${{ matrix.package }}/qualification.json" \
+              --language swift --toolchain 'protobuf=36.2;swiftProtobuf=1.38.1;swiftProtobufRevision=55d7a1cc5666b85c13464aea1c4b4a90feccb4c8;grpcSwift=2.4.1;grpcSwiftRevision=21fe69ab7ce0e87ac089534733c52f037e74a3eb;grpcSwiftProtobuf=2.4.1;grpcSwiftProtobufRevision=176c5a434fd76f6f479848d1a8f7d44967534168;swiftCollections=1.7.1;swiftCollectionsRevision=98ef3c98609a1e31b7e157b5b619579001a789d6' \
+              --tools "$SDK_SWIFT_PROTOC;$SDK_SWIFT_PLUGIN;$SDK_GRPC_SWIFT_PLUGIN"
           fi
-          python -c 'import json,os,sys; json.dump({"schema":"acyclic.sdk.platform-qualification.v1","package":sys.argv[1],"status":sys.argv[3],"source_revision":os.environ["GITHUB_SHA"],"pins":json.loads(sys.argv[2]),"publishes":False},open(os.path.join(os.environ["RUNNER_TEMP"],"platform-package",sys.argv[1],"qualification.json"),"w"),indent=2)' '${{ matrix.package }}' "$pins" "$status"
 
-      - name: Require completed platform qualification
+      - name: Verify Rust platform receipt
         shell: bash
         run: |
           set -euo pipefail
-          node scripts/verify-platform-qualification.mjs \
-            "$RUNNER_TEMP/platform-package/${{ matrix.package }}/qualification.json" \
-            '${{ matrix.package }}' "$GITHUB_SHA"
+          cargo run --manifest-path rust/crates/sdk-generation/Cargo.toml --locked --bin sdk-platform-receipt -- \
+            verify \
+            --receipt "$RUNNER_TEMP/platform-package/${{ matrix.package }}/qualification.json" \
+            --language '${{ matrix.package }}' \
+            --source-revision "$GITHUB_SHA"
       - name: Upload internal platform package evidence
         if: always()
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4.6.0
