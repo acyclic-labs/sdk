@@ -121,6 +121,20 @@ struct CancellationProvider {
     child_dispatches: AtomicUsize,
     child_started: Arc<tokio::sync::Notify>,
     reconciliations: AtomicUsize,
+    child_stream_dropped: Arc<AtomicBool>,
+    child_stopped: Arc<tokio::sync::Notify>,
+}
+
+struct ChildStreamGuard {
+    dropped: Arc<AtomicBool>,
+    stopped: Arc<tokio::sync::Notify>,
+}
+
+impl Drop for ChildStreamGuard {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+        self.stopped.notify_one();
+    }
 }
 
 impl CancellationProvider {
@@ -130,6 +144,8 @@ impl CancellationProvider {
             child_dispatches: AtomicUsize::new(0),
             child_started: Arc::new(tokio::sync::Notify::new()),
             reconciliations: AtomicUsize::new(0),
+            child_stream_dropped: Arc::new(AtomicBool::new(false)),
+            child_stopped: Arc::new(tokio::sync::Notify::new()),
         })
     }
 }
@@ -143,7 +159,12 @@ impl ModelProvider for CancellationProvider {
         if latest_declared_child_task(prepared.request()) == Some("cancel-child") {
             self.child_dispatches.fetch_add(1, Ordering::SeqCst);
             self.child_started.notify_waiters();
-            return Box::pin(stream::once(async {
+            let guard = ChildStreamGuard {
+                dropped: self.child_stream_dropped.clone(),
+                stopped: self.child_stopped.clone(),
+            };
+            return Box::pin(stream::once(async move {
+                let _guard = guard;
                 futures::future::pending::<Result<ModelEvent>>().await
             }));
         }
@@ -652,7 +673,7 @@ async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result
 }
 
 #[tokio::test]
-async fn cancelled_recursive_activation_aborts_child_and_preserves_indeterminate_claim()
+async fn cancelled_recursive_activation_drops_the_owned_child_provider_stream()
 -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (host, stream, project) = local_project(directory.path()).await?;
@@ -698,17 +719,20 @@ async fn cancelled_recursive_activation_aborts_child_and_preserves_indeterminate
     .await;
     assert!(started.is_ok(), "child provider was never dispatched");
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+    assert!(!provider.child_stream_dropped.load(Ordering::SeqCst));
 
     running.abort();
     let join = running.await;
     assert!(join.is_err(), "cancelled swarm run unexpectedly completed");
+    tokio::time::timeout(std::time::Duration::from_secs(5), provider.child_stopped.notified())
+        .await
+        .expect("aborting the parent left the child provider stream running");
+    assert!(provider.child_stream_dropped.load(Ordering::SeqCst));
 
     let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
     assert_eq!(swarm.session(child_task).await?.phase, LocalSessionPhase::Activating);
-    // The child journal's ModelStarted claim remains durable while its owned
-    // activation task is dropped. The executor recovery contract turns that
-    // claim into an indeterminate outcome; this test focuses on the swarm
-    // boundary proving that cancellation does not detach or redispatch it.
+    // Dropping the running stream does not publish successful completion or
+    // redispatch. Cold recovery of its admitted model attempt is a separate gate.
     assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
     assert_eq!(provider.child_dispatches.load(Ordering::SeqCst), 1);
     assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
