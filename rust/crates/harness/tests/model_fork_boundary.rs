@@ -652,7 +652,9 @@ impl ForkAtBatch {
             )?),
         ])?);
         parent = parent.with_fork_verifier(forks.clone());
-        let project_head = self.host.create_volume(&self.project).await?;
+        let project_head = self.host.resolve(&workspace_ref(
+            self.project.provider().clone(), &self.project.storage_name()?,
+        )?).await?;
         let sibling_barrier = Arc::new(Barrier::new(2));
         let child_zero_ready = Arc::new(Notify::new());
         let child_zero_release = Arc::new(Barrier::new(2));
@@ -1031,7 +1033,9 @@ impl ForkAtBatch {
             )?),
         ])?);
         parent = parent.with_fork_verifier(forks.clone());
-        let project_head = self.host.create_volume(&parent_project).await?;
+        let project_head = self.host.resolve(&workspace_ref(
+            parent_project.provider().clone(), &parent_project.storage_name()?,
+        )?).await?;
         let source_before = self.host.resolve(&project_head.workspace).await?;
         let seeded_source = self
             .host
