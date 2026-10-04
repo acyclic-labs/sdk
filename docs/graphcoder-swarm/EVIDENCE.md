@@ -373,3 +373,7 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 - Integrated fork foundation: [353/353 Harness library; production 0/1; faults 2/5](checkpoint-integrated-fork-native-2026-10-04.json), source4ba8293a9. Exact staged-file authority and replay duplicates remain open.
 - Windows Filesystem library: [1112 passed, 36 ignored](checkpoint-filesystem-native-2026-10-04.json), source239c00bb8. Owned/shared hard-crash tests pass; ignored cases are not qualified.
+
+- [Integrated recovery regression](checkpoint-recovery-foundation-native-2026-10-04.json): source 3d0a42bff; library 365/365 and faults 5/5.
+- [Integrated recursive run](checkpoint-recursive-integrated-native-2026-10-04.json): source 97d11a74a; library 365/365, recursive 1/1, faults 4/5; cancellation timeout remains failed.
+- [Terminal and reproducible install](checkpoint-cli-lock-native-2026-10-04.json): terminal 7/7 at f07b958d8; frozen install at fd4e73c29.

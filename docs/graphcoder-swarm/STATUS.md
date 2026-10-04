@@ -34,9 +34,15 @@ The cold recursive model boundary at source `9dfc54cb5` passes 3/3 after every o
 
 Earlier passing and failing checkpoints are retained in [EVIDENCE.md](EVIDENCE.md). A receipt proves only its source and stated scope. The earlier fork-port compilation failures are repaired in the current source; their evidence remains historical.
 
+At source `3d0a42bff`, the integrated Windows native Harness library and fault suites pass 365/365 and 5/5. See [recovery regression evidence](checkpoint-recovery-foundation-native-2026-10-04.json).
+
+At source `97d11a74a`, recursive child turns run as independently scheduled, abort-on-drop owned tasks, and GraphCoder snapshot assembly uses one lazy Harness projection. The library passes 365/365 and the real recursive durable swarm passes 1/1 on the ordinary Windows stack. The fault suite passes 4/5; `cancelled_child_after_publication_cannot_be_reactivated` times out after release. This failed gate prevents qualification. See [integrated recursive evidence](checkpoint-recursive-integrated-native-2026-10-04.json).
+
+The existing public terminal tests pass 7/7 at source `f07b958d8`. Frozen dependency installation passes at `fd4e73c29` after adding the missing GraphCoder workspace lock entries; no dependency versions changed. See [terminal and lock evidence](checkpoint-cli-lock-native-2026-10-04.json). These tests do not cover installed recursive commands, native approval or user-checkout writeback.
+
 ## Remaining integration and qualification
 
-1. Repair the production recursive swarm's Windows stack overflow without enlarging the fixture stack or narrowing recursion. Exact schema-declared reference inheritance is integrated; durable duplicate-activation fencing and full fault-recovery qualification remain open.
+1. Repair the cancellation fault timeout exposed after independently scheduling recursive child turns. The ordinary Windows production recursive scenario now passes without a larger stack; concurrent activation, cancellation and full recovery still require qualification.
 2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
 3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
 4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
