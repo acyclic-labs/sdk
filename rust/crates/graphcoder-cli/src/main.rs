@@ -11,8 +11,12 @@
 
 use acyclic_harness::{
     Error as HarnessError, InteractionId, OperationId, TaskId,
-    conversation::Limits,
-    filesystem::{LocalSessionPhase, PersistentLocalSwarm},
+    conversation::{ConversationMessage, Limits, VolumeRef},
+    core::Authority,
+    filesystem::{
+        LocalSessionPhase, PersistentLocalSwarm, ProjectMergeRecoveryEntry,
+        RootWritebackInspection,
+    },
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy,
         ModelProvider,
@@ -370,11 +374,13 @@ impl Runtime {
             "resolve_approval" => self.resolve_approval(&request.params).await,
             "cancel_session" => self.cancel_session(&request.params).await,
             "read_file" => self.read_file(&request.params).await,
-            "list_changes" | "read_change" | "approve_writeback" => {
-                Err(DispatchError::unsupported(
-                    "the durable local constructor does not expose this projection yet",
-                ))
-            }
+            "inspect_writeback" => self.inspect_writeback(&request.params).await,
+            "apply_writeback" => self.apply_writeback(&request.params).await,
+            "recover_writeback" => self.recover_writeback(&request.params).await,
+            "approve_writeback" => self.operator_approve(&request.params).await,
+            "list_changes" | "read_change" => Err(DispatchError::unsupported(
+                "the durable local constructor does not expose this projection yet",
+            )),
             _ => Err(DispatchError::invalid("unknown GraphCoder method")),
         };
         match result {
@@ -620,6 +626,73 @@ impl Runtime {
         Ok(approval_value(approval))
     }
 
+    async fn inspect_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let inspection_id = OperationId::parse(required_text(params, "inspection_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let approval_id = InteractionId::parse(required_text(params, "approval_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let operation_id = OperationId::parse(required_text(params, "operation_id")?)
+            .map_err(DispatchError::from_harness)?;
+        let root_project: VolumeRef = decode_param(params, "root_project")?;
+        let child_project: VolumeRef = decode_param(params, "child_project")?;
+        let child: Authority = decode_param(params, "child_authority")?;
+        let inspection = self
+            .swarm
+            .inspect_root_writeback(
+                task,
+                inspection_id,
+                approval_id,
+                &root_project,
+                child,
+                &child_project,
+                operation_id,
+            )
+            .await
+            .map_err(DispatchError::from_harness)?;
+        serde_json::to_value(inspection).map_err(|error| {
+            DispatchError::invalid(format!("writeback inspection is not serializable: {error}"))
+        })
+    }
+
+    async fn apply_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let inspection: RootWritebackInspection = decode_param(params, "inspection")?;
+        let notice: ConversationMessage = decode_param(params, "notice")?;
+        let outcome = self
+            .swarm
+            .apply_root_writeback_inspection(task, &inspection, notice)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(json!({
+            "session_id": task.to_string(),
+            "inspection_id": inspection.inspection_id.to_string(),
+            "status": project_join_status(&outcome),
+        }))
+    }
+
+    async fn recover_writeback(&self, params: &Value) -> Result<Value, DispatchError> {
+        let params = object(params)?;
+        let task = task_from_value(params, "session_id")?;
+        let inspection: RootWritebackInspection = decode_param(params, "inspection")?;
+        let entry: ProjectMergeRecoveryEntry = decode_param(params, "recovery_entry")?;
+        let receipt = self
+            .swarm
+            .recover_root_writeback_inspection(task, &inspection, &entry)
+            .await
+            .map_err(DispatchError::from_harness)?;
+        Ok(json!({
+            "session_id": task.to_string(),
+            "inspection_id": inspection.inspection_id.to_string(),
+            "status": "recovered",
+            "receipt": serde_json::to_value(receipt).map_err(|error| {
+                DispatchError::invalid(format!("receipt is not serializable: {error}"))
+            })?,
+        }))
+    }
+
     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
@@ -742,6 +815,29 @@ impl DispatchError {
             message: error.to_string(),
         }
     }
+}
+
+fn project_join_status(outcome: &acyclic_harness::merge::ProjectJoinOutcome) -> &'static str {
+    match outcome {
+        acyclic_harness::merge::ProjectJoinOutcome::Applied(_) => "applied",
+        acyclic_harness::merge::ProjectJoinOutcome::AlreadyApplied(_) => "already_applied",
+        acyclic_harness::merge::ProjectJoinOutcome::NoChanges(_) => "no_changes",
+        acyclic_harness::merge::ProjectJoinOutcome::StaleTarget(_) => "stale_target",
+        acyclic_harness::merge::ProjectJoinOutcome::Conflicted { .. } => "conflicted",
+        acyclic_harness::merge::ProjectJoinOutcome::Fenced => "fenced",
+        acyclic_harness::merge::ProjectJoinOutcome::IdempotencyConflict => "idempotency_conflict",
+    }
+}
+
+fn decode_param<T: for<'de> Deserialize<'de>>(
+    object: &serde_json::Map<String, Value>,
+    key: &str,
+) -> Result<T, DispatchError> {
+    let value = object
+        .get(key)
+        .ok_or_else(|| DispatchError::invalid(format!("{key} is required")))?;
+    serde_json::from_value(value.clone())
+        .map_err(|error| DispatchError::invalid(format!("{key} is invalid: {error}")))
 }
 
 fn object(value: &Value) -> Result<&serde_json::Map<String, Value>, DispatchError> {
