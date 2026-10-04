@@ -20,7 +20,7 @@ Remote SDKs and embedded bindings are separate qualifications:
 | surface | mechanism | result | current status |
 | --- | --- | --- | --- |
 | Swift remote | SwiftProtobuf + gRPC Swift 2.4.1 | generated message/service transport | generated package builds on Windows; NIO transport gate pending |
-| C++ remote | Protobuf C++ + gRPC C++ | generated message/service transport | generator/runtime unavailable locally |
+| C++ remote | Protobuf C++ + gRPC C++ | generated message/service transport | source-bound generation passes; matching runtime consumer remains pending |
 | Swift embedded | UniFFI 0.32.1 or the versioned C ABI | Rust behavior through a stable boundary | requires dedicated façade and ABI vectors |
 | C/C++ embedded | cbindgen 0.29.4 over explicit C ABI | C header plus C++ wrapper | local prototype qualified; release ABI remains gated |
 
@@ -95,16 +95,25 @@ emits only raw `.pb.*` and `.grpc.pb.*` transport bindings. `cpp/CMakeLists.txt`
 requires matching `Protobuf::libprotobuf` and `gRPC::grpc++` packages and fails
 if generated sources are absent. There is no C++ facade or package claim yet.
 
-The host has Clang 17, MSVC Build Tools 14.44 and CMake 3.26, but no `protoc`
-or `grpc_cpp_plugin` on PATH. Cargo's cached vendored protoc is 31.1 and is
-deliberately rejected by the pinned script. Docker reports a missing Linux
-engine. A bounded fresh CMake probe also found Git for Windows' `usr/bin/link.exe`
-ahead of the MSVC linker; direct Clang linking succeeds after the portable C++
-test prepends `Hostx64\\x64\\link.exe`. Fresh output directories cannot be
-created in this managed worktree, so the cross-volume CMake try-compile remains
-an environment gate rather than a failed C++ compile. Consequently the remote
-C++ generator/build smoke remains a CI gate; silently using 31.1 or the 1.56.2
-source tree would invalidate provenance and runtime compatibility.
+The host has Clang 17, MSVC Build Tools 14.44 and CMake 3.26. The pinned
+executables are retained outside the repository at
+`Q:/sdk/build/protobuf-36.2/bin/protoc.exe` and
+`Q:/sdk/build/grpc-install-1.80.0-vs-clean/bin/grpc_cpp_plugin.exe`.
+`cpp/Generate.ps1` ran against the current Rust-owned `proto/` tree and emitted
+10 families and a source-bound receipt under
+`sdk/build/sdk-cpp-generated-current`. This supersedes the earlier PATH audit;
+the cached Cargo protoc 31.1 and gRPC 1.56.2 probe remain excluded.
+
+The fresh generated tree was then compiled with the pinned gRPC package. The
+consumer exposed a real toolchain closure issue: the available gRPC 1.80.0
+MSVC runtime was built against Protobuf 6.31.1 (`PROTOBUF_VERSION 6031001`),
+while the selected Rust-bound generator emits Protobuf C++ 7.36.2
+(`PROTOBUF_VERSION 7036002`). The generated headers fail their exact runtime
+guard when paired with that runtime. The separate Protobuf 36.2 runtime is
+built `/MT` while the available gRPC libraries are `/MD`, so the attempted
+consumer also reports the MSVC runtime-library mismatch. The remote package
+remains pending until gRPC 1.80.0 is rebuilt against the same Protobuf 36.2
+and MSVC runtime mode.
 
 A bounded source probe also inspected the locally cached gRPC C++ source bundled
 by `grpcio-sys` (`1.56.2`, not the pinned `1.80.0`). CMake/Clang reached the
@@ -175,7 +184,12 @@ projection from being mistaken for an installable, tested SDK.
 
 - Swift generator output: `Q:/sdk/build/sdk-swift-generated-241`; exact source tags are SwiftProtobuf 1.38.1, gRPC Swift 2.4.1, and gRPC Swift Protobuf 2.4.1. The package release build passed with the official Swift 6.4 Windows toolchain.
 - Swift NIO transport source: `grpc-swift-nio-transport` tag 2.4.1 (`1f247d35f305ef3c21d9ebc1dd2dfcfee64260d8`). The Windows probe used the POSIX HTTP/2 product with local pinned checkouts. The receipt records the concrete swift-nio-ssl unsupported-Windows failure; no Windows NIO fixture call is claimed.
-- C++ remote remains pending: the required gRPC C++ 1.80.0 source/plugin has not produced a clean package consumer; cached gRPC 1.56.2 is excluded from evidence. The embedded C++ consumer has an independent local CMake/CTest receipt.
+- C++ remote remains pending: current Rust-bound generation and the pinned
+  plugin pass, but the available gRPC 1.80.0 installation is coupled to
+  Protobuf 6.31.1 and `/MD`, which cannot consume the Protobuf 36.2 `/MT`
+  runtime. A matching gRPC 1.80.0 rebuild is required before a remote package
+  receipt can qualify. Cached gRPC 1.56.2 remains excluded from evidence. The
+  embedded C++ consumer has an independent local CMake/CTest receipt.
 ## Windows NIO transport gate (2026-10-03)
 
 The pinned gRPC Swift NIO 2.4.1 POSIX product was compiled with the official Swift 6.4 Windows toolchain. Its dependency graph unconditionally includes swift-nio-ssl; NIOSSL rejects Windows with a source #error("unsupported os") and unresolved POSIX symbols (inet_ntop, AF_INET, socklen_t). The alternative Transport Services product requires Apple Network.framework. Therefore the generated GRPCCore/GRPCProtobuf package is Windows-buildable, but the native Windows fixture transport remains pending an upstream Windows transport or a source-bound Linux/macOS CI consumer. This is a transport-module restriction, not a blanket Swift Windows exclusion.
