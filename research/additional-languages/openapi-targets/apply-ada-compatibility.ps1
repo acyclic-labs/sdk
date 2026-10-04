@@ -232,12 +232,12 @@ end $rootUnit.Streams;
     if (Test-Path -LiteralPath $modelSpec -PathType Leaf) {
         $modelText = Get-Content -LiteralPath $modelSpec -Raw
         $blockPattern = '(?ms)^\s*type\s+(?<name>[A-Za-z0-9_]+_Type)\s+is\b.*?(?=^\s*type\s+[A-Za-z0-9_]+_Type\s+is\b|^\s*end\s+' + [regex]::Escape($rootUnit) + '\.Models;)'
-        $matches = @([regex]::Matches($modelText, $blockPattern))
-        if ($matches.Count -gt 1) {
+        $modelBlocks = @([regex]::Matches($modelText, $blockPattern))
+        if ($modelBlocks.Count -gt 1) {
             $known = @{}
-            foreach ($match in $matches) { $known[$match.Groups['name'].Value] = $true }
+            foreach ($match in $modelBlocks) { $known[$match.Groups['name'].Value] = $true }
             $remaining = [System.Collections.Generic.List[object]]::new()
-            foreach ($match in $matches) {
+            foreach ($match in $modelBlocks) {
                 $deps = [System.Collections.Generic.HashSet[string]]::new()
                 foreach ($dep in [regex]::Matches($match.Value, [regex]::Escape($rootUnit) + '\.Models\.([A-Za-z0-9_]+_Type)')) {
                     $depName = $dep.Groups[1].Value
@@ -257,9 +257,9 @@ end $rootUnit.Streams;
                 if ($ready.Count -eq 0) { $ordered.AddRange($remaining); break }
                 foreach ($item in $ready) { $ordered.Add($item); [void]$remaining.Remove($item) }
             }
-            if ($ordered.Count -eq $matches.Count) {
-                $prefix = $modelText.Substring(0, $matches[0].Index)
-                $suffixStart = $matches[$matches.Count - 1].Index + $matches[$matches.Count - 1].Length
+            if ($ordered.Count -eq $modelBlocks.Count) {
+                $prefix = $modelText.Substring(0, $modelBlocks[0].Index)
+                $suffixStart = $modelBlocks[$modelBlocks.Count - 1].Index + $modelBlocks[$modelBlocks.Count - 1].Length
                 $suffix = $modelText.Substring($suffixStart)
                 $modelText = $prefix + (($ordered | ForEach-Object { $_.Match.Value }) -join "`n") + $suffix
                 Set-Content -LiteralPath $modelSpec -Value $modelText -Encoding utf8NoBOM
