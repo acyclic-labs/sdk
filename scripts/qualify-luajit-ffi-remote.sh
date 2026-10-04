@@ -162,13 +162,32 @@ if command -v sha256sum >/dev/null; then
 else
   sha256=$(shasum -a 256 "$output_root/$library_name" | awk '{print $1}')
 fi
+hash_file() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
+lock_sha256=$(hash_file "$source_root/Cargo.lock")
+fixture_ca_sha256=$(hash_file "$ca")
+descriptor_sha256=$(find "$source_root/rust/crates/sdk-contract-wire/src" -type f -name '*.rs' -print \
+  | LC_ALL=C sort \
+  | while IFS= read -r file; do
+      printf '%s  %s\n' "$(hash_file "$file")" "${file#"$source_root/"}"
+    done \
+  | if command -v sha256sum >/dev/null; then sha256sum | awk '{print $1}'; else shasum -a 256 | awk '{print $1}'; fi)
 cat >"$output_root/LICENSE-RUST-APACHE-2.0.txt" <<'EOF'
 Rust remote C ABI crate license: Apache-2.0. See https://www.apache.org/licenses/LICENSE-2.0
 EOF
 cat >"$output_root/LICENSE-LUAJIT-MIT.txt" <<'EOF'
 LuaJIT runtime license: MIT. See https://github.com/LuaJIT/LuaJIT/blob/v2.1/COPYRIGHT
 EOF
-tar -czf "$output_root/acyclic_sdk_luajit_remote.tar.gz" -C "$output_root" "$library_name" consumer.lua LICENSE-RUST-APACHE-2.0.txt LICENSE-LUAJIT-MIT.txt
+cat >"$output_root/source-provenance.json" <<EOF
+{"schema":"acyclic.lua.ffi-source-provenance.v1","source_revision":"$source_revision","cargo_lock_sha256":"$lock_sha256","rust_contract_source_sha256":"$descriptor_sha256","fixture_ca_sha256":"$fixture_ca_sha256","contract_source_root":"rust/crates/sdk-contract-wire/src","fixture":"rust/crates/sdk-luajit-remote/src/bin/remote-fixture.rs","abi":"rust/crates/sdk-luajit-remote/src/lib.rs"}
+EOF
+tar -czf "$output_root/acyclic_sdk_luajit_remote.tar.gz" -C "$output_root" "$library_name" consumer.lua LICENSE-RUST-APACHE-2.0.txt LICENSE-LUAJIT-MIT.txt source-provenance.json
 cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote generated Stream operations plus append/read/follow-cancel","rust_family_inventory":8,"rust_product_operation_inventory":106,"rust_operation_inventory":10,"rust_json_dispatch":"Rust-owned HTTP route projections","rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz"}
+{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_revision":"$source_revision","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote generated Stream operations plus append/read/follow-cancel and descriptor-driven client-streaming handles","rust_family_inventory":8,"rust_product_operation_inventory":106,"rust_operation_inventory":10,"rust_contract_source_sha256":"$descriptor_sha256","fixture_ca_sha256":"$fixture_ca_sha256","rust_json_dispatch":"Rust-owned HTTP route projections","rust_stream_input_queue_capacity":64,"rust_transport":"Rust descriptor-driven gRPC with bounded FFI request backpressure","rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz","provenance":"source-provenance.json"}
 EOF
