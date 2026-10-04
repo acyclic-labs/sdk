@@ -1,6 +1,6 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
-import { encode_objects_v2_json, decode_objects_v2_json, objects_v2_http_error_code, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
+import { decode_objects_v2_json, encode_objects_v2_json, objects_v2_http_body_frame_bytes, objects_v2_http_error_code, objects_v2_http_json_frame_bytes, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
 import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
@@ -37,6 +37,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, signal?: AbortSignal): Promise<readonly Uint8Array[]> {
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
+    const jsonFrameBytes = objects_v2_http_json_frame_bytes();
+    const bodyFrameBytes = objects_v2_http_body_frame_bytes();
     const decodeResponse = (data: Uint8Array, maximum: number) => {
       try { return decode_objects_v2_json(types[1], data, maximum); }
       catch (error) {
@@ -58,18 +60,18 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
       const header = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "header", value: fromBinary(wire.PutObjectHeaderSchema, bytes) } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "header", value: fromBinary(wire.UploadPartHeaderSchema, bytes) } }));
-      add(encode_objects_v2_json(types[0], header, 128 * 1024));
-      for (let offset = 0; offset < body.byteLength; offset += 65536) {
-        const chunk = body.subarray(offset, offset + 65536);
+      add(encode_objects_v2_json(types[0], header, jsonFrameBytes));
+      for (let offset = 0; offset < body.byteLength; offset += bodyFrameBytes) {
+        const chunk = body.subarray(offset, offset + bodyFrameBytes);
         const frame = put
           ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "body", value: chunk } }))
           : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "body", value: chunk } }));
-        add(encode_objects_v2_json(types[0], frame, 128 * 1024));
+        add(encode_objects_v2_json(types[0], frame, jsonFrameBytes));
       }
       const complete = put
         ? toBinary(wire.PutObjectRequestSchema, create(wire.PutObjectRequestSchema, { frame: { case: "complete", value: true } }))
         : toBinary(wire.UploadPartRequestSchema, create(wire.UploadPartRequestSchema, { frame: { case: "complete", value: true } }));
-      add(encode_objects_v2_json(types[0], complete, 128 * 1024));
+      add(encode_objects_v2_json(types[0], complete, jsonFrameBytes));
     } else add(encode_objects_v2_json(types[0], bytes, 16 * 1024 * 1024));
     const request = new Uint8Array(requestSize);
     let offset = 0;
@@ -87,7 +89,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         if (response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
-        const line = new Uint8Array(128 * 1024);
+        const line = new Uint8Array(jsonFrameBytes);
         let lineLength = 0;
         let wireSize = 0;
         let remaining: bigint | undefined;
@@ -107,7 +109,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
             start = end + 1;
             const stop = lineLength > 0 && line[lineLength - 1] === 13 ? lineLength - 1 : lineLength;
             if (stop === 0) throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
-            const decoded = decodeResponse(line.subarray(0, stop), 128 * 1024);
+            const decoded = decodeResponse(line.subarray(0, stop), jsonFrameBytes);
             validate_objects_v2_response("objects/get", bytes, decoded, maximum);
             lineLength = 0;
             const { frame } = fromBinary(wire.GetObjectResponseSchema, decoded);
