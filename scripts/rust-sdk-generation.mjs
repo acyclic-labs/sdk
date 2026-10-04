@@ -13,7 +13,7 @@ export function generationInvocation(operation, inputArgs, {
   if (!operation) throw new Error("Usage: rust-sdk-generation.mjs <generate|check|drift|inventory|qualify> [--source-root PATH] [--output PATH]");
   const args = [...inputArgs];
   for (let index = 0; index < args.length; index++) {
-    if (args[index] === "--source-root" || args[index] === "--output") {
+    if (args[index] === "--source-root" || args[index] === "--output" || args[index] === "--package-root") {
       if (!args[index + 1] || args[index + 1].startsWith("--")) throw new Error(`${args[index]} requires a path`);
       args[index + 1] = resolve(callerDirectory, args[index + 1]);
       index++;
@@ -26,7 +26,12 @@ export function generationInvocation(operation, inputArgs, {
   const identity = createHash("sha256").update(sourceRoot).digest("hex").slice(0, 24);
   const cacheRoot = join(resolve(temporaryRoot), "acyclic-sdk-generation", identity);
   const cliArgs = [operation, "--source-root", sourceRoot];
-  if (!args.includes("--output")) cliArgs.push("--output", join(cacheRoot, "artifacts"));
+  if (!args.includes("--output")) {
+    const defaultOutput = environment.ACYCLIC_SDK_GENERATION_OUTPUT
+      ? resolve(callerDirectory, environment.ACYCLIC_SDK_GENERATION_OUTPUT)
+      : join(cacheRoot, "artifacts");
+    cliArgs.push("--output", defaultOutput);
+  }
   cliArgs.push(...args);
   return {
     program: environment.ACYCLIC_CARGO_BIN || environment.SDK_CARGO || "cargo",

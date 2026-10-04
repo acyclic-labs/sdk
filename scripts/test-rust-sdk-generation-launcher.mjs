@@ -49,3 +49,11 @@ test("missing path values fail before a compiler or generator starts", () => {
     assert.throws(() => generationInvocation("generate", args, options), /requires a path/);
   }
 });
+
+test("configured Rust output defaults also apply through the thin launcher", () => {
+  const configured = { ...options, environment: { ACYCLIC_SDK_GENERATION_OUTPUT: "retained-artifacts" } };
+  const implicit = generationInvocation("generate", [], configured);
+  assert.equal(value(implicit, "--output"), resolve(options.callerDirectory, "retained-artifacts"));
+  const explicit = generationInvocation("generate", ["--output", "explicit"], configured);
+  assert.equal(value(explicit, "--output"), resolve(options.callerDirectory, "explicit"));
+});
