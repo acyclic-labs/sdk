@@ -6,16 +6,20 @@
 
 use std::{collections::BTreeMap, sync::Arc};
 
+use bytes::Bytes;
+
 use acyclic_fs::{
-    FilesystemWireLimits, FilesystemWireService, MemoryAuthorityBackend, MemoryFs,
-    MemoryObjectBackend,
+    CancellationToken, FilesystemWireLimits, FilesystemWireService, MemoryAuthorityBackend,
+    MemoryFs, MemoryObjectBackend, OperationId, WorkBudget,
+    kernel::{LogicalName, NamespacePath},
+    model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode},
 };
 use acyclic_harness::{
     Error, Result as HarnessResult, wire,
     wire_api::{HarnessWireApi, OperationControlRequest, current_protocol, negotiate},
 };
 use futures::{
-    FutureExt as _,
+    FutureExt as _, StreamExt as _,
     stream::{self, BoxStream},
 };
 use tokio::sync::Mutex;
@@ -425,12 +429,62 @@ pub fn qualification_scenarios() -> impl Iterator<Item = FixtureScenario> {
 pub type FilesystemFixtureService =
     FilesystemWireService<MemoryAuthorityBackend, MemoryObjectBackend>;
 
+fn fixture_path(name: &str) -> Result<NamespacePath, Status> {
+    let component = LogicalName::new(
+        acyclic_fs::kernel::NameEncoding::Utf8,
+        name.as_bytes().to_vec(),
+        acyclic_fs::model::VolumeLimits::default().maximum_component_bytes,
+    )
+    .map_err(|error| Status::internal(format!("fixture path: {error}")))?;
+    NamespacePath::new(vec![component], acyclic_fs::model::VolumeLimits::default())
+        .map_err(|error| Status::internal(format!("fixture path: {error}")))
+}
+
+fn seeded_memory_fs() -> Result<MemoryFs, Status> {
+    let fs = MemoryFs::memory();
+    let cancellation = CancellationToken::new();
+    futures::executor::block_on(async {
+        let workspace = fs
+            .create_workspace("fixture")
+            .await
+            .map_err(|error| Status::internal(format!("fixture workspace: {error}")))?;
+        let mut checkout = workspace
+            .checkout(
+                GenerationSelector::Head,
+                CheckoutMode {
+                    access: AccessMode::ReadWrite,
+                    consistency: ConsistencyMode::TrackingSafe,
+                    mutations: MutationMode::PrivateOverlay,
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|error| Status::internal(format!("fixture checkout: {}", error.error)))?
+            .value;
+        checkout
+            .create_file(
+                fixture_path("hello")?,
+                Bytes::from_static(b"rust-fixture"),
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .map_err(|error| Status::internal(format!("fixture seed: {}", error.error)))?;
+        checkout
+            .commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation)
+            .await
+            .map_err(|error| Status::internal(format!("fixture commit: {}", error.error)))?;
+        Ok(fs)
+    })
+}
+
 /// Builds a Filesystem service over the public in-memory Stream and Objects providers.
 ///
 /// No fixture behavior is duplicated here: the service is the production
 /// `FilesystemWireService` over the canonical Rust engine.
 pub fn filesystem_service() -> std::result::Result<FilesystemFixtureService, Status> {
-    FilesystemWireService::new(MemoryFs::memory(), FilesystemWireLimits::default())
+    FilesystemWireService::new(seeded_memory_fs()?, FilesystemWireLimits::default())
 }
 
 /// Returns the Filesystem tonic server with all thirty generated handlers.
@@ -448,9 +502,15 @@ pub fn filesystem_server() -> std::result::Result<
 }
 
 /// Stateful in-memory Harness backend used by the five RPC fixture handlers.
+#[derive(Clone, Debug)]
+struct OperationRecord {
+    status: wire::OperationStatus,
+    event: wire::EventEnvelope,
+}
+
 #[derive(Clone, Default)]
 pub struct HarnessFixtureBackend {
-    operations: Arc<Mutex<BTreeMap<String, wire::OperationStatus>>>,
+    operations: Arc<Mutex<BTreeMap<String, OperationRecord>>>,
 }
 
 impl HarnessFixtureBackend {
@@ -526,15 +586,35 @@ impl HarnessWireApi for HarnessFixtureBackend {
                 .ok_or_else(|| Error::Invalid("fixture command authority is missing".into()))?;
             let protocol = command.protocol.unwrap_or_else(current_protocol);
             let operation_id = operation.operation_id.clone();
+            let event = wire::EventEnvelope {
+                protocol: Some(protocol.clone()),
+                authority: Some(owner.clone()),
+                revision: 1,
+                operation_id: operation_id.clone(),
+                intent_digest: command.intent_digest.clone(),
+                scope: command.scope.as_ref().map(|scope| wire::RecordedScope {
+                    id: scope.id.clone(),
+                    capabilities: scope.capabilities.clone(),
+                    issuer: scope.issuer.clone(),
+                    agent_id: scope.agent_id.clone(),
+                }),
+                causal_parent: command.causal_parent.clone(),
+                event_type: "fixture.command.accepted".into(),
+                canonical_payload_json: br#"{"status":"accepted"}"#.to_vec(),
+                attestation: vec![1; 32],
+            };
             let status = Self::status_for(
                 operation.clone(),
                 protocol,
-                owner,
+                owner.clone(),
                 wire::CompletionState::Succeeded,
                 1,
                 false,
             );
-            self.operations.lock().await.insert(operation_id, status);
+            self.operations
+                .lock()
+                .await
+                .insert(operation_id, OperationRecord { status, event });
             Ok(wire::Admission {
                 operation: Some(operation),
                 state: wire::AdmissionState::Accepted as i32,
@@ -559,13 +639,30 @@ impl HarnessWireApi for HarnessFixtureBackend {
                 |value| value.generation.clone(),
             );
             let revision = cursor.as_ref().map_or(0, |value| value.revision);
+            let record = self
+                .operations
+                .lock()
+                .await
+                .values()
+                .find(|record| {
+                    authority.as_ref().map_or(true, |expected| {
+                        record.status.owner.as_ref() == Some(expected)
+                    }) && record.event.revision > revision
+                })
+                .cloned();
+            let Some(record) = record else {
+                return Ok(
+                    Box::pin(stream::empty()) as BoxStream<'static, HarnessResult<wire::Delivery>>
+                );
+            };
+            let event_revision = record.event.revision;
             Ok(Box::pin(stream::once(async move {
                 Ok(wire::Delivery {
-                    authority,
+                    authority: record.status.owner,
                     generation,
-                    from_revision: revision,
-                    through_revision: revision,
-                    events: Vec::new(),
+                    from_revision: event_revision,
+                    through_revision: event_revision,
+                    events: vec![record.event],
                     live: true,
                 })
             }))
@@ -576,9 +673,23 @@ impl HarnessWireApi for HarnessFixtureBackend {
 
     fn authorize_operation_control<'a>(
         &'a self,
-        _request: &'a OperationControlRequest,
+        request: &'a OperationControlRequest,
     ) -> futures::future::BoxFuture<'a, HarnessResult<()>> {
-        async { Ok(()) }.boxed()
+        let operation_id = request.operation_id.to_string();
+        let owner = request.owner.clone();
+        async move {
+            let operations = self.operations.lock().await;
+            let record = operations.get(&operation_id).ok_or_else(|| {
+                Error::NotFound(format!("fixture operation {operation_id} is unknown"))
+            })?;
+            if record.status.owner.as_ref() != Some(&owner) {
+                return Err(Error::Unauthorized(format!(
+                    "fixture operation {operation_id} owner does not match"
+                )));
+            }
+            Ok(())
+        }
+        .boxed()
     }
 
     fn observe<'a>(
@@ -586,7 +697,8 @@ impl HarnessWireApi for HarnessFixtureBackend {
         request: wire::ObserveRequest,
     ) -> futures::future::BoxFuture<'a, HarnessResult<wire::OperationStatus>> {
         async move {
-            self.operations
+            let record = self
+                .operations
                 .lock()
                 .await
                 .get(&request.operation_id)
@@ -596,7 +708,14 @@ impl HarnessWireApi for HarnessFixtureBackend {
                         "fixture operation {} is unknown",
                         request.operation_id
                     ))
-                })
+                })?;
+            if request.owner.as_ref() != record.status.owner.as_ref() {
+                return Err(Error::Unauthorized(format!(
+                    "fixture operation {} owner does not match",
+                    request.operation_id
+                )));
+            }
+            Ok(record.status)
         }
         .boxed()
     }
@@ -607,18 +726,24 @@ impl HarnessWireApi for HarnessFixtureBackend {
     ) -> futures::future::BoxFuture<'a, HarnessResult<wire::CancelResponse>> {
         async move {
             let mut operations = self.operations.lock().await;
-            let status = operations.get_mut(&request.operation_id).ok_or_else(|| {
+            let record = operations.get_mut(&request.operation_id).ok_or_else(|| {
                 Error::NotFound(format!(
                     "fixture operation {} is unknown",
                     request.operation_id
                 ))
             })?;
-            status.state = wire::CompletionState::Cancelled as i32;
-            status.cancellation_requested = true;
-            status.revision = status.revision.saturating_add(1);
-            let operation = status.operation.clone();
+            if request.owner.as_ref() != record.status.owner.as_ref() {
+                return Err(Error::Unauthorized(format!(
+                    "fixture operation {} owner does not match",
+                    request.operation_id
+                )));
+            }
+            record.status.state = wire::CompletionState::Cancelled as i32;
+            record.status.cancellation_requested = true;
+            record.status.revision = record.status.revision.saturating_add(1);
+            let operation = record.status.operation.clone();
             Ok(wire::CancelResponse {
-                status: Some(status.clone()),
+                status: Some(record.status.clone()),
                 operation,
             })
         }
@@ -684,9 +809,29 @@ mod tests {
             .await
             .expect("submit");
         assert_eq!(admission.state, wire::AdmissionState::Accepted as i32);
+        let mut replay = backend
+            .replay(wire::ResumeRequest {
+                cursors: vec![wire::ReplayCursor {
+                    authority: Some(owner.clone()),
+                    generation: "fixture-generation".into(),
+                    revision: 0,
+                }],
+                ..Default::default()
+            })
+            .await
+            .expect("replay");
+        let delivery = replay
+            .next()
+            .await
+            .expect("delivery")
+            .expect("delivery result");
+        assert!(delivery.live);
+        assert_eq!(delivery.events.len(), 1);
+        assert_eq!(delivery.events[0].event_type, "fixture.command.accepted");
         let observed = backend
             .observe(wire::ObserveRequest {
                 operation_id: "fixture-op".into(),
+                owner: Some(owner.clone()),
                 ..Default::default()
             })
             .await
@@ -695,6 +840,7 @@ mod tests {
         let cancelled = backend
             .cancel(wire::CancelRequest {
                 operation_id: "fixture-op".into(),
+                owner: Some(owner),
                 ..Default::default()
             })
             .await
