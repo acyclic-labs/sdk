@@ -65,12 +65,28 @@ REQUIRED_EXPORTS = (
 )
 
 
+def assert_abi_layout() -> None:
+    assert ctypes.sizeof(ctypes.c_void_p) == 8, "the embedded ABI requires a 64-bit process"
+    assert ctypes.sizeof(Buffer) == 32
+    assert Buffer.id.offset == 0
+    assert Buffer.ptr.offset == 8
+    assert Buffer.len.offset == 16
+    assert Buffer.capacity.offset == 24
+    assert ctypes.sizeof(AppendResult) == 64
+    assert ctypes.sizeof(OpenResult) == 48
+    assert ctypes.sizeof(NextResult) == 80
+    assert ctypes.sizeof(WireResult) == 72
+    assert WireResult.response.offset == 8
+    assert WireResult.message.offset == 40
+
+
 def bytes_arg(value: bytes):
     storage = ctypes.create_string_buffer(value)
     return storage, ctypes.cast(storage, ctypes.POINTER(ctypes.c_uint8)), len(value)
 
 
 def main() -> None:
+    assert_abi_layout()
     dll = ctypes.CDLL(sys.argv[1])
     missing = [name for name in REQUIRED_EXPORTS if not hasattr(dll, name)]
     assert not missing, f"installed runtime is missing Rust ABI exports: {missing}"
