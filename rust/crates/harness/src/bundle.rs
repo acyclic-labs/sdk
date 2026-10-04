@@ -142,16 +142,14 @@ pub fn coding_tools(host: Arc<dyn CodingToolHost>) -> Result<ToolRegistry> {
         }
         validate_coding_schema(&definition.input_schema, name, "input")?;
         validate_coding_schema(&definition.output_schema, name, "output")?;
+        let adapter = Arc::new(HostedCodingTool {
+            name,
+            host: host.clone(),
+        });
         registry.register(Tool {
             definition,
-            executor: Arc::new(HostedCodingTool {
-                name,
-                host: host.clone(),
-            }),
-            projection: Arc::new(HostedCodingTool {
-                name,
-                host: host.clone(),
-            }),
+            executor: adapter.clone(),
+            projection: adapter,
         })?;
     }
     Ok(registry)
