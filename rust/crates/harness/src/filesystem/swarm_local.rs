@@ -42,8 +42,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    future::Future,
+    pin::Pin,
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex, OnceLock, Weak},
+    task::{Context, Poll},
 };
 use tokio::sync::Mutex;
 
@@ -64,6 +67,33 @@ const REGISTRY_VERSION: u32 = 2;
 const MAX_INLINE_COMPLETION_BYTES: usize = 64 * 1024;
 const MAX_SWARM_RECORD_BYTES: usize = 1024 * 1024;
 const MAX_SWARM_ACTIVITY_EVENTS: usize = 65_536;
+
+/// A spawned child turn remains owned by its activation future. Dropping the
+/// activation must cancel the child task instead of detaching a model worker
+/// that can continue dispatching effects after its caller has gone away.
+struct AbortOnDrop<T> {
+    handle: tokio::task::JoinHandle<T>,
+}
+
+impl<T> AbortOnDrop<T> {
+    fn new(handle: tokio::task::JoinHandle<T>) -> Self {
+        Self { handle }
+    }
+}
+
+impl<T> Future for AbortOnDrop<T> {
+    type Output = std::result::Result<T, tokio::task::JoinError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.get_mut().handle).poll(cx)
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
 
 type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 
@@ -3871,14 +3901,13 @@ impl PersistentLocalSwarm {
                 .unwrap_or(self.config.limits.model_steps),
         )
         .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
-        let output = match tokio::spawn(Self::run_child_turn(
+        let child_task = AbortOnDrop::new(tokio::spawn(Self::run_child_turn(
             harness.clone(),
             bundle.clone(),
             request.clone(),
             max_steps,
-        ))
-        .await
-        {
+        )));
+        let output = match child_task.await {
             Ok(Ok(output)) => output,
             Ok(Err(error)) => {
                 self.mark_failed(child, error.to_string()).await?;
