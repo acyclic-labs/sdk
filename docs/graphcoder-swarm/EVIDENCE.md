@@ -329,3 +329,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Harness WASM regeneration: [source-bound refresh receipt](checkpoint-harness-wasm-refresh-2026-10-04.json). Build succeeded; full generated audit remains pending.
 
 - Full generated audit after Harness refresh: [missing Inference artifact failure](checkpoint-generated-audit-missing-artifact-2026-10-04.json). Filesystem and Harness stages passed; the full gate failed and remains unqualified.
+
+- Windows host launch: [26/26 focused regression receipt](checkpoint-windows-hidden-host-2026-10-04.json). Existing native launch sets CREATE_NO_WINDOW; installed process ownership qualification remains open.
