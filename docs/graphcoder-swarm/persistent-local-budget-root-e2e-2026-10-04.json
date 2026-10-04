@@ -1,0 +1,43 @@
+{
+  "schema": "graphcoder.swarm.validation.receipt.v1",
+  "scope": "persistent local swarm budget root admission, cancellation, restart uncertainty",
+  "source_commit": "9a6bad15d30200087a8084f5c8b871918e0205ee",
+  "branch": "codex/budget-root-compatible",
+  "worktree": "C:\\graphcoder-builds\\budget-root-compatible-suite",
+  "fixture": {
+    "path": "rust/crates/harness/tests/persistent_local_swarm_budget_root_e2e.rs",
+    "sha256": "b1e69a195eeb9d6ed978cb59a803d7294390bf455625f4ba75035c1bfce1669c",
+    "provider": "deterministic mocked ModelProvider",
+    "storage": "real LocalFs and LocalStream",
+    "sandbox": false
+  },
+  "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test persistent_local_swarm_budget_root_e2e --target-dir C:\\graphcoder-builds\\budget-root-compatible-suite-target -j1 -- --nocapture",
+  "result": {
+    "passed": 2,
+    "failed": 0,
+    "tests": [
+      "persistent_budget_root_restart_preserves_uncertainty",
+      "persistent_budget_root_cancellation_survives_reopen"
+    ]
+  },
+  "artifacts": {
+    "log": {
+      "path": "C:\\graphcoder-builds\\budget-root-compatible-suite-persistent-budget-root-final.log",
+      "sha256": "05bf07ec9d9e24ec4cbd5ac81c9f1af5a82fc297ee2b823a0ae4d413cf90c5b6"
+    },
+    "executable": {
+      "path_glob": "C:\\graphcoder-builds\\budget-root-compatible-suite-target\\debug\\deps\\persistent_local_swarm_budget_root_e2e-*.exe",
+      "sha256": "bc99b2b77c70887e5fdc23a6ff9c51b1fedc919fa929394f93b8274c8347b94f"
+    }
+  },
+  "evidence": [
+    "Real root dispatch enters the production durable budget meter and leaves active_agents=1,total_agents=1 after an unknown provider outcome.",
+    "Reopen retains the original operation outcome as Error::Indeterminate and performs no second provider dispatch.",
+    "Cancellation through an independent persistent handle survives completion race and cold reopen; the cancelled root cannot dispatch again."
+  ],
+  "independent_blocker": {
+    "fixture": "rust/crates/harness/tests/local_model_swarm.rs",
+    "result": "budget-enabled recursive fixture reaches real setup but fails before child provider dispatch with Error::Invalid(\"inherited conversation differs from authoritative parent history\")",
+    "log_sha256": "d74543b3be83a3ff9a78cfdeab567f04cca6ac759c36f0df9d5029bdd3f790c6"
+  }
+}
