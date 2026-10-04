@@ -134,6 +134,8 @@ try {
   }
 } finally {
   bridge.close("GraphCoder qualification entrypoint finished");
+  const exit = await bridge.waitForExit(5_000);
+  if (exit.kind !== "closed") fail(`GraphCoder bridge returned an invalid exit result: ${JSON.stringify(exit)}`);
 }
 assertLazyCounters(lazyObservationPath, {
   require: process.env.GRAPHCODER_REQUIRE_LAZY_COUNTERS === "1",
