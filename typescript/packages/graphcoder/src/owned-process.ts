@@ -36,6 +36,9 @@ export function spawnOwnedProcess(
 ): ChildProcess {
   const child = spawn(executable, [...args], {
     ...options,
+    // A host must opt into every inherited variable. In particular, a model
+    // adapter or tool must never receive credentials from the launcher.
+    env: options.env ?? {},
     detached: true,
     windowsHide: true,
   });
@@ -114,11 +117,13 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
     }
     const command = await terminateWindowsProcessTree(pid, child, Math.max(graceMs, 1_000));
     if (command.kind !== "terminated") {
-      // The root handle is still owned by this ChildProcess even when the
-      // descendant tree result is uncertain. Closing that root is a bounded
-      // local cleanup step; it never upgrades the typed tree outcome.
-      try { child.kill(); } catch { /* retain the command's uncertainty */ }
-      await waitForClose(child, graceMs);
+      // A live ChildProcess still owns the direct root handle. Closing that
+      // handle is safe even when taskkill could not prove the descendant
+      // result; it never authorizes a PID-only fallback after root exit.
+      if (isAlive(child)) {
+        try { child.kill(); } catch { /* retain the typed uncertainty */ }
+        await waitForClose(child, graceMs);
+      }
       return command;
     }
     const pipeWait = await waitForClose(child, graceMs);

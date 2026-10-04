@@ -49,6 +49,9 @@ if (executable === undefined || executable.trim() === "") {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     process.exitCode = code ?? (signal === null ? 1 : 1);
-    surfaceCleanup(await cleanup());
+    // A naturally exited root no longer has a recoverable Node handle. The
+    // generic owner cannot safely infer descendant ownership from its PID;
+    // native hosts must inject the platform owner when descendant cleanup is
+    // required. Signal paths above still await the shared cleanup operation.
   });
 }

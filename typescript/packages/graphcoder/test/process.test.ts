@@ -159,7 +159,7 @@ describe("JSON-lines process bridge", () => {
     const marker = join(directory, "descendant-alive");
     const pidFile = join(directory, "descendant.pid");
     await writeFile(marker, "", "utf8");
-    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); setInterval(() => fs.appendFileSync(marker, 'x'), 20);";
+    const descendant = "const fs = require('node:fs'); const marker = process.argv[1]; const pidFile = process.argv[2]; fs.writeFileSync(pidFile, String(process.pid)); const tick = setInterval(() => fs.appendFileSync(marker, 'x'), 20); setTimeout(() => { clearInterval(tick); process.exit(0); }, 1500);";
     const systemRoot = process.env.SystemRoot ?? "";
     const detached = process.platform === "win32";
     const owner = `const fs = require('node:fs'); const { spawn } = require('node:child_process'); spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}, process.argv[1], process.argv[2]], { detached: ${detached}, windowsHide: true, env: { PATH: process.env.PATH || '', SystemRoot: ${JSON.stringify(systemRoot)} }, stdio: ['ignore', 'inherit', 'inherit'] }); const deadline = Date.now() + 5000; const wait = setInterval(() => { if (fs.existsSync(process.argv[2]) || Date.now() >= deadline) { clearInterval(wait); process.exit(0); } }, 10);`;
@@ -183,8 +183,9 @@ describe("JSON-lines process bridge", () => {
         await expect(bridge.waitForExit(250)).rejects.toMatchObject({ code: "transport" });
         descendantPid = Number(await readFile(pidFile, "utf8"));
         expect(Number.isSafeInteger(descendantPid)).toBe(true);
-        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
-        await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+        // The fixture has a bounded natural exit. Never turn a fixture PID
+        // into an authorization to kill an unrelated process.
+        await expect(bridge.waitForExit(3_000)).resolves.toMatchObject({ kind: "closed" });
       } else {
         expect(termination.kind).toBe("terminated");
         await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
@@ -192,9 +193,6 @@ describe("JSON-lines process bridge", () => {
       await expect(waitForStableSize(marker)).resolves.toBeGreaterThan(0);
     } finally {
       bridge.close("descendant cleanup fallback");
-      if (process.platform === "win32" && descendantPid !== undefined) {
-        try { process.kill(descendantPid); } catch { /* the fixture may have exited between observation and cleanup */ }
-      }
       await bridge.waitForExit(2_000).catch(() => undefined);
       await rm(directory, { recursive: true, force: true });
     }
@@ -222,7 +220,9 @@ describe("JSON-lines process bridge", () => {
 
   test("reports a failed Windows tree command without claiming cleanup", async () => {
     if (process.platform !== "win32") return;
-    const command = longRunningCommand();
+    // Keep the fixture bounded after the command itself is denied. The test
+    // must never recover a PID and turn it into an unconditional kill.
+    const command = { executable: testRuntimeExecutable(), args: ["-e", "setTimeout(() => {}, 500)"] };
     const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     const previousSystemRoot = process.env.SystemRoot;
     process.env.SystemRoot = join(tmpdir(), "graphcoder-missing-system-root");
@@ -231,7 +231,6 @@ describe("JSON-lines process bridge", () => {
     } finally {
       if (previousSystemRoot === undefined) delete process.env.SystemRoot;
       else process.env.SystemRoot = previousSystemRoot;
-      try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* fixture cleanup is best effort after the typed outcome */ }
       await waitForChildClose(child, 1_000);
     }
   });
@@ -252,7 +251,7 @@ describe("JSON-lines process bridge", () => {
     }
   });
 
-  test("native CLI awaits cleanup on a natural runtime exit", async () => {
+  test("native CLI exits cleanly after a natural runtime exit", async () => {
     const cli = fileURLToPath(new URL("../src/native-cli.ts", import.meta.url));
     const child = spawnChild(process.execPath, [cli, "-e", "process.exit(0)", "--model-fixture=test"], {
       cwd: process.cwd(),
@@ -264,8 +263,8 @@ describe("JSON-lines process bridge", () => {
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", chunk => { stderr += String(chunk); });
     await waitForChildClose(child, 5_000);
-    expect(child.exitCode).toBe(1);
-    expect(stderr).toContain("runtime process cleanup unknown");
+    expect(child.exitCode).toBe(0);
+    expect(stderr).toBe("");
   });
 
   test("delegates runtime ownership to one injected native boundary", async () => {

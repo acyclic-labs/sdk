@@ -231,7 +231,13 @@ export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
     spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
       // Detached roots have a stable Unix process group for the native
       // hand-off. Windows uses the same hand-off to assign the root to a Job.
-      const child = nodeSpawn(executable, [...args], { ...options, detached: true });
+      const child = nodeSpawn(executable, [...args], {
+        ...options,
+        // Native tools receive only explicitly granted variables. This keeps
+        // launcher credentials out of model/tool processes by default.
+        env: options.env ?? {},
+        detached: true,
+      });
       if (child.pid === undefined || child.pid === null) {
         throw new Error("native process owner could not observe the child pid");
       }
