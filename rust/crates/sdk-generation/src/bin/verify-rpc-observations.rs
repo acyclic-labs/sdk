@@ -141,6 +141,39 @@ fn validate_producer_provenance(
     {
         failures.push(format!("{language}: observed authority is not the Rust producer authority"));
     }
+    let authority_closure = expected_authority
+        .get("source_file_hashes")
+        .and_then(Value::as_object);
+    let observed_authority_closure = observed_authority
+        .get("source_file_hashes")
+        .and_then(Value::as_object);
+    if authority_closure.is_none() || authority_closure.is_some_and(|closure| closure.is_empty()) {
+        failures.push(format!("{language}: expected Rust authority source_file_hashes closure is missing"));
+    }
+    if observed_authority_closure.is_none() || observed_authority_closure.is_some_and(|closure| closure.is_empty()) {
+        failures.push(format!("{language}: observed Rust authority source_file_hashes closure is missing"));
+    }
+    if authority_closure != observed_authority_closure {
+        failures.push(format!("{language}: observed Rust authority source_file_hashes closure differs from expected"));
+    }
+    let package_closure = expected_provenance
+        .get("source_file_hashes")
+        .and_then(Value::as_object);
+    let observed_package_closure = observed_provenance
+        .get("source_file_hashes")
+        .and_then(Value::as_object);
+    if package_closure.is_none() || package_closure.is_some_and(|closure| closure.is_empty()) {
+        failures.push(format!("{language}: expected package source_file_hashes closure is missing"));
+    }
+    if observed_package_closure.is_none() || observed_package_closure.is_some_and(|closure| closure.is_empty()) {
+        failures.push(format!("{language}: executed package source_file_hashes closure is missing"));
+    }
+    if package_closure != authority_closure {
+        failures.push(format!("{language}: expected package source_file_hashes closure differs from Rust authority"));
+    }
+    if observed_package_closure != observed_authority_closure {
+        failures.push(format!("{language}: executed package source_file_hashes closure differs from Rust authority"));
+    }
     let Some(expected_generator) = expected_provenance.get("generator").and_then(Value::as_object) else {
         failures.push(format!("{language}: expected producer generator identity is missing"));
         return;
@@ -153,9 +186,11 @@ fn validate_producer_provenance(
         failures.push(format!("{language}: executed package generator identity differs from the Rust producer record"));
     }
     for field in ["generator_lock_sha256", "schema_inputs_sha256"] {
-        if expected_provenance.get(field).is_some()
-            && expected_provenance.get(field) != observed_provenance.get(field)
-        {
+        let expected_value = expected_provenance.get(field);
+        let observed_value = observed_provenance.get(field);
+        if expected_value.is_none() || observed_value.is_none() {
+            failures.push(format!("{language}: executed package {field} provenance is missing"));
+        } else if expected_value != observed_value {
             failures.push(format!("{language}: executed package {field} provenance differs from the producer record"));
         }
     }
