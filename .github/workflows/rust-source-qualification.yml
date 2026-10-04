@@ -309,7 +309,7 @@ jobs:
               -WritePackageManifest \
               -OutputDirectory "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" \
               >"$evidence/generation.stdout" 2>"$evidence/generation.stderr"
-            swift build --package-path "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" -c release \
+            python scripts/run-swift-sanitized.py swift build --package-path "$RUNNER_TEMP/platform-package/${{ matrix.package }}/generated" -c release \
               >"$evidence/swiftpm.stdout" 2>"$evidence/swiftpm.stderr"
             fixture_log="$evidence/fixture-server.log"
             cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --locked --bin fixture-server -- \
@@ -356,3 +356,4 @@ jobs:
           path: ${{ runner.temp }}/platform-package/${{ matrix.package }}
           if-no-files-found: error
           retention-days: 7
+
