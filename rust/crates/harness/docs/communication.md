@@ -44,7 +44,7 @@ receiver through `WaitCancellationSource` when registering the model tools.
 ## Model-facing tools
 
 `communication_tools::communication_tools` registers the version-pinned
-`swarm.message@1` and `swarm.wait@1` definitions. Their JSON schemas are
+`swarm.message@2` and `swarm.wait@2` definitions. Their JSON schemas are
 closed-world contracts: message content is an explicit `FileRef`, message
 targets are one direct parent or child, and waits name direct children, the
 caller's inbox cursor, or a deadline. The runtime assigns message and wait
@@ -53,7 +53,8 @@ select or alter them.
 
 The adapter uses `execute_with_context` and rejects the context-free model
 batch path because task ownership is required for authorization. It returns
-only the typed delivery or wait result to the model. Sender identity, parent
+only the typed delivery or wait result to the model. Inbox wait results include
+the authenticated sender and immutable committed delivery timestamp. Parent
 operation, provider call ID, admissions, and capability checks remain runtime
 provenance and are never appended to a prompt or tool result. Reconciliation
 re-enters the same host operation, so duplicate message publication remains

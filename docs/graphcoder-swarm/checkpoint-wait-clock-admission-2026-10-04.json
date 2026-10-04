@@ -1,0 +1,85 @@
+{
+  "scope": "Shared future clock bounds before durable wait admission",
+  "source_commit": "57ce74ec13f28b6e5f4ec68169fc475f54343f14",
+  "rust_tree_before_and_after": "37f00797a1758f2512670512570862cfb90781c7",
+  "platform": "Windows native",
+  "models": "mocked",
+  "sources_and_suites": [
+    {
+      "sha256": "730bfb3471a64e0f4b9cb3bf5bba43a07d70ec6da096ec96b2794019f82c81e7",
+      "path": "rust/crates/harness/src/communication.rs"
+    },
+    {
+      "sha256": "31050cddc3f352775e5ec5533bd48b4071e44d51e5bf8b9dc65bbcfad2545fbc",
+      "path": "rust/crates/harness/tests/communication_local.rs"
+    }
+  ],
+  "environment": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_BUILD_JOBS": "2"
+  },
+  "runs": [
+    {
+      "failed": 0,
+      "log": {
+        "sha256": "50211fca64c2712ff041ade18a1b807838838a9d4af96cefa53ddd4275b50de2",
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/57ce74ec1/wait-clock-admission-repaired.log"
+      },
+      "build_duration_seconds": 85,
+      "exit_code": 0,
+      "filtered": 305,
+      "passed": 32,
+      "artifact": {
+        "sha256": "42e892498b624beb44a120d8e8e183dbddcdc5d6ed54e2deaa0bcad21a489b2c",
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/57ce74ec1/acyclic_harness-41fc1555027bbefa.exe"
+      },
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --lib communication --target-dir C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/target -j2",
+      "test_duration_seconds": 0.08,
+      "process_session": 32810
+    },
+    {
+      "failed": 0,
+      "log": {
+        "sha256": "0e5212229e58dd52c50ccbb67be072e4541cfbd7fad63ea1e5b5c336962d4557",
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/57ce74ec1/wait-clock-local.log"
+      },
+      "build_duration_seconds": 61,
+      "exit_code": 0,
+      "filtered": 0,
+      "passed": 2,
+      "artifact": {
+        "sha256": "c94e459e02799f182decfdbc0db3c737132d1d09ae88c7e4a8dbca415e757131",
+        "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/57ce74ec1/communication_local-648a4d1497b0c654.exe"
+      },
+      "ignored": 0,
+      "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --test communication_local --target-dir C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/target -j2",
+      "test_duration_seconds": 0.82,
+      "process_session": 93069
+    }
+  ],
+  "prior_failure": {
+    "log": {
+      "sha256": "6efc55cecb7cbcae6ce90117e93110d298ca3aa01a0b2851b0a2194488c3da7f",
+      "path": "C:/Users/varun/.codex/artifacts/graphcoder-root-input-20261004/checkpoints/c36f7e672/wait-clock-admission.log"
+    },
+    "source_commit": "c36f7e6723e1920e13fb9860fe2cc6b43826fa7e",
+    "rust_tree": "57c450bb122293e0171316fdc52dfae146fd3653",
+    "outcome": "Compile failure E0433 in new regression: nonexistent acyclic_stream::Error. Corrected to imported StreamError; no tests executed.",
+    "process_session": 77597,
+    "exit_code": 101
+  },
+  "verified": [
+    "Direct durable store admission and communication wait both enforce the permitted future horizon before append",
+    "An expired timeout cannot suppress validation of an excessive deadline, or vice versa",
+    "Out-of-range declarations create zero wait journal records",
+    "Expired declarations preserve typed timeout/deadline outcomes and cold provider reopen still passes"
+  ],
+  "unmet": [
+    "Injected owner clock versus process wall clock agreement remains an unqualified separate contract",
+    "Operator-originated cancellation capability and public native communication transport remain under review",
+    "Full recursive swarm, effects and installed artifacts remain unqualified"
+  ]
+}
