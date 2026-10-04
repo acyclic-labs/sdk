@@ -10,7 +10,7 @@ use acyclic_sdk_contract_wire::workers::{
     WORKERS_ENUM_DOCS, WORKERS_FIELD_DOCS, WORKERS_MESSAGE_DOCS, WORKERS_SERVICE_DOC,
 };
 use acyclic_sdk_contract_wire::{
-    Cardinality, ContractSpec, FieldSpec, FieldType, explicit_http_family_views,
+    Cardinality, ContractSpec, FieldSpec, FieldType, RouteSpec, explicit_http_family_views,
 };
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -590,6 +590,63 @@ fn path_parameters(path: &str) -> Vec<Value> {
     parameters
 }
 
+fn objects_streaming_metadata(route: &RouteSpec) -> Option<Value> {
+    if route.rpc.starts_with("acyclic.objects.v2.ObjectsService/") {
+        return match (route.request, route.response) {
+            ("PutObjectRequest", "ObjectInfo") => Some(json!({
+                "request_record_type": "PutObjectRequest",
+                "response_record_type": "ObjectInfo",
+                "record_encoding": "canonical protobuf JSON record followed by LF",
+                "accepts_crlf": true,
+                "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+                "request_sequence": ["header", "body*", "complete"],
+                "completion": {"field": "complete", "value": true, "must_be_last": true},
+                "error": {"pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"}},
+                "trailer": {"supported": false},
+                "idempotency": {"field": "header.mutation.idempotencyKey", "body_digest": "complete decoded body bytes and logical header fields; retry key excluded"},
+                "cancellation": {"incomplete_stream": "no publication", "complete_frame_required": true}
+            })),
+            ("GetObjectRequest", "GetObjectResponse") => Some(json!({
+                "request_record_type": "GetObjectRequest",
+                "response_record_type": "GetObjectResponse",
+                "record_encoding": "canonical protobuf JSON record followed by LF",
+                "accepts_crlf": true,
+                "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+                "response_sequence": ["header", "body*", "error?"],
+                "error": {
+                    "pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"},
+                    "in_stream": {"field": "GetObjectResponse.error", "terminal": true, "no_subsequent_records": true}
+                },
+                "trailer": {"record_type": "GetObjectResponse", "field": "error", "terminal": true},
+                "idempotency": {"supported": false},
+                "cancellation": {"caller_abort": "read stream terminates without accepting another record"}
+            })),
+            _ => None,
+        };
+    }
+    if route
+        .rpc
+        .starts_with("acyclic.objects.v2.MultipartService/")
+        && route.request == "UploadPartRequest"
+        && route.response == "UploadedPart"
+    {
+        return Some(json!({
+            "request_record_type": "UploadPartRequest",
+            "response_record_type": "UploadedPart",
+            "record_encoding": "canonical protobuf JSON record followed by LF",
+            "accepts_crlf": true,
+            "frame_limits": {"json_record_bytes": 131072, "body_bytes": 65536},
+            "request_sequence": ["header", "body*", "complete"],
+            "completion": {"field": "complete", "value": true, "must_be_last": true},
+            "error": {"pre_stream": {"media_type": "application/json", "record_type": "ErrorDetail"}},
+            "trailer": {"supported": false},
+            "idempotency": {"field": "header.mutation.idempotencyKey", "body_digest": "complete decoded body bytes and logical header fields; retry key excluded"},
+            "cancellation": {"incomplete_stream": "no publication", "complete_frame_required": true}
+        }));
+    }
+    None
+}
+
 /// Generate an OpenAPI projection from a Rust-owned contract model.
 pub fn document() -> Result<Value, Error> {
     document_from_contract(&acyclic_sdk_contract_wire::ACTORS)
@@ -710,6 +767,10 @@ pub fn document_from_contract_with_projection(
         });
         if contract.message("Error").is_some() {
             responses["default"] = json!({"description": "Canonical service error", "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, "Error"))}}}});
+        } else if contract.package == "acyclic.objects.v2"
+            && contract.message("ErrorDetail").is_some()
+        {
+            responses["default"] = json!({"description": "Canonical service error", "content": {"application/json": {"schema": {"$ref": format!("#/components/schemas/{}", schema_key(contract, "ErrorDetail"))}}}});
         } else {
             responses["default"] = json!({"description": "Canonical service error"});
         }
@@ -744,6 +805,9 @@ pub fn document_from_contract_with_projection(
                 "sse": false,
                 "ndjson": objects_ndjson
             });
+        }
+        if let Some(metadata) = objects_streaming_metadata(route) {
+            operation["x-acyclic-objects-streaming"] = metadata;
         }
         paths.insert(
             route.path.to_owned(),
@@ -1666,16 +1730,157 @@ mod tests {
         assert!(put["requestBody"]["content"]["application/json"].is_null());
         assert!(put["responses"]["200"]["content"]["application/json"].is_object());
         assert_eq!(put["x-acyclic-http-streaming"]["ndjson"], true);
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["request_record_type"],
+            "PutObjectRequest"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["response_record_type"],
+            "ObjectInfo"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["record_encoding"],
+            "canonical protobuf JSON record followed by LF"
+        );
+        assert_eq!(put["x-acyclic-objects-streaming"]["accepts_crlf"], true);
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
+            131072
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
+            65536
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["request_sequence"][0],
+            "header"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["request_sequence"][1],
+            "body*"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["request_sequence"][2],
+            "complete"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["completion"]["must_be_last"],
+            true
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["error"]["pre_stream"]["record_type"],
+            "ErrorDetail"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["trailer"]["supported"],
+            false
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["idempotency"]["field"],
+            "header.mutation.idempotencyKey"
+        );
+        assert_eq!(
+            put["x-acyclic-objects-streaming"]["cancellation"]["complete_frame_required"],
+            true
+        );
+        assert_eq!(
+            put["responses"]["default"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/acyclic_objects_v2_ErrorDetail"
+        );
         let get = &paths["/v2/objects/objects/get"]["post"];
         assert!(get["requestBody"]["content"]["application/json"].is_object());
         assert!(get["responses"]["200"]["content"]["application/x-ndjson"].is_object());
         assert!(get["responses"]["200"]["content"]["application/json"].is_null());
         assert_eq!(get["x-acyclic-http-streaming"]["ndjson"], true);
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["response_record_type"],
+            "GetObjectResponse"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["record_encoding"],
+            "canonical protobuf JSON record followed by LF"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
+            131072
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
+            65536
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["response_sequence"][0],
+            "header"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["response_sequence"][1],
+            "body*"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["response_sequence"][2],
+            "error?"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["error"]["in_stream"]["field"],
+            "GetObjectResponse.error"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["error"]["in_stream"]["terminal"],
+            true
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["trailer"]["field"],
+            "error"
+        );
+        assert_eq!(
+            get["x-acyclic-objects-streaming"]["idempotency"]["supported"],
+            false
+        );
+        assert_eq!(
+            get["responses"]["default"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/acyclic_objects_v2_ErrorDetail"
+        );
         let upload_part = &paths["/v2/objects/multipart/upload-part"]["post"];
         assert!(upload_part["requestBody"]["content"]["application/x-ndjson"].is_object());
         assert!(upload_part["requestBody"]["content"]["application/json"].is_null());
         assert!(upload_part["responses"]["200"]["content"]["application/json"].is_object());
         assert_eq!(upload_part["x-acyclic-http-streaming"]["ndjson"], true);
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["request_record_type"],
+            "UploadPartRequest"
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["response_record_type"],
+            "UploadedPart"
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["record_encoding"],
+            "canonical protobuf JSON record followed by LF"
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["frame_limits"]["json_record_bytes"],
+            131072
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["frame_limits"]["body_bytes"],
+            65536
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["completion"]["field"],
+            "complete"
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["trailer"]["supported"],
+            false
+        );
+        assert_eq!(
+            upload_part["x-acyclic-objects-streaming"]["idempotency"]["field"],
+            "header.mutation.idempotencyKey"
+        );
+        assert_eq!(
+            upload_part["responses"]["default"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/acyclic_objects_v2_ErrorDetail"
+        );
         let create_bucket = &paths["/v2/objects/buckets/create"]["post"];
         assert!(create_bucket["requestBody"]["content"]["application/json"].is_object());
         assert!(create_bucket["responses"]["200"]["content"]["application/json"].is_object());
@@ -1683,6 +1888,20 @@ mod tests {
             doc["components"]["schemas"]["acyclic_objects_v2_ObjectInfo"]["properties"]["lastModified"]
                 ["format"],
             "date-time"
+        );
+        assert_eq!(
+            doc["components"]["schemas"]["acyclic_objects_v2_ObjectInfo"]["properties"]["size"]["x-protobuf-json"],
+            "decimal-string"
+        );
+        assert_eq!(
+            doc["components"]["schemas"]["acyclic_objects_v2_GetObjectResponse"]["properties"]["body"]
+                ["x-protobuf-json"],
+            "base64"
+        );
+        assert_eq!(
+            doc["components"]["schemas"]["acyclic_objects_v2_GetObjectResponse"]["properties"]["error"]
+                ["x-protobuf-oneof"],
+            "frame"
         );
         assert_eq!(
             doc["components"]["schemas"]["acyclic_objects_v2_PutObjectRequest"]["properties"]["body"]

@@ -70,6 +70,13 @@ the Objects family. PUT and multipart upload-part requests emit
 an `application/x-ndjson` success response. The streaming extension is
 `ndjson:true` for all three operations, while unary routes remain JSON.
 
+The projection also exposes the Rust HTTP envelope rules in
+`x-acyclic-objects-streaming`: request and response record types, header/body/
+completion ordering, the `GetObjectResponse.error` terminal trailer, bounded
+JSON/body frame sizes, pre-stream `ErrorDetail` responses, mutation identity
+fields, and cancellation behavior. The default OpenAPI error response now
+references the Rust `ErrorDetail` schema instead of an untyped default.
+
 The focused regression
 `objects_export_preserves_all_routes_external_timestamp_and_stream_direction`
 asserts all three streaming directions and a unary bucket route. A disposable
