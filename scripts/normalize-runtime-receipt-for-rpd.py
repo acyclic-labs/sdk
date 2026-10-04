@@ -100,6 +100,14 @@ def executed_package_binding(receipt: dict[str, Any], language: str, authority: 
     package_model = binding.get("model_digest", binding.get("rust_model_digest"))
     if package_model != authority.get("model_digest"):
         raise ValueError(f"{language}: executed package model digest does not match Rust authority")
+    authority_closure = authority.get("source_file_hashes")
+    package_closure = binding.get("source_file_hashes")
+    if not isinstance(authority_closure, dict) or not authority_closure:
+        raise ValueError(f"{language}: Rust authority source_file_hashes closure is missing")
+    if not isinstance(package_closure, dict) or not package_closure:
+        raise ValueError(f"{language}: executed package source_file_hashes closure is missing")
+    if package_closure != authority_closure:
+        raise ValueError(f"{language}: executed package source_file_hashes closure does not match Rust authority")
     # A generated package may have a larger generated-input closure than the
     # Rust producer closure. Keep those roles separate: only an explicitly
     # named producer closure is required to equal the authority closure.
