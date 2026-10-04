@@ -28,48 +28,56 @@ jobs:
           - package_target: linux-x64-gnu
             rust_target: x86_64-unknown-linux-gnu
             runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
             musl: false
             llvm: false
             native_runtime: true
           - package_target: linux-x64-musl
             rust_target: x86_64-unknown-linux-musl
             runner: blacksmith-4vcpu-ubuntu-2404
+            native_arch: X64
             musl: true
             llvm: false
             native_runtime: true
           - package_target: linux-arm64-gnu
             rust_target: aarch64-unknown-linux-gnu
             runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
             musl: false
             llvm: false
             native_runtime: true
           - package_target: linux-arm64-musl
             rust_target: aarch64-unknown-linux-musl
             runner: blacksmith-4vcpu-ubuntu-2404-arm
+            native_arch: ARM64
             musl: true
             llvm: false
             native_runtime: true
           - package_target: darwin-x64
             rust_target: x86_64-apple-darwin
             runner: blacksmith-6vcpu-macos-15
+            native_arch: X64
             musl: false
             llvm: false
             native_runtime: true
           - package_target: darwin-arm64
             rust_target: aarch64-apple-darwin
             runner: blacksmith-6vcpu-macos-15
+            native_arch: ARM64
             musl: false
             llvm: false
             native_runtime: true
           - package_target: win32-x64
             rust_target: x86_64-pc-windows-msvc
             runner: blacksmith-4vcpu-windows-2025
+            native_arch: X64
             musl: false
             llvm: false
             native_runtime: true
           - package_target: win32-arm64
             rust_target: aarch64-pc-windows-msvc
             runner: blacksmith-4vcpu-windows-2025
+            native_arch: ARM64
             musl: false
             llvm: true
             native_runtime: false
@@ -117,6 +125,16 @@ jobs:
         if: runner.os != 'Windows'
         shell: bash
         run: echo "RUSTC_VERSION=$(rustc -V)" >> "$GITHUB_ENV"
+
+      - name: Require a native runner for runtime qualification
+        if: matrix.native_runtime
+        shell: bash
+        env:
+          EXPECTED_ARCH: ${{ matrix.native_arch }}
+          ACTUAL_ARCH: ${{ runner.arch }}
+        run: |
+          set -euo pipefail
+          test "$ACTUAL_ARCH" = "$EXPECTED_ARCH"
 
       - name: Build and package the Rust native bridge
         shell: bash
