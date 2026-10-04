@@ -1746,6 +1746,13 @@ fn generated_package_manifest(
     // generated archives installable without a feature flag or hand-edited
     // JavaScript package graph.
     object.remove("optionalDependencies");
+    // The generated tree already contains compiled `dist` artifacts.  A
+    // source-package `prepack` hook would try to rebuild from workspace-only
+    // scripts that are deliberately outside the staged package, making
+    // `npm pack` depend on the source checkout instead of the Rust output.
+    if let Some(scripts) = object.get_mut("scripts").and_then(serde_json::Value::as_object_mut) {
+        scripts.remove("prepack");
+    }
     let native_companions = native_companion_dependencies(source_root, &service.family)?;
     if !native_companions.is_empty() {
         object.insert(
