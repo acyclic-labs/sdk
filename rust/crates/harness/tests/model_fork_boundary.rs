@@ -352,11 +352,14 @@ impl ForkAtBatch {
             grant.file.descriptor().clone(),
             grant.file.display_name(),
         )?;
-        foreign.validate()?;
+        assert!(matches!(
+            foreign.validate(),
+            Err(Error::Invalid(message)) if message.contains("missing an exact reader grant")
+        ));
         assert!(matches!(HarnessStorage::from_published_fork(
             self.limits.file_bytes, self.host.clone(), self.stream.clone(),
             issuer.clone(), parent, &foreign,
-        ).await, Err(Error::Unauthorized(message)) if message.contains("another provider")));
+        ).await, Err(Error::Invalid(message)) if message.contains("missing an exact reader grant")));
         self.assert_child_unbound(&seed, issuer).await?;
         let mut changed_prefix = seed.clone();
         changed_prefix.inherited_through_sequence = 0;
