@@ -15,6 +15,8 @@ At source 7d951663e, the native recursive boundary suite passes 3/3, including e
 
 At `d9090b0ac`, the focused memory composition suite passes 12/12, including exact cross-operation rejection provenance and selected inherited-message absence negatives. See [focused rejection evidence](checkpoint-rejection-provenance-strengthening-2026-10-04.json). Communication admission centralization at `85331945d` and bounded history refresh/append-only conformance at `eeafbf7e8` are integrated source changes with verification still pending; neither is counted as qualified by older receipts.
 
+The native local Stream checks at `eeafbf7e8` pass 2/2: adversarial middle-record replacement is rejected by public conformance, and exact committed records survive cold reopen. See [Stream immutability evidence](checkpoint-stream-immutable-native-2026-10-04.json). Harness aggregate refresh, communication admission, and installed swarm gates remain pending.
+
 ## Required integration and qualification gates
 
 1. Preserve exact recursive prefixes and rejection evidence across child follow-up, parallel batches, deeper forks, and restart. Preserve the dedicated native fixture stack and resolve the production capture/publication revision mismatch.

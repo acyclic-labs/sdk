@@ -343,3 +343,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Latest production coordinator: [0/1 coordinator and 1/5 fault cases, archived executables](checkpoint-production-prefix-failures-2026-10-04.json). Captured publication repair remains open.
 
 - Focused rejection provenance: [12/12 native memory composition cases](checkpoint-rejection-provenance-strengthening-2026-10-04.json). Exact cross-operation and missing selected inherited-ID negatives; not cold recursive reopen or installed qualification.
+
+- Native local Stream: [2/2 immutable-record conformance and cold reopen cases](checkpoint-stream-immutable-native-2026-10-04.json). Harness refresh and installed swarm qualification remain separate.
