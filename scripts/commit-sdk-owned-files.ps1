@@ -31,6 +31,28 @@ try {
     if ($branch -ne 'refs/heads/codex/rust-sdk-docs-source') {
         throw "Expected the isolated SDK branch; found $branch."
     }
+    # Match the effective author and committer to the repository's existing
+    # signature policy before producing any Git objects or updating a ref.
+    $signersPath = Join-Path $repositoryRoot '.github/allowed_signers'
+    if (-not (Test-Path -LiteralPath $signersPath -PathType Leaf)) {
+        throw 'Repository signature policy is missing.'
+    }
+    $principals = @(Get-Content -LiteralPath $signersPath | ForEach-Object {
+        $line = $_.Trim()
+        if ($line -and -not $line.StartsWith('#')) {
+            ($line -split '\s+', 2)[0] -split ','
+        }
+    } | Sort-Object -Unique)
+    foreach ($identityKind in @('GIT_AUTHOR_IDENT', 'GIT_COMMITTER_IDENT')) {
+        $identity = Invoke-CheckedGit @('var', $identityKind)
+        if ($identity -notmatch '<([^<>]+)>\s+\d+\s+[+-]\d{4}$') {
+            throw "Cannot parse the effective $identityKind identity."
+        }
+        $identityEmail = $Matches[1]
+        if ($identityEmail -notin $principals) {
+            throw "Effective $identityKind email $identityEmail is absent from .github/allowed_signers. Repair the accidental Git identity override before committing."
+        }
+    }
     $prefix = [IO.Path]::GetFullPath($repositoryRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
     $owned = @()
     foreach ($file in $Files) {
