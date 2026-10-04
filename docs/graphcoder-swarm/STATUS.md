@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Fresh isolated native results exist for Rust source `454797822`: exact frozen request/manifest conformance passes 2/2, read projections pass 2/2, and real local swarm faults pass 1/5. The four failures include manifest command/revision binding and missing child dispatch. These are blocking failures with source-qualified artifacts. See [checkpoint-isolated-native-2026-10-04.json](checkpoint-isolated-native-2026-10-04.json). Final qualification remains incomplete.
+
 Goal active; qualification incomplete. Implementation stays in the managed worktree on `codex/graphcoder-sdk`, based on `31b9ff52d63c91f2b9bf87e16b78ad682d26546f`. No merge occurred.
 
 ## Ownership
