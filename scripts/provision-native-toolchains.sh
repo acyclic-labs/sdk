@@ -98,6 +98,17 @@ case "$language" in
       git clone --filter=blob:none --no-checkout https://github.com/grpc/grpc-swift-protobuf.git "$grpc_swift_protobuf_source"
       git -C "$grpc_swift_protobuf_source" checkout --detach "$grpc_swift_protobuf_revision"
     fi
+    # Git on Windows checks out these upstream shared-source symlinks as files.
+    # Materialize them so SwiftPM sees the same plugin sources on every host.
+    for shared_target in \
+      "$grpc_swift_protobuf_source/Plugins/GRPCProtobufGenerator/PluginsShared" \
+      "$grpc_swift_protobuf_source/Plugins/GRPCProtobufGeneratorCommand/PluginsShared"; do
+      if [[ -f "$shared_target" ]]; then
+        rm -f "$shared_target"
+        cp -R "$grpc_swift_protobuf_source/Plugins/PluginsShared" "$shared_target"
+      fi
+    done
+    # Materialize Swift plugin shared sources before building on Windows.
     # Pin Swift Collections to the exact OSS revision used by grpc-swift-2.
     python3 - "$grpc_swift_source/Package.swift" "$swift_collections_source" <<'PY'
 from pathlib import Path
