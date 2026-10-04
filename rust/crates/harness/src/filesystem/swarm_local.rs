@@ -19,7 +19,7 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::TurnOutput,
     fork::{
-        Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
+        Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
     },
     interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
@@ -251,6 +251,7 @@ pub struct LocalModelForkPlan {
     pub request: LocalForkRequest,
     /// Provider-prepared report retained for publication and recovery.
     pub report: ForkReport,
+    pub(crate) rebind_proof: Option<ForkRebindProof>,
     /// Exact recursive model boundary declaration.
     pub declaration: LocalInheritedModelDeclaration,
     /// Owner authenticated local filesystem host.
@@ -324,6 +325,26 @@ fn child_fork_operation(publication: OperationId, child: OperationId) -> Operati
 }
 
 fn rebind_report_history(report: &mut ForkReport, parent_revision: u64) -> Result<()> {
+    let captured = report
+        .captures
+        .iter()
+        .find_map(|capture| match capture {
+            Capture::Captured(resource)
+                if matches!(&resource.source, ResourceRevision::History(_)) =>
+            {
+                resource.source.as_resource().version()?.parse::<u64>().ok()
+            }
+            _ => None,
+        })
+        .ok_or_else(|| Error::Invalid("fork report has no captured history revision".into()))?;
+    if captured >= parent_revision {
+        return Err(Error::Conflict(
+            "fork report rebind requires an advanced publication revision".into(),
+        ));
+    }
+    if report.original_request_digest.is_none() {
+        report.original_request_digest = Some(crate::contract::canonical_json_digest(&report.request)?);
+    }
     report.request.parent_revision = parent_revision;
     for (selection, capture) in report
         .request
@@ -586,8 +607,39 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 .get(&child_task)
                 .cloned();
             if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
-                report.validate()?;
-                let seed = report.clone().into_seed()?;
+                let source_project = report
+                    .request
+                    .selections
+                    .iter()
+                    .find_map(|selection| match &selection.revision {
+                        ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                        _ => None,
+                    })
+                    .ok_or_else(|| Error::Invalid("fork report has no project selection".into()))?;
+                let parent_reader = Arc::new(FilesystemContentVerifier::new(
+                    self.host.clone(),
+                    storage.verifier(),
+                    storage.owner_scope().clone(),
+                    swarm.config.limits.file_bytes,
+                )?);
+                let preparer = FilesystemForkPreparer::new(
+                    self.host.clone(),
+                    parent.reducer().clone(),
+                    storage.verifier(),
+                    storage.owner_scope().clone(),
+                    source_project,
+                    self.stream_provider.clone(),
+                    parent_reader,
+                )?;
+                let mut original_request = report.request.clone();
+                original_request.parent_revision = report.captured_history_revision()?;
+                let rebind_proof = preparer
+                    .authenticate_rebind_records(&original_request)
+                    .await?;
+                report.validate_with_rebind_proof(&rebind_proof)?;
+                let seed = report
+                    .clone()
+                    .into_seed_with_rebind_proof(&rebind_proof)?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
                     || seed.child != Self::child_authority(&intent)
@@ -616,6 +668,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     publication_operation: publication.operation_id,
                     request,
                     report,
+                    rebind_proof: Some(rebind_proof),
                     declaration,
                     host: self.host.clone(),
                     stream: self.stream.clone(),
@@ -790,6 +843,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     prompt: intent.prompt,
                 },
                 report,
+                rebind_proof: Some(preparer.authenticate_rebind(&request).await?),
                 declaration,
                 host: self.host.clone(),
                 stream: self.stream.clone(),
@@ -1347,7 +1401,19 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 // current stream revision before its append.
                 let current_revision = parent.reducer().revision();
                 if plan.report.request.parent_revision != current_revision {
+                    let proof = plan.rebind_proof.as_ref().ok_or_else(|| {
+                        Error::Conflict("rebound fork plan has no preparation proof".into())
+                    })?;
+                    let old_seed = plan.report.clone().into_seed_with_rebind_proof(proof)?;
                     rebind_report_history(&mut plan.report, current_revision)?;
+                    let rebound_seed = plan.report.clone().into_seed_with_rebind_proof(proof)?;
+                    // Persist an authenticated rebind intent before changing
+                    // either allocation journal, so a crash between report
+                    // publication and seed mutation can be replayed without
+                    // inventing a new allocation.
+                    plan.host
+                        .rebind_fork_seed(&old_seed, &rebound_seed)
+                        .await?;
                 }
                 let seed = swarm
                     .publish_child_seed_with_publication(
@@ -1358,6 +1424,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                         plan.report.clone(),
                         publication.clone(),
                         plan.declaration.clone(),
+                        plan.rebind_proof.as_ref(),
                     )
                     .await?;
                 prepared.push((plan, seed));
@@ -1874,6 +1941,8 @@ enum StoredEvent {
         publication: Option<ModelBatchPublication>,
         #[serde(default)]
         declaration: Option<LocalInheritedModelDeclaration>,
+        #[serde(default)]
+        rebind_proof: Option<ForkRebindProof>,
     },
     ForkAdmitted {
         parent: TaskId,
@@ -1900,6 +1969,8 @@ enum StoredEvent {
         publication: Option<ModelBatchPublication>,
         #[serde(default)]
         declaration: Option<LocalInheritedModelDeclaration>,
+        #[serde(default)]
+        rebind_proof: Option<ForkRebindProof>,
     },
     ForkCompleted {
         child: TaskId,
@@ -3142,6 +3213,7 @@ impl PersistentLocalSwarm {
                         report: Some(report.clone()),
                         publication: Some(publication.clone()),
                         declaration: Some(declaration.clone()),
+                        rebind_proof: None,
                     },
                     observed_tail,
                 )
@@ -3253,6 +3325,7 @@ impl PersistentLocalSwarm {
         seed: &ForkSeed,
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
+        rebind_proof: Option<&ForkRebindProof>,
     ) -> Result<()> {
         request.validate()?;
         if request.child_authority.is_none() || request.child_agent.is_none() {
@@ -3263,7 +3336,11 @@ impl PersistentLocalSwarm {
         let fork_operation = request.fork_operation.ok_or_else(|| {
             Error::Invalid("typed fork publication requires a fork operation identity".into())
         })?;
-        report.validate()?;
+        if let Some(proof) = rebind_proof {
+            report.validate_with_rebind_proof(proof)?;
+        } else {
+            report.validate()?;
+        }
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
             || report.request.operation_id != fork_operation
@@ -3283,7 +3360,11 @@ impl PersistentLocalSwarm {
                 "fork report child binding differs from fork request".into(),
             ));
         }
-        let reported_seed = report.clone().into_seed()?;
+        let reported_seed = if let Some(proof) = rebind_proof {
+            report.clone().into_seed_with_rebind_proof(proof)?
+        } else {
+            report.clone().into_seed()?
+        };
         if &reported_seed != seed {
             return Err(Error::Conflict(
                 "prepared fork report does not match the typed seed".into(),
@@ -3385,6 +3466,7 @@ impl PersistentLocalSwarm {
                 report: Some(report.clone()),
                 publication: Some(publication.clone()),
                 declaration: Some(declaration.clone()),
+                rebind_proof: rebind_proof.cloned(),
             },
             observed_tail,
         )
@@ -3459,6 +3541,7 @@ impl PersistentLocalSwarm {
                 report,
                 publication,
                 declaration,
+                None,
             )
             .await?;
         self.activate_published_child(request, host, stream, issuer, parent, &seed)
@@ -3477,9 +3560,14 @@ impl PersistentLocalSwarm {
         report: ForkReport,
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
+        rebind_proof: Option<&ForkRebindProof>,
     ) -> Result<ForkSeed> {
         request.validate()?;
-        report.validate()?;
+        if let Some(proof) = rebind_proof {
+            report.validate_with_rebind_proof(proof)?;
+        } else {
+            report.validate()?;
+        }
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
             || request.fork_operation != Some(report.request.operation_id)
@@ -3500,9 +3588,20 @@ impl PersistentLocalSwarm {
                 "fork report child authority or agent differs from request".into(),
             ));
         }
-        let preview = report.clone().into_seed()?;
-        self.preadmit_published_child(&request, &report, &preview, publication, declaration)
-            .await?;
+        let preview = if let Some(proof) = rebind_proof {
+            report.clone().into_seed_with_rebind_proof(proof)?
+        } else {
+            report.clone().into_seed()?
+        };
+        self.preadmit_published_child(
+            &request,
+            &report,
+            &preview,
+            publication,
+            declaration,
+            rebind_proof,
+        )
+        .await?;
         let mut child = StreamAggregate::open(
             &stream,
             preview.child.clone(),
@@ -3521,10 +3620,21 @@ impl PersistentLocalSwarm {
             "fork-bind",
             Capabilities::new(["conversation:bind".to_owned()]),
         );
-        let seed = match child
-            .spawn_from_report(parent, report, parent_scope, child_scope)
-            .await
-        {
+        let seed = match if let Some(proof) = rebind_proof {
+            child
+                .spawn_from_report_with_rebind(
+                    parent,
+                    report,
+                    parent_scope,
+                    child_scope,
+                    proof,
+                )
+                .await
+        } else {
+            child
+                .spawn_from_report(parent, report, parent_scope, child_scope)
+                .await
+        } {
             Ok(seed) => seed,
             Err(error) => {
                 self.mark_failed(
@@ -4272,6 +4382,7 @@ fn apply_record(
             report,
             publication,
             declaration,
+            rebind_proof,
         }
         | StoredEvent::ForkAdmitted {
             parent,
@@ -4289,8 +4400,45 @@ fn apply_record(
             report,
             publication,
             declaration,
+            rebind_proof,
             ..
         } => {
+            if rebind_proof.is_some() && (seed.is_none() || report.is_none()) {
+                return Err(Error::Conflict(
+                    "persisted fork rebound proof has no report and seed".into(),
+                ));
+            }
+            if seed.is_some() != report.is_some() {
+                return Err(Error::Conflict(
+                    "persisted fork seed and report must be restored together".into(),
+                ));
+            }
+            if let (Some(seed), Some(report)) = (&seed, &report) {
+                if let Some(proof) = &rebind_proof {
+                    report.validate_with_rebind_proof(proof)?;
+                    if report.clone().into_seed_with_rebind_proof(proof)? != *seed {
+                        return Err(Error::Conflict(
+                            "persisted rebound fork report is not bound to its typed seed".into(),
+                        ));
+                    }
+                } else {
+                    report.validate()?;
+                    if report.clone().into_seed()? != *seed {
+                        return Err(Error::Conflict(
+                            "persisted fork report is not bound to its typed seed".into(),
+                        ));
+                    }
+                }
+                seed.validate()?;
+                if report.request.operation_id != seed.operation_id
+                    || report.request.child != seed.child
+                    || report.request.child_agent != seed.child_agent
+                {
+                    return Err(Error::Conflict(
+                        "persisted fork report and seed operation binding changed".into(),
+                    ));
+                }
+            }
             let parent_session = sessions
                 .get(&parent)
                 .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
@@ -4345,7 +4493,11 @@ fn apply_record(
                 seeds.insert(child, seed);
             }
             if let Some(report) = report {
-                report.validate()?;
+                if let Some(proof) = &rebind_proof {
+                    report.validate_with_rebind_proof(proof)?;
+                } else {
+                    report.validate()?;
+                }
                 if let Some(existing) = reports.get(&child)
                     && existing != &report
                 {
