@@ -5,7 +5,7 @@
 //! mutual TLS with normal certificate and hostname verification. It is local
 //! qualification evidence only; it does not describe a hosted service.
 
-use std::{pin::Pin, sync::Arc};
+use std::pin::Pin;
 
 use acyclic_machines::wire;
 use futures::{Stream, stream};
@@ -104,8 +104,9 @@ fn contract() -> wire::MachineContract {
     wire::MachineContract {
         image: Some(wire::Image {
             kind: wire::ImageKind::Custom as i32,
-            digest: vec![7; 32],
-            reference: String::new(),
+            immutable_reference: Some(wire::image::ImmutableReference::CustomDigest(
+                vec![7; 32],
+            )),
         }),
         capabilities: vec![
             wire::Capability::LiveCheckpoint as i32,
@@ -226,7 +227,7 @@ impl wire::machines_service_server::MachinesService for AllRoutesMachinesFixture
             children: vec![machine([4; 16]), machine([5; 16])],
             operation: Some(operation(FIXTURE_OPERATION)),
             contract: Some(contract()),
-            fidelity: wire::ForkFidelity::BestEffort as i32,
+            fidelity: wire::ForkFidelity::MemoryAndDisk as i32,
         }))
     }
     async fn suspend(
