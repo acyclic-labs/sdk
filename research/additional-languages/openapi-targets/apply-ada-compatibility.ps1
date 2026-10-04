@@ -37,8 +37,11 @@ package $rootUnit is
    subtype ByteArray is UString;
    package ByteArray_Vectors is new Ada.Containers.Vectors (Positive, ByteArray);
    package UString_Vectors is new Ada.Containers.Vectors (Positive, UString);
+   subtype UString_Map is UString_Vectors.Vector;
+   subtype Nullable_Date is Nullable_UString;
    type One_Of_String_Integer is new Ada.Strings.Unbounded.Unbounded_String;
    type Value_Type is null record;
+   subtype Object is Value_Type;
    package Value_Vectors is new Ada.Containers.Vectors (Positive, Value_Type);
    subtype Value_Array_Type is Value_Vectors.Vector;
    function To_String (Value : Value_Type) return String;
@@ -112,6 +115,7 @@ package $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.ByteArray_Vectors.Vector);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString_Vectors.Vector);
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector);
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString_Vectors.Vector);
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString);
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer);
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString);
@@ -129,6 +133,7 @@ package body $rootUnit.Streams is
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.ByteArray_Vectors.Vector) is begin Value.Clear; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString_Vectors.Vector) is begin Value.Clear; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.ByteArray_Vectors.Vector) is begin null; end;
+   procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString_Vectors.Vector) is begin null; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.UString) is begin null; end;
    procedure Serialize (Into : in out Output_Stream'Class; Name : in String; Value : in $rootUnit.One_Of_String_Integer) is begin null; end;
    procedure Deserialize (From : in $rootUnit.Value_Type; Name : in String; Value : out $rootUnit.UString) is begin Value := $rootUnit.To_UString (""); end;
@@ -148,6 +153,7 @@ end $rootUnit.Streams;
         $text = $text.Replace("oneOf<string,integer>", "$rootUnit.One_Of_String_Integer")
         $text = $text.Replace("$rootUnit.Models.swagger::ByteArray", "$rootUnit.ByteArray")
         $text = $text.Replace('swagger::ByteArray_Vectors.Vector', "$rootUnit.ByteArray_Vectors.Vector")
+        $text = $text.Replace("Mime_1'Access", "$rootUnit.Mime_Json")
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-clients.ads')) {
             $text = [regex]::Replace($text, "(?m)^with $rootUnit\.Clients;\r?\n", '')
             $text = $text.Replace("new $rootUnit.Clients.Client_Type", "new $rootUnit.Client_Base_Type")
@@ -162,6 +168,10 @@ end $rootUnit.Streams;
         if ($text -notmatch [regex]::Escape("$rootUnit.Is_Null(")) {
             $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
         }
+        # Some OAG Ada templates already qualify Is_Null with the root unit and
+        # leave a space before the argument.  The generic receiver rewrite above
+        # must not turn that into Is_Null(Root) (Argument).
+        $text = $text.Replace("$rootUnit.Is_Null($rootUnit) (", "$rootUnit.Is_Null (")
         if ($text -notmatch [regex]::Escape("$rootUnit.Set_Path (")) {
             $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path \(", "$rootUnit.Set_Path (`$1,")
         }
