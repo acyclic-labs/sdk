@@ -14,7 +14,7 @@ use reqwest::{
 
 const REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
-/// Authenticated native HTTP client for the logical Objects v2 gateway.
+/// Authenticated HTTP client for the logical Objects v2 gateway.
 #[derive(Clone)]
 pub struct HttpObjects {
     transport: Client,
