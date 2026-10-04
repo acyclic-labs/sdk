@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Fresh production swarm and faults](checkpoint-current-production-swarm-2026-10-04.json) records actual Windows execution at `ee7cb5f40`: recursive model swarm 0/1 and recovery faults 1/5, with no ignored tests. The inherited-history admission failure, missing child dispatches, and cancellation dispatch timeout remain required failures. Logs and executables were copied into an immutable checkpoint directory and SHA256 digests recorded before further source changes.
+
 [Fork rebind concurrency review](checkpoint-fork-rebind-review-2026-10-04.json) holds isolated checkpoint `f5dd2a108`: seed validation and replacement do not use the same pinned generation, and the publication lookup discards errors. This is source-review evidence, not a test result. Deterministic concurrent-owner and corrupt-publication tests are required before integration.
 
 Fork failure diagnosis at `2e0ed9bd9`: the prior native suite's attestation error came from its forged-request path expecting preparation success. Its missing-child assertion failed before preparation because Filesystem flattened Missing to Storage. These observations do not prove valid-fork rejection or premature allocation. The early-denial fixture and typed error mapping are repaired; fresh qualification remains pending. The C-drive attempt (29742) executed zero tests due to archive disk exhaustion; its source-bound failed log is retained at `D:/graphcoder-builds/root-fork-20261004/checkpoints/2e0ed9bd9/attempt-fork-authorization.json`.
