@@ -54,7 +54,10 @@ reported fields are checked as measured deltas, and `--lazy-observation` then
 requires all three deltas to be zero. The native stage driver
 forwards `GRAPHCODER_LAZY_OBSERVATION_PATH` and, in strict mode,
 `GRAPHCODER_REQUIRE_LAZY_COUNTERS=1` to the runtime, then checks that the
-receipt names the runtime executable and `list-1` request. `harness-model-consumer.mjs` uses a local
+receipt names the runtime executable and `list-1` request. Its installed-consumer
+phase also drives `open`, `activity`, and `file` through the package terminal
+export over the same real JSON-lines runtime bridge and validates the typed
+projections. `harness-model-consumer.mjs` uses a local
 assertion provider only to observe the installed Harness boundary; it does not
 qualify any production model provider. The installed Harness artifact must
 include the generated native `prepareModelRequest` export; a missing export is

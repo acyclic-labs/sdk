@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bridgeEnvironment, commandContext, framedPromptCount, installChildSignalCleanup } from "./graphcoder-production-pty.mjs";
+import { assertTypedTerminalRecords, bridgeEnvironment, commandContext, framedPromptCount, installChildSignalCleanup } from "./graphcoder-production-pty.mjs";
 
 test("PTY environment keeps only platform and explicit GraphCoder variables", () => {
   const filtered = bridgeEnvironment({
@@ -40,6 +40,20 @@ test("PTY command context recovers dynamic identities from terminal projections"
     writeback_operation_id: "op-1",
     workspace_generation: "7",
   });
+});
+
+test("PTY transcript validation requires typed native projections and exit", () => {
+  const transcript = [
+    '{"ok":true,"value":{"selectedSession":{"id":"session-1"}}}',
+    '{"ok":true,"value":[{"id":"activity-1"}]}',
+    '{"ok":true,"value":{"unifiedDiff":"fixture"}}',
+    '{"ok":true,"value":{"mediaType":"text/plain"}}',
+    '{"ok":true,"value":{"applied":true}}',
+    '{"ok":true,"value":{"state":"cancelled"}}',
+    '{"ok":true,"exited":true}',
+  ].join("\r\n");
+  assert.equal(assertTypedTerminalRecords(transcript).length, 7);
+  assert.throws(() => assertTypedTerminalRecords(transcript.replace('"applied":true', '"applied":false')), /writeback receipt/);
 });
 
 test("PTY child signal listeners forward termination and are removed after close handling", () => {

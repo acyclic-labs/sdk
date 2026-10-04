@@ -249,9 +249,15 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
   catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`could not install package export consumer junction: ${error instanceof Error ? error.message : String(error)}`); }
   const resolver = createRequire(join(consumerRoot, "consumer.cjs"));
   let modulePath;
+  let terminalPath;
   try { modulePath = resolver.resolve("@acyclic-labs/graphcoder/node"); }
   catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`installed package ./node export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
-  const { createNodeGraphCoderConnection } = await import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`);
+  try { terminalPath = resolver.resolve("@acyclic-labs/graphcoder/terminal"); }
+  catch (error) { rmSync(consumerRoot, { recursive: true, force: true }); fail(`installed package ./terminal export could not be resolved: ${error instanceof Error ? error.message : String(error)}`); }
+  const [{ createNodeGraphCoderConnection }, { runCliWithTransport }] = await Promise.all([
+    import(`${pathToFileURL(modulePath).href}?qualification=${Date.now()}`),
+    import(`${pathToFileURL(terminalPath).href}?qualification=${Date.now()}`),
+  ]);
   let exitResolve;
   const exited = new Promise(resolvePromise => { exitResolve = resolvePromise; });
   const connection = createNodeGraphCoderConnection({
@@ -262,6 +268,26 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
     onDiagnostic: event => { if (event.kind === "exit") exitResolve(event); },
   });
   try {
+    const terminalOutput = [];
+    const terminalStatus = await withDeadline(runCliWithTransport(
+      [`open ${sessionId}`, "activity", "file graphcoder-fixture.txt"],
+      connection.transport,
+      { output: { write(value) { terminalOutput.push(String(value)); return true; } } },
+    ), "installed terminal adapter");
+    if (terminalStatus !== 0) fail(`installed terminal adapter returned ${terminalStatus}`);
+    const terminalLines = terminalOutput.filter(line => line.trim() !== "").map(line => {
+      try { return JSON.parse(line); }
+      catch (error) { fail(`installed terminal adapter emitted invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+    });
+    if (terminalLines.length !== 3 || terminalLines.some(line => line.ok !== true)) {
+      fail(`installed terminal adapter emitted an unsuccessful result: ${JSON.stringify(terminalLines)}`);
+    }
+    if (terminalLines[0].value?.selectedSession?.id !== sessionId || terminalLines[1].value?.length === 0) {
+      fail(`installed terminal adapter did not decode the native session/activity: ${JSON.stringify(terminalLines)}`);
+    }
+    if (terminalLines[2].value?.path !== "graphcoder-fixture.txt" || terminalLines[2].value?.mediaType !== "text/plain") {
+      fail(`installed terminal adapter did not decode the native file projection: ${JSON.stringify(terminalLines[2])}`);
+    }
     const snapshot = await withDeadline(connection.transport.openSession(sessionId), "installed consumer open_session");
     if (snapshot.workspaceGeneration <= 0n || snapshot.workspaceGeneration !== BigInt(generation)) fail(`installed consumer decoded an unexpected workspace generation: ${snapshot.workspaceGeneration}`);
     assertNoAttachments(snapshot, "installed consumer snapshot");
@@ -269,7 +295,13 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
     if (typeof file.generation !== "bigint" || file.generation !== snapshot.workspaceGeneration) fail(`installed consumer did not preserve BigInt file generation: ${String(file.generation)}`);
     if (file.mediaType !== "text/plain" || Buffer.from(file.bytes).toString("utf8") !== "fixture:stage") fail(`installed consumer decoded unexpected file body: ${JSON.stringify({ path: file.path, mediaType: file.mediaType, bytes: [...file.bytes] })}`);
     assertNoAttachments(file, "installed consumer file");
-    return { generation: file.generation.toString(), mediaType: file.mediaType, bytes: [...file.bytes], package: packageIdentity };
+    return {
+      generation: file.generation.toString(),
+      mediaType: file.mediaType,
+      bytes: [...file.bytes],
+      terminal: { status: terminalStatus, lines: terminalLines.length },
+      package: packageIdentity,
+    };
   } finally {
     connection.bridge.close("native stage qualification finished");
     let timer;

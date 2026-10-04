@@ -37,6 +37,7 @@
     "the retry reuses the original operation identity",
     "the staged file has the exact fixture bytes and media type",
     "the installed createNodeGraphCoderConnection transport decodes readFile with a nonzero BigInt generation",
+    "the installed terminal export drives open, activity, and file through the same native JSON-lines bridge and validates typed projections",
     "installed consumer requests have bounded deadlines and the bridge process exit is observed before cleanup",
     "reopen returns the completed durable session",
     "activity is loaded through its own public route",
@@ -44,7 +45,7 @@
   ],
   "evidence": {
     "execution_kind": "native",
-    "artifact_binding": "The suite descriptor must include the exact native executable digest, qualified source commit/tree, build ID, build timestamp, and unchanged post-run digest.",
+    "artifact_binding": "The suite descriptor must include the exact native executable digest, installed package archive and manifest digests, suite descriptor digest, qualified source commit/tree, build ID, build timestamp, and unchanged post-run digest.",
     "fixture_boundary": "This scenario may support a native fixture checkpoint, but it cannot satisfy production model or full GraphCoder terminal package rows."
   }
 }

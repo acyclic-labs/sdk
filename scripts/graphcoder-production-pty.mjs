@@ -102,6 +102,35 @@ export function commandContext(transcript) {
   return context;
 }
 
+function terminalRecords(transcript) {
+  const records = [];
+  for (const line of stripAnsi(transcript).split(/\r?\n/u)) {
+    const start = line.indexOf("{");
+    if (start < 0) continue;
+    try {
+      const value = JSON.parse(line.slice(start));
+      if (value && typeof value === "object" && typeof value.ok === "boolean") records.push(value);
+    } catch {
+      // Prompt redraws and diagnostics can share a line with terminal output;
+      // required markers and typed projection checks reject omission.
+    }
+  }
+  return records;
+}
+
+export function assertTypedTerminalRecords(transcript) {
+  const records = terminalRecords(transcript);
+  const values = records.filter(record => record.ok === true).map(record => record.value);
+  if (!values.some(value => value?.selectedSession && typeof value.selectedSession.id === "string")) fail("PTY transcript omitted the typed selected-session projection");
+  if (!values.some(value => Array.isArray(value))) fail("PTY transcript omitted a typed page projection");
+  if (!values.some(value => value?.changeBody?.unifiedDiff || value?.unifiedDiff)) fail("PTY transcript omitted a typed diff projection");
+  if (!values.some(value => value?.fileBody?.mediaType || value?.mediaType)) fail("PTY transcript omitted a typed file projection");
+  if (!values.some(value => value?.writeback?.applied === true || value?.applied === true)) fail("PTY transcript omitted an applied writeback receipt");
+  if (!values.some(value => value?.selectedSession?.state === "cancelled" || value?.state === "cancelled")) fail("PTY transcript omitted the cancelled session state");
+  if (!records.some(record => record.exited === true)) fail("PTY transcript omitted the typed exit record");
+  return records;
+}
+
 function expandCommand(command, transcript) {
   return command.replace(/\{\{([a-z_]+)\}\}/g, (_, name) => {
     const value = commandContext(transcript)[name];
@@ -209,6 +238,7 @@ export async function run(commands) {
     const transcript = state.output;
     const missing = [PROMPT, ...REQUIRED_MARKERS].filter(marker => !transcript.includes(marker));
     if (missing.length > 0) fail(`missing transcript markers: ${missing.join(", ")}`);
+    assertTypedTerminalRecords(transcript);
     process.stdout.write(transcript);
   } catch (error) {
     try {

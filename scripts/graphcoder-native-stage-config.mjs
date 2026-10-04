@@ -34,8 +34,10 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
   }
   const driver = fileURLToPath(new URL("./graphcoder-native-stage-e2e.mjs", import.meta.url));
   const packageContract = fileURLToPath(new URL("./fixtures/graphcoder-qualification/package-contract.mjs", import.meta.url));
+  const suiteDescriptor = fileURLToPath(new URL("../docs/graphcoder-swarm/graphcoder-native-scenarios.json", import.meta.url));
   const driverArtifact = describeArtifact({ path: driver, sourceCwd: source, buildId: `${id}-driver`, builtAt, gitOps });
   const packageContractArtifact = describeArtifact({ path: packageContract, sourceCwd: source, buildId: `${id}-package-contract`, builtAt, gitOps });
+  const suiteDescriptorArtifact = describeArtifact({ path: suiteDescriptor, sourceCwd: source, buildId: `${id}-suite-descriptor`, builtAt, gitOps });
   return {
     id: `native-stage-${id}`,
     descriptor: "docs/graphcoder-swarm/graphcoder-native-scenarios.json",
@@ -53,7 +55,7 @@ export function makeNativeStageConfig({ sourceCwd, packageArchive, runtime, pack
         GRAPHCODER_REQUIRE_LAZY_COUNTERS: "1",
       },
     },
-    artifacts: [nativeArtifact, packageArtifact, driverArtifact, packageContractArtifact],
+    artifacts: [nativeArtifact, packageArtifact, driverArtifact, packageContractArtifact, suiteDescriptorArtifact],
     expected_exit_code: 0,
     output: outputPath,
   };
