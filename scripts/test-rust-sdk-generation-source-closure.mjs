@@ -92,6 +92,7 @@ test("every generation binary declared by Cargo has a source file", () => {
     "sdk-generation",
     "sdk-platform-receipt",
     "sdk-stream-native-receipt",
+    "verify-rpc-observations",
   ]);
   for (const entry of entries) {
     assert.equal(existsSync(join(root, "rust/crates/sdk-generation", entry.path)), true, entry.path);
