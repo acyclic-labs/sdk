@@ -202,6 +202,22 @@ fn write_qualification_receipt(
     if seed_graph_count != rpc_scenario_count {
         return Err("Rust-owned semantic seed graph count differs from RPC scenarios".to_owned());
     }
+    let seed_steps = seed_graph
+        .get("steps")
+        .and_then(Value::as_array)
+        .ok_or("Rust-owned semantic seed graph is missing steps")?;
+    if seed_steps.len() as u64 != seed_graph_count {
+        return Err("Rust-owned semantic seed graph step count differs from count".to_owned());
+    }
+    for (index, step) in seed_steps.iter().enumerate() {
+        let order = step
+            .get("order")
+            .and_then(Value::as_u64)
+            .ok_or("Rust-owned semantic seed graph step is missing order")?;
+        if order != index as u64 + 1 {
+            return Err("Rust-owned semantic seed graph order is not contiguous".to_owned());
+        }
+    }
     let seed_graph_bytes = serde_json::to_vec(&seed_graph)
         .map_err(|error| format!("encode semantic seed graph evidence: {error}"))?;
     let status = if [(&snippets, &snippets_bytes), (&fixtures, &fixtures_bytes)]
