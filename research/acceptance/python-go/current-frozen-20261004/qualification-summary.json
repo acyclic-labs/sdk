@@ -1,0 +1,20 @@
+{
+  "schema": "acyclic.sdk.python-go.qualification-evidence.v1",
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "rust_model_source_revision_kind": "rust-model-sha256",
+  "package": {
+    "python_wheel_sha256": "8496E7D67AF04F60E6197BAF9FF521F79D3B28F62B71A119541E2077F73505AD",
+    "go_module_archive_sha256": "DA8F60F35AEC8D0FA665264F12BB51BBEDCF843F699C73819D6686EFDCFD245B"
+  },
+  "remote_semantic_runs": [
+    {"consumer":"python","family":"actors+stream","total":18,"passed":18,"failed":0,"transport":"grpc","execution_mode":"remote"},
+    {"consumer":"python","family":"harness","total":5,"passed":5,"failed":0,"transport":"grpc","execution_mode":"remote"},
+    {"consumer":"python","family":"inference","total":14,"passed":14,"failed":0,"transport":"grpc+mtls","execution_mode":"remote"},
+    {"consumer":"python","family":"machines","total":19,"passed":19,"failed":0,"transport":"grpc+mtls","execution_mode":"remote"},
+    {"consumer":"go","family":"actors+stream","total":18,"passed":18,"failed":0,"transport":"grpc","execution_mode":"remote","semantic":"create actor; append; idempotency recovery; tail; read; follow cancellation"},
+    {"consumer":"go","family":"inference","total":4,"passed":4,"failed":0,"transport":"grpc+mtls","execution_mode":"remote","semantic":"generate; inspect; cancel; watch [0,1]"},
+    {"consumer":"go","family":"machines","total":19,"passed":19,"failed":0,"transport":"grpc+mtls","execution_mode":"remote","semantic":"all advertised methods plus watch states"}
+  ],
+  "full_fixture_python_probe": {"total":73,"passed":65,"failed":8,"execution_mode":"remote","fixture_binary_sha256":"1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6","failed_methods":["objects.GetObject","stream.ChildrenPage","stream.Commit","stream.ReadCommit","filesystem.Export","harness.Replay","harness.Observe","harness.Cancel"]}
+}
+
