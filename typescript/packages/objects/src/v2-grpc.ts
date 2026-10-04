@@ -1,4 +1,5 @@
 import { rootCertificates } from "node:tls";
+import { validate_objects_v2_http_endpoint } from "../generated/wasm/acyclic_objects_wasm.js";
 import { OBJECTS_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { createClient, ConnectError, type Interceptor } from "@connectrpc/connect";
 import { create, fromBinary, toBinary, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
@@ -24,8 +25,13 @@ function grpcError(error: unknown): ObjectsV2Error {
 
 /** Complete Node/Bun clients, including client-streaming PUT/parts and server-streaming GET. */
 export function createObjectsV2GrpcClients(options: ObjectsV2GrpcOptions) {
-  const endpoint = new URL(options.endpoint);
-  if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new TypeError("gRPC endpoint must be HTTPS without credentials, query, or fragment");
+  let endpoint: URL;
+  try {
+    validate_objects_v2_http_endpoint(options.endpoint);
+    endpoint = new URL(options.endpoint);
+  } catch {
+    throw new TypeError("invalid Objects gRPC endpoint");
+  }
   validateRustOwnedCredentialPolicy(options.token);
   const maximum = options.maximumMessageBytes ?? 16 * 1024 * 1024;
   if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError("maximumMessageBytes must be a positive safe integer");

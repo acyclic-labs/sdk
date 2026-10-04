@@ -145,6 +145,10 @@ pub fn is_stream_error_code(value: &str) -> bool {
 /// Unknown values and a commit-only alias on another route return no value.
 #[wasm_bindgen(js_name = publicHttpErrorCode)]
 pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
+    let route = match route {
+        "read_commit" => "commits/read",
+        other => other,
+    };
     let code = match raw {
         "stream_not_found" => "stream_not_found",
         "destination_exists" => "destination_exists",
@@ -162,7 +166,13 @@ pub fn public_http_error_code(raw: &str, route: &str) -> Option<String> {
                 }
             }
             StreamErrorCode::AlreadyExists => "destination_exists",
-            StreamErrorCode::PrefixNotRetained => "prefix_not_retained",
+            StreamErrorCode::PrefixNotRetained => {
+                if route == "commit" {
+                    "invalid_argument"
+                } else {
+                    "prefix_not_retained"
+                }
+            },
             StreamErrorCode::OutOfRange => "out_of_range",
             StreamErrorCode::IdempotencyMismatch => "idempotency_mismatch",
             StreamErrorCode::Capacity => "capacity_exhausted",
@@ -1282,6 +1292,18 @@ mod tests {
         assert_eq!(
             public_http_error_code("stream_not_found", "read").as_deref(),
             Some("stream_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("not_found", "read_commit").as_deref(),
+            Some("commit_not_found")
+        );
+        assert_eq!(
+            public_http_error_code("prefix_not_retained", "commit").as_deref(),
+            Some("invalid_argument")
+        );
+        assert_eq!(
+            public_http_error_code("prefix_not_retained", "append").as_deref(),
+            Some("prefix_not_retained")
         );
         assert_eq!(public_http_error_code("commit_not_found", "read"), None);
         assert_eq!(public_http_error_code("unknown", "read"), None);

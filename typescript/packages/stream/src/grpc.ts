@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { is_stream_error_code, projectGrpcReadResponse, projectMemoryResponse, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, projectGrpcReadResponse, projectMemoryResponse, publicHttpErrorCode, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError } from "./types.js";
@@ -146,6 +146,7 @@ function providerError(error: unknown, operation: string): Error {
       break;
     case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
   }
-  if (code === "prefix_not_retained" && operation === "commit") code = "invalid_argument";
+  const projected = publicHttpErrorCode(error.rawMessage, operation);
+  if (projected !== undefined) code = projected;
   return new StreamError(code, error.rawMessage);
 }
