@@ -938,7 +938,7 @@ fn run_rust(
         workspace_tail = workspace_tail.trim_start(),
     );
     fs::write(&package_manifest, package_manifest_contents)
-    .map_err(|error| format!("write SDK package manifest: {error}"))?;
+        .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
         b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\n",
@@ -951,9 +951,7 @@ fn run_rust(
     {
         let entry = entry.map_err(|error| format!("read SDK crate entry: {error}"))?;
         let crate_source = entry.path();
-        if !crate_source.join("Cargo.toml").is_file()
-            || entry.file_name() == "sdk-examples"
-        {
+        if !crate_source.join("Cargo.toml").is_file() || entry.file_name() == "sdk-examples" {
             continue;
         }
         copy_dir_recursive(&crate_source, &bundled_crates.join(entry.file_name()))?;
