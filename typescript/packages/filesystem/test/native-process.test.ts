@@ -47,6 +47,8 @@ describe("native process owner adapter", () => {
       child.once("error", reject);
     });
     expect(terminateCalls).toBe(1);
+    await expect(owner.terminate(child)).resolves.toEqual({ kind: "terminated", pid: 42 });
+    expect(terminateCalls).toBe(1);
   });
 
   test("closes after uncertain reader cleanup while retaining the token", async () => {

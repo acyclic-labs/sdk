@@ -73,6 +73,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
     stopping: boolean;
     failed: boolean;
     termination: Promise<NativeProcessTermination> | undefined;
+    terminal: NativeProcessTermination | undefined;
     stdoutBlocked: boolean;
     stderrBlocked: boolean;
     resume: () => void;
@@ -112,6 +113,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         stopping: false,
         failed: false,
         termination: undefined as Promise<NativeProcessTermination> | undefined,
+        terminal: undefined as NativeProcessTermination | undefined,
         stdoutBlocked: false,
         stderrBlocked: false,
         resume: (): void => undefined,
@@ -147,7 +149,10 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         } satisfies NativeProcessTermination));
         state.termination = operation;
         void operation.then(result => {
-          if (result.kind === "terminated") tokens.delete(child);
+          if (result.kind === "terminated") {
+            tokens.delete(child);
+            state.terminal = result;
+          }
           if (state.termination === operation) state.termination = undefined;
           state.finish();
         });
@@ -177,6 +182,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         void operation.then(result => {
           if (result.kind === "terminated") {
             tokens.delete(child);
+            state.terminal = result;
             state.finish();
           } else if (state.termination === operation) {
             state.termination = undefined;
@@ -238,6 +244,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
     },
     terminate(child, graceMs = 250) {
       const state = states.get(child);
+      if (state?.terminal !== undefined) return Promise.resolve(state.terminal);
       const token = tokens.get(child);
       if (token === undefined) {
         if (state?.termination !== undefined) return state.termination;
@@ -274,6 +281,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         // Retire the token before emitting close/exit so a re-entrant close
         // listener cannot dispatch a second native termination request.
         tokens.delete(child);
+        if (state !== undefined) state.terminal = { kind: "terminated", pid: child.pid ?? -1 };
         state?.finish();
         return { kind: "terminated", pid: child.pid ?? -1 };
       });
