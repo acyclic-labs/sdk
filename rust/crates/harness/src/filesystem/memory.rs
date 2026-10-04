@@ -101,6 +101,8 @@ pub struct HarnessStorage<P, A, O> {
     issuer: AuthorityIssuer,
     stream: StreamClient<P>,
     conversation: Authority,
+    inherited_prefix:
+        Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
     session_id: SessionId,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
@@ -804,6 +806,11 @@ where
                 "fork child seed differs from the published parent fork".into(),
             ));
         }
+        let parent_agent = parent
+            .reducer()
+            .conversation()
+            .and_then(|conversation| conversation.agent)
+            .ok_or_else(|| Error::Conflict("fork parent conversation is unbound".into()))?;
         if volume.provider() != &host.provider {
             return Err(Error::Invalid(
                 "fork private volume belongs to another provider".into(),
@@ -865,7 +872,9 @@ where
         )
         .await?;
         child.bind_published_child(parent, seed, scope).await?;
-        Self::from_providers_with_reads(
+        let inherited_prefix =
+            crate::filesystem::execution_journal::authenticated_inherited_prefix(seed, parent_agent)?;
+        Self::from_providers_with_session_and_reads_and_prefix(
             seed.child_agent,
             maximum_file_bytes,
             host,
@@ -874,6 +883,8 @@ where
             seed.child.clone(),
             issuer,
             Capabilities::new(inherited_reads),
+            SessionId::new(),
+            inherited_prefix,
         )
         .await
     }
@@ -958,6 +969,33 @@ where
         inherited_reads: Capabilities,
         session_id: SessionId,
     ) -> Result<Self> {
+        Self::from_providers_with_session_and_reads_and_prefix(
+            agent,
+            maximum_file_bytes,
+            host,
+            stream,
+            volume,
+            conversation,
+            issuer,
+            inherited_reads,
+            session_id,
+            None,
+        )
+        .await
+    }
+
+    async fn from_providers_with_session_and_reads_and_prefix(
+        agent: AgentId,
+        maximum_file_bytes: u64,
+        host: Arc<FilesystemHost<A, O>>,
+        stream: StreamClient<P>,
+        volume: VolumeRef,
+        conversation: Authority,
+        issuer: AuthorityIssuer,
+        inherited_reads: Capabilities,
+        session_id: SessionId,
+        inherited_prefix: Option<crate::filesystem::execution_journal::AuthenticatedInheritedPrefix>,
+    ) -> Result<Self> {
         validate_storage_owner(agent, maximum_file_bytes, &volume)?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         if session_id.into_bytes() == [0; 16] {
@@ -1024,8 +1062,7 @@ where
             scope.clone(),
             maximum_file_bytes,
         )?);
-        let journal = Arc::new(
-            FilesystemExecutionJournal::new(
+        let mut journal = FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
                 volume.clone(),
@@ -1034,8 +1071,9 @@ where
                 maximum_file_bytes,
             )?
             .with_session_id(session_id)?
-            .with_input_verifier(input.clone()),
-        );
+            .with_input_verifier(input.clone());
+        journal = journal.with_authenticated_inherited_prefix(inherited_prefix.clone());
+        let journal = Arc::new(journal);
         let publisher = Arc::new(FilesystemContentPublisher {
             host: Arc::clone(&host),
             volume: volume.clone(),
@@ -1058,6 +1096,7 @@ where
             issuer,
             stream,
             conversation,
+            inherited_prefix,
             session_id,
             maximum_file_bytes,
             memory_store,
@@ -1845,6 +1884,7 @@ fn derived_operation_id(turn: OperationId, domain: &[u8]) -> OperationId {
 mod tests {
     use super::*;
     use crate::{
+        filesystem::execution_journal::REJECTION_JOURNAL_BINDING,
         interaction::Interaction,
         Outcome,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
@@ -1905,9 +1945,14 @@ mod tests {
             let events = if call == 0 {
                 vec![
                     Ok(ModelEvent::ToolCall {
-                        call_id: "history-invalid".into(),
+                        call_id: "history-invalid-1".into(),
                         name: "acyclic.stage_file".into(),
-                        arguments: json!({"parameters": {"text": "forged"}}),
+                        arguments: json!({"parameters": {"text": "forged one"}}),
+                    }),
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "history-invalid-2".into(),
+                        name: "acyclic.stage_file".into(),
+                        arguments: json!({"parameters": {"text": "forged two"}}),
                     }),
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
@@ -1956,8 +2001,11 @@ mod tests {
             .storage()
             .selected_rejection_evidence(&state, &selection, Limits::default())
             .await?;
-        assert_eq!(evidence.len(), 1);
-        assert_eq!(evidence[0].call_id, "history-invalid");
+        assert_eq!(evidence.len(), 2);
+        assert_eq!(
+            evidence.iter().map(|item| item.call_id.as_str()).collect::<Vec<_>>(),
+            ["history-invalid-1", "history-invalid-2"]
+        );
 
         local.run("second operation").await?;
         let captured = requests.lock().unwrap().clone();
@@ -1980,7 +2028,7 @@ mod tests {
         let binding: Value = serde_json::from_slice(&local.storage().read(&binding_ref).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         for (suffix, operation_id, call_id) in [
-            ("missing", OperationId::from_bytes([240; 16]), "history-invalid"),
+            ("missing", OperationId::from_bytes([240; 16]), "history-invalid-1"),
             (
                 "changed",
                 serde_json::from_value(
@@ -2026,6 +2074,102 @@ mod tests {
                 Err(Error::Conflict(_))
             ));
         }
+        let rejection_indices = state
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(index, message)| {
+                message
+                    .extensions
+                    .contains_key("acyclic.model.rejection-journal")
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        if rejection_indices.len() != 2 {
+            return Err(Error::Storage("expected two rejection result messages".into()));
+        }
+        let second_binding = state.messages[rejection_indices[1]]
+            .extensions
+            .get("acyclic.model.rejection-journal")
+            .cloned()
+            .ok_or_else(|| Error::Storage("second rejection binding missing".into()))?;
+        let mut swapped_state = state.clone();
+        swapped_state.messages[rejection_indices[0]]
+            .extensions
+            .insert("acyclic.model.rejection-journal".into(), second_binding);
+        assert!(matches!(
+            local
+                .storage()
+                .selected_rejection_evidence(&swapped_state, &selection, Limits::default())
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let first_result = rejection_indices[0];
+        let second_result = rejection_indices[1];
+        let first_call_id = state.messages[first_result]
+            .reply_to
+            .ok_or_else(|| Error::Storage("first rejection reply target missing".into()))?;
+        let second_call_id = state.messages[second_result]
+            .reply_to
+            .ok_or_else(|| Error::Storage("second rejection reply target missing".into()))?;
+        let first_call = state
+            .messages
+            .iter()
+            .position(|message| message.id == first_call_id)
+            .ok_or_else(|| Error::Storage("first rejection call missing".into()))?;
+        let second_call = state
+            .messages
+            .iter()
+            .position(|message| message.id == second_call_id)
+            .ok_or_else(|| Error::Storage("second rejection call missing".into()))?;
+        let mut cross_operation_state = state.clone();
+        cross_operation_state.messages[first_result].extensions =
+            state.messages[second_result].extensions.clone();
+        cross_operation_state.messages[first_result].reply_to =
+            state.messages[second_result].reply_to;
+        cross_operation_state.messages[first_result].tool_call_id =
+            state.messages[second_result].tool_call_id.clone();
+        cross_operation_state.messages[first_call].content =
+            state.messages[second_call].content.clone();
+        cross_operation_state.messages[first_call].tool_call_id =
+            state.messages[second_call].tool_call_id.clone();
+        assert!(matches!(
+            local
+                .storage()
+                .selected_rejection_evidence(
+                    &cross_operation_state,
+                    &selection,
+                    Limits::default()
+                )
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        let foreign = MemoryHarnessStorage::new(AgentId::from_bytes([250; 16]), 4_096).await?;
+        let foreign_binding = foreign
+            .stage(
+                OperationId::from_bytes([251; 16]),
+                "foreign/rejection-binding.json",
+                &local.storage().read(&binding_ref).await?,
+                "application/json",
+                "binding.json",
+            )
+            .await?;
+        let mut foreign_state = state.clone();
+        let foreign_result = foreign_state
+            .messages
+            .iter_mut()
+            .find(|message| message.extensions.contains_key(REJECTION_JOURNAL_BINDING))
+            .ok_or_else(|| Error::Storage("rejection result message missing".into()))?;
+        foreign_result
+            .extensions
+            .insert(REJECTION_JOURNAL_BINDING.into(), foreign_binding);
+        assert!(matches!(
+            local
+                .storage()
+                .selected_rejection_evidence(&foreign_state, &selection, Limits::default())
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         let call_index = state
             .messages
             .iter()

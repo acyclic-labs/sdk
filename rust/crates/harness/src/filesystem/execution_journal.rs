@@ -36,9 +36,65 @@ pub(crate) struct RejectionJournalBinding {
     pub(crate) operation_id: OperationId,
     pub(crate) step: u32,
     pub(crate) call_id: String,
+    pub(crate) message_id: uuid::Uuid,
+    pub(crate) reply_to: uuid::Uuid,
+    pub(crate) invocation_digest: [u8; 32],
 }
 
 pub(crate) const REJECTION_JOURNAL_BINDING: &str = "acyclic.model.rejection-journal";
+
+/// The only inherited prefix a child journal may use for membership proof.
+/// This is installed from a seed after the parent publication and allocation
+/// claims have been verified; callers cannot select an arbitrary file ref.
+#[derive(Clone, Debug)]
+pub(crate) struct AuthenticatedInheritedPrefix {
+    pub(crate) file: FileRef,
+    pub(crate) parent: crate::core::Authority,
+    pub(crate) parent_revision: u64,
+    pub(crate) parent_agent: crate::AgentId,
+    pub(crate) through_sequence: u64,
+    pub(crate) attached_agents: Vec<crate::AgentId>,
+}
+
+pub(crate) fn authenticated_inherited_prefix(
+    seed: &crate::fork::ForkSeed,
+    parent_agent: crate::AgentId,
+) -> Result<Option<AuthenticatedInheritedPrefix>> {
+    seed.validate()?;
+    if seed.inherited_through_sequence == 0 {
+        if !seed.inherited_context.is_empty() {
+            return Err(Error::Invalid(
+                "fork has inherited files without an inherited prefix".into(),
+            ));
+        }
+        return Ok(None);
+    }
+    let prefix = seed
+        .inherited_context
+        .first()
+        .cloned()
+        .ok_or_else(|| Error::Invalid("fork is missing its inherited prefix".into()))?;
+    if prefix.volume() != &seed.child_private_volume
+        || prefix.version() != hex::encode(seed.child_private_generation.as_resource().key())
+        || prefix.path() != ".system/inherited-conversation/prefix.json"
+        || prefix.display_name() != "inherited-conversation.json"
+        || prefix.descriptor().media_type()
+            != "application/vnd.acyclic.harness.inherited-conversation+json"
+        || parent_agent == seed.child_agent
+    {
+        return Err(Error::Conflict(
+            "fork inherited prefix is not bound to the published child generation".into(),
+        ));
+    }
+    Ok(Some(AuthenticatedInheritedPrefix {
+        file: prefix,
+        parent: seed.parent.clone(),
+        parent_revision: seed.parent_revision,
+        parent_agent,
+        through_sequence: seed.inherited_through_sequence,
+        attached_agents: seed.attached_agents.clone(),
+    }))
+}
 
 /// Loads rejection evidence for selected historical messages from the journal
 /// records named by authenticated hidden conversation metadata. The message
@@ -49,7 +105,59 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
     historical: &crate::conversation::ConversationState,
     selection: &crate::conversation::ModelContextSelection,
     limits: crate::conversation::Limits,
+    inherited_prefix: Option<&AuthenticatedInheritedPrefix>,
 ) -> Result<Vec<crate::tool::ToolRejectionFeedback>> {
+    let inherited_ids = if let Some(prefix_ref) = inherited_prefix {
+        let bytes = journal.load(&prefix_ref.file).await?;
+        if prefix_ref.file.path() != ".system/inherited-conversation/prefix.json"
+            || prefix_ref.file.display_name() != "inherited-conversation.json"
+            || prefix_ref.file.descriptor().media_type()
+            != "application/vnd.acyclic.harness.inherited-conversation+json"
+        {
+            return Err(Error::Conflict("inherited conversation prefix has an invalid media type".into()));
+        }
+        let expected_descriptor = crate::conversation::FileDescriptor::from_bytes(
+            &bytes,
+            "application/vnd.acyclic.harness.inherited-conversation+json",
+        )?;
+        if prefix_ref.file.descriptor() != &expected_descriptor {
+            return Err(Error::Conflict(
+                "inherited conversation prefix descriptor is not content bound".into(),
+            ));
+        }
+        let prefix: crate::fork::InheritedConversationPrefix = serde_json::from_slice(&bytes)
+            .map_err(|error| Error::Storage(format!("inherited conversation prefix is invalid: {error}")))?;
+        if prefix.canonical_bytes()? != bytes {
+            return Err(Error::Conflict("inherited conversation prefix is not canonical".into()));
+        }
+        if prefix.through_sequence != prefix.messages.len() as u64 {
+            return Err(Error::Conflict("inherited conversation prefix sequence is invalid".into()));
+        }
+        if prefix.parent != prefix_ref.parent
+            || prefix.parent_revision != prefix_ref.parent_revision
+            || prefix.parent_agent != prefix_ref.parent_agent
+            || prefix.through_sequence != prefix_ref.through_sequence
+            || prefix.attached_agents != prefix_ref.attached_agents
+        {
+            return Err(Error::Conflict(
+                "inherited conversation prefix differs from the published fork boundary".into(),
+            ));
+        }
+        let mut ids = std::collections::BTreeSet::new();
+        for (index, inherited) in prefix.messages.iter().enumerate() {
+            inherited.validate()?;
+            if inherited.sequence != index as u64 + 1
+                || !ids.insert(inherited.id)
+                || historical.messages.iter().find(|message| message.id == inherited.id)
+                    != Some(inherited)
+            {
+                return Err(Error::Conflict("historical message differs from frozen inherited prefix".into()));
+            }
+        }
+        Some(ids)
+    } else {
+        None
+    };
     let mut evidence = Vec::new();
     for message_id in &selection.message_ids {
         let Some(message) = historical.messages.iter().find(|message| &message.id == message_id)
@@ -62,8 +170,19 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
         if message.kind != crate::conversation::MessageKind::ToolResult {
             return Err(Error::Conflict("rejection binding is not attached to a tool result".into()));
         }
-        let binding: RejectionJournalBinding = serde_json::from_slice(&journal.load(binding_ref).await?)
+        // A recursive child carries the parent's hidden binding refs in its
+        // authenticated frozen prefix. Its immutable rejection evidence is
+        // supplied by the inherited boundary; only child-owned suffix refs
+        // are resolved against this journal.
+        if inherited_ids.as_ref().is_some_and(|ids| ids.contains(&message.id)) {
+            continue;
+        }
+        let binding_bytes = journal.load(binding_ref).await?;
+        let binding: RejectionJournalBinding = serde_json::from_slice(&binding_bytes)
             .map_err(|error| Error::Storage(format!("rejection journal binding is invalid: {error}")))?;
+        if binding.message_id != message.id {
+            return Err(Error::Conflict("rejection binding message identity differs from history".into()));
+        }
         if message.tool_call_id.as_deref() != Some(binding.call_id.as_str()) {
             return Err(Error::Conflict("rejection binding call identity differs from conversation result".into()));
         }
@@ -74,16 +193,21 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
             .ok_or_else(|| Error::Conflict("rejection result reply target is absent".into()))?;
         if call.kind != crate::conversation::MessageKind::ToolCall
             || call.tool_call_id.as_deref() != Some(binding.call_id.as_str())
+            || call.id != binding.reply_to
         {
             return Err(Error::Conflict("rejection result reply target is not its tool call".into()));
         }
-        let message_invocation: crate::tool::ToolInvocation =
-            serde_json::from_slice(&journal.load(&call.content).await?)
-                .map_err(|error| Error::Storage(format!("tool-call invocation is invalid: {error}")))?;
+        let records = journal.replay(binding.operation_id).await?;
+        let message_invocation: crate::tool::ToolInvocation = serde_json::from_slice(
+            &journal.load(&call.content).await?,
+        )
+        .map_err(|error| Error::Storage(format!("tool-call invocation is invalid: {error}")))?;
         if message_invocation.call_id != binding.call_id {
             return Err(Error::Conflict("tool-call content identity differs from binding".into()));
         }
-        let records = journal.replay(binding.operation_id).await?;
+        if crate::contract::canonical_json_digest(&message_invocation)? != binding.invocation_digest {
+            return Err(Error::Conflict("rejection binding invocation digest differs from call".into()));
+        }
         let mut found = None;
         for record in records {
             let crate::executor::ExecutionEvent::ToolAdmissionRejected {
@@ -137,6 +261,7 @@ async fn verify_selected_rejection_evidence(
     journal: &dyn ExecutionJournal,
     historical: &crate::conversation::ConversationState,
     selected: &SelectedModelContext,
+    inherited_prefix: Option<&AuthenticatedInheritedPrefix>,
 ) -> Result<()> {
     let authoritative = selected_rejection_evidence_from_journal(
         journal,
@@ -146,6 +271,7 @@ async fn verify_selected_rejection_evidence(
             context_messages: selected.selection.message_ids.len(),
             ..crate::conversation::Limits::default()
         },
+        inherited_prefix,
     )
     .await?;
     if authoritative != selected.rejection_evidence {
@@ -167,6 +293,9 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     maximum_payload_bytes: u64,
     input_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     interactions: FilesystemInteractionHost<P, A, O>,
+    /// Exact child-owned materialization proving which conversation messages
+    /// belong to the frozen inherited prefix.
+    inherited_prefix: Option<AuthenticatedInheritedPrefix>,
     /// Session identity authenticated by the composition that owns this
     /// journal.  A journal without this binding cannot authorize execution.
     session_id: Option<SessionId>,
@@ -243,6 +372,7 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             maximum_payload_bytes,
             input_verifier: None,
             interactions,
+            inherited_prefix: None,
             session_id: None,
         })
     }
@@ -267,6 +397,15 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
         self
     }
 
+    pub(crate) fn with_authenticated_inherited_prefix(
+        mut self,
+        prefix: Option<AuthenticatedInheritedPrefix>,
+    ) -> Self {
+        self.inherited_prefix = prefix;
+        self
+    }
+
+    /// Binds the authenticated child-owned inherited conversation materialization.
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     where
         P: StreamProvider,
@@ -910,7 +1049,13 @@ where
                     "model context differs from committed conversation projection".into(),
                 ));
             }
-            verify_selected_rejection_evidence(self, &historical, selected).await?;
+            verify_selected_rejection_evidence(
+                self,
+                &historical,
+                selected,
+                self.inherited_prefix.as_ref(),
+            )
+            .await?;
             Ok(())
         })
     }
