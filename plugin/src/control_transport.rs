@@ -36,22 +36,43 @@ pub(crate) struct ControlRequest {
     pub(crate) arguments: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub(crate) struct CliRouting {
     pub(crate) selected_cwd: PathBuf,
+    /// Explicit authorization to route a command into a direct child
+    /// workspace while the invoking process remains in its parent workspace.
+    /// The service verifies the lineage; this field is only a requested
+    /// target, never a bearer grant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) authorized_agent: Option<String>,
 }
 
 pub(crate) fn cli_routing(selected_cwd: PathBuf) -> Value {
-    json!(CliRouting { selected_cwd })
+    json!(CliRouting {
+        selected_cwd,
+        authorized_agent: None,
+    })
 }
 
-pub(crate) fn selected_cli_cwd(request: &ControlRequest) -> Result<PathBuf, String> {
+pub(crate) fn cli_routing_authorized(selected_cwd: PathBuf, agent: String) -> Value {
+    json!(CliRouting {
+        selected_cwd,
+        authorized_agent: Some(agent),
+    })
+}
+
+pub(crate) fn selected_cli_routing(request: &ControlRequest) -> Result<CliRouting, String> {
     if request.arguments.is_null() {
-        return request.cwd.canonicalize().map_err(display);
+        return Ok(CliRouting {
+            selected_cwd: request.cwd.canonicalize().map_err(display)?,
+            authorized_agent: None,
+        });
     }
-    let routing: CliRouting = serde_json::from_value(request.arguments.clone()).map_err(display)?;
-    routing.selected_cwd.canonicalize().map_err(display)
+    let mut routing: CliRouting =
+        serde_json::from_value(request.arguments.clone()).map_err(display)?;
+    routing.selected_cwd = routing.selected_cwd.canonicalize().map_err(display)?;
+    Ok(routing)
 }
 
 pub(crate) struct ControlEndpoint {

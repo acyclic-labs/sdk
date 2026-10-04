@@ -4493,10 +4493,14 @@ fn parse_argv<E: std::error::Error + 'static>(
                 mode,
             })
         }
-        "merge" if matches!(args, [operation] if operation == "--continue") => {
+        command if matches!(command, "merge" | "rebase")
+            && matches!(args, [operation] if operation == "--continue") =>
+        {
             Ok(GitCommand::MergeContinue)
         }
-        "merge" if matches!(args, [operation] if operation == "--abort") => {
+        command if matches!(command, "merge" | "rebase")
+            && matches!(args, [operation] if operation == "--abort") =>
+        {
             Ok(GitCommand::MergeAbort)
         }
         "merge" | "rebase" => {
@@ -9144,6 +9148,16 @@ mod tests {
                     branch: "main".to_owned(),
                 },
             ),
+            (
+                (&["merge", "--continue"] as &[&str]),
+                GitCommand::MergeContinue,
+            ),
+            (
+                (&["rebase", "--continue"] as &[&str]),
+                GitCommand::MergeContinue,
+            ),
+            ((&["merge", "--abort"] as &[&str]), GitCommand::MergeAbort),
+            ((&["rebase", "--abort"] as &[&str]), GitCommand::MergeAbort),
             ((&["stash", "push"] as &[&str]), GitCommand::StashPush),
             ((&["stash", "pop"] as &[&str]), GitCommand::StashPop),
             (

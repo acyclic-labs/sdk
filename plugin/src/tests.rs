@@ -69,6 +69,33 @@ async fn root_has_file_contents(
 }
 
 #[test]
+fn authorized_cli_routing_has_a_strict_wire_shape() {
+    let cwd = std::env::current_dir().expect("current directory");
+    let canonical_cwd = cwd.canonicalize().expect("canonical current directory");
+    let request = ControlRequest {
+        version: 1,
+        command: ControlCommand::Git,
+        cwd: cwd.clone(),
+        argv: vec!["status".to_owned()],
+        name: String::new(),
+        arguments: cli_routing_authorized(cwd.clone(), "child".to_owned()),
+    };
+    let routing = selected_cli_routing(&request).expect("authorized routing");
+    assert_eq!(routing.selected_cwd, canonical_cwd);
+    assert_eq!(routing.authorized_agent.as_deref(), Some("child"));
+
+    let mut malformed = cli_routing_authorized(request.cwd.clone(), "child".to_owned());
+    malformed["unexpected"] = json!(true);
+    let malformed_request = ControlRequest {
+        arguments: malformed,
+        ..request
+    };
+    let error = selected_cli_routing(&malformed_request)
+        .expect_err("unknown routing fields must be rejected");
+    assert!(!error.is_empty());
+}
+
+#[test]
 fn native_posix_names_are_presented_when_they_are_valid_utf8() {
     use acyclic_fs::kernel::LogicalName;
 
@@ -892,6 +919,47 @@ async fn shared_service_case() {
         .expect_err("a root must inspect descendants through agent refs, not -C");
     assert!(
         error.contains("authority boundaries") || error.contains("multiple Acyclic sessions"),
+        "{error}"
+    );
+    service
+        .dispatch_request(ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            // The caller remains in the parent root.  The explicit target
+            // authorizes service-side routing into the direct child without
+            // putting this process CWD inside the child mount.
+            cwd: root_a.clone(),
+            argv: vec!["status".to_owned()],
+            name: String::new(),
+            arguments: cli_routing_authorized(root_a.clone(), "child".to_owned()),
+        })
+        .await
+        .expect("a parent may explicitly route a Git command to its child");
+    let error = service
+        .dispatch_request(ControlRequest {
+            version: 1,
+            command: ControlCommand::Agents,
+            cwd: root_a.clone(),
+            argv: Vec::new(),
+            name: String::new(),
+            arguments: cli_routing_authorized(root_a.clone(), "child".to_owned()),
+        })
+        .await
+        .expect_err("authorized workspace routing must not broaden beyond Git");
+    assert!(error.contains("only supported for acyclic git"), "{error}");
+    let error = service
+        .dispatch_request(ControlRequest {
+            version: 1,
+            command: ControlCommand::Git,
+            cwd: root_a.clone(),
+            argv: vec!["status".to_owned()],
+            name: String::new(),
+            arguments: cli_routing_authorized(root_a.clone(), "missing".to_owned()),
+        })
+        .await
+        .expect_err("unknown authorized workspace target must be rejected");
+    assert!(
+        error.contains("authorized workspace target 'missing' is unknown"),
         "{error}"
     );
     service

@@ -1690,14 +1690,30 @@ impl ControlPlane {
             &executor,
         )
         .await;
-        let parent_head = parent.head().await.map(|generation| generation.id());
-        let observed: Result<(), String> = match parent_head {
-            Ok(parent_head) => operations
-                .observe_parent(workspace.id(), parent_head)
-                .await
-                .map(|_| ())
-                .map_err(display),
-            Err(error) => Err(display(error)),
+        // A retained Git transition owns the child's workspace until the
+        // caller continues or aborts it.  Reconciling that conflicted tree
+        // with the parent here would turn a local Git conflict into a parent
+        // barrier failure, and would make the subsequent abort impossible.
+        // Successful non-transition commands can still coalesce a parent
+        // advance before closing their operation window.
+        let local_abort = matches!(
+            argv.as_slice(),
+            [command, option]
+                if matches!(command.as_str(), "merge" | "rebase") && option == "--abort"
+        );
+        let reconcile_parent = command.as_ref().is_ok_and(Option::is_some) && !local_abort;
+        let observed: Result<(), String> = if reconcile_parent {
+            let parent_head = parent.head().await.map(|generation| generation.id());
+            match parent_head {
+                Ok(parent_head) => operations
+                    .observe_parent(workspace.id(), parent_head)
+                    .await
+                    .map(|_| ())
+                    .map_err(display),
+                Err(error) => Err(display(error)),
+            }
+        } else {
+            Ok(())
         };
         let finish = operations
             .finish(&lease, now_millis())
@@ -3491,6 +3507,84 @@ impl ControlPlane {
     pub(crate) fn route_from_cwd(&self, cwd: &Path) -> Result<(String, Option<Route>), String> {
         self.route_root_from_cwd(cwd)
             .map(|(agent, route, _)| (agent, route))
+    }
+
+    /// Resolve a direct child workspace from a caller-owned parent path.
+    ///
+    /// The caller's process may be outside the child's mount, which is
+    /// required on Windows because an unmount cannot complete while that
+    /// process has the child as its current directory.  The selected path
+    /// still has to identify a root in the caller's workspace so the service
+    /// can select the corresponding child root.  Lineage is checked here;
+    /// the agent id is a target selector, never a standalone grant.
+    pub(crate) fn route_root_for_authorized_agent(
+        &self,
+        caller: &str,
+        target_agent: &str,
+        selected_cwd: &Path,
+    ) -> Result<(String, Route, WorkspaceRootId), String> {
+        if target_agent == caller {
+            return Err("authorized workspace target must be a direct child".to_owned());
+        }
+        let root_id = self.root_id_for_caller_cwd(caller, selected_cwd)?;
+        let route = self
+            .state
+            .routes
+            .get(target_agent)
+            .cloned()
+            .ok_or_else(|| "authorized workspace target is unknown".to_owned())?;
+        if route.parent_agent_id != caller {
+            return Err("authorized workspace target is not a direct child".to_owned());
+        }
+        if !route.lifecycle.needs_mount() {
+            return Err("authorized workspace target is not mounted".to_owned());
+        }
+        if !route.roots.contains_key(&root_key(root_id)) {
+            return Err("authorized workspace target has no corresponding root".to_owned());
+        }
+        Ok((target_agent.to_owned(), route, root_id))
+    }
+
+    fn root_id_for_caller_cwd(&self, caller: &str, cwd: &Path) -> Result<WorkspaceRootId, String> {
+        let canonical = cwd.canonicalize().map_err(display)?;
+        let mut roots = Vec::new();
+        if caller == self.state.root_agent_id {
+            for root in self.state.roots.values() {
+                if let Ok(path) = root.path.canonicalize()
+                    && canonical.starts_with(&path)
+                {
+                    roots.push((
+                        path.components().count(),
+                        WorkspaceRootId::from_bytes(root.root_id),
+                    ));
+                }
+            }
+        } else {
+            let route = self
+                .state
+                .routes
+                .get(caller)
+                .ok_or_else(|| "caller workspace route is unavailable".to_owned())?;
+            for root in route.roots.values() {
+                let path = route.mount_path.join(root.mount_name());
+                if let Ok(path) = path.canonicalize()
+                    && canonical.starts_with(&path)
+                {
+                    roots.push((
+                        path.components().count(),
+                        WorkspaceRootId::from_bytes(root.root_id),
+                    ));
+                }
+            }
+        }
+        roots
+            .into_iter()
+            .max_by_key(|(depth, _)| *depth)
+            .map(|(_, root_id)| root_id)
+            .ok_or_else(|| {
+                "authorized workspace routing requires the selected CWD in the caller workspace"
+                    .to_owned()
+            })
     }
 
     pub(crate) fn route_root_from_cwd(

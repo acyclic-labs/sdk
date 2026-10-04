@@ -226,6 +226,25 @@ impl ServiceControl {
         Ok(session_id)
     }
 
+    fn session_for_authorized_agent(&self, target_agent: &str) -> Result<String, String> {
+        let mut matches = self
+            .sessions
+            .iter()
+            .filter(|(_, control)| control.state.routes.contains_key(target_agent))
+            .map(|(session_id, _)| session_id.clone());
+        let Some(session_id) = matches.next() else {
+            return Err(format!(
+                "authorized workspace target '{target_agent}' is unknown"
+            ));
+        };
+        if matches.next().is_some() {
+            return Err(format!(
+                "authorized workspace target '{target_agent}' is ambiguous across sessions"
+            ));
+        }
+        Ok(session_id)
+    }
+
     pub(crate) fn child_mount_for_cwd(
         &self,
         cwd: &Path,
@@ -791,7 +810,12 @@ impl ControlRequestDispatcher for ServiceControl {
                 .dispatch_native_hook(host, event, request.arguments, &request.cwd)
                 .await;
         }
-        let session_id = self.session_for_cwd_or_register(&request.cwd).await?;
+        let routing = selected_cli_routing(&request)?;
+        let session_id = if let Some(target_agent) = routing.authorized_agent.as_deref() {
+            self.session_for_authorized_agent(target_agent)?
+        } else {
+            self.session_for_cwd_or_register(&request.cwd).await?
+        };
         let control = self
             .sessions
             .get_mut(&session_id)
@@ -1426,6 +1450,39 @@ impl ConcurrentServiceControl {
         Ok(Some(Arc::clone(handle)))
     }
 
+    pub(crate) async fn route_session_for_authorized_agent(
+        &self,
+        target_agent: &str,
+    ) -> Result<Arc<SessionHandle>, String> {
+        let handles = self.catalog.lock().await;
+        let handles = handles
+            .active
+            .values()
+            .chain(handles.draining.values())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut matches = Vec::new();
+        for handle in handles {
+            let Some(snapshot) = handle.snapshot()? else {
+                continue;
+            };
+            if snapshot.routes.contains_key(target_agent) {
+                matches.push(handle);
+            }
+        }
+        let Some(handle) = matches.pop() else {
+            return Err(format!(
+                "authorized workspace target '{target_agent}' is unknown"
+            ));
+        };
+        if !matches.is_empty() {
+            return Err(format!(
+                "authorized workspace target '{target_agent}' is ambiguous across sessions"
+            ));
+        }
+        Ok(handle)
+    }
+
     pub(crate) async fn drain_sessions(&self, deactivate: bool) -> Result<(), String> {
         self.lifecycle
             .store(SERVICE_DRAINING, std::sync::atomic::Ordering::Release);
@@ -1576,7 +1633,11 @@ impl ConcurrentControlRequestDispatcher for ConcurrentServiceControl {
             }
             return self.session(&session_id).await?.dispatch(request).await;
         }
-        let handle = if let Some(handle) = self.route_session(&request.cwd).await? {
+        let routing = selected_cli_routing(&request)?;
+        let handle = if let Some(target_agent) = routing.authorized_agent.as_deref() {
+            self.route_session_for_authorized_agent(target_agent)
+                .await?
+        } else if let Some(handle) = self.route_session(&request.cwd).await? {
             handle
         } else {
             let catalog = self.catalog.lock().await;
@@ -1617,14 +1678,37 @@ pub(crate) async fn dispatch_session_request(
         return dispatch_native_session_hook(control, host, event, request.arguments, &request.cwd)
             .await;
     }
-    let selected_cwd = selected_cli_cwd(&request)?;
+    let routing = selected_cli_routing(&request)?;
+    let selected_cwd = routing.selected_cwd;
     let (invocation_caller, _) = control.route_from_cwd(&request.cwd)?;
-    let (selected_caller, _) = control.route_from_cwd(&selected_cwd)?;
-    if selected_caller != invocation_caller {
-        return Err("acyclic -C cannot cross workspace-context authority boundaries".to_owned());
-    }
     let mut request = request;
-    request.cwd = selected_cwd;
+    if let Some(target_agent) = routing.authorized_agent {
+        if request.command != ControlCommand::Git {
+            return Err(
+                "authorized workspace routing is only supported for acyclic git commands"
+                    .to_owned(),
+            );
+        }
+        let (_, route, root_id) = control.route_root_for_authorized_agent(
+            &invocation_caller,
+            &target_agent,
+            &selected_cwd,
+        )?;
+        let root = route
+            .roots
+            .get(&root_key(root_id))
+            .ok_or_else(|| "authorized workspace target root is unavailable".to_owned())?;
+        // Route inside the service without changing the caller process CWD.
+        request.cwd = route.mount_path.join(root.mount_name());
+    } else {
+        let (selected_caller, _) = control.route_from_cwd(&selected_cwd)?;
+        if selected_caller != invocation_caller {
+            return Err(
+                "acyclic -C cannot cross workspace-context authority boundaries".to_owned(),
+            );
+        }
+        request.cwd = selected_cwd;
+    }
     request.arguments = Value::Null;
     dispatch_plane_request(control, request).await
 }
@@ -1670,12 +1754,20 @@ pub(crate) async fn dispatch_plane_request(
                 return Err("acyclic git requires a Git-style subcommand".to_owned());
             }
             let (caller, route, root_id) = control.route_root_from_cwd(&request.cwd)?;
-            let merge_abort = match request.argv.as_slice() {
-                [command, option] if command == "merge" && option == "--continue" => Some(false),
-                [command, option] if command == "merge" && option == "--abort" => Some(true),
+            let merge_transition = match request.argv.as_slice() {
+                [command, option]
+                    if matches!(command.as_str(), "merge" | "rebase") && option == "--continue" =>
+                {
+                    Some(false)
+                }
+                [command, option]
+                    if matches!(command.as_str(), "merge" | "rebase") && option == "--abort" =>
+                {
+                    Some(true)
+                }
                 _ => None,
             };
-            if let Some(abort) = merge_abort {
+            if let Some(abort) = merge_transition {
                 // A mounted child can have either a local Git-compatible
                 // merge conflict or a publication conflict owned by its
                 // parent.  Only the latter uses the agent transition path;

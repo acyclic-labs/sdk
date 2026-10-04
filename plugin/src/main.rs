@@ -374,7 +374,12 @@ fn path_is_within(path: &Path, root: &Path) -> bool {
 fn is_foreground_cli_invocation() -> bool {
     let mut arguments = env::args_os().skip(1);
     let mut command = arguments.next();
-    if command.as_deref() == Some(std::ffi::OsStr::new("-C")) {
+    while matches!(
+        command.as_deref(),
+        Some(value)
+            if value == std::ffi::OsStr::new("-C")
+                || value == std::ffi::OsStr::new("--workspace")
+    ) {
         let _ = arguments.next();
         command = arguments.next();
     }
@@ -404,19 +409,39 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = env::args().skip(1).collect::<Vec<_>>();
     let invocation_cwd = env::current_dir()?.canonicalize()?;
     let mut cwd = invocation_cwd.clone();
-    if arguments.first().is_some_and(|argument| argument == "-C") {
-        if arguments.len() < 2 {
-            return Err(io::Error::other("acyclic -C requires a path").into());
+    let mut authorized_agent = None;
+    loop {
+        match arguments.first().map(String::as_str) {
+            Some("-C") => {
+                if arguments.len() < 2 {
+                    return Err(io::Error::other("acyclic -C requires a path").into());
+                }
+                cwd = PathBuf::from(arguments.remove(1)).canonicalize()?;
+                arguments.remove(0);
+            }
+            Some("--workspace") => {
+                if arguments.len() < 2 {
+                    return Err(
+                        io::Error::other("acyclic --workspace requires agents/<ref>").into(),
+                    );
+                }
+                let target = arguments.remove(1);
+                let agent = target
+                    .strip_prefix("agents/")
+                    .filter(|agent| !agent.is_empty() && !agent.contains(['/', '\\']))
+                    .ok_or_else(|| io::Error::other("acyclic --workspace requires agents/<ref>"))?;
+                authorized_agent = Some(agent.to_owned());
+                arguments.remove(0);
+            }
+            _ => break,
         }
-        cwd = PathBuf::from(arguments.remove(1)).canonicalize()?;
-        arguments.remove(0);
     }
     if arguments
         .first()
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic [-C PATH] [--workspace agents/<ref>] [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());
@@ -491,7 +516,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             cwd: invocation_cwd,
             argv: arguments.get(1..).unwrap_or_default().to_vec(),
             name: String::new(),
-            arguments: cli_routing(cwd),
+            arguments: authorized_agent.map_or_else(
+                || cli_routing(cwd.clone()),
+                |agent| cli_routing_authorized(cwd.clone(), agent),
+            ),
         };
         let response = send_cli_control_request(&data, &request)
             .await

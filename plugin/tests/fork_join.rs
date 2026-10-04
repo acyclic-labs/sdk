@@ -106,6 +106,38 @@ impl Session {
         (output.status.success(), text)
     }
 
+    fn run_owned(&self, arguments: &[String], cwd: &Path, input: &[u8]) -> (bool, String) {
+        let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+        self.run(&arguments, cwd, input)
+    }
+
+    fn authorized_git(
+        &self,
+        child: &Workspace,
+        selected_cwd: &Path,
+        git_arguments: &[&str],
+    ) -> (bool, String) {
+        self.authorized_git_from(child, selected_cwd, &self.repo, git_arguments)
+    }
+
+    fn authorized_git_from(
+        &self,
+        child: &Workspace,
+        selected_cwd: &Path,
+        process_cwd: &Path,
+        git_arguments: &[&str],
+    ) -> (bool, String) {
+        let mut arguments = vec![
+            "-C".to_owned(),
+            selected_cwd.display().to_string(),
+            "--workspace".to_owned(),
+            child.reference(),
+            "git".to_owned(),
+        ];
+        arguments.extend(git_arguments.iter().map(|argument| (*argument).to_owned()));
+        self.run_owned(&arguments, process_cwd, b"")
+    }
+
     fn hook(&self, event: &str, payload: &Value, cwd: &Path) -> Value {
         let input = serde_json::to_vec(payload).expect("hook payload");
         let (ok, text) = self.run(&["__hook", HOST, event], cwd, &input);
@@ -299,6 +331,136 @@ fn posix_operations_inside_a_fork_reach_the_parent_on_merge() {
     session.merge(&fork).expect("merge");
     assert_eq!(session.files(), ["new/b.rs", "pkg/shared.rs"]);
     assert_eq!(read(&session.repo.join("pkg/shared.rs")), "VALUE = 2\n");
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
+fn authorized_child_git_runs_from_parent_cwd() {
+    let session = Session::open("authorized-routing");
+    let root = session.root();
+    fs::write(
+        session.repo.join("child.patch"),
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+child\n",
+    )
+    .expect("child patch");
+    fs::write(
+        session.repo.join("parent.patch"),
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+parent\n",
+    )
+    .expect("parent patch");
+    let (ok, output) = session.run(&["git", "commit", "-m", "baseline"], &session.repo, b"");
+    assert!(ok, "baseline commit failed: {output}");
+    let (ok, output) = session.run(&["git", "status"], &session.repo, b"");
+    assert!(ok, "parent status after baseline failed: {output}");
+    let child = session.spawn(&root, "authorized");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["status"]);
+    assert!(ok, "authorized child initial status failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["switch", "-c", "child"]);
+    assert!(ok, "authorized child switch failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["apply", "child.patch"]);
+    assert!(ok, "authorized child patch failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["commit", "-m", "child"]);
+    assert!(ok, "authorized child commit failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["switch", "main"]);
+    assert!(ok, "authorized child main switch failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["apply", "parent.patch"]);
+    assert!(ok, "authorized child parent patch failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["commit", "-m", "parent"]);
+    assert!(ok, "authorized child parent commit failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["switch", "child"]);
+    assert!(ok, "authorized child re-switch failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["rebase", "main"]);
+    assert!(
+        !ok,
+        "conflicting child rebase unexpectedly succeeded: {output}"
+    );
+    assert!(
+        output.to_ascii_lowercase().contains("conflict")
+            || output.to_ascii_lowercase().contains("pending"),
+        "conflicting child rebase did not retain a typed conflict: {output}"
+    );
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["rebase", "--abort"]);
+    assert!(ok, "authorized child rebase abort failed: {output}");
+    assert_eq!(read(&child.path.join("README.md")), "child\n");
+
+    session.stop(&child);
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
+fn authorized_child_git_continues_rebase_from_parent_cwd() {
+    let session = Session::open("authorized-routing-continue");
+    let root = session.root();
+    fs::write(
+        session.repo.join("child.patch"),
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+child\n",
+    )
+    .expect("child patch");
+    fs::write(
+        session.repo.join("parent.patch"),
+        "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-base\n+parent\n",
+    )
+    .expect("parent patch");
+    let (ok, output) = session.run(&["git", "commit", "-m", "baseline"], &session.repo, b"");
+    assert!(ok, "baseline commit failed: {output}");
+    let (ok, output) = session.run(&["git", "status"], &session.repo, b"");
+    assert!(ok, "parent status after baseline failed: {output}");
+    let child = session.spawn(&root, "authorized-continue");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["status"]);
+    assert!(ok, "authorized child initial status failed: {output}");
+    for (arguments, message) in [
+        (&["switch", "-c", "child"][..], "child branch"),
+        (&["apply", "child.patch"][..], "child patch"),
+        (&["commit", "-m", "child"][..], "child commit"),
+        (&["switch", "main"][..], "main switch"),
+        (&["apply", "parent.patch"][..], "parent patch"),
+        (&["commit", "-m", "parent"][..], "parent commit"),
+        (&["switch", "child"][..], "child re-switch"),
+    ] {
+        let (ok, output) = session.authorized_git(&child, &session.repo, arguments);
+        assert!(ok, "authorized child {message} failed: {output}");
+    }
+    let (ok, output) =
+        session.authorized_git_from(&child, &session.repo, &session.repo, &["rebase", "main"]);
+    assert!(
+        !ok,
+        "conflicting child rebase unexpectedly succeeded: {output}"
+    );
+    let (ok, output) = session.authorized_git_from(
+        &child,
+        &session.repo,
+        &session.repo,
+        &["rebase", "--continue"],
+    );
+    assert!(ok, "authorized child rebase continue failed: {output}");
+    let (ok, output) = session.authorized_git(&child, &session.repo, &["status"]);
+    assert!(ok, "child status after rebase continue failed: {output}");
+    session.stop(&child);
+}
+
+#[test]
+#[ignore = "requires live native mounts"]
+fn authorized_workspace_rejects_non_direct_children() {
+    let session = Session::open("authorized-authority");
+    let root = session.root();
+    let sibling = session.spawn(&root, "sibling");
+    let child = session.spawn(&root, "parent");
+    let grandchild = session.spawn(&child, "grandchild");
+    let (ok, output) = session.authorized_git(&grandchild, &session.repo, &["status"]);
+    assert!(!ok, "root was allowed to target a grandchild: {output}");
+    assert!(
+        output.to_ascii_lowercase().contains("direct child"),
+        "grandchild denial did not identify the authority boundary: {output}"
+    );
+    let (ok, output) = session.authorized_git_from(&sibling, &child.path, &child.path, &["status"]);
+    assert!(!ok, "child was allowed to target a sibling: {output}");
+    assert!(
+        output.to_ascii_lowercase().contains("direct child"),
+        "sibling denial did not identify the authority boundary: {output}"
+    );
+    session.stop(&grandchild);
+    session.stop(&child);
+    session.stop(&sibling);
 }
 
 #[test]
