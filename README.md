@@ -2,7 +2,7 @@
 
 The Acyclic SDK is the open contract and composition layer for building recursive,
 fork-join agent systems. It contains the Rust harness, public service interfaces,
-customer-machine implementations, conformance suites, and TypeScript packages.
+customer-machine implementations, conformance suites, and language bindings.
 
 Rust owns the public contracts, shared behavior, documentation, and executable
 examples. Protobuf, OpenAPI, language facades, and website documentation are
