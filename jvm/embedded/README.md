@@ -9,8 +9,18 @@ wrappers (`inspectIdempotency`, `appendWire`, `tail`, `fork`, `childrenPage`, `c
 `readCommit`) over the matching `acyclic.stream.v2` request/response bytes; `read`, `follow`, and
 `children` use explicit reader handles so cancellation and bounded delivery remain Rust-owned.
 
-The checked-in Windows x64 DLL in this review patch is the pre-wire-call asset and therefore does
-not load the new wrapper surface yet. A Rust rebuild must replace it before an installed consumer
-can execute the ten-operation surface.
+Before packaging, stage the Rust producer assets and provenance into the JVM resource layout:
 
-Typed overloads accept generated com.google.protobuf.Message values and Parser responses, so callers use their generated acyclic.stream.v2 classes without manually handling wire bytes.
+```powershell
+pwsh scripts/stage-jvm-embedded-native.ps1 `
+  -InputRoot target/dotnet-embedded `
+  -OutputRoot target/native/sdk-embedded
+mvn -Dembedded.native.root="$PWD/target/native/sdk-embedded" `
+  -Dacyclic.embedded.native.qualification=true package
+```
+
+The package contains all six desktop resources under `native/<platform>/`, plus the Rust source
+revision manifest. `RustEmbedded` selects the host resource from the classpath automatically, and
+the release consumer gate exercises append/read through the installed JAR without a native path
+override. Typed overloads accept generated `com.google.protobuf.Message` values and parser
+responses, so callers use the generated `acyclic.stream.v2` classes directly.

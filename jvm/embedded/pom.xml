@@ -12,8 +12,28 @@
     <jna.version>5.15.0</jna.version>
     <protobuf.version>4.31.1</protobuf.version>
     <sdk.contract.root>${project.basedir}/../../target/sdk-contract</sdk.contract.root>
+    <!-- Rust-owned native assets staged with the platform RID directory names
+         consumed by RustEmbedded.nativeResource(). Override this for a
+         release bundle; the package gate requires all six resources. -->
+    <embedded.native.root>${project.basedir}/../../target/native/sdk-embedded</embedded.native.root>
   </properties>
   <build>
+    <resources>
+      <resource>
+        <directory>${embedded.native.root}</directory>
+        <targetPath>native</targetPath>
+        <filtering>false</filtering>
+        <includes>
+          <include>native-manifest.json</include>
+          <include>win-x86_64/acyclic_sdk_embedded_prototype.dll</include>
+          <include>win-aarch64/acyclic_sdk_embedded_prototype.dll</include>
+          <include>linux-x86_64-gnu/libacyclic_sdk_embedded_prototype.so</include>
+          <include>linux-aarch64-gnu/libacyclic_sdk_embedded_prototype.so</include>
+          <include>osx-x86_64/libacyclic_sdk_embedded_prototype.dylib</include>
+          <include>osx-aarch64/libacyclic_sdk_embedded_prototype.dylib</include>
+        </includes>
+      </resource>
+    </resources>
     <extensions>
       <extension>
         <groupId>kr.motd.maven</groupId>
@@ -47,6 +67,40 @@
       </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-antrun-plugin</artifactId>
+        <version>3.1.0</version>
+        <executions>
+          <execution>
+            <id>verify-rust-native-resources</id>
+            <phase>package</phase>
+            <configuration>
+              <target>
+                <fail message="Rust embedded JVM package is missing win-x86_64 native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/win-x86_64/acyclic_sdk_embedded_prototype.dll" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing win-aarch64 native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/win-aarch64/acyclic_sdk_embedded_prototype.dll" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing linux-x86_64-gnu native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/linux-x86_64-gnu/libacyclic_sdk_embedded_prototype.so" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing linux-aarch64-gnu native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/linux-aarch64-gnu/libacyclic_sdk_embedded_prototype.so" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing osx-x86_64 native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/osx-x86_64/libacyclic_sdk_embedded_prototype.dylib" /></not></condition>
+                </fail>
+                <fail message="Rust embedded JVM package is missing osx-aarch64 native resource.">
+                  <condition><not><available file="${project.build.outputDirectory}/native/osx-aarch64/libacyclic_sdk_embedded_prototype.dylib" /></not></condition>
+                </fail>
+              </target>
+            </configuration>
+            <goals><goal>run</goal></goals>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.3</version>
       </plugin>
@@ -62,6 +116,12 @@
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
       <version>${protobuf.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <version>5.13.4</version>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>
