@@ -18,6 +18,7 @@ dependencies = [
 name = "acyclic-actors"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
  "acyclic-workers",
  "prost",
  "prost-reflect",
@@ -468,6 +469,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "acyclic-stream-native"
+version = "0.2.0"
+dependencies = [
+ "acyclic-stream",
+ "bytes",
+ "futures",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "prost",
+ "rcgen",
+ "tokio",
+ "tokio-stream",
+ "tonic",
+]
+
+[[package]]
 name = "acyclic-stream-wasm"
 version = "0.2.0"
 dependencies = [
@@ -485,6 +503,7 @@ dependencies = [
 name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
  "prost",
  "prost-reflect",
  "reqwest",
@@ -3725,10 +3744,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sdk-machines-native"
+version = "0.2.0"
+dependencies = [
+ "acyclic-machines",
+ "futures",
+ "napi",
+ "napi-build",
+ "napi-derive",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "sdk-proto-codegen"
 version = "0.2.0"
 dependencies = [
  "prost",
+ "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
 ]
