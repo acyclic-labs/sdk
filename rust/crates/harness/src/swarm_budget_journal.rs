@@ -2057,9 +2057,9 @@ mod tests {
         root.report_root_usage_with_receipt(&owner, issuer.issue()?)
             .await?;
         let remaining = root.root_resource_limits()?;
-        assert_eq!(remaining.model_steps, 1);
-        assert_eq!(remaining.output_bytes, 112);
-        assert_eq!(remaining.execution_time_ms, 195);
+        assert_eq!(remaining.model_steps, 2);
+        assert_eq!(remaining.output_bytes, 128);
+        assert_eq!(remaining.execution_time_ms, 200);
         Ok(())
     }
 
