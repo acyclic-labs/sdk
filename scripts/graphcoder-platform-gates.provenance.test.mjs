@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -87,6 +89,35 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
   const stalePath = join(root, "stale.json");
   writeFileSync(stalePath, `${JSON.stringify(makeReceipt("passed", [{ source_commit: "c".repeat(40), source_tree: source.tree, fresh: true }]))}\n`);
   assert.throws(() => readLaneReceipt(stalePath, lane, "native", source, "windows"), /provenance is stale/u);
+});
+
+test("the qualification-suite producer emits a receipt consumed by the platform lane validator", () => {
+  const root = mkdtempSync(join(tmpdir(), "graphcoder-lane-producer-"));
+  const output = join(root, "suite");
+  const configPath = join(root, "config.json");
+  const artifactPath = join(process.cwd(), "scripts", "graphcoder-installed-transport-faults.mjs");
+  const sourceCommit = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  const sourceTree = execFileSync("git", ["rev-parse", "HEAD^{tree}"], { encoding: "utf8" }).trim();
+  const artifactSha256 = createHash("sha256").update(readFileSync(artifactPath)).digest("hex");
+  writeFileSync(configPath, `${JSON.stringify({
+    id: "platform-lane-producer-shape",
+    descriptor: "installed transport producer shape",
+    execution_kind: "package",
+    platform: "windows",
+    command: {
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)", "scripts/graphcoder-installed-transport-faults.mjs"],
+      cwd: process.cwd(),
+      env: {},
+    },
+    artifacts: [{ path: artifactPath, sha256: artifactSha256, source_commit: sourceCommit, source_tree: sourceTree, built_at: new Date(Date.now() - 60_000).toISOString(), build_id: "producer-shape", fresh: true }],
+    output,
+  }, null, 2)}\n`);
+  execFileSync(process.execPath, ["scripts/graphcoder-qualification-suite.mjs", "capture", configPath], { cwd: process.cwd(), encoding: "utf8" });
+  const receiptPath = join(output, "platform-lane-producer-shape.record.json");
+  const lane = loadManifest().qualification_lanes.find(item => item.id === "installed-transport-faults");
+  const receipt = readLaneReceipt(receiptPath, lane, "package", { commit: sourceCommit, tree: sourceTree }, "windows");
+  assert.equal(receipt.suite_id, "platform-lane-producer-shape");
 });
 
 test("platform manifest rejects artifact paths that escape the worktree", () => {

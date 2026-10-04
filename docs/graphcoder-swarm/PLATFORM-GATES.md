@@ -85,3 +85,33 @@ Installed package and PTY evidence continues to use
 archives and host bridge artifacts whose paths are created by the packaging
 lane. Their suite descriptors should reference the same qualified commit/tree
 and be included in the final receipt alongside these platform-gate records.
+
+`graphcoder-platform-gates.mjs run windows` consumes installed-lane receipts
+through environment variables. Capture them in this order from a clean
+qualified worktree, using fresh artifacts from the same source commit and
+tree:
+
+1. Build `acyclic-graphcoder-cli` with `cargo build -p acyclic-graphcoder-cli
+   --locked`, capture `graphcoder-native-stage-e2e.mjs` with
+   `graphcoder-native-stage-config.mjs`, and export its record as
+   `GRAPHCODER_NATIVE_STAGE_RECEIPT`.
+2. Build and pack GraphCoder and Filesystem, then capture the real Harness
+   bridge through `graphcoder-production-entrypoint.mjs` once as `native` and
+   once as `package`. Export the records as
+   `GRAPHCODER_HEADLESS_NATIVE_RECEIPT` and
+   `GRAPHCODER_HEADLESS_PACKAGE_RECEIPT`.
+3. Run the same installed command sequence through
+   `graphcoder-production-pty.mjs` and the native WinPTY driver on Windows;
+   export its record as `GRAPHCODER_PTY_RECEIPT`.
+4. Run `graphcoder-installed-transport-faults.mjs` against the extracted
+   package with descendant cleanup required; export its record as
+   `GRAPHCODER_TRANSPORT_FAULTS_RECEIPT`.
+5. Run `node scripts/graphcoder-platform-gates.mjs run windows` with those
+   receipt variables. The runner validates every producer record, descriptor
+   command, source identity, execution kind, status, and fresh artifact before
+   reporting platform qualification as complete.
+
+The production bridge may use a deterministic mock model provider because the
+goal requires mocked models. A mock transport or fixture bridge cannot satisfy
+installed native, package, or PTY receipts; those lanes still exercise the
+durable Harness, real filesystem effects, and native process boundary.
