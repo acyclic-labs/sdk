@@ -312,3 +312,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 - [Context history private-journal boundary](checkpoint-context-history-private-journal-2026-10-04.json): source 6d22aba49 archived native artifact; default stack overflow retained; same artifact with 32 MiB test stack passes 2/3, recursive child follow-up fails private-volume journal authority. No recursive qualification claim.
 - [Receipt identity rejection](checkpoint-reconcile-receipt-identities-2026-10-04.json): source 5e78977b4 focused public reconciliation regression passes 1/1; broader effect recovery remains open.
+
+- [Current host execution](checkpoint-host-execution-current-2026-10-04.json): d00d687de passes all 26 host execution cases on Windows, including real local storage; archived artifact and source/suite/log digests. Installed native process ownership and full swarm recovery remain unqualified.

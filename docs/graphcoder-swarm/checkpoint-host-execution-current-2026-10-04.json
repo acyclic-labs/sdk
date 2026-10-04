@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "source_commit": "d00d687de2ada4fbe910bc485f9f85ff81a04f95",
+  "source_tree": "6a44072d9b493aac3a6073fa5e7cde44c14128bc",
+  "rust_tree": "55e2981a1d45eef26b4b761b3a04f4d26cbc55e0",
+  "suite": "rust/crates/harness/src/host_execution.rs",
+  "suite_blob": "2a988be2c15080631131dee31524ff1e9ce20a8e",
+  "platform": "Windows native execution",
+  "features": [
+    "filesystem-local"
+  ],
+  "command": "acyclic_harness-8839286032972dd7.exe host_execution --test-threads=1",
+  "passed": 26,
+  "failed": 0,
+  "ignored": 0,
+  "filtered_out": 316,
+  "exit_code": 0,
+  "artifact": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\d00d687de\\acyclic_harness-8839286032972dd7.exe",
+    "sha256": "c3ec99eb9eea568d5d00d5601153e4db86b265c1eb8da150fcbe2782bb0c7acf"
+  },
+  "log": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\d00d687de\\host-execution-all-modules.txt",
+    "sha256": "0354446c4d7fb571d03d837abc72e7370b224836f13338d472c15c5d34833a57"
+  },
+  "build_log": {
+    "path": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\d00d687de\\held-pipe-root-d00d-corrected.txt",
+    "sha256": "3f2c59fcf202edb018d99567957d71a707d7b64657da927bbd281d2dfccc76b7"
+  },
+  "prior_invocation_error": "First shell invocation used nonexistent rust/Cargo.toml and executed no tests; retained at D:\\graphcoder-builds\\root-fork-20261004\\logs\\held-pipe-root-d00d.txt",
+  "scope": "Host execution unit and real local-provider suite only. Includes cancellation persistence failure, receipt identity substitution and unknown restart fencing; does not qualify installed native-process-tree integration, all descendant cleanup, full swarm fault matrix or root writeback."
+}
