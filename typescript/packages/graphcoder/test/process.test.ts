@@ -2,7 +2,8 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn as spawnChild } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { createNativeOwnedProcessOwner, retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type NativeOwnedProcessIo, type OwnedProcessTermination } from "../src/owned-process.js";
+import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
+import { createNativeProcessOwnerAdapter, type NativeProcessIo } from "../../filesystem/src/native-process.js";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -291,7 +292,7 @@ describe("JSON-lines process bridge", () => {
 
   test("stops native polling before a proven token is retired", async () => {
     let active = true;
-    const io: NativeOwnedProcessIo = {
+    const io: NativeProcessIo = {
       launch: () => ({ token: "native-test-token", pid: 41 }),
       write: () => undefined,
       closeStdin: () => undefined,
@@ -305,7 +306,7 @@ describe("JSON-lines process bridge", () => {
         return { kind: "terminated" };
       },
     };
-    const owner = createNativeOwnedProcessOwner(io);
+    const owner = createNativeProcessOwnerAdapter(io);
     const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
     let errors = 0;
     child.on("error", () => { errors += 1; });
@@ -317,7 +318,7 @@ describe("JSON-lines process bridge", () => {
 
   test("applies a bounded stream cap when a native reader is never consumed", async () => {
     let polls = 0;
-    const io: NativeOwnedProcessIo = {
+    const io: NativeProcessIo = {
       launch: () => ({ token: "native-blocked-token", pid: 42 }),
       write: () => undefined,
       closeStdin: () => undefined,
@@ -331,7 +332,7 @@ describe("JSON-lines process bridge", () => {
       pollExit: () => ({ kind: "running" }),
       terminate: () => ({ kind: "terminated" }),
     };
-    const owner = createNativeOwnedProcessOwner(io);
+    const owner = createNativeProcessOwnerAdapter(io);
     const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
     child.on("error", () => undefined);
     await new Promise(resolve => setTimeout(resolve, 250));
