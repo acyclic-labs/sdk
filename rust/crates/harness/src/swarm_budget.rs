@@ -234,10 +234,7 @@ impl SwarmUsageLimiter {
     /// already consumed by the same dispatch attempt.
     pub fn resume(limits: SwarmResourceRequest, usage: SwarmUsage) -> Result<Self> {
         limits.validate()?;
-        if usage.model_steps > limits.model_steps
-            || usage.output_bytes > limits.output_bytes
-            || usage.execution_time_ms > limits.execution_time_ms
-        {
+        if usage_exceeds_limits(usage, limits) {
             return Err(Error::Conflict(
                 "restored provider usage exceeds the child reservation ceiling".into(),
             ));
@@ -545,10 +542,7 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         validate_issuer_cursor(sequence, last_usage)?;
         let mut issuer = Self::with_limits(source, operation_id, dispatch_id, limits)?;
         if let Some(usage) = last_usage {
-            if usage.model_steps > limits.model_steps
-                || usage.output_bytes > limits.output_bytes
-                || usage.execution_time_ms > limits.execution_time_ms
-            {
+            if usage_exceeds_limits(usage, limits) {
                 return Err(Error::Conflict(
                     "restored provider usage exceeds the child reservation ceiling".into(),
                 ));
@@ -603,10 +597,7 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
             ));
         }
         if let Some(limits) = self.limits {
-            if usage.model_steps > limits.model_steps
-                || usage.output_bytes > limits.output_bytes
-                || usage.execution_time_ms > limits.execution_time_ms
-            {
+            if usage_exceeds_limits(usage, limits) {
                 return Err(Error::Conflict(
                     "provider usage exceeds the child reservation ceiling".into(),
                 ));
@@ -3050,6 +3041,12 @@ fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
     }
 }
 
+fn usage_exceeds_limits(usage: SwarmUsage, limits: SwarmResourceRequest) -> bool {
+    usage.model_steps > limits.model_steps
+        || usage.output_bytes > limits.output_bytes
+        || usage.execution_time_ms > limits.execution_time_ms
+}
+
 fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest> {
     let root_claimed = state.root_claims.values().try_fold(
         SwarmUsage::default(),
@@ -3155,10 +3152,7 @@ fn validate_ancestor_ceilings(
         complete,
     )?;
     let own_total = add_usage(usage, own_descendants)?;
-    if own_total.model_steps > reservation.resources.model_steps
-        || own_total.output_bytes > reservation.resources.output_bytes
-        || own_total.execution_time_ms > reservation.resources.execution_time_ms
-    {
+    if usage_exceeds_limits(own_total, reservation.resources) {
         return Err(Error::Conflict(
             "swarm usage exceeds its remaining descendant resource budget".into(),
         ));
@@ -3327,10 +3321,7 @@ fn update_usage(
         ));
     }
     let delta = usage.checked_delta(reservation.usage)?;
-    if usage.model_steps > reservation.resources.model_steps
-        || usage.output_bytes > reservation.resources.output_bytes
-        || usage.execution_time_ms > reservation.resources.execution_time_ms
-    {
+    if usage_exceeds_limits(usage, reservation.resources) {
         return Err(Error::Conflict(
             "child usage exceeds its reservation".into(),
         ));
