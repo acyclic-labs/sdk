@@ -8,8 +8,8 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
-    LocalHarnessTools, PersistentLocalHarness, workspace_ref,
+    InteractionApprovalAuthorization, InteractionOperatorAuthorizer, LocalHarnessTools,
+    PersistentLocalHarness, workspace_ref,
 };
 use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
@@ -19,10 +19,13 @@ use crate::{
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{ExecutionEvent, TurnOutput},
     fork::{
-        Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
-        ResourceRevision,
+        Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed,
+        ForkSelection, ResourceRevision,
     },
-    interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
+    interaction::{
+        InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse,
+        InteractionTicket,
+    },
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
@@ -50,7 +53,9 @@ use tokio::sync::Mutex;
 #[path = "swarm_read_projection.rs"]
 mod read_projection;
 pub use read_projection::{LocalSwarmAgent, LocalSwarmPage};
-use read_projection::{page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree};
+use read_projection::{
+    page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree,
+};
 
 const REGISTRY_STREAM: &str = "swarm/records";
 // The issuer-binding event gained a child-operation key and is no longer
@@ -71,13 +76,13 @@ type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBack
 /// handle per composition root so independently opened swarm handles observe
 /// the same journal and CAS boundary.
 static LOCAL_STREAM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalStream>>>> = OnceLock::new();
-static LOCAL_FILESYSTEM_CACHE: OnceLock<
-    Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>,
-> = OnceLock::new();
+static LOCAL_FILESYSTEM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>> =
+    OnceLock::new();
 
 #[cfg(test)]
-static EMPTY_REGISTRY_OPEN_BARRIER: OnceLock<StdMutex<Option<(PathBuf, Arc<tokio::sync::Barrier>)>>> =
-    OnceLock::new();
+static EMPTY_REGISTRY_OPEN_BARRIER: OnceLock<
+    StdMutex<Option<(PathBuf, Arc<tokio::sync::Barrier>)>>,
+> = OnceLock::new();
 
 #[cfg(test)]
 async fn await_empty_registry_open_barrier(root: &Path) {
@@ -297,7 +302,6 @@ impl LocalSwarmBindings {
             None => tools,
         })
     }
-
 }
 
 /// One owner-prepared fork request that a model may select by stable
@@ -373,7 +377,9 @@ impl LocalForkIntent {
             || self.task.len() > 4 * 1024
             || self.prompt.len() > 64 * 1024
         {
-            return Err(Error::Invalid("model-selected fork intent is invalid".into()));
+            return Err(Error::Invalid(
+                "model-selected fork intent is invalid".into(),
+            ));
         }
         Ok(())
     }
@@ -402,7 +408,8 @@ fn rebind_report_history(
         ));
     }
     if report.original_request_digest.is_none() {
-        report.original_request_digest = Some(crate::contract::canonical_json_digest(&report.request)?);
+        report.original_request_digest =
+            Some(crate::contract::canonical_json_digest(&report.request)?);
     }
     report.request.parent_revision = parent_revision;
     report.validate_with_rebind_proof(proof)
@@ -503,7 +510,9 @@ impl LocalFilesystemForkResolver {
     #[must_use]
     pub fn with_host_secret(mut self, secret: [u8; 32]) -> Result<Self> {
         if secret == [0; 32] {
-            return Err(Error::Invalid("local fork issuer secret cannot be zero".into()));
+            return Err(Error::Invalid(
+                "local fork issuer secret cannot be zero".into(),
+            ));
         }
         self.issuer_secret = Some(secret);
         Ok(self)
@@ -594,7 +603,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let parent_harness = swarm.open_session(intent.parent).await?;
             let parent_session = swarm.session(intent.parent).await?;
             if parent_session.depth >= swarm.config.maximum_depth {
-                return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm depth limit exceeded".into(),
+                ));
             }
             let existing_task_ids = swarm
                 .records
@@ -613,7 +624,9 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 0
             };
             if existing_children + pending_children > swarm.config.maximum_children {
-                return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm child limit exceeded".into(),
+                ));
             }
             let issuer_secret = self.issuer_secret.ok_or_else(|| {
                 Error::Unauthorized("local fork resolver has no durable host secret".into())
@@ -640,9 +653,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             let boundary = verified.boundary().clone();
             let parent = verified.parent();
             let parent_revision = parent.reducer().revision();
-            if parent.reducer().authority() != storage.conversation()
-                || parent_revision == 0
-            {
+            if parent.reducer().authority() != storage.conversation() || parent_revision == 0 {
                 return Err(Error::Conflict(
                     "fork publication parent aggregate changed during allocation".into(),
                 ));
@@ -654,12 +665,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             // never allocate another pair of child volumes for one operation.
             let child_task = TaskId::from_bytes(intent.child_operation.into_bytes());
             let existing_report = swarm.reports.lock().await.get(&child_task).cloned();
-            let existing_declaration = swarm
-                .declarations
-                .lock()
-                .await
-                .get(&child_task)
-                .cloned();
+            let existing_declaration = swarm.declarations.lock().await.get(&child_task).cloned();
             if let (Some(report), Some(declaration)) = (existing_report, existing_declaration) {
                 let source_project = report
                     .request
@@ -691,14 +697,11 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                     .authenticate_rebind_records(&original_request)
                     .await?;
                 report.validate_with_rebind_proof(&rebind_proof)?;
-                let seed = report
-                    .clone()
-                    .into_seed_with_rebind_proof(&rebind_proof)?;
+                let seed = report.clone().into_seed_with_rebind_proof(&rebind_proof)?;
                 if seed.operation_id != intent.fork_operation
                     || seed.parent != *storage.conversation()
                     || seed.child != Self::child_authority(&intent)
-                    || seed.child_agent
-                        != AgentId::from_bytes(intent.child_operation.into_bytes())
+                    || seed.child_agent != AgentId::from_bytes(intent.child_operation.into_bytes())
                     || declaration.boundary != boundary
                 {
                     return Err(Error::Conflict(
@@ -732,11 +735,8 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
 
             let child_authority = Self::child_authority(&intent);
             let child_agent = AgentId::from_bytes(intent.child_operation.into_bytes());
-            let child_issuer = Self::child_issuer(
-                &child_authority,
-                intent.child_operation,
-                issuer_secret,
-            );
+            let child_issuer =
+                Self::child_issuer(&child_authority, intent.child_operation, issuer_secret);
             let child_private = VolumeRef::new(
                 self.host.provider.clone(),
                 format!("local-private-{}", intent.child_operation),
@@ -747,32 +747,34 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
             // its direct parent received.  The root resolver's configured
             // project is only the fallback for the root task; reusing it at
             // every depth would silently discard edits made by an ancestor.
-            let parent_project = swarm
-                .reports
-                .lock()
-                .await
-                .get(&intent.parent)
-                .and_then(|report| {
-                    report
-                        .request
-                        .selections
-                        .iter()
-                        .zip(&report.captures)
-                        .find_map(|(selection, capture)| {
-                            if !matches!(&selection.revision, ResourceRevision::Project { .. }) {
-                                return None;
-                            }
-                            match capture {
-                                Capture::Captured(resource) => {
-                                    match &resource.revision {
-                                        ResourceRevision::Project { volume, .. } => Some(volume.clone()),
-                                        _ => None,
-                                    }
+            let parent_project =
+                swarm
+                    .reports
+                    .lock()
+                    .await
+                    .get(&intent.parent)
+                    .and_then(|report| {
+                        report
+                            .request
+                            .selections
+                            .iter()
+                            .zip(&report.captures)
+                            .find_map(|(selection, capture)| {
+                                if !matches!(&selection.revision, ResourceRevision::Project { .. })
+                                {
+                                    return None;
                                 }
-                                _ => None,
-                            }
-                        })
-                });
+                                match capture {
+                                    Capture::Captured(resource) => match &resource.revision {
+                                        ResourceRevision::Project { volume, .. } => {
+                                            Some(volume.clone())
+                                        }
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                }
+                            })
+                    });
             let source_project = source_project_for_parent(
                 parent_project,
                 parent_session.parent.is_none(),
@@ -1143,8 +1145,7 @@ impl LocalModelForkPlans {
                             && existing != &digest
                         {
                             return Err(Error::Conflict(
-                                "durable model fork issuer binding changed during recovery"
-                                    .into(),
+                                "durable model fork issuer binding changed during recovery".into(),
                             ));
                         }
                         issuer_bindings.insert(key, digest);
@@ -1200,12 +1201,7 @@ impl LocalModelForkPlans {
             .and_then(|resolver| resolver.issuer_binding_digest());
         if intents.contains_key(&key) {
             if let Some(expected) = issuer_digest
-                && self
-                    .issuer_bindings
-                    .lock()
-                    .await
-                    .get(&key)
-                    != Some(&expected)
+                && self.issuer_bindings.lock().await.get(&key) != Some(&expected)
             {
                 return Err(Error::Conflict(
                     "model fork issuer binding is missing or changed on retry".into(),
@@ -1229,10 +1225,7 @@ impl LocalModelForkPlans {
         }
         intents.insert(key, intent);
         if let Some(digest) = issuer_digest {
-            self.issuer_bindings
-                .lock()
-                .await
-                .insert(key, digest);
+            self.issuer_bindings.lock().await.insert(key, digest);
         }
         drop(intents);
         if let Some(registry) = registry {
@@ -1240,8 +1233,10 @@ impl LocalModelForkPlans {
                 .stream(REGISTRY_STREAM)
                 .map_err(|error| Error::Storage(error.to_string()))?;
             let records = load_records(&stream).await?;
-            let position = records.into_iter().enumerate().find_map(|(position, record)| {
-                match record.event {
+            let position = records
+                .into_iter()
+                .enumerate()
+                .find_map(|(position, record)| match record.event {
                     StoredEvent::ForkIntent { intent }
                     | StoredEvent::ForkIntentSelected { intent, .. }
                         if (intent.fork_operation, intent.child_operation) == key =>
@@ -1249,8 +1244,7 @@ impl LocalModelForkPlans {
                         Some(position as u64)
                     }
                     _ => None,
-                }
-            });
+                });
             if let Some(position) = position {
                 self.intent_order
                     .lock()
@@ -1262,7 +1256,10 @@ impl LocalModelForkPlans {
         Ok(())
     }
 
-    async fn resolve_intents(&self, publication: ModelBatchPublication) -> Result<Vec<LocalModelForkPlan>> {
+    async fn resolve_intents(
+        &self,
+        publication: ModelBatchPublication,
+    ) -> Result<Vec<LocalModelForkPlan>> {
         let mut intents = self
             .intents
             .lock()
@@ -1285,7 +1282,9 @@ impl LocalModelForkPlans {
             if !prepared.is_empty() {
                 return Ok(prepared);
             }
-            return Err(Error::Conflict("completed fork publication has no durable intent".into()));
+            return Err(Error::Conflict(
+                "completed fork publication has no durable intent".into(),
+            ));
         }
         let existing = self
             .plans
@@ -1309,12 +1308,7 @@ impl LocalModelForkPlans {
             let key = (intent.fork_operation, intent.child_operation);
             if let Some(resolver) = resolver.as_ref()
                 && let Some(expected) = resolver.issuer_binding_digest()
-                && self
-                    .issuer_bindings
-                    .lock()
-                    .await
-                    .get(&key)
-                    != Some(&expected)
+                && self.issuer_bindings.lock().await.get(&key) != Some(&expected)
             {
                 return Err(Error::Conflict(
                     "durable model fork issuer binding does not match the owner secret".into(),
@@ -1533,9 +1527,7 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                     // either allocation journal, so a crash between report
                     // publication and seed mutation can be replayed without
                     // inventing a new allocation.
-                    plan.host
-                        .rebind_fork_seed(&old_seed, &rebound_seed)
-                        .await?;
+                    plan.host.rebind_fork_seed(&old_seed, &rebound_seed).await?;
                 }
                 let seed = swarm
                     .publish_child_seed_with_publication(
@@ -1579,7 +1571,10 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
         publication: ModelBatchPublication,
     ) -> BoxFuture<'a, Result<Option<()>>> {
         Box::pin(async move {
-            let plans = self.plans.get_for_publication(publication.operation_id).await;
+            let plans = self
+                .plans
+                .get_for_publication(publication.operation_id)
+                .await;
             if plans.is_empty() {
                 if !self.plans.has_intent(publication.operation_id).await {
                     return Ok(Some(()));
@@ -1633,8 +1628,10 @@ impl ToolExecutor for LocalForkToolExecutor {
     ) -> BoxFuture<'a, Result<ToolResult>> {
         Box::pin(async move {
             context.validate_invocation(&invocation)?;
-            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+            let input: LocalForkToolInput =
+                serde_json::from_value(invocation.arguments).map_err(|error| {
+                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
+                })?;
             let publication_operation = context.publication_operation();
             let fork_operation = child_fork_operation(publication_operation, input.child_operation);
             if input
@@ -1681,8 +1678,10 @@ impl ToolExecutor for LocalForkToolExecutor {
             if invocation.name != "acyclic.fork_child" {
                 return Ok(None);
             }
-            let input: LocalForkToolInput = serde_json::from_value(invocation.arguments)
-                .map_err(|error| Error::Invalid(format!("local fork arguments are invalid: {error}")))?;
+            let input: LocalForkToolInput =
+                serde_json::from_value(invocation.arguments).map_err(|error| {
+                    Error::Invalid(format!("local fork arguments are invalid: {error}"))
+                })?;
             let Some(intent) = self.plans.replay_intent(&input).await else {
                 return Ok(None);
             };
@@ -2031,7 +2030,9 @@ enum StoredEvent {
     },
     /// Model-selected child intent retained before completed-batch
     /// publication. The owner allocator resolves it only after publication.
-    ForkIntent { intent: LocalForkIntent },
+    ForkIntent {
+        intent: LocalForkIntent,
+    },
     /// Non-secret owner binding fingerprint retained beside the selected
     /// intent. It prevents a reopen with another host issuer secret.
     ForkIssuerBinding {
@@ -2241,7 +2242,10 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
-        crate::model::validate_model_options(&config.model.options, provider.model_option_policy())?;
+        crate::model::validate_model_options(
+            &config.model.options,
+            provider.model_option_policy(),
+        )?;
         let root = root.as_ref().to_path_buf();
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
@@ -2268,8 +2272,8 @@ impl PersistentLocalSwarm {
                 )
             } else {
                 let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-                let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider)
-                    .await?;
+                let host =
+                    shared_local_filesystem(root.join("filesystem"), filesystem_provider).await?;
                 let stream_provider = ProviderRef::new("local", "stream", "2")?;
                 let stream = shared_local_stream(root.join("conversation")).await?;
                 (host, stream, stream_provider)
@@ -2341,9 +2345,9 @@ impl PersistentLocalSwarm {
             .await
             {
                 Ok(()) => {
-                    registry_tail = initial_tail.checked_add(1).ok_or_else(|| {
-                        Error::Storage("swarm registry sequence overflow".into())
-                    })?;
+                    registry_tail = initial_tail
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?;
                     sessions.insert(root_task, root_session);
                 }
                 Err(Error::Conflict(_)) => {
@@ -2477,7 +2481,8 @@ impl PersistentLocalSwarm {
         let bindings = if let Some(plans) = bindings.model_fork_plans.clone() {
             bindings.with_model_fork_plans(plans)
         } else if let Some(resolver) = bindings.filesystem_fork_resolver.clone() {
-            bindings.with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
+            bindings
+                .with_model_fork_plans(Arc::new(LocalModelForkPlans::new().with_resolver(resolver)))
         } else {
             bindings
         };
@@ -2538,8 +2543,8 @@ impl PersistentLocalSwarm {
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
-        let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
-            .await?;
+        let host =
+            shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone()).await?;
         let stream_provider = ProviderRef::new("local", "stream", "2")?;
         let stream = shared_local_stream(root.join("conversation")).await?;
         let project = VolumeRef::new(
@@ -2658,9 +2663,7 @@ impl PersistentLocalSwarm {
             .get(&operator_choice_key(task, id))
             .cloned()
             .ok_or_else(|| {
-                Error::Unauthorized(
-                    "approval requires an authenticated operator choice".into(),
-                )
+                Error::Unauthorized("approval requires an authenticated operator choice".into())
             })?;
         if choice.approved != approved
             || choice.operation != binding.operation_id
@@ -2701,7 +2704,13 @@ impl PersistentLocalSwarm {
     /// reading child filesystem content.
     pub async fn sessions(&self) -> Result<Vec<LocalSwarmSession>> {
         self.refresh_registry_state().await?;
-        let sessions = self.records.lock().await.values().cloned().collect::<Vec<_>>();
+        let sessions = self
+            .records
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         self.observe(LocalSwarmObservation::SessionList {
             returned: sessions.len(),
         });
@@ -2990,10 +2999,12 @@ impl PersistentLocalSwarm {
             };
             let existing = if let Some(detail) = &resolution.detail {
                 let harness = self.open_session(task).await?;
-                serde_json::from_slice::<InteractionResponse>(&harness.storage().read(detail).await?)
-                    .map_err(|error| {
-                        Error::Storage(format!("invalid persisted approval response: {error}"))
-                    })?
+                serde_json::from_slice::<InteractionResponse>(
+                    &harness.storage().read(detail).await?,
+                )
+                .map_err(|error| {
+                    Error::Storage(format!("invalid persisted approval response: {error}"))
+                })?
             } else {
                 InteractionResponse::Approval { approved, reason }
             };
@@ -3037,11 +3048,10 @@ impl PersistentLocalSwarm {
                 "swarm messages require a direct parent or child recipient".into(),
             ));
         };
-        let host = self
-            .bindings
-            .communication_host
-            .clone()
-            .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
+        let host =
+            self.bindings.communication_host.clone().ok_or_else(|| {
+                Error::Unsupported("durable communication host is not bound".into())
+            })?;
         // Mail payloads are staged into the recipient's own private volume.
         // A sender-owned FileRef would require an implicit sibling read grant
         // and would make an otherwise valid parent/child message unreadable
@@ -3377,10 +3387,12 @@ impl PersistentLocalSwarm {
                             )
                             .await?
                     }
-                    None => parent_harness
-                        .storage()
-                        .verified_model_fork_boundary(&publication, self.config.limits)
-                        .await?,
+                    None => {
+                        parent_harness
+                            .storage()
+                            .verified_model_fork_boundary(&publication, self.config.limits)
+                            .await?
+                    }
                 };
                 let (boundary, parent) = verified.into_parts();
                 (boundary, Some(parent))
@@ -3445,19 +3457,21 @@ impl PersistentLocalSwarm {
             let observed_tail = self.refresh_registry_state_with_tail().await?;
             let latest_parent = self.session(request.parent).await?;
             if latest_parent.depth >= self.config.maximum_depth {
-                return Err(Error::Unauthorized("local swarm depth limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm depth limit exceeded".into(),
+                ));
             }
             let latest_child_count = self
                 .records
                 .lock()
                 .await
                 .values()
-                .filter(|session| {
-                    session.parent == Some(request.parent) && session.task != child
-                })
+                .filter(|session| session.parent == Some(request.parent) && session.task != child)
                 .count();
             if latest_child_count >= self.config.maximum_children {
-                return Err(Error::Unauthorized("local swarm child limit exceeded".into()));
+                return Err(Error::Unauthorized(
+                    "local swarm child limit exceeded".into(),
+                ));
             }
             if let Some(session) = self.records.lock().await.get(&child).cloned() {
                 if session.phase == LocalSessionPhase::Cancelled {
@@ -3549,8 +3563,14 @@ impl PersistentLocalSwarm {
                     self.requests.lock().await.insert(child, request.clone());
                     self.seeds.lock().await.insert(child, seed.clone());
                     self.reports.lock().await.insert(child, report.clone());
-                    self.publications.lock().await.insert(child, publication.clone());
-                    self.declarations.lock().await.insert(child, declaration.clone());
+                    self.publications
+                        .lock()
+                        .await
+                        .insert(child, publication.clone());
+                    self.declarations
+                        .lock()
+                        .await
+                        .insert(child, declaration.clone());
                 }
             }
         }
@@ -3573,26 +3593,27 @@ impl PersistentLocalSwarm {
                 .await?;
             }
         }
-        let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
-            self.config.model.clone(),
-            self.provider.clone(),
-            self.config.limits,
-            host,
-            stream,
-            issuer,
-            storage_parent,
-            seed,
-            self.bindings.tools_for(child)?,
-            self.stream_provider.clone(),
-        )
-        .await
-        {
-            Ok(harness) => Arc::new(harness),
-            Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
-                return Err(error);
-            }
-        };
+        let harness =
+            match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+                self.config.model.clone(),
+                self.provider.clone(),
+                self.config.limits,
+                host,
+                stream,
+                issuer,
+                storage_parent,
+                seed,
+                self.bindings.tools_for(child)?,
+                self.stream_provider.clone(),
+            )
+            .await
+            {
+                Ok(harness) => Arc::new(harness),
+                Err(error) => {
+                    self.mark_failed(child, error.to_string()).await?;
+                    return Err(error);
+                }
+            };
         self.verify_admitted_task(child, Some(request.parent))
             .await?;
         self.sessions.lock().await.insert(child, harness.clone());
@@ -3664,7 +3685,8 @@ impl PersistentLocalSwarm {
             || seed.parent != report.request.parent
             || seed.child != report.request.child
             || seed.child_agent != report.request.child_agent
-            || child_fork_operation(publication.operation_id, request.child_operation) != fork_operation
+            || child_fork_operation(publication.operation_id, request.child_operation)
+                != fork_operation
         {
             return Err(Error::Conflict(
                 "published fork seed or model publication has the wrong operation binding".into(),
@@ -3912,13 +3934,7 @@ impl PersistentLocalSwarm {
         );
         let seed = match if let Some(proof) = rebind_proof {
             child
-                .spawn_from_report_with_rebind(
-                    parent,
-                    report,
-                    parent_scope,
-                    child_scope,
-                    proof,
-                )
+                .spawn_from_report_with_rebind(parent, report, parent_scope, child_scope, proof)
                 .await
         } else {
             child
@@ -4067,14 +4083,29 @@ impl PersistentLocalSwarm {
                 return Err(error);
             }
         };
-        let output = match self.run_child_turn(child, &harness, &bundle, &request).await {
+        // Schedule recursive child turns independently to bound the poll stack.
+        let max_steps = u32::try_from(
+            self.config
+                .run_limits
+                .max_steps
+                .unwrap_or(self.config.limits.model_steps),
+        )
+        .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
+        self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
+        let child_result = tokio::spawn(Self::run_child_turn(
+            harness.clone(),
+            bundle.clone(),
+            request.clone(),
+            max_steps,
+        ))
+        .await
+        .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
+        .and_then(|result| result);
+        let output = match child_result {
             Ok(output) => output,
             Err(error) => {
-                // ForkFailed clears the activation fence and permits a new
-                // provider dispatch. It is therefore valid only when the
-                // execution journal proves that no model admission occurred.
-                // Provider/storage uncertainty retains the claim until the
-                // shared executor authenticates an admitted outcome.
+                // Retain the activation claim if model admission occurred or
+                // dispatch has an uncertain outcome. The executor reconciles it.
                 if !matches!(error, Error::Indeterminate(_))
                     && !self
                         .child_model_started(&harness, request.child_operation)
@@ -4282,11 +4313,10 @@ impl PersistentLocalSwarm {
     }
 
     async fn run_child_turn(
-        &self,
-        child: TaskId,
-        harness: &PersistentLocalHarness,
-        bundle: &crate::Harness,
-        request: &LocalForkRequest,
+        harness: Arc<PersistentLocalHarness>,
+        bundle: crate::Harness,
+        request: LocalForkRequest,
+        max_steps: u32,
     ) -> Result<TurnOutput> {
         let content = harness
             .storage()
@@ -4298,17 +4328,9 @@ impl PersistentLocalSwarm {
                 "prompt.txt",
             )
             .await?;
-        let max_steps = u32::try_from(
-            self.config
-                .run_limits
-                .max_steps
-                .unwrap_or(self.config.limits.model_steps),
-        )
-        .map_err(|_| Error::Invalid("child step limit exceeds u32".into()))?;
-        self.observe(LocalSwarmObservation::ModelWorkerStarted { task: child });
         harness
             .storage()
-            .run_conversation(bundle, request.child_operation, content, vec![], max_steps)
+            .run_conversation(&bundle, request.child_operation, content, vec![], max_steps)
             .await
     }
 
@@ -4458,12 +4480,7 @@ impl PersistentLocalSwarm {
         self.update_session_at(observed_tail, task, update).await
     }
 
-    async fn update_session_at<F>(
-        &self,
-        observed_tail: u64,
-        task: TaskId,
-        update: F,
-    ) -> Result<()>
+    async fn update_session_at<F>(&self, observed_tail: u64, task: TaskId, update: F) -> Result<()>
     where
         F: FnOnce(&mut LocalSwarmSession),
     {
@@ -5324,10 +5341,7 @@ mod tests {
             request: crate::communication::WaitRequest,
         ) -> BoxFuture<'a, Result<Option<crate::communication::WaitCompletion>>> {
             Box::pin(async move {
-                self.opened
-                    .lock()
-                    .expect("wait store lock")
-                    .push(request);
+                self.opened.lock().expect("wait store lock").push(request);
                 Ok(None)
             })
         }
@@ -5456,7 +5470,10 @@ mod tests {
             .await,
             Err(Error::Invalid(_))
         ));
-        assert!(!recursive.exists(), "denied model created recursive volumes");
+        assert!(
+            !recursive.exists(),
+            "denied model created recursive volumes"
+        );
         assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
         Ok(())
     }
@@ -5476,7 +5493,9 @@ mod tests {
         let swarm = PersistentLocalSwarm::open_with_model_and_bindings(
             root.path(),
             model,
-            Arc::new(CommunicationModel { calls: AtomicUsize::new(0) }),
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(0),
+            }),
             Limits::default(),
             bindings,
         )
@@ -5486,8 +5505,15 @@ mod tests {
             swarm.read_inbox(TaskId::from_bytes([99; 16]), 0, 1).await,
             Err(Error::NotFound(_))
         ));
-        assert!(host.observed.lock().expect("communication host lock").is_empty());
-        swarm.run_root(OperationId::from_bytes([82; 16]), "wait for the deadline").await?;
+        assert!(
+            host.observed
+                .lock()
+                .expect("communication host lock")
+                .is_empty()
+        );
+        swarm
+            .run_root(OperationId::from_bytes([82; 16]), "wait for the deadline")
+            .await?;
         let observed = host.observed.lock().expect("communication host lock");
         assert!(!observed.is_empty());
         assert!(observed.iter().all(|task| *task == root_task));
@@ -5520,7 +5546,10 @@ mod tests {
             .tail()
             .await
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert_eq!(load_records_range(&registry, 0, tail).await?.len() as u64, tail);
+        assert_eq!(
+            load_records_range(&registry, 0, tail).await?.len() as u64,
+            tail
+        );
         for from in [0, tail] {
             let error = load_records_range(&registry, from, tail + 1)
                 .await
@@ -5594,12 +5623,8 @@ mod tests {
             provider.clone(),
             Limits::default(),
         );
-        let second = PersistentLocalSwarm::open_with_model(
-            root.path(),
-            model,
-            provider,
-            Limits::default(),
-        );
+        let second =
+            PersistentLocalSwarm::open_with_model(root.path(), model, provider, Limits::default());
         let opened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::join!(first, second)
         })
@@ -5717,7 +5742,11 @@ mod tests {
         assert_eq!(snapshot.conversation_revision, 0);
         assert!(!second.sessions.lock().await.contains_key(&child));
         let _activity = second.read_activity(parent, 0, 1).await?;
-        let observations = second_observer.events.lock().expect("observer lock").clone();
+        let observations = second_observer
+            .events
+            .lock()
+            .expect("observer lock")
+            .clone();
         assert!(observations.contains(&LocalSwarmObservation::SessionList { returned: 2 }));
         assert!(observations.contains(&LocalSwarmObservation::SessionPage { returned: 1 }));
         assert!(observations.contains(&LocalSwarmObservation::SessionSnapshot { task: child }));
@@ -5778,7 +5807,13 @@ mod tests {
             Limits::default(),
         )
         .await?;
-        assert!(reopened.sessions().await?.iter().any(|session| session.task == child));
+        assert!(
+            reopened
+                .sessions()
+                .await?
+                .iter()
+                .any(|session| session.task == child)
+        );
         assert!(!reopened.sessions.lock().await.contains_key(&child));
         Ok(())
     }
@@ -5879,18 +5914,17 @@ mod tests {
             return Err(Error::Storage("cancellation host call timed out".into()));
         }
         release.wait().await;
-        let cancelled = match tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            &mut cancel,
-        )
-        .await
+        let cancelled = match tokio::time::timeout(std::time::Duration::from_secs(2), &mut cancel)
+            .await
         {
             Ok(result) => result
                 .map_err(|error| Error::Storage(format!("cancellation task failed: {error}")))??,
             Err(_) => {
                 cancel.abort();
                 let _ = cancel.await;
-                return Err(Error::Storage("cancellation final refresh timed out".into()));
+                return Err(Error::Storage(
+                    "cancellation final refresh timed out".into(),
+                ));
             }
         };
         assert_eq!(cancelled.task, task);
@@ -5917,11 +5951,7 @@ mod tests {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(
-            &registry,
-            StoredEvent::ForkCancelled { child: cancel_task },
-        )
-        .await?;
+        append_record(&registry, StoredEvent::ForkCancelled { child: cancel_task }).await?;
         append_record(
             &registry,
             StoredEvent::ForkFailed {
@@ -5946,7 +5976,8 @@ mod tests {
             LocalSessionPhase::Cancelled
         );
 
-        let completion_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let completion_root =
+            tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let first = PersistentLocalSwarm::open_with_model(
             completion_root.path(),
             model.clone(),
@@ -6017,7 +6048,10 @@ mod tests {
     }
 
     impl ModelProvider for MockModel {
-        fn generate<'a>(&'a self, prepared: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             let request = prepared.request().clone();
             self.requests.lock().expect("request lock").push(request);
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -6169,13 +6203,9 @@ mod tests {
             requests: Mutex::new(Vec::new()),
         });
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
-        let swarm = PersistentLocalSwarm::open_with_model(
-            root.path(),
-            model,
-            provider,
-            Limits::default(),
-        )
-        .await?;
+        let swarm =
+            PersistentLocalSwarm::open_with_model(root.path(), model, provider, Limits::default())
+                .await?;
         let task = swarm.root_task().await?;
         let interaction = InteractionId::new();
         let operation = OperationId::new();
@@ -6189,7 +6219,9 @@ mod tests {
                 Interaction::approval("approve exact action", operation, action_digest)?,
             )
             .await?;
-        swarm.record_operator_approval(task, interaction, false).await?;
+        swarm
+            .record_operator_approval(task, interaction, false)
+            .await?;
         assert!(matches!(
             swarm
                 .resolve_recorded_operator_approval(task, interaction, true)
