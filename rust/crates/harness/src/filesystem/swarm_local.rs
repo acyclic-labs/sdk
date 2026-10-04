@@ -4825,6 +4825,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filesystem::WorkspaceMutation;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
@@ -5198,6 +5199,106 @@ mod tests {
         assert_eq!(snapshot.conversation_revision, 0);
         assert_eq!(snapshot.workspace_generation, None);
         assert!(!swarm.sessions.lock().await.contains_key(&child));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cross_handle_metadata_stays_lazy_and_workspace_cas_rejects_stale_publish() -> Result<()>
+    {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let first = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let second = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model.clone(),
+            provider,
+            Limits::default(),
+        )
+        .await?;
+        let parent = first.root_task().await?;
+        let child = TaskId::new();
+        let registry = first
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::Session(StoredSession {
+                version: REGISTRY_VERSION,
+                task: child,
+                parent: Some(parent),
+                depth: 1,
+                task_description: "cross-handle cold child".into(),
+                operation: None,
+                phase: StoredPhase::Ready,
+            }),
+        )
+        .await?;
+        let listed = second.sessions().await?;
+        assert!(listed.iter().any(|session| session.task == child));
+        assert!(!second.sessions.lock().await.contains_key(&child));
+        let snapshot = second.session_snapshot(child).await?;
+        assert_eq!(snapshot.workspace_generation, None);
+        assert_eq!(snapshot.conversation_revision, 0);
+        assert!(!second.sessions.lock().await.contains_key(&child));
+
+        let root_harness = first.open_session(parent).await?;
+        let volume = root_harness.storage().volume().clone();
+        let workspace = workspace_ref(volume.provider().clone(), &volume.storage_name()?)?;
+        let head = first.filesystem_host.resolve(&workspace).await?;
+        let left_mutations = [WorkspaceMutation::PutFile {
+            path: "/left.txt".into(),
+            bytes: b"left".to_vec(),
+        }];
+        let right_mutations = [WorkspaceMutation::PutFile {
+            path: "/right.txt".into(),
+            bytes: b"right".to_vec(),
+        }];
+        let left_key = crate::IdempotencyKey::new("cross-handle-left")?;
+        let right_key = crate::IdempotencyKey::new("cross-handle-right")?;
+        let left = first.filesystem_host.apply(
+            &workspace,
+            Some(&head.generation),
+            &left_mutations,
+            &left_key,
+        );
+        let right = second.filesystem_host.apply(
+            &workspace,
+            Some(&head.generation),
+            &right_mutations,
+            &right_key,
+        );
+        let (left, right) = tokio::join!(left, right);
+        assert!(matches!(
+            (left, right),
+            (Ok(_), Err(Error::Conflict(_))) | (Err(Error::Conflict(_)), Ok(_))
+        ));
+        let committed = first.filesystem_host.resolve(&workspace).await?;
+        assert_ne!(committed.generation, head.generation);
+
+        drop(second);
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        assert!(reopened.sessions().await?.iter().any(|session| session.task == child));
+        assert!(!reopened.sessions.lock().await.contains_key(&child));
         Ok(())
     }
 
