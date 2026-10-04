@@ -17,8 +17,7 @@ use acyclic_harness::{
         PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
-        ModelRequest, ModelRole,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest, ModelRole,
     },
     resources::ProviderRef,
 };
@@ -150,10 +149,24 @@ impl DeterministicProvider {
 }
 
 impl ModelProvider for DeterministicProvider {
-    fn generate<'a>(&'a self, prepared: acyclic_harness::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         Self::assert_request_round_trips(&request);
-        let bytes = serde_json::to_vec(&request).expect("serialize model request");
+        // Capture the bytes from the actual production executor boundary. A
+        // separately serialized clone could hide a provider-input rewrite or
+        // canonicalization mismatch.
+        let bytes = prepared.bytes().to_vec();
+        assert_eq!(
+            *blake3::hash(&bytes).as_bytes(),
+            prepared.manifest().request_digest,
+            "provider capture must retain the admitted request bytes"
+        );
+        let decoded: ModelRequest =
+            serde_json::from_slice(&bytes).expect("captured request must decode");
+        assert_eq!(decoded, request, "captured bytes must preserve the request");
         self.requests_decoded
             .lock()
             .expect("request lock")
