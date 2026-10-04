@@ -2,12 +2,12 @@
   "schema": "acyclic.graphcoder.native-approval-receipt.v1",
   "source": {
     "worktree": "C:/Users/varun/.codex/worktrees/graphcoder-blocking-f9",
-    "commit": "bd8f3d43ab94b6e08d1ab5fe579351d0a9f05442",
-    "tree": "b743524c6931f799b5e4409ce6a28a8d605262e7"
+    "commit": "9cec4d515163fe785a35e7c4ece4f8e206a9b37f",
+    "tree": "c7c2dd972750a2260eba01a5ac69054d050a0a1a"
   },
   "artifact": {
     "path": "Q:/graphcoder-builds/terminal/debug/graphcoder-runtime.exe",
-    "sha256": "00b3b65d16da75e28aa55188a4cbc34652d090a846c4377b64be2a9c08e7b8ca"
+    "sha256": "2cb6fbffbfb88e29632bbeed7d07dbed283cfc8171ad0770bef01ec3833caadc"
   },
   "qualification": {
     "platform": "windows-native",
@@ -25,7 +25,27 @@
       "approved-stage-effect",
       "cancelled",
       "reopened"
-    ]
+    ],
+    "host_execution_driver": "node scripts/graphcoder-native-host-execution-e2e.mjs",
+    "host_execution_driver_result": "passed",
+    "host_execution_fixture": "native-approval",
+    "host_execution_markers": [
+      "pending-approval",
+      "operator-inspection",
+      "forged-identity",
+      "denied-operator",
+      "approved-host-effect",
+      "durable-replay"
+    ],
+    "host_execution_action": {
+      "executable": "absolute COMSPEC path",
+      "arguments": [
+        "/C",
+        "echo graphcoder-native-approval>graphcoder-native-effect.txt"
+      ],
+      "working_directory": "temporary attached checkout",
+      "environment": "explicit GRAPHCODER_FIXTURE only"
+    }
   },
   "process_policy": {
     "environment": "explicit PATH/SystemRoot/WINDIR/COMSPEC/PATHEXT only",
