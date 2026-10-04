@@ -15,6 +15,7 @@ use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
+    communication_tools::{LocalTaskCancellationSource, WaitCancellationSource},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::{ExecutionEvent, TurnOutput},
@@ -108,6 +109,26 @@ type LocalFilesystemHost = FilesystemHost<LocalAuthorityBackend, LocalObjectBack
 static LOCAL_STREAM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalStream>>>> = OnceLock::new();
 static LOCAL_FILESYSTEM_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>> =
     OnceLock::new();
+// Live cancellation is shared by handles of the same durable composition.
+// This cache carries no authority: only a committed cancellation signals it.
+static LOCAL_CANCELLATION_CACHE: OnceLock<
+    StdMutex<BTreeMap<PathBuf, Weak<LocalTaskCancellationSource>>>,
+> = OnceLock::new();
+
+fn shared_local_cancellation(root: &Path) -> Result<Arc<LocalTaskCancellationSource>> {
+    let mut cache = LOCAL_CANCELLATION_CACHE
+        .get_or_init(|| StdMutex::new(BTreeMap::new()))
+        .lock()
+        .map_err(|_| Error::Storage("local cancellation cache lock poisoned".into()))?;
+    let key = normalized_path(root);
+    if let Some(source) = cache.get(&key).and_then(Weak::upgrade) {
+        return Ok(source);
+    }
+    cache.retain(|_, source| source.strong_count() != 0);
+    let source = Arc::new(LocalTaskCancellationSource::default());
+    cache.insert(key, Arc::downgrade(&source));
+    Ok(source)
+}
 
 #[cfg(test)]
 static EMPTY_REGISTRY_OPEN_BARRIER: OnceLock<
@@ -2208,6 +2229,7 @@ impl From<LocalSwarmSession> for StoredSession {
 /// Durable local recursive application composition.
 pub struct PersistentLocalSwarm {
     root: PathBuf,
+    live_cancellation: Arc<LocalTaskCancellationSource>,
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
     bindings: LocalSwarmBindings,
@@ -2445,6 +2467,7 @@ impl PersistentLocalSwarm {
         let mut opened = BTreeMap::new();
         opened.insert(root_task, root_harness);
         let swarm = Self {
+            live_cancellation: shared_local_cancellation(&root)?,
             root,
             config,
             provider,
@@ -3178,6 +3201,8 @@ impl PersistentLocalSwarm {
         let observed_tail = self.refresh_registry_state_with_tail().await?;
         let session = self.session(task).await?;
         if session.phase == LocalSessionPhase::Cancelled {
+            self.live_cancellation.register(task)?;
+            self.live_cancellation.cancel(task)?;
             return Ok(session);
         }
         if session.phase == LocalSessionPhase::Completed {
@@ -3199,6 +3224,8 @@ impl PersistentLocalSwarm {
             self.refresh_registry_state().await?;
             let latest = self.session(task).await?;
             if latest.phase == LocalSessionPhase::Cancelled {
+                self.live_cancellation.register(task)?;
+                self.live_cancellation.cancel(task)?;
                 return Ok(latest);
             }
             return Err(error);
@@ -3212,6 +3239,8 @@ impl PersistentLocalSwarm {
                 current.phase = LocalSessionPhase::Cancelled;
             }
         }
+        self.live_cancellation.register(task)?;
+        self.live_cancellation.cancel(task)?;
         if let Some(source) = &self.bindings.cancellation {
             let _ = source.cancel(task);
         }
@@ -4067,6 +4096,12 @@ impl PersistentLocalSwarm {
         harness: Arc<PersistentLocalHarness>,
         declared_suffix: Option<Vec<ModelMessage>>,
     ) -> Result<LocalForkOutcome> {
+        // Subscribe before the durable check so cancellation cannot fall
+        // between that check and live task registration.
+        self.live_cancellation.register(child)?;
+        let mut cancelled = self.live_cancellation.receiver(child).ok_or_else(|| {
+            Error::Storage("registered child cancellation scope disappeared".into())
+        })?;
         self.refresh_registry_state().await?;
         if self
             .records
@@ -4167,10 +4202,26 @@ impl PersistentLocalSwarm {
             request.clone(),
             max_steps,
         )));
-        let child_result = child_task
-            .await
-            .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
-            .and_then(|result| result);
+        tokio::pin!(child_task);
+        let child_result = tokio::select! {
+            result = &mut child_task => result
+                .map_err(|error| Error::Storage(format!("child turn task failed: {error}")))
+                .and_then(|result| result),
+            result = async {
+                while !*cancelled.borrow_and_update() {
+                    cancelled.changed().await.map_err(|_| {
+                        Error::Storage("child cancellation source closed".into())
+                    })?;
+                }
+                Ok::<(), Error>(())
+            } => {
+                // Await termination before reading the child's journal. An
+                // abort request alone could leave its writer racing recovery.
+                child_task.as_ref().get_ref().handle.abort();
+                let _ = (&mut child_task).await;
+                result.and_then(|()| Err(Error::Conflict("child activation was cancelled".into())))
+            },
+        };
         let output = match child_result {
             Ok(output) => output,
             Err(error) => {
