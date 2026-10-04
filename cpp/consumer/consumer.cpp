@@ -3,10 +3,13 @@
 #include <google/protobuf/dynamic_message.h>
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
+#include <google/protobuf/util/json_util.h>
+#include <google/protobuf/util/message_differencer.h>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
@@ -37,6 +40,15 @@ struct SeedScenario {
   std::string seed;
   std::vector<std::string> depends_on;
   std::string known_output;
+  struct WireEnvelope {
+    std::string encoding;
+    std::string message;
+    std::string value;
+    std::string sha256;
+  };
+  std::optional<WireEnvelope> wire_request;
+  std::optional<WireEnvelope> wire_expected;
+  std::vector<WireEnvelope> wire_expected_frames;
 };
 
 struct Scenario {
@@ -97,6 +109,155 @@ std::string json_unescape(const std::string& value) {
   return result;
 }
 
+std::optional<std::string> json_string_at(const std::string& text, std::size_t offset) {
+  if (offset >= text.size() || text[offset] != '"') return std::nullopt;
+  std::string raw;
+  bool escaped = false;
+  for (std::size_t index = offset + 1; index < text.size(); ++index) {
+    const char character = text[index];
+    if (escaped) {
+      raw.push_back('\\');
+      raw.push_back(character);
+      escaped = false;
+      continue;
+    }
+    if (character == '\\') {
+      escaped = true;
+      continue;
+    }
+    if (character == '"') return json_unescape(raw);
+    raw.push_back(character);
+  }
+  return std::nullopt;
+}
+
+std::size_t json_after_colon(const std::string& text, const std::string& key) {
+  const std::string quoted = "\"" + key + "\"";
+  const std::size_t key_offset = text.find(quoted);
+  if (key_offset == std::string::npos) return std::string::npos;
+  const std::size_t colon = text.find(':', key_offset + quoted.size());
+  if (colon == std::string::npos) return std::string::npos;
+  std::size_t value = colon + 1;
+  while (value < text.size() && std::isspace(static_cast<unsigned char>(text[value]))) ++value;
+  return value;
+}
+
+std::optional<std::string> json_string_field(const std::string& object, const std::string& key) {
+  const std::size_t value = json_after_colon(object, key);
+  if (value == std::string::npos || value >= object.size() || object[value] != '"') return std::nullopt;
+  return json_string_at(object, value);
+}
+
+std::optional<std::string> json_container_field(const std::string& object,
+                                                const std::string& key,
+                                                char opening,
+                                                char closing) {
+  const std::size_t value = json_after_colon(object, key);
+  if (value == std::string::npos || value >= object.size() || object[value] != opening) {
+    return std::nullopt;
+  }
+  int depth = 0;
+  bool in_string = false;
+  bool escaped = false;
+  for (std::size_t index = value; index < object.size(); ++index) {
+    const char character = object[index];
+    if (in_string) {
+      if (escaped) escaped = false;
+      else if (character == '\\') escaped = true;
+      else if (character == '"') in_string = false;
+      continue;
+    }
+    if (character == '"') {
+      in_string = true;
+      continue;
+    }
+    if (character == opening) ++depth;
+    else if (character == closing && --depth == 0) {
+      return object.substr(value, index - value + 1);
+    }
+  }
+  return std::nullopt;
+}
+
+std::vector<std::string> json_top_level_objects(const std::string& array) {
+  std::vector<std::string> objects;
+  int depth = 0;
+  std::size_t start = std::string::npos;
+  bool in_string = false;
+  bool escaped = false;
+  for (std::size_t index = 0; index < array.size(); ++index) {
+    const char character = array[index];
+    if (in_string) {
+      if (escaped) escaped = false;
+      else if (character == '\\') escaped = true;
+      else if (character == '"') in_string = false;
+      continue;
+    }
+    if (character == '"') {
+      in_string = true;
+      continue;
+    }
+    if (character == '{') {
+      if (depth == 0) start = index;
+      ++depth;
+    } else if (character == '}' && depth > 0) {
+      --depth;
+      if (depth == 0 && start != std::string::npos) {
+        objects.push_back(array.substr(start, index - start + 1));
+        start = std::string::npos;
+      }
+    }
+  }
+  return objects;
+}
+
+std::vector<std::string> json_string_array_field(const std::string& object,
+                                                 const std::string& key) {
+  const auto array = json_container_field(object, key, '[', ']');
+  if (!array) return {};
+  std::vector<std::string> values;
+  for (std::size_t index = 0; index < array->size(); ++index) {
+    if ((*array)[index] != '"') continue;
+    const auto value = json_string_at(*array, index);
+    if (!value) break;
+    values.push_back(*value);
+    const std::size_t end = array->find('"', index + 1);
+    if (end == std::string::npos) break;
+    index = end;
+  }
+  return values;
+}
+
+std::optional<SeedScenario::WireEnvelope> json_wire_envelope_object(const std::string& value) {
+  SeedScenario::WireEnvelope envelope;
+  envelope.encoding = json_string_field(value, "encoding").value_or("");
+  envelope.message = json_string_field(value, "message").value_or("");
+  envelope.value = json_string_field(value, "value").value_or("");
+  envelope.sha256 = json_string_field(value, "sha256").value_or("");
+  if (envelope.encoding.empty() || envelope.message.empty() || envelope.value.empty() || envelope.sha256.empty()) {
+    throw std::runtime_error("Rust wire envelope is missing encoding, message, value, or sha256");
+  }
+  return envelope;
+}
+
+std::optional<SeedScenario::WireEnvelope> json_wire_envelope(const std::string& object,
+                                                              const std::string& key) {
+  const auto value = json_container_field(object, key, '{', '}');
+  return value ? json_wire_envelope_object(*value) : std::nullopt;
+}
+
+std::vector<SeedScenario::WireEnvelope> json_wire_envelope_array(const std::string& object,
+                                                                  const std::string& key) {
+  const auto value = json_container_field(object, key, '[', ']');
+  if (!value) return {};
+  std::vector<SeedScenario::WireEnvelope> envelopes;
+  for (const auto& item : json_top_level_objects(*value)) {
+    const auto envelope = json_wire_envelope_object(item);
+    if (envelope) envelopes.push_back(*envelope);
+  }
+  return envelopes;
+}
+
 std::string read_file(const std::filesystem::path& path);
 
 std::vector<SeedScenario> rust_seed_scenarios(const std::filesystem::path& generated_root,
@@ -123,28 +284,43 @@ std::vector<SeedScenario> rust_seed_scenarios(const std::filesystem::path& gener
   if (!std::regex_search(manifest, source_match, source) || source_match[1].str() != source_revision) {
     throw std::runtime_error("Rust transport fixture manifest is bound to a different source revision");
   }
-  const std::size_t rpc_start = manifest.find("\"rpc_scenarios\"");
-  const std::size_t seed_start = manifest.find("\"seed_graph\"", rpc_start);
-  if (rpc_start == std::string::npos || seed_start == std::string::npos || seed_start <= rpc_start) {
+  const auto rpc_object = json_container_field(manifest, "rpc_scenarios", '{', '}');
+  const auto scenario_array = rpc_object
+      ? json_container_field(*rpc_object, "scenarios", '[', ']')
+      : std::nullopt;
+  const auto seed_graph = json_container_field(manifest, "seed_graph", '{', '}');
+  if (!rpc_object || !scenario_array || !seed_graph) {
     throw std::runtime_error("Rust transport fixture manifest has no RPC scenario and seed graph");
   }
-  const std::string scenario_section = manifest.substr(rpc_start, seed_start - rpc_start);
-  const std::regex scenario(
-      R"REGEX("family"\s*:\s*"([^"]+)"\s*,\s*"operation"\s*:\s*"([^"]+)"\s*,\s*"input"\s*:\s*"([^"]*)"\s*,\s*"expected"\s*:\s*"([^"]*)"\s*,\s*"order"\s*:\s*(\d+)\s*,\s*"seed"\s*:\s*"([^"]*)"\s*,\s*"depends_on"\s*:\s*\[([^\]]*)\]\s*,\s*"known_output"\s*:\s*"([^"]*)")REGEX");
   std::vector<SeedScenario> result;
-  for (std::sregex_iterator it(scenario_section.begin(), scenario_section.end(), scenario), end;
-       it != end; ++it) {
+  for (const auto& object : json_top_level_objects(*scenario_array)) {
     SeedScenario value;
-    value.family = json_unescape((*it)[1].str());
-    value.operation = json_unescape((*it)[2].str());
-    value.input = json_unescape((*it)[3].str());
-    value.expected = json_unescape((*it)[4].str());
-    value.order = static_cast<unsigned int>(std::stoul((*it)[5].str()));
-    value.seed = json_unescape((*it)[6].str());
-    for (const auto& dependency : quoted_values((*it)[7].str())) {
-      value.depends_on.push_back(json_unescape(dependency));
+    const auto family = json_string_field(object, "family");
+    const auto operation = json_string_field(object, "operation");
+    const auto input = json_string_field(object, "input");
+    const auto expected = json_string_field(object, "expected");
+    const auto seed = json_string_field(object, "seed");
+    const auto known_output = json_string_field(object, "known_output");
+    const auto order_number = json_after_colon(object, "order");
+    if (!family || !operation || order_number == std::string::npos) {
+      continue;
     }
-    value.known_output = json_unescape((*it)[8].str());
+    value.family = *family;
+    value.operation = *operation;
+    value.input = input.value_or("");
+    value.expected = expected.value_or("");
+    std::size_t order_end = order_number;
+    while (order_end < object.size() && std::isdigit(static_cast<unsigned char>(object[order_end]))) ++order_end;
+    value.order = static_cast<unsigned int>(std::stoul(object.substr(order_number, order_end - order_number)));
+    value.seed = seed.value_or("");
+    value.depends_on = json_string_array_field(object, "depends_on");
+    value.known_output = known_output.value_or("");
+    value.wire_request = json_wire_envelope(object, "wire_request");
+    value.wire_expected = json_wire_envelope(object, "wire_expected");
+    value.wire_expected_frames = json_wire_envelope_array(object, "wire_expected_frames");
+    if (value.wire_expected && !value.wire_expected_frames.empty()) {
+      throw std::runtime_error("Rust scenario cannot declare both wire_expected and wire_expected_frames");
+    }
     result.push_back(std::move(value));
   }
   if (result.size() != 35) {
@@ -357,6 +533,67 @@ std::optional<std::string> decode_base64(const std::string& encoded) {
   return bytes;
 }
 
+extern "C" unsigned char* SHA256(const unsigned char*, std::size_t, unsigned char*);
+
+std::string sha256_hex(const std::string& input) {
+  unsigned char bytes_digest[32] = {};
+  if (SHA256(reinterpret_cast<const unsigned char*>(input.data()), input.size(), bytes_digest) == nullptr) {
+    throw std::runtime_error("gRPC crypto SHA256 failed");
+  }
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string hex;
+  hex.reserve(64);
+  for (const auto byte : bytes_digest) {
+    hex.push_back(digits[byte >> 4]);
+    hex.push_back(digits[byte & 0xfu]);
+  }
+  return hex;
+}
+
+void verify_envelope_hash(const SeedScenario::WireEnvelope& envelope, const std::string& bytes) {
+  if (envelope.sha256.empty()) return;
+  std::string expected = envelope.sha256;
+  if (expected.rfind("sha256:", 0) == 0) expected = expected.substr(7);
+  if (expected.size() != 64 ||
+      !std::all_of(expected.begin(), expected.end(), [](unsigned char character) {
+        return std::isxdigit(character) != 0;
+      })) {
+    throw std::runtime_error("Rust wire envelope has an invalid sha256 digest");
+  }
+  std::transform(expected.begin(), expected.end(), expected.begin(),
+                 [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+  if (sha256_hex(bytes) != expected) throw std::runtime_error("Rust wire envelope sha256 mismatch");
+}
+
+std::unique_ptr<google::protobuf::Message> decode_wire_envelope(
+    const SeedScenario::WireEnvelope& envelope,
+    const google::protobuf::Descriptor* descriptor,
+    google::protobuf::DynamicMessageFactory& factory,
+    const std::string& role) {
+  if (envelope.message != descriptor->full_name()) {
+    throw std::runtime_error("Rust " + role + " message does not match the RPC descriptor: " +
+                             envelope.message + " != " + std::string(descriptor->full_name()));
+  }
+  const auto* prototype = factory.GetPrototype(descriptor);
+  if (!prototype) throw std::runtime_error("missing Rust " + role + " message prototype");
+  std::unique_ptr<google::protobuf::Message> message(prototype->New());
+  if (envelope.encoding == "protobuf-base64") {
+    const auto bytes = decode_base64(envelope.value);
+    if (!bytes || !message->ParseFromString(*bytes)) {
+      throw std::runtime_error("Rust " + role + " protobuf-base64 payload is invalid");
+    }
+    verify_envelope_hash(envelope, *bytes);
+  } else if (envelope.encoding == "protobuf-json") {
+    const auto status = google::protobuf::util::JsonStringToMessage(envelope.value, message.get());
+    if (!status.ok()) throw std::runtime_error("Rust " + role + " protobuf-json payload is invalid: " +
+                                               std::string(status.message()));
+    verify_envelope_hash(envelope, message->SerializeAsString());
+  } else {
+    throw std::runtime_error("Rust " + role + " envelope has unsupported encoding: " + envelope.encoding);
+  }
+  return message;
+}
+
 bool set_seed_scalar(google::protobuf::Message& message,
                      const google::protobuf::FieldDescriptor* field,
                      const std::string& value) {
@@ -476,6 +713,48 @@ void apply_seed_input(google::protobuf::Message& request, const SeedScenario& se
   apply(request, 0);
 }
 
+void apply_logical_seed(google::protobuf::Message& request, const std::string& seed) {
+  const std::size_t separator = seed.find(':');
+  if (separator == std::string::npos || separator == 0 || separator + 1 >= seed.size()) return;
+  const std::string kind = normalized_field_name(seed.substr(0, separator));
+  const std::string value = seed.substr(separator + 1);
+  std::vector<std::string> aliases;
+  if (kind == "protocol") aliases = {"version"};
+  if (kind == "workspace") aliases = {"name"};
+  if (kind == "operation") aliases = {"operation_id", "idempotency_key", "id"};
+  if (kind == "cursor") aliases = {"opaque"};
+  if (kind == "generation") aliases = {"name", "generation_id"};
+  if (aliases.empty()) return;
+  const auto matches = [&aliases](const std::string& field_name) {
+    const std::string normalized = normalized_field_name(field_name);
+    return std::find(aliases.begin(), aliases.end(), normalized) != aliases.end();
+  };
+  std::function<void(google::protobuf::Message&, int)> apply =
+      [&](google::protobuf::Message& message, int depth) {
+        if (depth > 8) return;
+        const auto* descriptor = message.GetDescriptor();
+        const auto* reflection = message.GetReflection();
+        for (int index = 0; index < descriptor->field_count(); ++index) {
+          const auto* field = descriptor->field(index);
+          if (kind == "cursor" && field->is_repeated() &&
+              field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+              normalized_field_name(std::string(field->name())) == "cursors") {
+            auto* cursor = reflection->AddMessage(&message, field);
+            const auto* opaque = cursor->GetDescriptor()->FindFieldByName("opaque");
+            if (opaque) set_seed_scalar(*cursor, opaque, value);
+          }
+          if (matches(std::string(field->name())) && !field->is_repeated()) {
+            set_seed_scalar(message, field, value);
+          }
+          if (field->cpp_type() == google::protobuf::FieldDescriptor::CPPTYPE_MESSAGE &&
+              !field->is_repeated()) {
+            apply(*reflection->MutableMessage(&message, field), depth + 1);
+          }
+        }
+      };
+  apply(request, 0);
+}
+
 void wait_for(grpc::CompletionQueue& queue, void* expected_tag, const std::string& rpc) {
   void* tag = nullptr;
   bool ok = false;
@@ -490,6 +769,12 @@ std::unique_ptr<google::protobuf::Message> request_for(
     const std::optional<SeedScenario>& seed) {
   const auto* prototype = factory.GetPrototype(method->input_type());
   if (prototype == nullptr) throw std::runtime_error("missing request prototype for " + std::string(method->full_name()));
+  if (seed && seed->wire_request) {
+    // A typed Rust envelope is authoritative. It bypasses all compatibility
+    // identity defaults below so the consumer cannot silently manufacture a
+    // different request when the source-owned bytes are present.
+    return decode_wire_envelope(*seed->wire_request, method->input_type(), factory, "request");
+  }
   std::unique_ptr<google::protobuf::Message> request(prototype->New());
   if (method->full_name() == "acyclic.actors.v1.ActorsService.CreateActor") {
     const auto* reflection = request->GetReflection();
@@ -538,6 +823,7 @@ std::unique_ptr<google::protobuf::Message> request_for(
         }
   };
   seed_identity(*request, 0);
+  if (seed) apply_logical_seed(*request, seed->seed);
   if (seed) apply_seed_input(*request, *seed);
   return request;
 }
@@ -900,6 +1186,26 @@ struct InvocationResult {
   SemanticEvidence semantic;
 };
 
+void verify_wire_expected(const google::protobuf::Message& response,
+                          const google::protobuf::MethodDescriptor* method,
+                          const Scenario& scenario,
+                          google::protobuf::DynamicMessageFactory& factory) {
+  if (!scenario.rust_seed || !scenario.rust_seed->wire_expected) return;
+  const auto expected = decode_wire_envelope(*scenario.rust_seed->wire_expected,
+                                             method->output_type(), factory, "expected response");
+  if (!google::protobuf::util::MessageDifferencer::Equivalent(response, *expected)) {
+    throw std::runtime_error(std::string(method->full_name()) +
+                             " response differs from the Rust-owned expected protobuf message");
+  }
+}
+
+void verify_expected_frame_count(const std::string& rpc, int actual, std::size_t expected) {
+  if (expected != 0 && actual != static_cast<int>(expected)) {
+    throw std::runtime_error(rpc + " returned " + std::to_string(actual) +
+                             " frames; Rust expected " + std::to_string(expected));
+  }
+}
+
 InvocationResult invoke_unary(grpc::GenericStub& stub, const std::string& path,
                  const grpc::ByteBuffer& request, const google::protobuf::Message& request_message,
                  const google::protobuf::MethodDescriptor* method,
@@ -922,6 +1228,7 @@ InvocationResult invoke_unary(grpc::GenericStub& stub, const std::string& path,
   if (!response->ParseFromString(from_buffer(response_buffer))) {
     throw std::runtime_error(path + " returned invalid protobuf bytes");
   }
+  verify_wire_expected(*response, method, scenario, factory);
   SemanticEvidence evidence = semantic_evidence(*response, request_message, method, scenario);
   evidence.transitions = {"request_sent", "response_received", "completed"};
   return {1, std::move(evidence)};
@@ -931,6 +1238,17 @@ InvocationResult invoke_stream(grpc::GenericStub& stub, const std::string& path,
                   const grpc::ByteBuffer& request, const google::protobuf::Message& request_message,
                   const google::protobuf::MethodDescriptor* method,
                   const Scenario& scenario, google::protobuf::DynamicMessageFactory& factory) {
+  std::vector<std::unique_ptr<google::protobuf::Message>> expected_frames;
+  if (scenario.rust_seed && scenario.rust_seed->wire_expected) {
+    throw std::runtime_error(std::string(method->full_name()) +
+                             " has a typed expected response but no Rust-owned frame sequence");
+  }
+  if (scenario.rust_seed) {
+    for (const auto& envelope : scenario.rust_seed->wire_expected_frames) {
+      expected_frames.push_back(decode_wire_envelope(envelope, method->output_type(), factory,
+                                                     "expected stream response"));
+    }
+  }
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + std::chrono::seconds(10));
   grpc::CompletionQueue queue;
@@ -966,6 +1284,15 @@ InvocationResult invoke_stream(grpc::GenericStub& stub, const std::string& path,
     if (!response->ParseFromString(from_buffer(response_buffer))) {
       throw std::runtime_error(path + " returned invalid protobuf bytes");
     }
+    if (!expected_frames.empty()) {
+      if (responses >= static_cast<int>(expected_frames.size())) {
+        throw std::runtime_error(path + " returned more frames than the Rust-owned expectation");
+      }
+      if (!google::protobuf::util::MessageDifferencer::Equivalent(*response, *expected_frames[responses])) {
+        throw std::runtime_error(path + " frame " + std::to_string(responses + 1) +
+                                 " differs from the Rust-owned expected protobuf message");
+      }
+    }
     observe_response(*response, request_message, method, scenario, semantic);
     semantic.transitions.push_back("response_received");
     ++responses;
@@ -974,6 +1301,7 @@ InvocationResult invoke_stream(grpc::GenericStub& stub, const std::string& path,
   call->Finish(&status, finish_tag);
   wait_for(queue, finish_tag, path);
   if (!status.ok()) throw std::runtime_error(path + " failed: " + status.error_message());
+  verify_expected_frame_count(path, responses, expected_frames.size());
   semantic.transitions.push_back("completed");
   return {responses, finalize_semantic_evidence(std::move(semantic), method, scenario)};
 }
@@ -994,6 +1322,12 @@ void write_scenario(const std::filesystem::path& root, const std::string& revisi
          << "\"transport\":\"grpc\",\"execution_mode\":\"remote\"," 
          << "\"rust_seed\":";
   if (scenario.rust_seed) {
+    const auto emit_envelope = [&output](const char* key, const SeedScenario::WireEnvelope& envelope) {
+      output << ",\"" << key << "\":{\"encoding\":\"" << json_escape(envelope.encoding)
+             << "\",\"message\":\"" << json_escape(envelope.message)
+             << "\",\"value\":\"" << json_escape(envelope.value)
+             << "\",\"sha256\":\"" << json_escape(envelope.sha256) << "\"}";
+    };
     output << "{\"family\":\"" << json_escape(scenario.rust_seed->family)
            << "\",\"operation\":\"" << json_escape(scenario.rust_seed->operation)
            << "\",\"input\":\"" << json_escape(scenario.rust_seed->input)
@@ -1006,7 +1340,22 @@ void write_scenario(const std::filesystem::path& root, const std::string& revisi
       output << "\"" << json_escape(scenario.rust_seed->depends_on[i]) << "\"";
     }
     output << "],\"known_output\":\""
-           << json_escape(scenario.rust_seed->known_output) << "\"}";
+           << json_escape(scenario.rust_seed->known_output) << "\"";
+    if (scenario.rust_seed->wire_request) emit_envelope("wire_request", *scenario.rust_seed->wire_request);
+    if (scenario.rust_seed->wire_expected) emit_envelope("wire_expected", *scenario.rust_seed->wire_expected);
+    if (!scenario.rust_seed->wire_expected_frames.empty()) {
+      output << ",\"wire_expected_frames\":[";
+      for (std::size_t index = 0; index < scenario.rust_seed->wire_expected_frames.size(); ++index) {
+        if (index) output << ',';
+        const auto& envelope = scenario.rust_seed->wire_expected_frames[index];
+        output << "{\"encoding\":\"" << json_escape(envelope.encoding)
+               << "\",\"message\":\"" << json_escape(envelope.message)
+               << "\",\"value\":\"" << json_escape(envelope.value)
+               << "\",\"sha256\":\"" << json_escape(envelope.sha256) << "\"}";
+      }
+      output << ']';
+    }
+    output << "}";
   } else {
     output << "null";
   }

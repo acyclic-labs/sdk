@@ -22,7 +22,12 @@ add_executable(acyclic_sdk_cpp_consumer
   ${ACYCLIC_GENERATED_HEADERS})
 target_compile_features(acyclic_sdk_cpp_consumer PRIVATE cxx_std_17)
 target_include_directories(acyclic_sdk_cpp_consumer PRIVATE "${ACYCLIC_GENERATED_ROOT}")
-target_link_libraries(acyclic_sdk_cpp_consumer PRIVATE protobuf::libprotobuf gRPC::grpc++)
+target_link_libraries(acyclic_sdk_cpp_consumer PRIVATE protobuf::libprotobuf gRPC::grpc++ gRPC::crypto)
+
+add_executable(acyclic_sdk_cpp_envelope_tests negative-envelope-tests.cpp)
+target_compile_features(acyclic_sdk_cpp_envelope_tests PRIVATE cxx_std_17)
+target_link_libraries(acyclic_sdk_cpp_envelope_tests PRIVATE protobuf::libprotobuf gRPC::grpc++ gRPC::crypto)
 
 enable_testing()
 add_test(NAME acyclic_sdk_cpp_consumer COMMAND acyclic_sdk_cpp_consumer)
+add_test(NAME acyclic_sdk_cpp_envelope_tests COMMAND acyclic_sdk_cpp_envelope_tests)
