@@ -64,6 +64,14 @@ const revision = process.env.SOURCE_REVISION?.trim();
 if (!revision || !/^[0-9a-f]{40}$/i.test(revision)) {
   throw new Error("cannot bind native package to an immutable Git source revision");
 }
+const sourceModelRevision = process.env.SOURCE_MODEL_REVISION?.trim() || undefined;
+if (sourceModelRevision !== undefined && !/^[0-9a-f]{64}$/i.test(sourceModelRevision)) {
+  throw new Error("SOURCE_MODEL_REVISION must be a 64-character Rust model identity");
+}
+const sourceContentSha256 = process.env.SOURCE_CONTENT_SHA256?.trim() || undefined;
+if (sourceContentSha256 !== undefined && !/^[0-9a-f]{64}$/i.test(sourceContentSha256)) {
+  throw new Error("SOURCE_CONTENT_SHA256 must be a 64-character SHA-256 digest");
+}
 
 const packageRoot = join(artifactRoot, packageTarget);
 rmSync(packageRoot, { recursive: true, force: true });
@@ -99,6 +107,8 @@ const build = {
   schema: "acyclic.sdk.stream.native.build.v1",
   source_revision: revision,
   source_revision_kind: "git-oid",
+  source_model_revision: sourceModelRevision ?? null,
+  source_content_sha256: sourceContentSha256 ? `sha256:${sourceContentSha256}` : null,
   generator: {
     name: "scripts/build-stream-native-package.mjs",
     version: "1",
@@ -143,6 +153,8 @@ if (provenancePath) {
     schema: "acyclic.sdk.stream.native.provenance.v1",
     source_revision: revision,
     source_revision_kind: "git-oid",
+    source_model_revision: sourceModelRevision ?? null,
+    source_content_sha256: sourceContentSha256 ? `sha256:${sourceContentSha256}` : null,
     package_target: packageTarget,
     rust_target: target.rust,
     package_root: packageRoot,
@@ -165,3 +177,4 @@ console.log(JSON.stringify({
   provenance: provenancePath ? resolve(provenancePath) : undefined,
   installedConsumerVerified,
 }));
+

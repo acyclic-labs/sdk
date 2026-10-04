@@ -17,7 +17,70 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  typescript_identity:
+    name: Generate Rust-bound TypeScript package identity
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    outputs:
+      source_model_revision: ${{ steps.identity.outputs.source_model_revision }}
+      source_content_sha256: ${{ steps.identity.outputs.source_content_sha256 }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust and WASM target
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install package generation dependencies
+        shell: bash
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+
+      - name: Install pinned wasm-bindgen
+        shell: bash
+        run: cargo install wasm-bindgen-cli --version 0.2.117 --locked
+
+      - name: Generate Rust wire and installable TypeScript packages
+        shell: bash
+        env:
+          SDK_RELEASE: '1'
+          CARGO_TARGET_DIR: ${{ runner.temp }}/typescript-identity-target
+        run: |
+          set -euo pipefail
+          wire="$RUNNER_TEMP/rust-wire"
+          out="$RUNNER_TEMP/rust-typescript"
+          cargo run --locked --manifest-path rust/crates/sdk-contract-wire/Cargo.toml --bin sdk-contract-wire -- generate --out "$wire"
+          cargo run --locked --manifest-path rust/crates/sdk-typescript/Cargo.toml -- packages-write "$GITHUB_WORKSPACE" "$out" "$wire"
+          node scripts/build-stream-wasm.mjs "$out/typescript/packages/stream/generated/wasm"
+          test -s "$out/typescript/packages/stream/generated/wasm/acyclic_stream_wasm_bg.wasm"
+
+      - name: Export exact package identities
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          provenance="$RUNNER_TEMP/rust-typescript/typescript/packages/stream/generated/rust-provenance.json"
+          node --input-type=module -e 'const p=JSON.parse(await (await import("node:fs/promises")).readFile(process.argv[1],"utf8")); const family=p.acyclicGenerated ?? p; if (family.sourceGitSha !== process.env.GITHUB_SHA) throw new Error(`package Git identity ${family.sourceGitSha} differs from ${process.env.GITHUB_SHA}`); if (!/^[0-9a-f]{64}$/.test(family.sourceModelRevision ?? "")) throw new Error("missing model identity"); if (!/^[0-9a-f]{64}$/.test(family.sourceContentSha256 ?? "")) throw new Error("missing content identity"); console.log(`source_model_revision=${family.sourceModelRevision}`); console.log(`source_content_sha256=${family.sourceContentSha256}`);' "$provenance" >> "$GITHUB_OUTPUT"
+
+      - name: Upload generated TypeScript package
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-typescript-generated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-typescript
+          if-no-files-found: error
+          retention-days: 7
+
   build:
+    needs: typescript_identity
     name: ${{ matrix.package_target }}
     strategy:
       fail-fast: false
@@ -148,6 +211,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-target
           STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
           SOURCE_REVISION: ${{ inputs.source_revision || github.sha }}
+          SOURCE_MODEL_REVISION: ${{ needs.typescript_identity.outputs.source_model_revision }}
+          SOURCE_CONTENT_SHA256: ${{ needs.typescript_identity.outputs.source_content_sha256 }}
         run: |
           set -euo pipefail
           verify_install=''
@@ -248,5 +313,63 @@ jobs:
         with:
           name: stream-native-${{ matrix.package_target }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stream-native-packages
+          if-no-files-found: error
+          retention-days: 90
+
+  typescript_native:
+    name: Installed generated TypeScript native and WASM lane
+    needs: [typescript_identity, build]
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Install package runtime dependencies
+        shell: bash
+        run: npm install --ignore-scripts --no-audit --no-fund --no-package-lock
+
+      - name: Download generated TypeScript package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stream-typescript-generated-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-typescript
+
+      - name: Download matching native companion
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: stream-native-linux-x64-gnu-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stream-native
+
+      - name: Run installed native and WASM qualification
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_root="$RUNNER_TEMP/stream-native/linux-x64-gnu"
+          archive=$(find "$RUNNER_TEMP/stream-native" -maxdepth 2 -name '*.tgz' -type f | head -n 1)
+          test -d "$native_root"
+          test -n "$archive"
+          mkdir -p "$RUNNER_TEMP/qualification"
+          node scripts/qualify-typescript-native-wasm.mjs \
+            --package-root "$RUNNER_TEMP/rust-typescript/typescript/packages/stream" \
+            --native-package "$native_root" \
+            --dependencies-root "$GITHUB_WORKSPACE" \
+            --archive "$archive" \
+            --output "$RUNNER_TEMP/qualification/typescript-native-wasm.json"
+
+      - name: Upload TypeScript native and WASM receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-typescript-native-wasm-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification
           if-no-files-found: error
           retention-days: 90
