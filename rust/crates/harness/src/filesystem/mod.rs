@@ -50,6 +50,9 @@ pub(crate) fn is_host_owned_internal_path(path: &str) -> bool {
 
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
+#[cfg(feature = "filesystem-local")]
+#[doc(hidden)]
+pub use execution_journal::JournalLoadFault;
 mod git_facade;
 pub use git_facade::{
     FilesystemGitFacade, ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,

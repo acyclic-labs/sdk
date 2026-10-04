@@ -25,6 +25,9 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
 
+#[cfg(feature = "filesystem-local")]
+use std::sync::Mutex;
+
 const MAX_RECORDS: u64 = 1_000_000;
 
 #[derive(Serialize, Deserialize)]
@@ -33,6 +36,19 @@ struct Observation {
     operation_id: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
+}
+
+/// A narrowly scoped fault used by the persistent local-storage regression
+/// tests.  The fault is keyed by one exact, already authenticated `FileRef`,
+/// after the real object provider has loaded and verified its bytes.
+#[cfg(feature = "filesystem-local")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum JournalLoadFault {
+    /// Report that the exact journal body cannot be found.
+    Missing,
+    /// Report that the exact journal body failed its integrity check.
+    Corrupt,
 }
 
 /// Durable, ref-only journal for one exact agent-private volume.
@@ -49,6 +65,8 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     /// Session identity authenticated by the composition that owns this
     /// journal.  A journal without this binding cannot authorize execution.
     session_id: Option<SessionId>,
+    #[cfg(feature = "filesystem-local")]
+    load_fault: Arc<Mutex<Option<(FileRef, JournalLoadFault)>>>,
 }
 
 impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
@@ -123,7 +141,32 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             input_verifier: None,
             interactions,
             session_id: None,
+            #[cfg(feature = "filesystem-local")]
+            load_fault: Arc::new(Mutex::new(None)),
         })
+    }
+
+    /// Injects a typed fault for one exact persisted journal reference.
+    ///
+    /// This is intentionally hidden from normal API documentation and is
+    /// compiled only with the persistent local provider.  It lets integration
+    /// tests exercise replay after the real LocalFs/LocalStream composition
+    /// has loaded the pinned bytes, without replacing that composition with an
+    /// in-memory fake or deleting an entire object segment.
+    #[cfg(feature = "filesystem-local")]
+    #[doc(hidden)]
+    pub fn inject_load_fault(
+        &self,
+        reference: FileRef,
+        fault: JournalLoadFault,
+    ) -> Result<()> {
+        reference.validate()?;
+        let mut slot = self
+            .load_fault
+            .lock()
+            .map_err(|_| Error::Storage("journal load-fault lock is poisoned".into()))?;
+        *slot = Some((reference, fault));
+        Ok(())
     }
 
     /// Binds the journal to the authenticated session that owns its
@@ -688,6 +731,25 @@ where
                     .read_content(reference, &grant, self.maximum_payload_bytes)
                     .await?
             };
+            #[cfg(feature = "filesystem-local")]
+            let fault = self
+                .load_fault
+                .lock()
+                .map_err(|_| Error::Storage("journal load-fault lock is poisoned".into()))?
+                .as_ref()
+                .filter(|(target, _)| target == reference)
+                .map(|(_, fault)| *fault);
+            #[cfg(feature = "filesystem-local")]
+            if let Some(fault) = fault {
+                return Err(match fault {
+                    JournalLoadFault::Missing => {
+                        Error::NotFound("injected exact journal content missing".into())
+                    }
+                    JournalLoadFault::Corrupt => {
+                        Error::Invalid("injected exact journal content corruption".into())
+                    }
+                });
+            }
             Ok(bytes.to_vec())
         })
     }

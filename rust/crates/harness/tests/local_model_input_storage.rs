@@ -1,34 +1,36 @@
 #![cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 #![allow(clippy::too_many_lines)]
 
-//! Cold-storage checks for the exact model-input journal references.
+//! Cold-storage checks for exact model-input journal references.
 //!
-//! These cases deliberately mutate the LocalObjects files after the producing
-//! harness has been dropped.  They are intended to prove that a missing or
-//! corrupted request artifact is rejected before a fresh model provider can
-//! be called.
+//! These cases reopen the real LocalStream/LocalFs composition, inject a
+//! fault for one exact persisted `FileRef` at the journal load boundary, and
+//! retry the same operation. The fixture deliberately remains larger than a
+//! single object body so request and manifest are independently persisted;
+//! unrelated content must remain readable and the fresh provider must never
+//! be dispatched.
 
 use acyclic_harness::{
-    Error, OperationId, Result,
-    conversation::{Attachment, Limits},
+    conversation::{Attachment, FileRef, Limits},
     executor::{ExecutionEvent, ExecutionJournal},
-    filesystem::PersistentLocalHarness,
+    filesystem::{JournalLoadFault, PersistentLocalHarness},
     model::{Model, ModelAttempt, ModelEvent, ModelProvider},
     model_input::PreparedModelInput,
+    Error, OperationId, Result,
 };
 use futures::{
     future::BoxFuture,
     stream::{self, BoxStream},
 };
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::{Arc, atomic::{AtomicUsize, Ordering}},
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
-use tempfile::{TempDir, tempdir};
+use tempfile::{tempdir, TempDir};
 
 const OBJECT_BODY_LIMIT: usize = 64 * 1024;
 const ATTACHMENT_COUNT: usize = 900;
+const PROMPT: &str = "cold storage exact input";
 
 #[derive(Default)]
 struct CountingProvider {
@@ -51,22 +53,48 @@ impl ModelProvider for CountingProvider {
     }
 }
 
-async fn large_input_fixture() -> Result<(TempDir, Model, Limits, Vec<u8>, Vec<u8>)> {
+struct Fixture {
+    root: TempDir,
+    model: Model,
+    limits: Limits,
+    operation: OperationId,
+    content: FileRef,
+    attachments: Vec<Attachment>,
+    request: FileRef,
+    manifest: FileRef,
+    survivor: FileRef,
+}
+
+async fn large_input_fixture() -> Result<Fixture> {
     let root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let model = Model::new("test", "local-storage", "1", serde_json::json!({}))?;
     let limits = Limits::default();
+    assert!(
+        limits.attachments >= ATTACHMENT_COUNT,
+        "default attachment limit must admit the large-input fixture"
+    );
     let provider = Arc::new(CountingProvider::default());
-    let session = PersistentLocalHarness::open(root.path(), model.clone(), provider.clone(), limits)
-        .await?;
+    let session =
+        PersistentLocalHarness::open(root.path(), model.clone(), provider.clone(), limits).await?;
     let operation = OperationId::from_bytes([0x71; 16]);
     let content = session
         .storage()
         .stage(
             operation,
-            "turns/input-storage/user.txt",
-            b"cold storage exact input",
+            &format!("turns/{operation}/user.txt"),
+            PROMPT.as_bytes(),
             "text/plain",
             "prompt.txt",
+        )
+        .await?;
+    let survivor = session
+        .storage()
+        .stage(
+            OperationId::new(),
+            "unrelated/survivor.txt",
+            b"unrelated durable content",
+            "text/plain",
+            "survivor.txt",
         )
         .await?;
     let mut attachments = Vec::with_capacity(ATTACHMENT_COUNT);
@@ -92,12 +120,18 @@ async fn large_input_fixture() -> Result<(TempDir, Model, Limits, Vec<u8>, Vec<u
     }
     session
         .storage()
-        .run_conversation(session.bundle(), operation, content, attachments, 1)
+        .run_conversation(
+            session.bundle(),
+            operation,
+            content.clone(),
+            attachments.clone(),
+            1,
+        )
         .await?;
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
 
     let records = session.storage().journal().replay(operation).await?;
-    let (manifest_ref, request_ref) = records
+    let (manifest, request) = records
         .iter()
         .find_map(|record| match &record.event {
             ExecutionEvent::ModelInputPrepared {
@@ -107,8 +141,8 @@ async fn large_input_fixture() -> Result<(TempDir, Model, Limits, Vec<u8>, Vec<u
         })
         .ok_or_else(|| Error::Storage("model input preparation record is missing".into()))?;
     let journal = session.storage().journal();
-    let request_bytes = journal.load(&request_ref).await?;
-    let manifest_bytes = journal.load(&manifest_ref).await?;
+    let request_bytes = journal.load(&request).await?;
+    let manifest_bytes = journal.load(&manifest).await?;
     assert!(
         request_bytes.len() > OBJECT_BODY_LIMIT,
         "request must use a separately persisted body"
@@ -118,81 +152,97 @@ async fn large_input_fixture() -> Result<(TempDir, Model, Limits, Vec<u8>, Vec<u
         "manifest must use a separately persisted body"
     );
     drop(session);
-    Ok((root, model, limits, request_bytes, manifest_bytes))
+    Ok(Fixture {
+        root,
+        model,
+        limits,
+        operation,
+        content,
+        attachments,
+        request,
+        manifest,
+        survivor,
+    })
 }
 
-fn object_files(root: &Path) -> Result<Vec<PathBuf>> {
-    fn walk(path: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                walk(&path, files)?;
-            } else if path.is_file() {
-                files.push(path);
-            }
+#[derive(Clone, Copy)]
+enum Target {
+    Request,
+    Manifest,
+}
+
+async fn exercise_fault(target: Target, fault: JournalLoadFault) -> Result<()> {
+    let fixture = large_input_fixture().await?;
+    let provider = Arc::new(CountingProvider::default());
+    let session = PersistentLocalHarness::open(
+        fixture.root.path(),
+        fixture.model.clone(),
+        provider.clone(),
+        fixture.limits,
+    )
+    .await?;
+
+    // The real LocalFs object store remains usable after reopening, including
+    // for a ref outside the execution journal being faulted below.
+    assert_eq!(
+        session.storage().read(&fixture.survivor).await?,
+        b"unrelated durable content"
+    );
+    let reference = match target {
+        Target::Request => fixture.request.clone(),
+        Target::Manifest => fixture.manifest.clone(),
+    };
+    session
+        .storage()
+        .inject_journal_load_fault(reference, fault)?;
+    let error = match session
+        .storage()
+        .run_conversation(
+            session.bundle(),
+            fixture.operation,
+            fixture.content.clone(),
+            fixture.attachments.clone(),
+            1,
+        )
+        .await
+    {
+        Ok(_) => {
+            return Err(Error::Invalid(
+                "faulted exact model-input replay unexpectedly succeeded".into(),
+            ));
         }
-        Ok(())
+        Err(error) => error,
+    };
+    match fault {
+        JournalLoadFault::Missing => assert!(
+            matches!(&error, Error::NotFound(_)),
+            "missing exact journal content must remain typed: {error}"
+        ),
+        JournalLoadFault::Corrupt => assert!(
+            matches!(&error, Error::Invalid(_)),
+            "corrupt exact journal content must remain typed: {error}"
+        ),
     }
-    let objects = root.join("filesystem").join("objects");
-    let mut files = Vec::new();
-    walk(&objects, &mut files).map_err(|error| Error::Storage(error.to_string()))?;
-    Ok(files)
-}
-
-fn body_location(root: &Path, body: &[u8]) -> Result<(PathBuf, usize)> {
-    for path in object_files(root)? {
-        let bytes = fs::read(&path).map_err(|error| Error::Storage(error.to_string()))?;
-        if let Some(offset) = bytes.windows(body.len()).position(|window| window == body) {
-            return Ok((path, offset));
-        }
-    }
-    Err(Error::Storage(
-        "persisted model-input body was not found in LocalObjects storage".into(),
-    ))
-}
-
-fn remove_body(root: &Path, body: &[u8]) -> Result<()> {
-    let (path, _) = body_location(root, body)?;
-    fs::remove_file(path).map_err(|error| Error::Storage(error.to_string()))?;
-    Ok(())
-}
-
-fn corrupt_body(root: &Path, body: &[u8]) -> Result<()> {
-    let (path, offset) = body_location(root, body)?;
-    let mut bytes = fs::read(&path).map_err(|error| Error::Storage(error.to_string()))?;
-    let byte = bytes
-        .get_mut(offset + body.len() / 2)
-        .ok_or_else(|| Error::Storage("persisted model-input body offset is invalid".into()))?;
-    *byte ^= 0x5a;
-    fs::write(path, bytes).map_err(|error| Error::Storage(error.to_string()))?;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
 #[tokio::test]
 async fn missing_persisted_request_is_rejected_before_provider_dispatch() -> Result<()> {
-    let (root, model, limits, request_bytes, _) = large_input_fixture().await?;
-    remove_body(root.path(), &request_bytes)?;
-    let provider = Arc::new(CountingProvider::default());
-    assert!(
-        PersistentLocalHarness::open(root.path(), model, provider.clone(), limits)
-            .await
-            .is_err()
-    );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-    Ok(())
+    exercise_fault(Target::Request, JournalLoadFault::Missing).await
+}
+
+#[tokio::test]
+async fn corrupted_persisted_request_is_rejected_before_provider_dispatch() -> Result<()> {
+    exercise_fault(Target::Request, JournalLoadFault::Corrupt).await
+}
+
+#[tokio::test]
+async fn missing_persisted_manifest_is_rejected_before_provider_dispatch() -> Result<()> {
+    exercise_fault(Target::Manifest, JournalLoadFault::Missing).await
 }
 
 #[tokio::test]
 async fn corrupted_persisted_manifest_is_rejected_before_provider_dispatch() -> Result<()> {
-    let (root, model, limits, _, manifest_bytes) = large_input_fixture().await?;
-    corrupt_body(root.path(), &manifest_bytes)?;
-    let provider = Arc::new(CountingProvider::default());
-    assert!(
-        PersistentLocalHarness::open(root.path(), model, provider.clone(), limits)
-            .await
-            .is_err()
-    );
-    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
-    Ok(())
+    exercise_fault(Target::Manifest, JournalLoadFault::Corrupt).await
 }

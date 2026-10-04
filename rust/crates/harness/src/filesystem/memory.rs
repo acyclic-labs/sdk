@@ -1050,6 +1050,21 @@ where
         self.journal.clone()
     }
 
+    /// Injects a typed load fault for one exact persisted journal reference.
+    ///
+    /// This hidden hook exists only for the persistent local-storage
+    /// integration matrix.  It does not alter grants, references, or the
+    /// underlying LocalFs/LocalStream providers.
+    #[cfg(feature = "filesystem-local")]
+    #[doc(hidden)]
+    pub fn inject_journal_load_fault(
+        &self,
+        reference: FileRef,
+        fault: crate::filesystem::JournalLoadFault,
+    ) -> Result<()> {
+        self.journal.inject_load_fault(reference, fault)
+    }
+
     /// Stable identity used to bind owner approvals to this storage session.
     #[must_use]
     pub const fn session_id(&self) -> SessionId {
