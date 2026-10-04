@@ -1,0 +1,129 @@
+{
+  "source": "1dca5d5016de65679791dc6a62f4ee545e8bbbb6",
+  "formal": {
+    "unsafe": {
+      "violated_invariant": "AdmittedClaimRetained",
+      "expected_exit_code": 12,
+      "counterexample_states": 4
+    },
+    "assumptions": [
+      "Authenticated durable journal and storage CAS",
+      "Provider reconciliation does not redispatch admitted effects"
+    ],
+    "command": "check-activation.ps1 -ToolsJar tla2tools-1.7.4.jar -EvidenceDirectory activation-qualified",
+    "safe": {
+      "generated_states": 61,
+      "queue_remaining": 0,
+      "distinct_states": 23,
+      "exit_code": 0
+    },
+    "bounds": "One operation; two owners; atomic durable transitions; no liveness theorem or implementation refinement proof",
+    "runner_exit_code": 0
+  },
+  "native_source": "05a76fac4ee249307cec6570f723f579611cb149",
+  "platform": "Windows 11 native; Java 17.0.14; TLC 2.19 from TLA+ release v1.7.4",
+  "preserved_failures": [
+    {
+      "source": "4df5cd4aed59d8d71158fecad5b340e3a4396093",
+      "kind": "Native test compile failure: tuple variant constructor used without failure reason"
+    },
+    {
+      "kind": "First verification runner preserved expected negative TLC exit as overall exit 12; repaired to report exit 0 only after both expected results match"
+    }
+  ],
+  "native": {
+    "recursive": {
+      "passed": 4,
+      "ignored": 0,
+      "failed": 0
+    },
+    "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults -- --nocapture",
+    "faults": {
+      "passed": 6,
+      "ignored": 0,
+      "failed": 0
+    },
+    "library": {
+      "passed": 366,
+      "ignored": 0,
+      "failed": 0
+    },
+    "exit_code": 0
+  },
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef",
+  "artifacts": [
+    {
+      "sha256": "e498585929cfb1a534a50c548282f78981309903e212937a2bec810f98610ccc",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\activation-failure-proof-native.log"
+    },
+    {
+      "sha256": "43fd7b13d517c6021f1c0df326fc6717e7a469bb822487f9ab8ed7ddcb569c6e",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\activation-failure-proof-native-compile-failure.log"
+    },
+    {
+      "sha256": "1e2f355ef4b741648f9ee9b7675f338758785bfa478b644dfd9beaf9205c75ef",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\acyclic_harness-641f85f696abacc6.exe"
+    },
+    {
+      "sha256": "38df95fc423711825ce8279b1cb08cb5cf1e90c5f1f7558384791ba44e212d78",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\local_model_swarm-b5d1df9216f26b8b.exe"
+    },
+    {
+      "sha256": "43f61cf2f82e7b706cfab34c9347ce18906d5f2030ec5b20ded812124c1d8280",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\local_swarm_faults-cf47ef77f7bcbf61.exe"
+    },
+    {
+      "sha256": "75f7959ee20b7c9fdfe891e33c486297b8dc6dd02f784c87ba08b989c4c43336",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\swarm_local.rs"
+    },
+    {
+      "sha256": "57f2c7aefd016377f375ab82cf10a9f80e63a058b4c81b7d0b6888f0b0f8cfe6",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\local_model_swarm.rs"
+    },
+    {
+      "sha256": "a9f382ef1bdd286757e2b5b5ad448ef77bc4c4f6b317139bbc0db91474b73735",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\local_swarm_faults.rs"
+    },
+    {
+      "sha256": "4a8cb718953e649a6a942f44af60b18e7b17719e3be62cc628efbf2a886b3a15",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\ActivationRecovery.tla"
+    },
+    {
+      "sha256": "769237fd65d2479579602974cad3eb9facd29337b1a3781a011e18af053851e3",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\ActivationRecovery.cfg"
+    },
+    {
+      "sha256": "c0260bd7976c9c4552263f0c1df998d37e456d61bfb162b8f11ce68a0a046105",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\ActivationRecoveryUnsafe.cfg"
+    },
+    {
+      "sha256": "999388c6229a1b2aa76278e8c13650690a5791ee24a883aa80e35d7f2e9b9d0a",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\check-activation.ps1"
+    },
+    {
+      "sha256": "5076592a04209f66a5ec420a07a6a327a22bd1d12f4a7dab977778fc85391c83",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\README.md"
+    },
+    {
+      "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\tla2tools-1.7.4.jar"
+    },
+    {
+      "sha256": "a869e41b238e0077fc44f9051d42860fd9c2f66c7070915eff33e990bc4e6af5",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\activation-runner.log"
+    },
+    {
+      "sha256": "c0e7d167033f8ee155142bc4672ee2252ce6b27e31569bd291f61da62b62c89c",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\activation-runner-exit-failure.log"
+    },
+    {
+      "sha256": "eae54c69f1eca202b50817fdfdfe15f0c32092e364937d02d83b89d45665c2ef",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\94525a211b0e4d289f62b35bb664eb97-safe.log"
+    },
+    {
+      "sha256": "3473b5ca4d474cc490a416b96ff95a617325b78b9e89353476683159b477c0f8",
+      "path": "D:\\graphcoder-builds\\root-qualification-artifacts\\1dca5d501\\activation-recovery\\94525a211b0e4d289f62b35bb664eb97-unsafe.log"
+    }
+  ],
+  "scope": "Central activation failure guard and bounded single-operation/two-owner recovery safety model. Not whole-swarm formal proof or installed qualification."
+}

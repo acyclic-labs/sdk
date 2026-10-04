@@ -385,3 +385,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - [Integrated recovery regression](checkpoint-recovery-foundation-native-2026-10-04.json): source 3d0a42bff; library 365/365 and faults 5/5.
 - [Integrated recursive run](checkpoint-recursive-integrated-native-2026-10-04.json): source 97d11a74a; library 365/365, recursive 1/1, faults 4/5; cancellation timeout remains failed.
 - [Terminal and reproducible install](checkpoint-cli-lock-native-2026-10-04.json): terminal 7/7 at f07b958d8; frozen install at fd4e73c29.
+
+- [Activation recovery native and formal checkpoint](checkpoint-activation-recovery-native-formal-2026-10-05.json): native source 05a76fac4 passes 366 library, four recursive and six fault tests. Formal source 1dca5d501 checks a single-operation/two-owner safety model and detects the deliberately unsafe claim-release mutation. Eighteen archived source, log, executable and tool artifacts have verified SHA256 digests. This is bounded protocol evidence with stated assumptions, not whole-swarm verification. Initial compilation and runner exit-code failures remain preserved.
