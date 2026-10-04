@@ -1,0 +1,25 @@
+{
+  "qualification": "incomplete",
+  "source_restored": "e08d74c6e742be102fdd25082acddf0b805f41aa",
+  "previous_build": { "handle": 32966, "outcome": "unknown; handle missing, matching Cargo/linker processes absent", "qualifies": false },
+  "observations": {
+    "branch_ref": "41 null bytes; verified reflog and commit objects intact",
+    "ref_backup": "target/recovery-metadata/graphcoder-sdk-null-ref-2026-10-04.bin",
+    "ref_backup_sha256": "9e1736c43d19118e6ce4302118af337109491ecc52757dfb949bad6a7940b0c2",
+    "partial_cli_executable": "target/qualification-root/debug/deps/graphcoder_runtime-fe9969d8db0e8209.exe",
+    "partial_executable_bytes": 2097152,
+    "partial_executable_sha256": "5647f05ec18958947d32874eeb788fa396a05d0bab7c1b71f112ceb7e9b31eee",
+    "partial_executable_header": "16 null bytes",
+    "cause": "unknown"
+  },
+  "recovery": {
+    "verified_reflog_tip": "e08d74c6e742be102fdd25082acddf0b805f41aa",
+    "normal_update_ref": "rejected broken reference",
+    "action": "preserved damaged ref, atomically replaced only isolated branch ref with verified tip",
+    "checkout_reset": false,
+    "merge": false,
+    "post_recovery_working_tree": "clean",
+    "fresh_build": { "handle": 42845, "target_directory": "target/qualification-root-v2", "status": "running at receipt creation", "jobs": 2 }
+  },
+  "scope": "Missing handle and observed artifact/ref corruption justify new build; no successful prior CLI outcome inferred. No checkout files or index reset. Other worktrees and processes were not modified. Final qualification requires fresh verified artifacts."
+}

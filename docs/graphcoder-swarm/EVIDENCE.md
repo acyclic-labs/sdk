@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-build-interruption-recovery-2026-10-04.json](checkpoint-build-interruption-recovery-2026-10-04.json) records a missing CLI build handle, null-byte branch-reference corruption, and an incomplete CLI artifact. The isolated branch was restored from its verified reflog with a preserved metadata backup. No CLI success is inferred; a new dedicated build remains required.
+
 [checkpoint-isolated-local-storage-2026-10-04.json](checkpoint-isolated-local-storage-2026-10-04.json) records six passing current native local-storage cases and a failed unknown-operation fencing case. Completed-turn replay is verified; full effect recovery remains incomplete.
 
 [checkpoint-terminal-lifecycle-failure-2026-10-04.json](checkpoint-terminal-lifecycle-failure-2026-10-04.json) records the integrated process-backed terminal fixtures passing 9/14, plus seven strict type failures. Missing bridge lifecycle support and fixture shape errors remain under repair; scripted hosts do not replace native PTY qualification.
