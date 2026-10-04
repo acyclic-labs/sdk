@@ -1,5 +1,6 @@
 package dev.acyclic.transport;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.grpc.CallOptions;
@@ -25,7 +26,11 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -73,6 +78,13 @@ final class RpcScenarioEvidenceTest {
     }
     scenarios.sort(Comparator.comparing(Scenario::rpc));
     assertTrue(!scenarios.isEmpty(), "generated JVM services must expose RPCs");
+    Map<String, String> observed = new LinkedHashMap<>();
+    for (Scenario scenario : scenarios) {
+      assertTrue(observed.put(scenario.rpc(), scenario.shape()) == null,
+          "duplicate generated RPC " + scenario.rpc());
+    }
+    assertEquals(authorityMethods(), observed,
+        "generated JVM RPC inventory must match the Rust authority manifest");
 
     List<String> outputs = new ArrayList<>();
     for (int index = 0; index < scenarios.size(); index++) {
@@ -219,12 +231,33 @@ final class RpcScenarioEvidenceTest {
     return rpc.substring(dot + 1, secondDot);
   }
 
+  private static Map<String, String> authorityMethods() throws IOException {
+    InputStream resource = RpcScenarioEvidenceTest.class.getClassLoader()
+        .getResourceAsStream("rust-authority.json");
+    if (resource == null) throw new IOException("missing Rust authority manifest resource");
+    String manifest;
+    try (resource) {
+      manifest = new String(resource.readAllBytes(), StandardCharsets.UTF_8);
+    }
+    Pattern method = Pattern.compile(
+        "\\\"rpc\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*\\\"shape\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    Matcher matcher = method.matcher(manifest);
+    Map<String, String> methods = new LinkedHashMap<>();
+    while (matcher.find()) {
+      String rpc = matcher.group(1);
+      String shape = matcher.group(2);
+      if (methods.put(rpc, shape) != null) throw new IOException("duplicate Rust authority RPC " + rpc);
+    }
+    if (methods.isEmpty()) throw new IOException("Rust authority manifest has no RPC methods");
+    return methods;
+  }
+
   private record Scenario(String revision, String family, String rpc, String shape) {
     String json() {
       return "{\"schema\":\"acyclic.sdk.rpc-scenario-result.v1\",\"source_revision\":\""
           + RpcScenarioEvidenceTest.json(revision) + "\",\"status\":\"passed\",\"invoked\":true,\"exit_code\":0,"
           + "\"family\":\"" + RpcScenarioEvidenceTest.json(family) + "\",\"rpc\":\"" + RpcScenarioEvidenceTest.json(rpc)
-          + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\","
+          + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\",\"execution_mode\":\"in-process\","
           + "\"checks\":[\"invocation\",\"transport\",\"serialization\"]}\n";
     }
   }

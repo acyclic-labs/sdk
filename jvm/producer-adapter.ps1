@@ -47,6 +47,7 @@ foreach ($testName in @('RpcScenarioEvidenceTest.java', 'GeneratedTransportTest.
 $consumerResources = Join-Path $workspaceConsumer 'src\test\resources\golden'
 $null = New-Item -ItemType Directory -Force -Path $consumerResources
 Copy-Item -LiteralPath (Join-Path $workspaceJvm 'src\test\resources\golden\cross-language-family-fixtures.json') -Destination $consumerResources -Force
+Copy-Item -LiteralPath $manifest -Destination (Join-Path $consumerResources 'rust-authority.json') -Force
 
 $maven = Get-Command mvn -ErrorAction SilentlyContinue
 if ($null -eq $maven) {

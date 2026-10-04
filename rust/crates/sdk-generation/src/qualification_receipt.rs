@@ -32,6 +32,7 @@ pub struct Options {
 #[derive(Debug)]
 struct ScenarioEvidence {
     family: String,
+    execution_mode: String,
     checks: BTreeSet<String>,
 }
 
@@ -156,6 +157,10 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         if !matches!(transport.as_str(), "grpc" | "http" | "http-json" | "grpc-web") {
             return Err(format!("scenario {family}/{rpc} has an unknown transport"));
         }
+        let execution_mode = nonempty_string(&result, "execution_mode")?;
+        if !matches!(execution_mode.as_str(), "remote" | "in-process") {
+            return Err(format!("scenario {family}/{rpc} has an unknown execution mode"));
+        }
         let checks = result
             .get("checks")
             .and_then(Value::as_array)
@@ -189,12 +194,14 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .insert(rpc, shape);
         evidence.push(ScenarioEvidence {
             family: family.clone(),
+            execution_mode,
             checks: check_set,
         });
         scenarios.push(json!({
             "family": family,
             "rpc": result.get("rpc"),
             "shape": result.get("shape"),
+            "execution_mode": result.get("execution_mode"),
             "status": "passed",
             "output_path": output_path,
             "output_sha256": output_digest,
@@ -207,6 +214,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         .collect::<BTreeMap<_, _>>();
     if observed != service_authority {
         return Err("scenario log does not cover exactly the Rust authority RPC inventory".into());
+    }
+    if evidence.iter().any(|scenario| scenario.execution_mode != "remote") {
+        return Err("remote qualification requires execution_mode=remote for every scenario".into());
     }
 
     let families = authority
@@ -513,7 +523,7 @@ mod tests {
 
     #[test]
     fn receipt_writer_derives_complete_rpc_inventory_from_results() {
-        let (root, output, options) = fixture(false);
+        let (root, output, options) = fixture(false, false);
         let receipt_path = write(&options).expect("valid scenario log writes receipt");
         let receipt = read_json(&receipt_path).expect("read receipt");
         assert_eq!(receipt["schema"], RECEIPT_SCHEMA);
@@ -526,14 +536,23 @@ mod tests {
 
     #[test]
     fn receipt_writer_rejects_missing_authority_rpc() {
-        let (root, output, options) = fixture(true);
+        let (root, output, options) = fixture(true, false);
         let error = write(&options).expect_err("missing RPC must fail closed");
         assert!(error.contains("absent from Rust authority"));
         cleanup(&root);
         cleanup(&output);
     }
 
-    fn fixture(missing_rpc: bool) -> (PathBuf, PathBuf, Options) {
+    #[test]
+    fn receipt_writer_rejects_in_process_evidence_for_remote_qualification() {
+        let (root, output, options) = fixture(false, true);
+        let error = write(&options).expect_err("in-process evidence must not qualify remote");
+        assert!(error.contains("execution_mode=remote"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    fn fixture(missing_rpc: bool, in_process: bool) -> (PathBuf, PathBuf, Options) {
         let root = env::temp_dir().join(format!(
             "acyclic-sdk-receipt-helper-{}-{}-{}",
             std::process::id(),
@@ -554,11 +573,13 @@ mod tests {
         git(&root, &["-c", "commit.gpgsign=false", "commit", "-m", "fixture"]);
 
         let consumer_bytes = b"consumer";
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","checks":["invocation","transport","serialization"]}"#;
+        let execution_mode = if in_process { "in-process" } else { "remote" };
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"REVISION","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"acyclic.actors.v1.ActorsService/CreateActor","shape":"unary","transport":"grpc","execution_mode":"EXECUTION_MODE","checks":["invocation","transport","serialization"]}"#;
         let revision = git_head(&root).expect("fixture revision");
         let scenario_bytes = String::from_utf8(scenario_bytes.to_vec())
             .expect("fixture JSON")
             .replace("REVISION", &revision)
+            .replace("EXECUTION_MODE", execution_mode)
             .into_bytes();
         let consumer_path = "qualification/consumers/consumer.bin";
         let scenario_path = "qualification/consumers/actors-create.json";
