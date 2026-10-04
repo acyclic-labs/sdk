@@ -1,6 +1,6 @@
 {
   "receipt_version": 1,
-  "recorded_at": "2026-10-03",
+  "recorded_at": "2026-10-04",
   "target": "perl",
   "qualification": "Rust-owned five-family OpenAPI HTTP projection prototype",
   "source": {
@@ -9,14 +9,14 @@
       "actors": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
       "workers": "090821C087D43A6813E6A0457B448303FD131FD7E9FB1FC76301261DB4551A77",
       "stream": "9EE98891DF2D54503FA6CF058B849E89482422062FA5A5575A046A14038A1E4D",
-      "objects": "34D1FC4DD0A909122BFEAB8FA349B746FFF1451CCD8D4CC760EE7EA970BBBC6A",
+      "objects": "298D60E0C419BA9358487D6BE36D365B21103EA5620140D88DEEF4D8DCB772A3",
       "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
     },
     "fixture_sha256": "5D663FBD494915AA373A0DC19D1AEA0D1B6737C7C99BF57C567305F8E065AA27",
     "consumer_sha256": "72BB504649D2918FF99974733E121A4C8977034CBA6D215560E9BC3608AF3273",
     "generator_script": "research/additional-languages/openapi-targets/qualify-perl.ps1",
     "generator_script_sha256": "2DD183D0B7B7D8D7175F9ED3152F66980470BE37792806B459D991F8C6BE20FB",
-    "generation_mode": "Rust projections were already generated and hash-bound; the qualification run used SkipRustGeneration while concurrent wire sources were active",
+    "generation_mode": "Rust projections were refreshed and hash-bound before the qualification run; generated Perl packages were tested from those refreshed specs",
     "runtime_adaptation": "research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1",
     "adaptation_sha256": "5A0DDEB0D3C8BCE69E5DD99BF7B324862DE0F17258DDAB1DFDABF975ACFD2486"
   },
@@ -39,7 +39,7 @@
   },
   "package": {
     "name": "acyclic-http-perl-0.1.0.zip",
-    "sha256": "8D0443C081B8CB1417E3A6B26E74E0D35F54741F8976ED52D6F4B0B1EBC50480",
+    "sha256": "76A09B51F9851AA9DAB7F6EA864B24D338E06657A862D686B2DAF17369FE85EC",
     "install": "Five generated Perl libs plus cpanfiles installed into an isolated local-lib-contained directory",
     "publication": "local-only"
   },

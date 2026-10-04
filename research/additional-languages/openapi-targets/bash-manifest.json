@@ -1,6 +1,6 @@
 {
   "receipt_version": 2,
-  "recorded_at": "2026-10-03",
+  "recorded_at": "2026-10-04",
   "target": "bash",
   "qualification": "Rust-owned five-family OpenAPI HTTP projection prototype",
   "source": {
@@ -9,7 +9,7 @@
       "actors": "4043B2672A974EF3041FC75FC254321A63C66C1B0334C0C5E2BFAA644878F56A",
       "workers": "090821C087D43A6813E6A0457B448303FD131FD7E9FB1FC76301261DB4551A77",
       "stream": "9EE98891DF2D54503FA6CF058B849E89482422062FA5A5575A046A14038A1E4D",
-      "objects": "34D1FC4DD0A909122BFEAB8FA349B746FFF1451CCD8D4CC760EE7EA970BBBC6A",
+      "objects": "298D60E0C419BA9358487D6BE36D365B21103EA5620140D88DEEF4D8DCB772A3",
       "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
     },
     "fixture_sha256": "AFD0438AD9856A5AC6AD8622490DEB913B6E805CA98E23A2F0CE2546F6F5244E",
@@ -38,7 +38,7 @@
   },
   "artifact": {
     "name": "acyclic-http-bash-0.1.0.zip",
-    "sha256": "D6AA33319F59DB4A4D0FD6072A6FFD5D98570FE7AE51D64FDA9431D40830DCB7",
+    "sha256": "FCC099E6FDF6D9A91B9E1D7B102480BAFF1C7BAB4EF197870E82BC3A1E9C5CC5",
     "publication": "local-only ignored output",
     "install": "unzip and invoke each family client.sh with Bash 4.3+ and curl"
   },
@@ -55,7 +55,7 @@
       "Actors unauthenticated 401 body"
     ],
     "ci_policy": "release-or-explicit-qualification only",
-    "generation_mode": "Rust projections generated and hashed; final fixture rerun used SkipRustGeneration while concurrent wire edits were active"
+    "generation_mode": "Rust projections regenerated and hashed from the current Rust source; the fixture was rerun against the refreshed generated clients"
   },
   "license_scope": {
     "generated_template": "OpenAPI Generator Apache-2.0 project; review generated package notices before redistribution",
