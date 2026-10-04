@@ -1265,12 +1265,69 @@ pub struct ForkReport {
     pub attachment_manifests: Vec<FileRef>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ForkRebindProof {
+    operation_id: OperationId,
+    original_request_digest: [u8; 32],
+    preparation_digest: [u8; 32],
+    prepared_report_digest: [u8; 32],
+}
+
+impl ForkRebindProof {
+    pub(crate) fn from_preparation(
+        operation_id: OperationId,
+        original_request_digest: [u8; 32],
+        preparation_digest: [u8; 32],
+        prepared_report_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            operation_id,
+            original_request_digest,
+            preparation_digest,
+            prepared_report_digest,
+        }
+    }
+
+    pub(crate) fn verify_report(&self, report: &ForkReport) -> Result<()> {
+        if report.request.operation_id != self.operation_id
+            || report.original_request_digest != Some(self.original_request_digest)
+        {
+            return Err(Error::Conflict("fork rebound proof does not match the prepared report".into()));
+        }
+        let captured = report.captured_history_revision()?;
+        let mut original = report.request.clone();
+        original.parent_revision = captured;
+        if crate::contract::canonical_json_digest(&original)? != self.original_request_digest {
+            return Err(Error::Conflict("fork rebound proof original request changed".into()));
+        }
+        if self.preparation_digest == [0; 32] || self.prepared_report_digest == [0; 32] {
+            return Err(Error::Invalid("fork preparation proof is empty".into()));
+        }
+        // The durable report is the authority for every field except the
+        // publication revision and its derived rebound marker. Normalize
+        // those fields before comparing so sequential rebinds cannot replace
+        // the prepared captures, grants, or generations.
+        let mut normalized = report.clone();
+        normalized.request.parent_revision = captured;
+        normalized.original_request_digest = None;
+        if crate::contract::canonical_json_digest(&normalized)? != self.prepared_report_digest {
+            return Err(Error::Conflict("fork rebound report differs from preparation".into()));
+        }
+        Ok(())
+    }
+}
+
 impl ForkReport {
     /// Validates a prepared report even when a required capture is still
     /// unavailable; only `into_seed` demands all required captures succeed.
     pub fn validate(&self) -> Result<()> {
         self.request.validate()?;
         self.validate_body()
+    }
+
+    pub(crate) fn validate_with_rebind_proof(&self, proof: &ForkRebindProof) -> Result<()> {
+        self.validate_rebound()?;
+        proof.verify_report(self)
     }
 
     /// Validates a report after its publication predecessor was durably
@@ -1419,11 +1476,19 @@ impl ForkReport {
 
     /// Produces a publishable seed only when every required capture succeeded.
     pub fn into_seed(self) -> Result<ForkSeed> {
-        if self.original_request_digest.is_some() {
-            self.validate_rebound()?;
-        } else {
-            self.validate()?;
-        }
+        self.validate()?;
+        self.into_seed_after_validation()
+    }
+
+    pub(crate) fn into_seed_with_rebind_proof(
+        self,
+        proof: &ForkRebindProof,
+    ) -> Result<ForkSeed> {
+        self.validate_with_rebind_proof(proof)?;
+        self.into_seed_after_validation()
+    }
+
+    fn into_seed_after_validation(self) -> Result<ForkSeed> {
         let mut resources = Vec::new();
         let mut omissions = Vec::new();
         for (selection, capture) in self.request.selections.iter().zip(self.captures) {
@@ -2051,6 +2116,57 @@ mod tests {
         let encoded =
             serde_json::to_string(&seed).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(encoded, fixture);
+        Ok(())
+    }
+
+    #[test]
+    fn rebound_report_requires_the_prepared_report_and_preserves_original_digest() -> Result<()> {
+        let request: ForkRequest = serde_json::from_str(include_str!(
+            "../fixtures/v2/fork-request.json"
+        ))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let seed: ForkSeed = serde_json::from_str(include_str!(
+            "../fixtures/v2/fork-seed.json"
+        ))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+        let report = ForkReport {
+            request: request.clone(),
+            original_request_digest: None,
+            captures: seed.resources.iter().cloned().map(Capture::Captured).collect(),
+            child_private_volume: seed.child_private_volume.clone(),
+            child_private_generation: seed.child_private_generation.clone(),
+            inherited_context: seed.inherited_context.clone(),
+            inherited_through_sequence: seed.inherited_through_sequence,
+            shared_grants: seed.shared_grants.clone(),
+            reference_grants: seed.reference_grants.clone(),
+            attachment_manifests: seed.attachment_manifests.clone(),
+        };
+        report.validate()?;
+        let original_request_digest = crate::contract::canonical_json_digest(&request)?;
+        let prepared_report_digest = crate::contract::canonical_json_digest(&report)?;
+        let proof = ForkRebindProof::from_preparation(
+            request.operation_id,
+            original_request_digest,
+            [7; 32],
+            prepared_report_digest,
+        );
+
+        let mut rebound = report.clone();
+        rebound.request.parent_revision = 4;
+        rebound.original_request_digest = Some(original_request_digest);
+        rebound.clone().into_seed_with_rebind_proof(&proof)?;
+        let first_digest = rebound.original_request_digest;
+        rebound.request.parent_revision = 5;
+        rebound.clone().into_seed_with_rebind_proof(&proof)?;
+        assert_eq!(rebound.original_request_digest, first_digest);
+
+        let mut forged = rebound;
+        forged.child_private_generation = GenerationRef::new(
+            forged.child_private_volume.provider().clone(),
+            [9; 32],
+            None,
+        )?;
+        assert!(forged.into_seed_with_rebind_proof(&proof).is_err());
         Ok(())
     }
 
