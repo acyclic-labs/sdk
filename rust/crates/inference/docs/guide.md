@@ -5,33 +5,18 @@ revisions, recoverable generation Runs, streamed Run events, evaluations, and
 explicit warm-retention commitments. The crate owns typed request builders,
 wire validation, and the descriptor-derived HTTP JSON codec.
 
-## Package and source qualification
+## Install and connect
 
-The workspace package is `acyclic-inference` version `0.2.0`. The source
-checkout is the authority for this guide. Qualify a checkout with the exact
-revision, lockfile, and feature set that produced the guide:
-
-```text
-git rev-parse HEAD
-cargo metadata --locked --no-deps --format-version 1 --manifest-path rust/crates/inference/Cargo.toml
-cargo check --locked --all-targets --manifest-path rust/crates/inference/Cargo.toml
-cargo test --locked -p acyclic-inference
-cargo test --locked -p acyclic-inference --features http-codec --test http_codec
-```
-
-The command block is the maintainer qualification matrix. The final command
-checks the HTTP adapter profile. The supported caller profile enables the
-native host client by default, so a consumer uses one dependency declaration:
+Add `acyclic-inference` as a single dependency. The default package setup
+selects the native host client automatically:
 
 ```toml
 [dependencies]
 acyclic-inference = { path = "../inference", version = "=0.2.0" }
 ```
 
-The TOML block is a dependency declaration for a caller and is not an
-executable Rust fence. The source-owned
-`examples/inference-capability-discovery.rs` is compile-checked with the
-package. To query a provider, supply `INFERENCE_ENDPOINT`,
+The `examples/inference-capability-discovery.rs` example uses the same
+dependency declaration. To query a provider, supply `INFERENCE_ENDPOINT`,
 `INFERENCE_API_KEY`, and `INFERENCE_CA_PEM`; a caller uses `Inference::connect`
 and the typed client methods through the default dependency declaration.
 

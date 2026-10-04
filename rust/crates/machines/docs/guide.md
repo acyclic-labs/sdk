@@ -6,34 +6,20 @@ recovery, event pages, and usage receipts. `MachinesProvider` is the provider
 boundary. `SimulatedMachines` is a deterministic process-local implementation
 for bounded tests.
 
-## Package and source qualification
+## Install and connect
 
-The workspace package is `acyclic-machines` version `0.2.0` and the default
-feature enables `grpc`. Qualify the exact source revision and package feature
-set with:
-
-```text
-git rev-parse HEAD
-cargo metadata --locked --no-deps --format-version 1 --manifest-path rust/crates/machines/Cargo.toml
-cargo check --locked --all-targets --manifest-path rust/crates/machines/Cargo.toml
-cargo test --locked -p acyclic-machines
-```
-
-The command block is the maintainer qualification matrix. The supported caller
-profile enables the native gRPC client by default, so a consumer uses one
-dependency declaration:
+Add `acyclic-machines` as a single dependency. The default package setup
+selects the native gRPC client automatically:
 
 ```toml
 [dependencies]
 acyclic-machines = "0.2"
 ```
 
-The TOML block is a dependency declaration for a caller and is not an
-executable Rust fence. The source-owned
-`examples/machines-recovery-cancellation.rs` is the executable recovery
-scenario for this package; it uses only `SimulatedMachines` and asserts
-process-local assurance. A remote caller can use `Machines::connect` or
-`Machines::from_env` without selecting a transport feature.
+The `examples/machines-recovery-cancellation.rs` example exercises the
+recovery scenario with `SimulatedMachines` and records process-local
+assurance. A remote caller can use `Machines::connect` or `Machines::from_env`
+without selecting a transport feature.
 
 The package declaration is owned by `rust/crates/machines/Cargo.toml` and
 pins version `0.2.0` with Rust `1.92` as its minimum toolchain. Its default
