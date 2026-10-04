@@ -177,6 +177,20 @@ impl ProtocolService for ProtocolFixture {
 }
 
 fn authorized_control_family<T>(request: &Request<T>) -> Result<BindingFamily, Status> {
+    let authorization = request
+        .metadata()
+        .get("authorization")
+        .ok_or_else(|| Status::unauthenticated("authorization metadata is required"))?
+        .to_str()
+        .map_err(|_| Status::unauthenticated("authorization metadata must be ASCII"))?;
+    if !authorization
+        .strip_prefix("Bearer ")
+        .is_some_and(|token| !token.is_empty())
+    {
+        return Err(Status::unauthenticated(
+            "authorization must be a bearer token",
+        ));
+    }
     let family = request
         .metadata()
         .get(transport_control::FAMILY_METADATA_KEY)
@@ -1810,6 +1824,9 @@ mod tests {
             transport_control::FAMILY_METADATA_KEY,
             family.name().parse().unwrap(),
         );
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer fixture-token".parse().unwrap());
         let response = ProtocolFixture
             .handshake(request)
             .await
@@ -1865,6 +1882,9 @@ mod tests {
             transport_control::FAMILY_METADATA_KEY,
             family.name().parse().unwrap(),
         );
+        request
+            .metadata_mut()
+            .insert("authorization", "Bearer fixture-token".parse().unwrap());
         let response = ProtocolServiceClient::new(channel)
             .handshake(request)
             .await
