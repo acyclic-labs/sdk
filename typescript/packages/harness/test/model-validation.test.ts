@@ -102,7 +102,7 @@ test("generated WASM model admission captures canonical request bytes and manife
     request_digest: readonly number[];
     messages: readonly { position: number; role: string; digest: readonly number[] }[];
   };
-  expect(manifest.version).toBe(1);
+  expect(manifest.version).toBe(3);
   expect(manifest.binding_digest).toHaveLength(32);
   expect(manifest.request_digest).toEqual(prepared.request_digest);
   expect(manifest.messages.map(message => ({ position: message.position, role: message.role })))
