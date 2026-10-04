@@ -134,6 +134,11 @@ mod platform {
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
+    #[cfg(target_os = "linux")]
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
 
     #[cfg(target_os = "linux")]
     use std::fs::{create_dir, read_to_string, remove_dir, write};
@@ -155,12 +160,28 @@ mod platform {
         let cgroup = match configured_cgroup_root() {
             Some(root) => {
                 let value = Cgroup::prepare(&root)?;
-                let procs_path = value.procs_path()?;
+                let procs_path = match value.procs_path() {
+                    Ok(path) => path,
+                    Err(error) => {
+                        value.discard();
+                        return Err(error);
+                    }
+                };
+                let launch_once = Arc::new(AtomicBool::new(false));
+                let launch_once_child = Arc::clone(&launch_once);
                 // The child has not executed user code when this hook runs.
                 // Moving it into the cgroup here closes the post-spawn fork
                 // window that made parent-side attachment unsafe.
                 unsafe {
-                    command.pre_exec(move || attach_current_process(&procs_path));
+                    command.pre_exec(move || {
+                        if launch_once_child.swap(true, Ordering::AcqRel) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::AlreadyExists,
+                                "process command cannot be reused after native ownership setup",
+                            ));
+                        }
+                        attach_current_process(&procs_path)
+                    });
                 }
                 Some(value)
             }
@@ -181,11 +202,14 @@ mod platform {
         let process_group = match process_group {
             Ok(value) => value,
             Err(error) => {
-                stop_child(&mut child);
                 #[cfg(target_os = "linux")]
-                if let Some(value) = &cgroup {
-                    value.discard();
+                if let Err(cleanup_error) = cleanup_failed_launch(&mut child, cgroup.as_ref()) {
+                    return Err(io::Error::other(format!(
+                        "{error}; launch cleanup is uncertain: {cleanup_error}"
+                    )));
                 }
+                #[cfg(not(target_os = "linux"))]
+                stop_child(&mut child);
                 return Err(error);
             }
         };
@@ -193,9 +217,10 @@ mod platform {
         let root_start_time = match process_start_time(child.id()) {
             Ok(value) => Some(value),
             Err(error) => {
-                stop_child(&mut child);
-                if let Some(value) = &cgroup {
-                    value.discard();
+                if let Err(cleanup_error) = cleanup_failed_launch(&mut child, cgroup.as_ref()) {
+                    return Err(io::Error::other(format!(
+                        "{error}; launch cleanup is uncertain: {cleanup_error}"
+                    )));
                 }
                 return Err(error);
             }
@@ -265,6 +290,35 @@ mod platform {
     fn stop_child(child: &mut Child) {
         let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn cleanup_failed_launch(child: &mut Child, cgroup: Option<&Cgroup>) -> io::Result<()> {
+        let Some(cgroup) = cgroup else {
+            stop_child(child);
+            return Ok(());
+        };
+        if let Err(error) = cgroup.terminate() {
+            stop_child(child);
+            return Err(io::Error::other(format!(
+                "native cgroup cleanup failed after launch initialization error: {error}"
+            )));
+        }
+        child.wait()?;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if cgroup.complete()? {
+                cgroup.discard();
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "native cgroup descendants remained after launch initialization failure",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(target_os = "linux")]
