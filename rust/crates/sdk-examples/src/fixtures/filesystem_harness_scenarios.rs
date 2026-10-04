@@ -24,7 +24,10 @@ use acyclic_harness::{
     wire_api::{HarnessWireApi, current_protocol},
 };
 
-use super::filesystem_harness::{HarnessFixtureBackend, filesystem_service};
+use super::{
+    filesystem_harness::{empty_filesystem_service, filesystem_service},
+    harness_backend::StatefulHarnessFixtureBackend as HarnessFixtureBackend,
+};
 
 const SOURCE: &str = "rust/crates/sdk-examples/src/fixtures/filesystem_harness_scenarios.rs";
 
@@ -331,35 +334,50 @@ where
         &state,
     ));
 
-    // ReadLink is intentionally a real missing-path request.  The typed
-    // status is evidence too, but the exporter remains fail-closed if the
-    // fixture unexpectedly starts manufacturing a link.
+    // ReadLink uses the symlink seeded by the production fixture. The response
+    // is emitted from the real wire adapter so the generated evidence carries
+    // the same target bytes as the fixture's semantic scenario.
     let read_link = fs_wire::ReadLinkRequest {
         generation: Some(fixture_head.clone()),
         path: "/link".into(),
         maximum_bytes: 1024,
     };
-    let read_link_result = service.read_link(Request::new(read_link.clone())).await;
-    let read_link_error = read_link_result
-        .err()
-        .ok_or_else(|| Status::internal("seeded fixture unexpectedly contains /link"))?;
-    output.push(json!({
-        "family": "filesystem",
-        "operation": "ReadLink",
-        "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
-        "source": SOURCE,
-        "request": {
-            "type": "acyclic.filesystem.v2.ReadLinkRequest",
-            "bytes_base64": b64(&read_link.encode_to_vec()),
-            "sha256": digest(&read_link.encode_to_vec()),
-        },
-        "response": {
-            "status": read_link_error.code().to_string(),
-            "code": format!("{:?}", read_link_error.code()),
-            "message": read_link_error.message()
-        },
-        "state": state,
-    }));
+    match service.read_link(Request::new(read_link.clone())).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if response.contents != b"hello" {
+                return Err(Status::internal("seeded symlink target changed"));
+            }
+            output.push(evidence(
+                "filesystem",
+                "ReadLink",
+                "acyclic.filesystem.v2.ReadLinkRequest",
+                &read_link,
+                "acyclic.filesystem.v2.ReadResponse",
+                &response,
+                &state,
+            ));
+        }
+        Err(error) => {
+            output.push(json!({
+                "family": "filesystem",
+                "operation": "ReadLink",
+                "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+                "source": SOURCE,
+                "request": {
+                    "type": "acyclic.filesystem.v2.ReadLinkRequest",
+                    "bytes_base64": b64(&read_link.encode_to_vec()),
+                    "sha256": digest(&read_link.encode_to_vec()),
+                },
+                "response": {
+                    "status": error.code().to_string(),
+                    "code": format!("{:?}", error.code()),
+                    "message": error.message()
+                },
+                "state": state,
+            }));
+        }
+    }
 
     macro_rules! record_rpc {
         ($method:ident, $operation:literal, $request:expr, $request_type:literal, $response_type:literal) => {{
@@ -613,7 +631,14 @@ where
         .local_addr()
         .map_err(|error| Status::internal(format!("read import fixture address: {error}")))?;
     let incoming = TcpListenerStream::new(listener);
-    let server = acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(service.clone());
+    // Import into a fresh production service. Reusing the exporting service
+    // would correctly reject the already-created volume authority and would
+    // turn this positive transfer conformance case into a duplicate-create
+    // probe. The destination still uses the same deterministic providers and
+    // accepts the exported workspace identity from the wire manifest.
+    let import_service = empty_filesystem_service()
+        .map_err(|error| Status::internal(format!("empty import fixture: {error}")))?;
+    let server = acyclic_fs::wire::filesystem::v2::filesystem_service_server::FilesystemServiceServer::new(import_service);
     let server_task: JoinHandle<Result<(), tonic::transport::Error>> = tokio::spawn(async move {
         Server::builder()
             .add_service(server)
@@ -932,6 +957,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn export_executes_all_typed_filesystem_and_harness_steps() {
         let records = export().await.expect("typed fixture export");
+        let repeated = export().await.expect("repeat typed fixture export");
+        assert_eq!(records, repeated, "fresh exports must be byte-identical");
         assert_eq!(records.len(), 35);
 
         let operations: Vec<&str> = records
@@ -1015,9 +1042,9 @@ mod tests {
             .iter()
             .find(|record| record["family"] == "filesystem" && record["operation"] == "Import")
             .expect("filesystem import evidence");
-        assert!(import["response"]["bytes_base64"]
-            .as_str()
-            .is_some_and(|bytes| !bytes.is_empty()));
+        // A successful empty protobuf response encodes to an empty byte string.
+        // Require the typed field and its digest instead of rejecting that valid wire value.
+        assert!(import["response"]["bytes_base64"].as_str().is_some());
         assert!(import["response"]["sha256"]
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
@@ -1042,11 +1069,16 @@ mod tests {
             .iter()
             .find(|record| record["operation"] == "ReadLink")
             .expect("filesystem read-link evidence");
-        assert_eq!(read_link["response"]["code"], "Unavailable");
-        assert!(!read_link["response"]["message"]
+        assert_eq!(
+            read_link["response"]["type"],
+            "acyclic.filesystem.v2.ReadResponse"
+        );
+        assert!(read_link["response"]["bytes_base64"]
             .as_str()
-            .unwrap_or_default()
-            .is_empty());
+            .is_some_and(|bytes| !bytes.is_empty()));
+        assert!(read_link["response"]["sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
         for operation in ["Observe", "Cancel"] {
             let response = records
                 .iter()
@@ -1081,4 +1113,3 @@ mod tests {
         assert_eq!(harness_cancel["state"]["cancelled_revision"], "2");
     }
 }
-
