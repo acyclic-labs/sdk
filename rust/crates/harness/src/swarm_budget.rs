@@ -3526,7 +3526,7 @@ mod tests {
         runtime::{TaskAdmissionRecord, TaskRunLimits},
     };
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Duration};
     fn id(byte: u8) -> OperationId {
         OperationId::from_bytes([byte; 16])
     }
@@ -3639,6 +3639,45 @@ mod tests {
                 .pop()
                 .ok_or_else(|| Error::Storage("measurement source exhausted".into()))
         }
+    }
+
+    #[tokio::test]
+    async fn metered_stream_drop_surfaces_execution_accounting_failure() -> Result<()> {
+        let token = SwarmDispatchToken {
+            operation_id: id(19),
+            parent_operation_id: None,
+            owner: owner(0),
+            completed_boundary_digest: [1; 32],
+            workspace_generation_digest: [2; 32],
+            dispatch_id: Some(IdempotencyKey::new("dispatch-drop")?),
+            resources: SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: 1,
+                execution_time_ms: 1,
+            },
+        };
+        let context = SwarmDispatchContext::new(
+            token,
+            MeasuredSource {
+                snapshots: Mutex::new(Vec::new()),
+            },
+        )?;
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Child(context));
+        {
+            let _stream = MeteredStream {
+                inner: Box::pin(futures::stream::pending::<Result<crate::model::ModelEvent>>()),
+                meter: meter.clone(),
+                started: Instant::now() - Duration::from_millis(2),
+                charged_ms: 0,
+                deadline: Box::pin(tokio::time::sleep(Duration::from_secs(60))),
+                finished: false,
+            };
+        }
+        assert!(matches!(
+            meter.usage(),
+            Err(Error::Storage(message)) if message.contains("finalization failed")
+        ));
+        Ok(())
     }
 
     #[test]
