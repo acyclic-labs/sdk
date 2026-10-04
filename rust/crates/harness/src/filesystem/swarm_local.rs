@@ -2849,9 +2849,14 @@ impl PersistentLocalSwarm {
             }
             return Err(error);
         }
-        let _refresh = self.registry_refresh.lock().await;
-        if let Some(current) = self.records.lock().await.get_mut(&task) {
-            current.phase = LocalSessionPhase::Cancelled;
+        {
+            // Fence only the in-memory projection publication. Host bridges may
+            // re-enter this swarm (and the final session lookup refreshes the
+            // same projection), so they must run after the fence is released.
+            let _refresh = self.registry_refresh.lock().await;
+            if let Some(current) = self.records.lock().await.get_mut(&task) {
+                current.phase = LocalSessionPhase::Cancelled;
+            }
         }
         if let Some(source) = &self.bindings.cancellation {
             let _ = source.cancel(task);
@@ -4631,6 +4636,48 @@ mod tests {
         }
     }
 
+    /// A host whose cancellation call can be held at a controlled barrier.
+    /// This makes lock-order regressions deterministic: the swarm must release
+    /// its projection fence before awaiting the host, then reacquire it for the
+    /// final durable session read.
+    struct ControlledCancellationHost {
+        inner: RecordingCommunicationHost,
+        entered: Arc<tokio::sync::Barrier>,
+        release: Arc<tokio::sync::Barrier>,
+    }
+
+    impl crate::runtime::DurableTaskHost for ControlledCancellationHost {
+        fn observe_admission<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+            <RecordingCommunicationHost as crate::runtime::DurableTaskHost>::observe_admission(
+                &self.inner,
+                task_id,
+            )
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<crate::Outcome<Value>>>> {
+            <RecordingCommunicationHost as crate::runtime::DurableTaskHost>::outcome(
+                &self.inner,
+                task_id,
+            )
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                entered.wait().await;
+                release.wait().await;
+                Ok(())
+            })
+        }
+    }
+
     struct ImmediateWaitStore {
         opened: Mutex<Vec<crate::communication::WaitRequest>>,
         completed: Mutex<Vec<crate::communication::WaitCompletion>>,
@@ -4893,7 +4940,60 @@ mod tests {
         let sessions = sessions?;
         written?;
         assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].task, task);
+        assert_eq!(sessions[0].phase, LocalSessionPhase::Ready);
+        assert!(matches!(
+            sessions[0].task_description.as_str(),
+            "root" | "direct publication"
+        ));
         assert_eq!(swarm.session(task).await?.task_description, "direct publication");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_releases_projection_fence_before_host_and_final_refresh() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let entered = Arc::new(tokio::sync::Barrier::new(2));
+        let release = Arc::new(tokio::sync::Barrier::new(2));
+        let host = Arc::new(ControlledCancellationHost {
+            inner: RecordingCommunicationHost {
+                observed: Mutex::new(Vec::new()),
+            },
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let bindings = LocalSwarmBindings::communication(host, None, None);
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let swarm = Arc::new(
+            PersistentLocalSwarm::open_with_model_and_bindings(
+                root.path(),
+                model,
+                Arc::new(MockModel {
+                    calls: AtomicUsize::new(0),
+                    requests: Mutex::new(Vec::new()),
+                }),
+                Limits::default(),
+                bindings,
+            )
+            .await?,
+        );
+        let task = swarm.root_task().await?;
+        let cancel = {
+            let swarm = swarm.clone();
+            tokio::spawn(async move { swarm.cancel(task).await })
+        };
+
+        // Let the production host call begin, then release it. If cancel held
+        // registry_refresh across host.cancel, the subsequent session refresh
+        // would deadlock and the bounded join below would fail.
+        entered.wait().await;
+        release.wait().await;
+        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(2), cancel)
+            .await
+            .map_err(|_| Error::Storage("cancellation final refresh timed out".into()))?
+            .map_err(|error| Error::Storage(format!("cancellation task failed: {error}")))??;
+        assert_eq!(cancelled.task, task);
+        assert_eq!(cancelled.phase, LocalSessionPhase::Cancelled);
         Ok(())
     }
 
