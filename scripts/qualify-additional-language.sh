@@ -147,6 +147,20 @@ EOF
     test -n "$client_module"
     test -n "$(rg -l 'stream' src --glob '*_client.erl' | head -n 1)"
     python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/src" "${contract_protos[@]}"
+    if [[ -n "${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}" ]]; then
+      fixture_host=${ACYCLIC_FIXTURE_GRPC_ENDPOINT%:*}
+      fixture_port=${ACYCLIC_FIXTURE_GRPC_ENDPOINT##*:}
+      mkdir -p config
+      cat >config/sys.config <<EOF
+[{grpcbox,[{client,#{channels=>[{default_channel,[{http,"$fixture_host",$fixture_port,[]}],#{}}]}}]}].
+EOF
+      python3 "$source_root/scripts/write-erlang-runtime-consumer.py" \
+        "$project/src" "${contract_protos[@]}" "$project/src/runtime_smoke.erl"
+      rebar3 compile
+      erl -noshell -config config/sys -pa _build/default/lib/*/ebin \
+        -eval 'case runtime_smoke:run() of ok -> halt(0); _ -> halt(1) end.'
+      test -s "$project/src/runtime_smoke.erl"
+    fi
     module=$(basename "$(find src -type f -name 'actors_pb.erl' -print -quit)" .erl)
     test -n "$module"
     erl -noshell -pa _build/default/lib/*/ebin -eval "M=$module, [N|_] = M:get_msg_names(), B = M:encode_msg(#{}, N), _ = M:decode_msg(B, N), halt()."
