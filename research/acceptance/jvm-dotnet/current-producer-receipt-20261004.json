@@ -1,0 +1,88 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.current-producer-receipt.v1",
+  "recorded_at": "2026-10-04T05:59:30+01:00",
+  "authority": {
+    "root": "target/sdk-contract",
+    "manifest": "target/sdk-contract/rust-authority.json",
+    "manifest_sha256": "89DEAC918E8873C8E34688D5E52236F3CA908FEAEEA5B08041B8BF2D9F535A4C",
+    "source_revision": "a6e51232329ad16165b1bcdcd3f72a4f345144d12c527e5d4ab29bed4a25a1d7",
+    "families": 9,
+    "source_descriptor_pairs": 9,
+    "source_bound": true
+  },
+  "producers": {
+    "jvm": {
+      "adapter": "jvm/producer-adapter.ps1",
+      "adapter_sha256": "4E65E217E182761655814A12CF53BB2E00F4797B2FAC7E57558EDE38FDDBB474",
+      "generator": "protoc + grpc-java",
+      "versions": {
+        "protobuf": "4.31.1",
+        "grpc": "1.75.0",
+        "protobuf_maven_plugin": "0.6.1"
+      },
+      "artifact": {
+        "path": "Q:/sdk/work/jvm-current-producer-20261004f/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+        "sha256": "03B477104F12BD0FBDBBE1BFD7CC7CC108F958BE35DF420D5810483357736D8F",
+        "bytes": 5039202,
+        "dependency_metadata": "Q:/sdk/work/jvm-current-producer-20261004f/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom",
+        "dependency_metadata_sha256": "952BCDB5A5340CA0D7DBEBE9F58D5A3FC9AB55C06BA0ACB5044D53EB301A6CCC"
+      },
+      "second_build": {
+        "path": "Q:/sdk/work/jvm-current-producer-20261004g/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+        "sha256": "03B477104F12BD0FBDBBE1BFD7CC7CC108F958BE35DF420D5810483357736D8F",
+        "dependency_metadata_sha256": "952BCDB5A5340CA0D7DBEBE9F58D5A3FC9AB55C06BA0ACB5044D53EB301A6CCC",
+        "byte_identical": true
+      },
+      "consumer": {
+        "project": "jvm/consumer/pom.xml",
+        "project_sha256": "4E5E832C6DBC2804D5FB1ECF62AA0FBC7687AAC8433C39787DDAAFC86BEC8657",
+        "command": "mvn -B -ntp -Dmaven.repo.local=<isolated-cache> -f jvm/consumer/pom.xml clean test",
+        "result": "pass",
+        "tests": 1,
+        "installed_artifact": true,
+        "assertions": ["generated Actors and Stream types", "uint64 boundary values", "clean installed Maven artifact dependency resolution"]
+      }
+    },
+    "dotnet": {
+      "adapter": "dotnet/producer-adapter.ps1",
+      "adapter_sha256": "141A2CBFBCC8C51DEB9BF92D78694A55FC3DDDAD1C88759BEF4B8A89A6FD2956",
+      "project": "dotnet/Acyclic.Sdk.Transport.csproj",
+      "project_sha256": "9652A00BB60E6D3B82EE379F262240C289C4420EA5DF36CF1774693D71FA988B",
+      "generator": "Grpc.Tools + Grpc.Net.Client",
+      "versions": {
+        "google_protobuf": "3.31.1",
+        "grpc_tools": "2.71.0",
+        "grpc_net_client": "2.71.0",
+        "dotnet_sdk": "8.0.425"
+      },
+      "artifact": {
+        "path": "Q:/sdk/work/dotnet-current-producer-20261004j/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+        "sha256": "DC46CAE740FB5D8E7CB1C97B89D37CB6C7874EBDBF0960D81175F60C12F64672",
+        "bytes": 508234,
+        "package_normalization": "dotnet/reproducible-pack.ps1"
+      },
+      "second_build": {
+        "path": "Q:/sdk/work/dotnet-current-producer-20261004k/Acyclic.Sdk.Transport.0.2.0-alpha.1.nupkg",
+        "sha256": "DC46CAE740FB5D8E7CB1C97B89D37CB6C7874EBDBF0960D81175F60C12F64672",
+        "bytes": 508234,
+        "byte_identical": true
+      },
+      "consumer": {
+        "project": "dotnet/consumer/Acyclic.Sdk.Transport.Consumer.csproj",
+        "source_sha256": "F333E9E12C08DAA3DBCDAC2F556DE4FA0B49CA9FDB4B7707C060892EEC84570A",
+        "command": "dotnet restore --source <isolated-package-feed> && dotnet run --no-restore",
+        "result": "pass",
+        "installed_artifact": true,
+        "assertions": ["all 9 Rust golden family serialization round trips", "Rust-emitted transport policy defaults", "generated Actors and Stream checks", "uint64 and oneof values", "cancellation token path"]
+      }
+    }
+  },
+  "source_binding": {
+    "request": ".tmp-jvm-current-examples-request.json",
+    "authority_manifest_required": true,
+    "authority_manifest_verified_before_generation": true,
+    "separately_authored_contract_used": false
+  },
+  "result": "pass",
+  "scope": "Current Rust authority export generated installable Java and .NET transport artifacts; both installed consumers passed and two clean builds produced byte-identical artifacts."
+}

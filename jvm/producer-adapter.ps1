@@ -48,7 +48,7 @@ if (-not (Test-Path -LiteralPath $pom -PathType Leaf)) {
   & $maven.Source '-B' '-ntp' '-f' $pom `
   "-Dacyclic.schema.root=$Authority" `
   "-Dmaven.repo.local=$mavenLocal" `
-  '-Dmaven.test.skip=true' 'package'
+  '-Dmaven.test.skip=true' 'install'
 if ($LASTEXITCODE -ne 0) {
   throw "Pinned JVM producer failed with exit code $LASTEXITCODE."
 }
@@ -58,6 +58,11 @@ if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) {
   throw "JVM producer completed without its installable JAR: $jar"
 }
 Copy-Item -LiteralPath $jar -Destination (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar') -Force
+$installedPom = Join-Path $mavenLocal 'dev\acyclic\acyclic-sdk-jvm-transport\0.2.0-SNAPSHOT\acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom'
+if (-not (Test-Path -LiteralPath $installedPom -PathType Leaf)) {
+  throw "JVM producer completed without dependency metadata: $installedPom"
+}
+Copy-Item -LiteralPath $installedPom -Destination (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom') -Force
 $requestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $Request).Hash
 $authorityHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
 @{
@@ -74,5 +79,7 @@ $authorityHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifest).Hash
   }
   artifact = 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar'
   artifact_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar')).Hash
+  dependency_metadata = 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom'
+  dependency_metadata_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $output 'acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.pom')).Hash
 } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $output 'producer-output.json') -Encoding utf8
 Write-Output "staged JVM package: acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar"

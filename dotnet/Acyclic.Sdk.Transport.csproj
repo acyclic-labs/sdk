@@ -14,7 +14,10 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
-    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-transport</PathMap>
+    <!-- Map both the producer checkout and generated intermediates.  The
+         latter path changes for every isolated build output directory and is
+         part of the deterministic compiler input set. -->
+    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-transport,$(BaseIntermediateOutputPath)=/_/obj</PathMap>
     <!-- Produced by sdk-contract-wire; override with /p:SchemaRoot=... -->
     <SchemaRoot Condition="'$(SchemaRoot)' == ''">$(MSBuildThisFileDirectory)..\target\sdk-contract</SchemaRoot>
   </PropertyGroup>
