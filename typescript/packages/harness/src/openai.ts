@@ -59,6 +59,14 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     }
   }
 
+  /** OpenAI-compatible request options are public provider fields; credentials
+   * remain in this adapter's private headers and never enter the model value. */
+  admitModel(model: ModelRequest["model"]): void {
+    if (model.options !== null && (typeof model.options !== "object" || Array.isArray(model.options))) {
+      throw new TypeError("OpenAI-compatible model options must be an object or null");
+    }
+  }
+
   async *generate(request: ModelRequest): AsyncIterable<ModelEvent> {
     const contracts = await NativeContracts.create();
     const encoder = new TextEncoder();

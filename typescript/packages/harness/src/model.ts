@@ -97,7 +97,19 @@ export type ModelAttempt<Event extends ModelEvent = ModelEvent> =
     requestDigest: Uint8Array;
     observed: readonly Event[];
   }>;
-export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> { generate(request: Request): AsyncIterable<Event>; reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined> }
+export interface ModelProvider<Request extends ModelRequest = ModelRequest, Event extends ModelEvent = ModelEvent> {
+  /** Admits the provider-registered, model-visible options before Rust/WASM request construction. */
+  readonly admitModel?: (model: Model) => void;
+  generate(request: Request): AsyncIterable<Event>;
+  reconcile(attempt: ModelAttempt<Event>): Promise<readonly Event[] | undefined>;
+}
+
+/** Safe default for providers that expose no registered public model options. */
+export function validateDefaultModelOptions(options: unknown): void {
+  if (options === null || (typeof options === "object" && !Array.isArray(options)
+    && Object.keys(options as Record<string, unknown>).length === 0)) return;
+  throw new TypeError("model options require an explicitly registered provider policy");
+}
 
 export interface ToolInvocation<Input = unknown> {
   /** Runtime-owned reconciliation identity; provider call IDs can recur across turns. */

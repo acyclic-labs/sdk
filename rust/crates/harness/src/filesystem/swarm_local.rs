@@ -1857,9 +1857,10 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
-        provider
-            .model_option_policy()
-            .validate(&config.model.options)?;
+        // Admit the model binding before opening or mutating the durable
+        // registry. Provider option policy is the sole authority for public
+        // model-visible options.
+        provider.admit_model(&config.model)?;
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
                 Error::Invalid(
@@ -1941,9 +1942,7 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         for session in sessions.values() {
             session.model.validate()?;
-            provider
-                .model_option_policy()
-                .validate(&session.model.options)?;
+            provider.admit_model(&session.model)?;
         }
         if persisted_root.model != config.model {
             return Err(Error::Conflict(
@@ -3861,7 +3860,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
+    use crate::model::{ModelAttempt, ModelEvent, ModelOptionPolicy, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
     use serde_json::{Value, json};
     use std::sync::{
@@ -3874,7 +3873,28 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
+    struct FixtureModelOptionPolicy;
+
+    impl ModelOptionPolicy for FixtureModelOptionPolicy {
+        fn validate(&self, options: &Value) -> Result<()> {
+            let Some(options) = options.as_object() else {
+                return Err(Error::Invalid("fixture model options must be an object".into()));
+            };
+            if options.keys().all(|key| matches!(key.as_str(), "fixture" | "seed")) {
+                Ok(())
+            } else {
+                Err(Error::Invalid("fixture model option is not registered".into()))
+            }
+        }
+    }
+
+    static FIXTURE_MODEL_OPTION_POLICY: FixtureModelOptionPolicy = FixtureModelOptionPolicy;
+
     impl ModelProvider for MockModel {
+        fn model_option_policy(&self) -> &dyn ModelOptionPolicy {
+            &FIXTURE_MODEL_OPTION_POLICY
+        }
+
         fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
             self.requests.lock().expect("request lock").push(request);
             self.calls.fetch_add(1, Ordering::SeqCst);

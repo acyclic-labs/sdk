@@ -60,15 +60,23 @@ pub trait ModelOptionPolicy: Send + Sync {
     fn validate(&self, options: &Value) -> Result<()>;
 }
 
-struct AllowAnyModelOptionPolicy;
+/// The safe default for providers that have not registered a public option
+/// schema.  Empty options are useful for fixtures and providers whose model
+/// has no knobs; non-empty options must be admitted by the provider itself.
+struct EmptyModelOptionPolicy;
 
-impl ModelOptionPolicy for AllowAnyModelOptionPolicy {
-    fn validate(&self, _options: &Value) -> Result<()> {
-        Ok(())
+impl ModelOptionPolicy for EmptyModelOptionPolicy {
+    fn validate(&self, options: &Value) -> Result<()> {
+        if options.is_null() || options.as_object().is_some_and(serde_json::Map::is_empty) {
+            return Ok(());
+        }
+        Err(Error::Invalid(
+            "model options require an explicitly registered provider policy".into(),
+        ))
     }
 }
 
-static ALLOW_ANY_MODEL_OPTION_POLICY: AllowAnyModelOptionPolicy = AllowAnyModelOptionPolicy;
+static EMPTY_MODEL_OPTION_POLICY: EmptyModelOptionPolicy = EmptyModelOptionPolicy;
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -345,13 +353,21 @@ pub struct ModelAttempt {
 pub trait ModelProvider: Send + Sync {
     /// Returns the provider-registered public option policy.
     fn model_option_policy(&self) -> &dyn ModelOptionPolicy {
-        &ALLOW_ANY_MODEL_OPTION_POLICY
+        &EMPTY_MODEL_OPTION_POLICY
+    }
+
+    /// Validates the immutable model binding before any durable state is
+    /// created. Providers override [`model_option_policy`] when they expose
+    /// model-visible options; host credentials stay outside this value.
+    fn admit_model(&self, model: &Model) -> Result<()> {
+        model.validate()?;
+        self.model_option_policy().validate(&model.options)
     }
 
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
     fn admit(&self, request: &ModelRequest) -> Result<()> {
-        self.model_option_policy().validate(&request.model.options)
+        self.admit_model(&request.model)
     }
 
     /// Starts one request and yields ordered model events.
@@ -432,6 +448,13 @@ mod wire_contract_tests {
             })
         )
         .is_ok());
+    }
+
+    #[test]
+    fn default_option_policy_rejects_unregistered_options() {
+        assert!(EMPTY_MODEL_OPTION_POLICY.validate(&json!({"credential": "hidden"})).is_err());
+        assert!(EMPTY_MODEL_OPTION_POLICY.validate(&json!({})).is_ok());
+        assert!(EMPTY_MODEL_OPTION_POLICY.validate(&Value::Null).is_ok());
     }
 
     #[test]

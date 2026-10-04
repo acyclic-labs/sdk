@@ -922,6 +922,9 @@ impl PersistentLocalHarness {
         project: Option<&VolumeRef>,
     ) -> Result<Self> {
         limits.validate()?;
+        // Validate the model binding before creating any durable storage or
+        // publishing a descriptor. The provider owns public option policy.
+        provider.admit_model(&model)?;
         let project_capabilities = match project {
             Some(project) => {
                 if project.class() != VolumeClass::Project || project.provider() != &host.provider {
@@ -1004,6 +1007,7 @@ impl PersistentLocalHarness {
         extension: LocalHarnessTools,
     ) -> Result<Self> {
         limits.validate()?;
+        provider.admit_model(&model)?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
             host.clone(),
@@ -1061,6 +1065,9 @@ impl PersistentLocalHarness {
         project: Option<VolumeRef>,
     ) -> Result<Self> {
         limits.validate()?;
+        // Descriptor creation below is durable; reject unregistered options
+        // before the first append so failed admission leaves no session.
+        provider.admit_model(&model)?;
         let root = root.as_ref();
         let stream = StreamClient::new(Arc::new(
             LocalStream::open(root.join("history"), LocalStreamLimits::default())

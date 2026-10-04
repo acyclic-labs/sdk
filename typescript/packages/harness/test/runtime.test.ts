@@ -1980,7 +1980,7 @@ describe("typed agent runtime", () => {
   test("model identity and options are pinned at binding, including scoped overrides", async () => {
     const rootIdentity = { provider: "root", name: "model", revision: "3", options: { mode: "original" } };
     const seen: unknown[] = [];
-    const provider = { async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
+    const provider = { admitModel() {}, async *generate(request: { model: unknown }) { seen.push(request.model); yield { kind: "completed" as const, metadata: {} }; },
       async reconcile() { return undefined; } };
     const runtime = Harness.builder(contracts).model(rootIdentity, provider).build();
     rootIdentity.options.mode = "mutated";
@@ -1992,6 +1992,16 @@ describe("typed agent runtime", () => {
     await scoped.run("child");
     expect(seen[1]).toEqual({ provider: "child", name: "model", revision: "4", options: { mode: "scoped" } });
     expect(() => Harness.builder(contracts).model({ provider: "", name: "model", revision: "1", options: {} }, provider)).toThrow("identity");
+  });
+
+  test("unregistered model options are rejected before request preparation", () => {
+    const provider = {
+      async *generate() { yield { kind: "completed" as const, metadata: {} }; },
+      async reconcile() { return undefined; },
+    };
+    expect(() => Harness.builder(contracts).model({
+      provider: "fixture", name: "fixture", revision: "1", options: { credential: "hidden" },
+    }, provider)).toThrow("explicitly registered provider policy");
   });
 
   test("selected context preserves canonical roles without a synthetic user duplicate", async () => {

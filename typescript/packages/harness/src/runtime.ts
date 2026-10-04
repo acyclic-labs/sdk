@@ -1,4 +1,4 @@
-import { validateComponentLabel, validateToolName, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
+import { validateComponentLabel, validateToolName, validateDefaultModelOptions, type AgentInput, type AgentLoop, type AgentOutput, type ContextBuilder, type Model, type ModelContent, type ModelEvent, type ModelMessage, type ModelProvider, type ModelRequest, type ModelToolDefinition, type ToolDefinition, type ToolExecutor, type ToolJsonSchema, type ToolJsonValue, type ToolRef, type UserContentPart } from "./model.js";
 import { DEFAULT_LIMITS, verifyFileBytes, type FileRef, type Limits, type VolumeRef } from "./conversation.js";
 import { approvalBinding, interactionId, type InteractionId, type InteractionResolver, type InteractionResponse, type ResolutionReceipt } from "./interaction.js";
 import { NativeContracts, type BatchAdmissionProjectionInput, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
@@ -129,7 +129,10 @@ function bindModel(identity: Model, provider: ModelProvider): BoundModel {
   if (typeof provider.generate !== "function" || typeof provider.reconcile !== "function") {
     throw new TypeError("model provider requires generate and reconcile");
   }
-  return Object.freeze({ identity: Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) }), provider });
+  const pinned = Object.freeze({ ...identity, options: freezeSchema(structuredClone(identity.options)) });
+  if (provider.admitModel === undefined) validateDefaultModelOptions(pinned.options);
+  else provider.admitModel(pinned);
+  return Object.freeze({ identity: pinned, provider });
 }
 export type ResumableTaskOptions<Input, Output> = TaskDefinitionOptions<Input, Output> & Readonly<{
   input: RuntimeSchema<Input>;
@@ -2446,6 +2449,12 @@ export class AgentHarness {
       let previousAdmission: ModelEventAdmissionState = { count: 0, calls: [], completed: false, text_bytes: 0 };
       const maxSteps = Math.min(this.scope.limits.maxSteps ?? this.limits.model_steps, this.limits.model_steps);
       for (let step = 0; step < maxSteps; step += 1) {
+        // The provider policy runs before the Rust/WASM serializer. This
+        // keeps provider-visible options separate from host credentials and
+        // prevents low-level request preparation from becoming an admission
+        // bypass.
+        if (model.provider.admitModel === undefined) validateDefaultModelOptions(model.identity.options);
+        else model.provider.admitModel(model.identity);
         // The caller owns final reference resolution and authorization. Once
         // those bytes are present in `messages`, Rust is the only request
         // serializer and digest authority before this provider dispatch.
