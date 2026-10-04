@@ -61,5 +61,25 @@
     },
     "rust_expected_manifest": "failed before emission: Stream Commit returned limit_exceeded"
   },
-  "next_bounded_milestone": "Repair the Rust expected-manifest Stream Commit limit_exceeded case and then compare each installed Python terminal status and response frame against the emitted Rust expected manifest through the central semantic verifier."
+  "next_bounded_milestone": "Repair the Rust expected-manifest Stream Commit limit_exceeded case and then compare each installed Python terminal status and response frame against the emitted Rust expected manifest through the central semantic verifier.",
+  "canonical_oracle_replay": {
+    "oracle_path": "C:\\Users\\varun\\.codex\\visualizations\\2026\\10\\03\\01a1012c-cbf9-71f3-9cb6-fb3047b2fa2b\\typed-collector-central-full106-20261004.json",
+    "oracle_sha256": "97B2FEAC5BD588BF6FFF59E4E79AAC3511F79590CC212F0852A31C72EBF7423C",
+    "runtime_receipt": "Q:\\sdk\\work\\python106-integrated-root-20261004\\python-canonical-runtime.json",
+    "runtime_receipt_sha256": "9D676338E132D016D3E03DD0F1177D358A3D1606B3B989D69EEC204DC86161E4",
+    "comparison_receipt": "Q:\\sdk\\work\\python106-integrated-root-20261004\\canonical-comparison.json",
+    "comparison_receipt_sha256": "18B822FDC06A2DC561A845181AA8FB16DD5AFD19F7E1BCD81DF1B5626BBD90D6",
+    "scenarios": 106,
+    "request_matches": 106,
+    "response_matches": 67,
+    "terminal_matches": 83,
+    "fully_matching": 60,
+    "runtime_terminal_ok": 77,
+    "runtime_terminal_errors": 29,
+    "status": "failed",
+    "qualification": "not-qualified",
+    "interpretation": "Installed freshly generated Python sent all 106 canonical Rust request frame sequences over real gRPC. Every request frame sequence matched the Rust oracle. The fixture returned divergent response/terminal semantics for 46 scenarios, so this is evidence of actual traffic and a fixture/state mismatch, not a qualification.",
+    "expected_manifest_blocker": "Rust typed-request-manifest exits before emission because Stream Commit returns limit_exceeded",
+    "fixture_state_followup": "Requires the coherent Rust fixture owners to seed the same clocks, identities, and state used by the canonical oracle before rerun."
+  }
 }
