@@ -639,6 +639,24 @@ pub(crate) struct HostRestoreGuard {
     file: cap_std::fs::File,
 }
 
+#[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
+impl HostRestoreGuard {
+    /// Moves the exact handle-pinned baseline to a held backup name without
+    /// replacing a destination that appeared after the baseline was opened.
+    pub(crate) fn rename_to_no_replace(
+        &self,
+        destination_parent: &HostDirectory,
+        destination_name: &Path,
+    ) -> io::Result<()> {
+        rename_windows_handle_no_replace(
+            &self.file,
+            &destination_parent.directory,
+            destination_name,
+        )
+    }
+}
+
 #[cfg(unix)]
 fn held_parent_leaf(root: &Dir, path: &Path) -> io::Result<(Dir, std::ffi::CString)> {
     use std::os::unix::ffi::OsStrExt as _;
@@ -1301,10 +1319,12 @@ impl HostRoot {
     pub(crate) fn open_restore_guard(&self, path: &Path) -> io::Result<Option<HostRestoreGuard>> {
         #[cfg(windows)]
         {
+            use windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS;
             use windows::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_READ};
             let opened = match self.open_by_name_with_share(
                 path,
                 FILE_GENERIC_READ | DELETE,
+                NTCREATEFILE_CREATE_OPTIONS(0),
                 windows::Win32::Storage::FileSystem::FILE_SHARE_READ
                     | windows::Win32::Storage::FileSystem::FILE_SHARE_DELETE,
             ) {
@@ -2861,6 +2881,101 @@ impl HostDirectory {
             .rename(name, &destination.directory, destination_name)
     }
 
+    /// Moves one held entry into another held directory without replacing an
+    /// entry that appeared at the destination after the caller's observation.
+    ///
+    /// This is the publication primitive for a previously absent destination:
+    /// the source and destination parents are capabilities, and the kernel's
+    /// no-replace operation closes the final check/publish race.  A caller that
+    /// needs replacement must use [`Self::rename_to`] or the materializer's
+    /// durable replacement journal instead.
+    #[cfg(any(feature = "native-mount", test))]
+    pub(crate) fn rename_to_no_replace(
+        &self,
+        name: &Path,
+        destination: &Self,
+        destination_name: &Path,
+    ) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::AsRawFd as _;
+            use std::os::unix::ffi::OsStrExt as _;
+
+            let source = std::ffi::CString::new(name.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "source name contains NUL")
+            })?;
+            let target =
+                std::ffi::CString::new(destination_name.as_os_str().as_bytes()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL")
+                })?;
+            // SAFETY: both directory descriptors and C names remain live for
+            // the duration of the synchronous syscall.  RENAME_NOREPLACE is
+            // the kernel-side create-only exchange required here.
+            let result = unsafe {
+                libc::syscall(
+                    libc::SYS_renameat2,
+                    self.directory.as_raw_fd(),
+                    source.as_ptr(),
+                    destination.directory.as_raw_fd(),
+                    target.as_ptr(),
+                    libc::RENAME_NOREPLACE,
+                )
+            };
+            if result == 0 {
+                return Ok(());
+            }
+            return Err(io::Error::last_os_error());
+        }
+
+        #[cfg(windows)]
+        {
+            return rename_windows_no_replace(
+                &self.directory,
+                name,
+                &destination.directory,
+                destination_name,
+            );
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::os::fd::AsRawFd as _;
+            use std::os::unix::ffi::OsStrExt as _;
+
+            let source = std::ffi::CString::new(name.as_os_str().as_bytes()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "source name contains NUL")
+            })?;
+            let target =
+                std::ffi::CString::new(destination_name.as_os_str().as_bytes()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "destination name contains NUL")
+                })?;
+            // `renameatx_np` keeps both parent capabilities in the kernel and
+            // provides the same atomic no-replace contract on APFS/HFS+.
+            let result = unsafe {
+                libc::renameatx_np(
+                    self.directory.as_raw_fd(),
+                    source.as_ptr(),
+                    destination.directory.as_raw_fd(),
+                    target.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            };
+            if result == 0 {
+                return Ok(());
+            }
+            return Err(io::Error::last_os_error());
+        }
+
+        #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+        {
+            let _ = (name, destination, destination_name);
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "capability-rooted no-replace rename is unavailable on this host",
+            ))
+        }
+    }
+
     /// Creates one child directory and retains a capability for it.
     pub fn create_dir_held(&self, name: &Path) -> io::Result<Self> {
         self.directory.create_dir(name)?;
@@ -2890,6 +3005,135 @@ impl HostDirectory {
         } else {
             self.directory.remove_file(name)
         }
+    }
+}
+
+/// Renames one entry relative to two held Windows directory handles while
+/// refusing to replace an entry that appeared at the destination.  Opening
+/// the source with delete access pins the source record until the kernel
+/// rename completes; `FileRenameInformation` performs the destination test
+/// and move as one operation.
+#[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
+#[allow(unsafe_code)]
+fn rename_windows_no_replace(
+    source_parent: &Dir,
+    source_name: &Path,
+    destination_parent: &Dir,
+    destination_name: &Path,
+) -> io::Result<()> {
+    use cap_std::fs::OpenOptionsExt as _;
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let one_leaf = |path: &Path, label: &str| {
+        let mut components = path.components();
+        let Some(std::path::Component::Normal(name)) = components.next() else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, label));
+        };
+        if components.next().is_some() {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, label));
+        }
+        Ok(name)
+    };
+    let source_name = one_leaf(source_name, "source rename name must be one leaf")?;
+    let destination_name = one_leaf(destination_name, "destination rename name must be one leaf")?;
+
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .access_mode((DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE).0)
+        .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
+        .custom_flags((FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).0)
+        ._cap_fs_ext_follow(cap_primitives::fs::FollowSymlinks::No);
+    let source = source_parent.open_with(source_name, &options)?.into_std();
+
+    rename_windows_handle_no_replace(&source, destination_parent, destination_name)
+}
+
+#[cfg(windows)]
+#[cfg(any(feature = "native-mount", test))]
+#[allow(unsafe_code)]
+fn rename_windows_handle_no_replace(
+    source: &impl std::os::windows::io::AsRawHandle,
+    destination_parent: &Dir,
+    destination_name: &Path,
+) -> io::Result<()> {
+    use std::mem::{offset_of, size_of};
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsHandle as _, AsRawHandle as _};
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut components = destination_name.components();
+    let Some(std::path::Component::Normal(destination_name)) = components.next() else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination rename name must be one leaf",
+        ));
+    };
+    if components.next().is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "destination rename name must be one leaf",
+        ));
+    }
+    let name = destination_name.encode_wide().collect::<Vec<_>>();
+    let name_bytes = name
+        .len()
+        .checked_mul(size_of::<u16>())
+        .ok_or_else(|| io::Error::other("rename information overflow"))?;
+    let name_offset = offset_of!(FILE_RENAME_INFORMATION, FileName);
+    let total = name_offset
+        .checked_add(name_bytes)
+        .ok_or_else(|| io::Error::other("rename information overflow"))?
+        .max(size_of::<FILE_RENAME_INFORMATION>());
+    // u64 storage satisfies FILE_RENAME_INFORMATION's alignment.
+    let mut storage = vec![0_u64; total.div_ceil(size_of::<u64>())];
+    let information = storage.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+    // SAFETY: storage spans `total` bytes, aligned for the structure, and the
+    // trailing UTF-16 name fits after the fixed structure.
+    unsafe {
+        (*information).Anonymous.ReplaceIfExists = false;
+        (*information).RootDirectory = HANDLE(destination_parent.as_handle().as_raw_handle());
+        (*information).FileNameLength =
+            u32::try_from(name_bytes).map_err(|_| io::Error::other("rename name too long"))?;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr(),
+            information.cast::<u8>().add(name_offset).cast::<u16>(),
+            name.len(),
+        );
+    }
+
+    let mut status_block = IO_STATUS_BLOCK::default();
+    // SAFETY: source, destination parent, status block, and information all
+    // remain live for this synchronous native call.
+    let status = unsafe {
+        NtSetInformationFile(
+            HANDLE(source.as_raw_handle()),
+            &raw mut status_block,
+            information.cast(),
+            u32::try_from(total).map_err(|_| io::Error::other("rename information too large"))?,
+            FileRenameInformation,
+        )
+    };
+    if status.is_ok() {
+        Ok(())
+    } else {
+        Err(status_error(status))
     }
 }
 
@@ -5210,6 +5454,53 @@ mod windows_clone_tests {
         assert_eq!(ranges.len(), 10);
         assert_eq!(ranges[0].offset, 0);
         assert_eq!(ranges[9].offset, 18 * 1024 * 1024);
+        Ok(())
+    }
+}
+
+#[cfg(all(test, any(unix, windows)))]
+mod no_replace_rename_tests {
+    use super::HostRoot;
+    use std::path::Path;
+
+    #[test]
+    fn absent_destination_is_create_only_and_held_parent_survives_root_move()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temporary = tempfile::tempdir()?;
+        let root_path = temporary.path().join("root");
+        let moved_path = temporary.path().join("moved");
+        std::fs::create_dir(&root_path)?;
+        std::fs::create_dir(root_path.join("stage"))?;
+        std::fs::create_dir(root_path.join("destination"))?;
+        std::fs::write(root_path.join("stage/item"), b"published")?;
+
+        let root = HostRoot::open(&root_path)?;
+        let stage = root.create_dir_all_held(Path::new("stage"))?;
+        let destination = root.create_dir_all_held(Path::new("destination"))?;
+
+        // A destination created after the caller's observation is preserved;
+        // the kernel no-replace operation reports the conflict atomically.
+        std::fs::write(root_path.join("destination/item"), b"user")?;
+        let error = stage
+            .rename_to_no_replace(Path::new("item"), &destination, Path::new("item"))
+            .expect_err("destination race must reject publication");
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::PermissionDenied
+        ));
+        assert_eq!(std::fs::read(root_path.join("destination/item"))?, b"user");
+
+        // Held parents continue to address the authenticated root inode after
+        // its pathname is moved and replaced by an unrelated directory.
+        std::fs::remove_file(root_path.join("destination/item"))?;
+        std::fs::rename(&root_path, &moved_path)?;
+        std::fs::create_dir(&root_path)?;
+        stage.rename_to_no_replace(Path::new("item"), &destination, Path::new("item"))?;
+        assert_eq!(
+            std::fs::read(moved_path.join("destination/item"))?,
+            b"published"
+        );
+        assert!(!root_path.join("destination/item").exists());
         Ok(())
     }
 }

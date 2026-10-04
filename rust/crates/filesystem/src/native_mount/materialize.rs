@@ -650,7 +650,13 @@ where
                     .file_name()
                     .ok_or_else(|| std::io::Error::other("restore path has no leaf"))?;
                 remove_any(&stage_root)?;
-                remove_restored_path(&parent, Path::new(name), &destination_root, &relative)
+                remove_restored_path(
+                    &parent,
+                    Path::new(name),
+                    &destination_root,
+                    &relative,
+                    restore_guard,
+                )
             })
             .await
             .map_err(|error| {
@@ -787,11 +793,14 @@ fn publish_restore(
     match destination_parent.symlink_metadata(Path::new(destination_name)) {
         Ok(_) => match replacement {
             #[cfg(unix)]
-            HostPathReplacement::Atomic => stage_parent.rename_to(
-                Path::new(staged_name),
-                &destination_parent,
-                Path::new(destination_name),
-            )?,
+            HostPathReplacement::Atomic => {
+                let _ = restore_guard;
+                stage_parent.rename_to_no_replace(
+                    Path::new(staged_name),
+                    &destination_parent,
+                    Path::new(destination_name),
+                )?
+            }
             #[cfg(not(unix))]
             HostPathReplacement::Atomic => replace_live_mount(
                 &stage_parent,
@@ -801,6 +810,7 @@ fn publish_restore(
                 relative,
                 destination,
                 staged,
+                restore_guard,
             )?,
             HostPathReplacement::LiveMount => replace_live_mount(
                 &stage_parent,
@@ -810,10 +820,16 @@ fn publish_restore(
                 relative,
                 destination,
                 staged,
+                restore_guard,
             )?,
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            stage_parent.rename_to(
+            // The destination was absent when the precondition ran.  Keep
+            // that decision capability-rooted through publication and make
+            // the final move create-only: a user-created destination racing
+            // this branch must survive and surface as a conflict rather than
+            // being replaced by the staged tree.
+            stage_parent.rename_to_no_replace(
                 Path::new(staged_name),
                 &destination_parent,
                 Path::new(destination_name),
@@ -927,7 +943,8 @@ fn sync_restore_parent(destination: &Path) -> Result<(), MaterializeError> {
 }
 
 const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
-const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
+const LIVE_RESTORE_PREPARED: &[u8] = b"acyclic-live-restore-v1:prepared\n";
+const LIVE_RESTORE_PUBLISHED: &[u8] = b"acyclic-live-restore-v1:published\n";
 
 fn restore_witness_path(prefix: &str, relative: &Path, destination: &Path) -> PathBuf {
     destination
@@ -941,6 +958,22 @@ fn create_restore_witness(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
     let mut file = std::fs::OpenOptions::new()
         .create_new(true)
+        .write(true)
+        .open(path)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    acyclic_native_runtime::sync_parent(
+        path.parent()
+            .ok_or_else(|| std::io::Error::other("restore witness has no parent"))?,
+        acyclic_native_runtime::Durability::Full,
+    )
+}
+
+fn update_restore_witness(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new()
+        .truncate(true)
         .write(true)
         .open(path)?;
     file.write_all(contents)?;
@@ -1009,34 +1042,58 @@ fn remove_restored_path(
     destination_name: &Path,
     destination_root: &Path,
     relative: &Path,
+    restore_guard: Option<crate::native_host::HostRestoreGuard>,
 ) -> std::io::Result<()> {
     let destination = destination_root.join(relative);
     let removed = restore_artifact_name(".acyclic-restore-removed-", relative);
     let witness = restore_witness_path(".acyclic-restore-remove-witness-", relative, &destination);
     create_restore_witness(&witness, REMOVE_RESTORE_WITNESS)?;
-    match destination_parent.symlink_metadata(destination_name) {
-        Ok(_) => {
-            destination_parent.rename_to(destination_name, destination_parent, &removed)?;
-            acyclic_native_runtime::sync_parent(
-                destination.parent().ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
-                })?,
-                acyclic_native_runtime::Durability::Full,
-            )?;
-            destination_parent.remove(&removed)?;
-            acyclic_native_runtime::sync_parent(
-                destination.parent().ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
-                })?,
-                acyclic_native_runtime::Durability::Full,
-            )?;
-            remove_restore_witness(&witness)
+    #[cfg(windows)]
+    if let Some(guard) = restore_guard {
+        guard.rename_to_no_replace(destination_parent, &removed)?;
+    } else {
+        match destination_parent.symlink_metadata(destination_name) {
+            Ok(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "restore removal destination appeared after approval",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return remove_restore_witness(&witness);
+            }
+            Err(error) => return Err(error),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            remove_restore_witness(&witness)
-        }
-        Err(error) => Err(error),
     }
+    #[cfg(not(windows))]
+    {
+        let _ = restore_guard;
+        match destination_parent.symlink_metadata(destination_name) {
+            Ok(_) => destination_parent.rename_to_no_replace(
+                destination_name,
+                destination_parent,
+                &removed,
+            )?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return remove_restore_witness(&witness);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    acyclic_native_runtime::sync_parent(
+        destination.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+        })?,
+        acyclic_native_runtime::Durability::Full,
+    )?;
+    destination_parent.remove(&removed)?;
+    acyclic_native_runtime::sync_parent(
+        destination.parent().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+        })?,
+        acyclic_native_runtime::Durability::Full,
+    )?;
+    remove_restore_witness(&witness)
 }
 
 fn remove_any(path: &Path) -> std::io::Result<()> {
@@ -1056,17 +1113,42 @@ fn replace_live_mount(
     relative: &Path,
     destination: &Path,
     staged: &Path,
+    restore_guard: Option<crate::native_host::HostRestoreGuard>,
 ) -> Result<(), MaterializeError> {
     let backup_name = restore_artifact_name(".acyclic-restore-backup-", relative);
     recover_live_mount_replacement(destination_parent, destination_name, relative, destination)?;
     let witness = restore_witness_path(".acyclic-restore-live-witness-", relative, destination);
-    create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
-    destination_parent.rename_to(destination_name, destination_parent, &backup_name)?;
+    create_restore_witness(&witness, LIVE_RESTORE_PREPARED)?;
+    #[cfg(windows)]
+    if let Some(guard) = restore_guard {
+        guard
+            .rename_to_no_replace(destination_parent, &backup_name)
+            .map_err(MaterializeError::Io)?;
+    } else {
+        destination_parent.rename_to_no_replace(
+            destination_name,
+            destination_parent,
+            &backup_name,
+        )?;
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = restore_guard;
+        destination_parent.rename_to_no_replace(
+            destination_name,
+            destination_parent,
+            &backup_name,
+        )?;
+    }
     sync_restore_parent(destination)?;
-    if let Err(error) = staged_parent.rename_to(staged_name, destination_parent, destination_name) {
-        if let Err(rollback) =
-            destination_parent.rename_to(&backup_name, destination_parent, destination_name)
-        {
+    if let Err(error) =
+        staged_parent.rename_to_no_replace(staged_name, destination_parent, destination_name)
+    {
+        if let Err(rollback) = destination_parent.rename_to_no_replace(
+            &backup_name,
+            destination_parent,
+            destination_name,
+        ) {
             return Err(MaterializeError::Engine(format!(
                 "replacement failed: {error}; displaced entry remains at {} after rollback failed: {rollback}",
                 backup_name.display()
@@ -1077,6 +1159,7 @@ fn replace_live_mount(
     }
     sync_restore_parent(destination)?;
     sync_restore_parent(staged)?;
+    update_restore_witness(&witness, LIVE_RESTORE_PUBLISHED)?;
     destination_parent.remove(&backup_name)?;
     sync_restore_parent(destination)?;
     remove_restore_witness(&witness)?;
@@ -1097,22 +1180,45 @@ fn recover_live_mount_replacement(
         Err(error) => return Err(error.into()),
     };
     if !backup_exists {
-        if validate_restore_witness(&witness, LIVE_RESTORE_WITNESS)? {
+        if validate_restore_witness(&witness, LIVE_RESTORE_PREPARED)?
+            || validate_restore_witness(&witness, LIVE_RESTORE_PUBLISHED)?
+        {
             remove_restore_witness(&witness)?;
         }
         return Ok(());
     }
-    if !validate_restore_witness(&witness, LIVE_RESTORE_WITNESS)? {
+    if validate_restore_witness(&witness, LIVE_RESTORE_PUBLISHED)? {
+        match destination_parent.symlink_metadata(destination_name) {
+            Ok(_) => destination_parent.remove(&backup_name)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                destination_parent.rename_to_no_replace(
+                    &backup_name,
+                    destination_parent,
+                    destination_name,
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else if validate_restore_witness(&witness, LIVE_RESTORE_PREPARED)? {
+        match destination_parent.symlink_metadata(destination_name) {
+            Ok(_) => {
+                return Err(MaterializeError::Engine(
+                    "live-restore has an unresolved destination race".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                destination_parent.rename_to_no_replace(
+                    &backup_name,
+                    destination_parent,
+                    destination_name,
+                )?;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    } else {
         return Err(MaterializeError::Engine(
             "unowned live-restore backup collision".into(),
         ));
-    }
-    match destination_parent.symlink_metadata(destination_name) {
-        Ok(_) => destination_parent.remove(&backup_name)?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            destination_parent.rename_to(&backup_name, destination_parent, destination_name)?;
-        }
-        Err(error) => return Err(error.into()),
     }
     sync_restore_parent(destination)?;
     remove_restore_witness(&witness)?;
@@ -2276,7 +2382,7 @@ mod restore_recovery_tests {
         let backup = restore_artifact_name(".acyclic-restore-backup-", relative);
         let witness =
             restore_witness_path(".acyclic-restore-live-witness-", relative, &destination);
-        create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
+        create_restore_witness(&witness, LIVE_RESTORE_PREPARED)?;
         parent.rename_to(relative, &parent, &backup)?;
 
         recover_live_mount_replacement(&parent, relative, relative, &destination)?;
@@ -2297,7 +2403,7 @@ mod restore_recovery_tests {
         let backup = restore_artifact_name(".acyclic-restore-backup-", relative);
         let witness =
             restore_witness_path(".acyclic-restore-live-witness-", relative, &destination);
-        create_restore_witness(&witness, LIVE_RESTORE_WITNESS)?;
+        create_restore_witness(&witness, LIVE_RESTORE_PUBLISHED)?;
         std::fs::write(root.join(&backup), b"before")?;
         let parent = held_parent(&root, relative)?;
 
@@ -2337,7 +2443,7 @@ mod restore_recovery_tests {
         std::fs::write(root.join(relative), b"old")?;
         let parent = held_parent(&root, relative)?;
 
-        remove_restored_path(&parent, relative, &root, relative)?;
+        remove_restored_path(&parent, relative, &root, relative, None)?;
 
         assert!(!root.join(relative).exists());
         assert!(
