@@ -5,7 +5,9 @@ use crate::{
     conversation::ModelContextSelection,
     executor::load_json,
     model::ModelRequest,
-    model_input::{CompletedModelBoundary, FrozenModelPrefix, PreparedModelInput},
+    model_input::{
+        CompletedModelBoundary, FrozenModelPrefix, ModelInputManifest, PreparedModelInput,
+    },
     tool::ModelToolContext,
 };
 
@@ -139,17 +141,19 @@ where
         }
         let records = self.journal.replay(publication.parent_operation).await?;
         let mut admitted = false;
-        let mut original = false;
+        let mut original_manifest = None;
         let mut completed = false;
         for record in &records {
             match &record.event {
-                ExecutionEvent::ModelInputPrepared { step, request, .. }
-                    if *step == publication.step =>
-                {
-                    if request != &publication.request || original {
+                ExecutionEvent::ModelInputPrepared {
+                    step,
+                    request,
+                    manifest,
+                } if *step == publication.step => {
+                    if request != &publication.request || original_manifest.is_some() {
                         return Err(Error::Conflict("fork request admission changed".into()));
                     }
-                    original = true;
+                    original_manifest = Some(manifest);
                 }
                 ExecutionEvent::ToolBatchCompleted { step, boundary }
                     if *step == publication.step =>
@@ -173,7 +177,7 @@ where
                 _ => {}
             }
         }
-        if !admitted || !original || !completed {
+        if !admitted || original_manifest.is_none() || !completed {
             return Err(Error::Conflict(
                 "fork publication is not durably admitted".into(),
             ));
@@ -182,12 +186,24 @@ where
         let boundary: CompletedModelBoundary =
             load_json(self.journal.as_ref(), &publication.boundary).await?;
         boundary.verify(limits)?;
-        let original = PreparedModelInput::prepare(request, limits)?;
+        let manifest: ModelInputManifest = load_json(
+            self.journal.as_ref(),
+            original_manifest
+                .ok_or_else(|| Error::Conflict("fork input manifest is missing".into()))?,
+        )
+        .await?;
+        let original = PreparedModelInput::restore(
+            request,
+            limits,
+            boundary.option_policy.as_ref(),
+            manifest,
+        )?;
         let original_prefix =
             FrozenModelPrefix::capture(&original, original.request().messages.len())?;
-        original_prefix.verify(&PreparedModelInput::prepare(
+        original_prefix.verify(&PreparedModelInput::prepare_with_policy(
             boundary.request.clone(),
             limits,
+            boundary.option_policy.as_ref(),
         )?)?;
         let parent = self
             .completed_conversation(publication.parent_operation, publication.step, limits)
