@@ -39,6 +39,14 @@ function Assert-Equal([string]$Actual, [string]$Expected, [string]$Label) {
     if ($Actual -cne $Expected) { throw "$Label mismatch: expected '$Expected', got '$Actual'" }
 }
 
+function Assert-PortableRelative([string]$Value, [string]$Label) {
+    if ([string]::IsNullOrWhiteSpace($Value) -or
+        $Value -match '^(?:[A-Za-z]:[\\/]|[\\/])' -or
+        $Value -match '(^|[\\/])\.\.([\\/]|$)') {
+        throw "$Label must be a portable relative path: '$Value'"
+    }
+}
+
 $rootPath = (Resolve-Path -LiteralPath $ReceiptRoot).Path
 $sourcePath = (Resolve-Path -LiteralPath $SourceRoot).Path
 $receiptFiles = @(Get-ChildItem -LiteralPath $rootPath -Recurse -File -Filter "platform-package.json" | Sort-Object FullName)
@@ -78,6 +86,7 @@ foreach ($receiptFile in $receiptFiles) {
     Assert-Equal ([string]$receipt.source_revision) $actualRevision "source revision for $target"
 
     $sourceDigestLines = foreach ($input in @($receipt.source_inputs)) {
+        Assert-PortableRelative ([string]$input) "source input for $target"
         $inputPath = Join-Path $sourcePath ($input.Replace('/', [IO.Path]::DirectorySeparatorChar))
         if (-not (Test-Path -LiteralPath $inputPath -PathType Leaf)) { throw "Missing source input '$input' for $target" }
         "$input $(Get-Sha256 $inputPath)"
@@ -92,6 +101,7 @@ foreach ($receiptFile in $receiptFiles) {
     $packageRoot = Join-Path $receiptDirectory "prefix"
     if (-not (Test-Path -LiteralPath $packageRoot -PathType Container)) { throw "Installed package prefix is missing for $target" }
     foreach ($artifact in $receipt.artifacts.psobject.Properties) {
+        Assert-PortableRelative ([string]$artifact.Name) "artifact path for $target"
         Assert-Hex ([string]$artifact.Value) 64 "artifact hash $target/$($artifact.Name)"
         $artifactPath = Join-Path $packageRoot ($artifact.Name.Replace('/', [IO.Path]::DirectorySeparatorChar))
         if (-not (Test-Path -LiteralPath $artifactPath -PathType Leaf)) { throw "Receipt names missing installed artifact '$($artifact.Name)' for $target" }
@@ -106,10 +116,12 @@ foreach ($receiptFile in $receiptFiles) {
         }
         Assert-Equal ([string]$consumer.source_revision) $actualRevision "$name source revision for $target"
         Assert-Hex ([string]$consumer.source_sha256) 64 "$name source hash for $target"
+        Assert-PortableRelative ([string]$consumer.source) "$name source path for $target"
         $consumerSource = Join-Path $sourcePath ($consumer.source.Replace('/', [IO.Path]::DirectorySeparatorChar))
         if (-not (Test-Path -LiteralPath $consumerSource -PathType Leaf)) { throw "Missing consumer source '$($consumer.source)' for $target" }
         Assert-Equal (Get-Sha256 $consumerSource) ([string]$consumer.source_sha256).ToLowerInvariant() "$name source hash for $target"
         $artifactProperty = $receipt.artifacts.psobject.Properties[[string]$consumer.package_artifact]
+        Assert-PortableRelative ([string]$consumer.package_artifact) "$name package artifact path for $target"
         if ($null -eq $artifactProperty) { throw "Consumer '$name' references an artifact outside the package for $target" }
         Assert-Equal ([string]$consumer.package_artifact_sha256) ([string]$artifactProperty.Value).ToLowerInvariant() "$name package hash for $target"
         $requiredChecks = switch ($name) {
