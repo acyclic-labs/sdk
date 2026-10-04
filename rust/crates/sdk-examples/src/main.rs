@@ -1455,7 +1455,7 @@ fn run_rust(
 
 fn guide_rust_cases() -> Vec<(&'static str, &'static str, String)> {
     let filesystem = format!(
-        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{}\", std::process::id()));
+        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{{}}\", std::process::id()));
 {}",
         filesystem_scenarios::QUICKSTART_SNIPPET
     );
@@ -1554,7 +1554,7 @@ fn run_guide_rust_consumers(
         }
         fs::create_dir_all(staging.join("src"))
             .map_err(|error| format!("create guide staging: {error}"))?;
-        let package_path_text = package_root.to_string_lossy().replace('\\', '/');
+        let package_path_text = package_root.to_string_lossy().replace('\\', "/");
         let manifest = format!(
             r#"[package]
 name = "guide-{scenario_id}"
@@ -2966,3 +2966,4 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
+
