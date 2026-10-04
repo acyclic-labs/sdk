@@ -8,10 +8,16 @@
 use acyclic_harness::{
     Result,
     conversation::Limits,
-    model::{ModelOptionPolicy, ModelRequest},
-    model_input::{FrozenModelPrefix, PreparedModelInput},
+    model::{
+        ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelOptionPolicy, ModelProvider,
+        ModelRequest,
+    },
+    model_input::{FrozenModelPrefix, PrefixBoundModelProvider, PreparedModelInput},
 };
+use futures::{StreamExt, future::BoxFuture, stream::BoxStream};
 use serde::Deserialize;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
 
 const VECTOR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -180,6 +186,151 @@ fn native_conformance_rejects_forged_or_reformatted_manifest() -> Result<()> {
             &noncanonical,
         )
         .is_err()
+    );
+    Ok(())
+}
+
+/// A provider used only to prove the production provider boundary receives the
+/// frozen request bytes.  It deliberately records the bytes from the
+/// `PreparedModelInput` passed to `generate`; the test does not compare an
+/// earlier fixture or a separately reconstructed request.
+struct CapturingProvider {
+    policy: ModelOptionPolicy,
+    requests: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl ModelProvider for CapturingProvider {
+    fn model_option_policy(&self) -> Option<&ModelOptionPolicy> {
+        Some(&self.policy)
+    }
+
+    fn generate<'a>(&'a self, prepared: PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        let result = self
+            .requests
+            .lock()
+            .map(|mut requests| requests.push(prepared.bytes().to_vec()))
+            .map_err(|_| acyclic_harness::Error::Storage("capture lock poisoned".into()))
+            .map(|()| ModelEvent::Completed {
+                metadata: json!({"fixture": "captured"}),
+            });
+        Box::pin(futures::stream::iter([result]))
+    }
+
+    fn reconcile_admitted<'a>(
+        &'a self,
+        _: PreparedModelInput,
+        _: ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        Box::pin(async { Ok(None) })
+    }
+}
+
+#[tokio::test]
+async fn production_provider_receives_exact_recursive_requests() -> Result<()> {
+    let vector = parse_vector();
+    let root = prepare(&vector.root, vector.limits, &vector.policy)?;
+    let root_prefix = FrozenModelPrefix::capture(&root, vector.root.prefix_message_count)?;
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = Arc::new(CapturingProvider {
+        policy: vector.policy.clone(),
+        requests: requests.clone(),
+    });
+    let child_provider =
+        PrefixBoundModelProvider::new(root_prefix.clone(), vector.limits, provider.clone())?;
+
+    // Both siblings pass through the real prefix-enforcing provider boundary.
+    for child in &vector.children {
+        let mut stream = child_provider.generate(prepare(child, vector.limits, &vector.policy)?);
+        while let Some(event) = stream.next().await {
+            event?;
+        }
+    }
+
+    // A grandchild is checked against the first child's retained prefix.  Its
+    // parent provider is still the same production adapter and the capture is
+    // the exact bytes it receives.
+    let first_child = prepare(&vector.children[0], vector.limits, &vector.policy)?;
+    let first_child_prefix =
+        FrozenModelPrefix::capture(&first_child, vector.grandchild.prefix_message_count)?;
+    let grandchild_provider =
+        PrefixBoundModelProvider::new(first_child_prefix, vector.limits, provider)?;
+    let mut stream =
+        grandchild_provider.generate(prepare(&vector.grandchild, vector.limits, &vector.policy)?);
+    while let Some(event) = stream.next().await {
+        event?;
+    }
+
+    let captured = requests
+        .lock()
+        .map_err(|_| acyclic_harness::Error::Storage("capture lock poisoned".into()))?
+        .clone();
+    assert_eq!(captured.len(), 3);
+    assert_eq!(
+        captured[0],
+        vector.children[0].expected.request_json.as_bytes()
+    );
+    assert_eq!(
+        captured[1],
+        vector.children[1].expected.request_json.as_bytes()
+    );
+    assert_eq!(
+        captured[2],
+        vector.grandchild.expected.request_json.as_bytes()
+    );
+
+    // The parent may continue independently after the fork.  Mutating its
+    // history, model settings, and a referenced file identity cannot rewrite
+    // any already captured child request.
+    let mut changed_parent = vector.root.request;
+    changed_parent.model.revision = "parent-after-fork".into();
+    changed_parent.messages[0] = serde_json::from_value(json!({
+        "role": "system",
+        "content": "parent changed after fork"
+    }))
+    .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+    let ModelContent::Parts(parts) = &mut changed_parent.messages[1].content else {
+        return Err(acyclic_harness::Error::Invalid(
+            "fixture attachment message is not multipart".into(),
+        ));
+    };
+    let Some(ModelContentPart::File { file, .. }) = parts
+        .iter_mut()
+        .find(|part| matches!(part, ModelContentPart::File { .. }))
+    else {
+        return Err(acyclic_harness::Error::Invalid(
+            "fixture attachment message has no file".into(),
+        ));
+    };
+    let changed_file = acyclic_harness::conversation::FileRef::new(
+        file.volume().clone(),
+        format!("parent-after-fork/{}", file.path()),
+        file.version().to_owned(),
+        file.descriptor().clone(),
+        file.display_name().to_owned(),
+    )?;
+    *file = changed_file;
+    let changed_parent = PreparedModelInput::prepare_with_policy(
+        changed_parent,
+        vector.limits,
+        Some(&vector.policy),
+    )?;
+    assert!(
+        root_prefix
+            .verify(&prepare(
+                &vector.children[0],
+                vector.limits,
+                &vector.policy,
+            )?)
+            .is_ok()
+    );
+    assert_ne!(changed_parent.bytes(), captured[0]);
+    assert_eq!(
+        captured[0],
+        vector.children[0].expected.request_json.as_bytes()
     );
     Ok(())
 }

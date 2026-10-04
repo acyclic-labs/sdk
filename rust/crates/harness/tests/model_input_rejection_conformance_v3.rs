@@ -20,7 +20,10 @@ use acyclic_harness::{
 };
 use futures::{future::BoxFuture, stream::BoxStream};
 use serde::Deserialize;
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 const VECTOR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -171,5 +174,166 @@ async fn local_storage_rejects_missing_corrupt_and_stale_file_references() -> Re
         replacement.display_name(),
     )?;
     assert!(verifier.verify(&stale_descriptor).await.is_err());
+    Ok(())
+}
+
+fn find_file_containing(root: &Path, needle: &[u8]) -> Result<PathBuf> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(&path)
+            .map_err(|error| Error::Storage(format!("read {}: {error}", path.display())))?
+        {
+            let entry = entry.map_err(|error| Error::Storage(error.to_string()))?;
+            let file_type = entry
+                .file_type()
+                .map_err(|error| Error::Storage(error.to_string()))?;
+            let child = entry.path();
+            if file_type.is_dir() {
+                pending.push(child);
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let bytes = std::fs::read(&child)
+                .map_err(|error| Error::Storage(format!("read {}: {error}", child.display())))?;
+            if bytes.windows(needle.len()).any(|window| window == needle) {
+                return Ok(child);
+            }
+        }
+    }
+    Err(Error::Storage(format!(
+        "could not find staged bytes under {}",
+        root.display()
+    )))
+}
+
+#[tokio::test]
+async fn local_storage_rejects_physical_corruption_and_deletion_after_restart() -> Result<()> {
+    let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let model = Model::new("mock", "residency", "1", serde_json::json!({}))?;
+    let original_bytes = b"physical-pinned-content\r\n";
+    let session = PersistentLocalHarness::open(
+        root.path(),
+        model.clone(),
+        Arc::new(NoopProvider),
+        Limits::default(),
+    )
+    .await?;
+    let original = session
+        .storage()
+        .stage(
+            acyclic_harness::OperationId::new(),
+            "src/physical-corrupt.txt",
+            original_bytes,
+            "text/plain",
+            "physical-corrupt.txt",
+        )
+        .await?;
+    session
+        .storage()
+        .content_verifier()
+        .verify(&original)
+        .await?;
+    drop(session);
+
+    let filesystem_root = root.path().join("filesystem");
+    let body = find_file_containing(&filesystem_root, original_bytes)?;
+    let replacement = vec![0xa5; original_bytes.len()];
+    let mut physical = std::fs::read(&body)
+        .map_err(|error| Error::Storage(format!("read {}: {error}", body.display())))?;
+    let position = physical
+        .windows(original_bytes.len())
+        .position(|window| window == original_bytes)
+        .ok_or_else(|| Error::Storage("staged bytes disappeared before corruption".into()))?;
+    physical[position..position + replacement.len()].copy_from_slice(&replacement);
+    std::fs::write(&body, physical)
+        .map_err(|error| Error::Storage(format!("write {}: {error}", body.display())))?;
+
+    let reopened = PersistentLocalHarness::open(
+        root.path(),
+        model.clone(),
+        Arc::new(NoopProvider),
+        Limits::default(),
+    )
+    .await;
+    if let Ok(reopened) = reopened {
+        assert!(
+            reopened
+                .storage()
+                .content_verifier()
+                .verify(&original)
+                .await
+                .is_err()
+        );
+        drop(reopened);
+    } else if let Err(error) = reopened {
+        assert!(
+            matches!(
+                error,
+                Error::Storage(_) | Error::Invalid(_) | Error::Conflict(_)
+            ),
+            "physical corruption must fail closed with a typed storage outcome: {error:?}"
+        );
+    }
+
+    // A physical corruption may make the object provider fail closed while it
+    // reopens. Use an independent root for deletion so both outcomes are
+    // exercised without repairing the first damaged store.
+    let deleted_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let session = PersistentLocalHarness::open(
+        deleted_root.path(),
+        model.clone(),
+        Arc::new(NoopProvider),
+        Limits::default(),
+    )
+    .await?;
+    let deleted_bytes = b"physical-deleted-content\r\n";
+    let deleted = session
+        .storage()
+        .stage(
+            acyclic_harness::OperationId::new(),
+            "src/physical-deleted.txt",
+            deleted_bytes,
+            "text/plain",
+            "physical-deleted.txt",
+        )
+        .await?;
+    session
+        .storage()
+        .content_verifier()
+        .verify(&deleted)
+        .await?;
+    drop(session);
+
+    let deleted_filesystem_root = deleted_root.path().join("filesystem");
+    let deleted_body = find_file_containing(&deleted_filesystem_root, deleted_bytes)?;
+    std::fs::remove_file(&deleted_body)
+        .map_err(|error| Error::Storage(format!("delete {}: {error}", deleted_body.display())))?;
+    let reopened = PersistentLocalHarness::open(
+        deleted_root.path(),
+        model,
+        Arc::new(NoopProvider),
+        Limits::default(),
+    )
+    .await;
+    if let Ok(reopened) = reopened {
+        assert!(
+            reopened
+                .storage()
+                .content_verifier()
+                .verify(&deleted)
+                .await
+                .is_err()
+        );
+    } else if let Err(error) = reopened {
+        assert!(
+            matches!(
+                error,
+                Error::Storage(_) | Error::Invalid(_) | Error::Conflict(_)
+            ),
+            "physical deletion must fail closed with a typed storage outcome: {error:?}"
+        );
+    }
     Ok(())
 }
