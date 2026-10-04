@@ -859,6 +859,25 @@ mod tests {
                 && !scenario.input.is_empty()
                 && !scenario.expected.is_empty()
         }));
+        let expectations: Vec<_> = scenarios
+            .iter()
+            .copied()
+            .map(scenario_expectation)
+            .collect();
+        let operation_ids: std::collections::BTreeSet<_> =
+            expectations.iter().map(|value| value.operation_id).collect();
+        assert_eq!(operation_ids.len(), 32);
+        assert!(expectations
+            .iter()
+            .all(|value| !value.authority.is_empty() && !value.cursor.is_empty()));
+        assert_eq!(
+            scenario_expectation(FILESYSTEM_SCENARIOS[5]).output,
+            "path=/hello;bytes=rust-fixture"
+        );
+        assert_eq!(
+            scenario_expectation(HARNESS_SCENARIOS[4]).status,
+            "cancelled;revision=2"
+        );
         assert!(!FILESYSTEM_DESCRIPTOR_ARCHIVE.is_empty());
         assert!(!HARNESS_DESCRIPTOR_ARCHIVE.is_empty());
     }
