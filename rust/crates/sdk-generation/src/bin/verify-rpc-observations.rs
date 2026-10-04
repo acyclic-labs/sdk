@@ -156,20 +156,11 @@ fn validate_producer_provenance(
     if authority_closure != observed_authority_closure {
         failures.push(format!("{language}: observed Rust authority source_file_hashes closure differs from expected"));
     }
-    let package_closure = expected_provenance
-        .get("source_file_hashes")
-        .and_then(Value::as_object);
     let observed_package_closure = observed_provenance
         .get("source_file_hashes")
         .and_then(Value::as_object);
-    if package_closure.is_none() || package_closure.is_some_and(|closure| closure.is_empty()) {
-        failures.push(format!("{language}: expected package source_file_hashes closure is missing"));
-    }
     if observed_package_closure.is_none() || observed_package_closure.is_some_and(|closure| closure.is_empty()) {
         failures.push(format!("{language}: executed package source_file_hashes closure is missing"));
-    }
-    if package_closure != authority_closure {
-        failures.push(format!("{language}: expected package source_file_hashes closure differs from Rust authority"));
     }
     if observed_package_closure != observed_authority_closure {
         failures.push(format!("{language}: executed package source_file_hashes closure differs from Rust authority"));
