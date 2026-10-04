@@ -1,0 +1,84 @@
+{
+  "checkpoint": "communication-lazy-content-020de9514",
+  "source_commit": "020de9514c67d198c771b7f769eddd8ec8dadf2f",
+  "parent_checkpoint": "de2327679",
+  "worktree": "C:\\Users\\varun\\.codex\\worktrees\\model-input-policy",
+  "artifact_root": "Q:\\graphcoder-builds\\communication",
+  "scope": [
+    "durable communication identity and ordering",
+    "restart-safe wait timeout and cancellation ownership",
+    "native GraphCoder message content references with explicit body hydration"
+  ],
+  "runs": [
+    {
+      "suite": "communication unit",
+      "command": "cargo test -p acyclic-harness --lib communication::tests:: -- --test-threads=1",
+      "status": "passed",
+      "passed": 27,
+      "failed": 0,
+      "log": "Q:\\graphcoder-builds\\communication\\communication-unit-020de9514.out",
+      "log_sha256": "10cadb6fb48a8f4c2ee0dac01901e1adf1f3e07d1a039c4ca8053715d1413ec4"
+    },
+    {
+      "suite": "filesystem-local communication integration",
+      "command": "cargo test -p acyclic-harness --features filesystem-local --test communication_local -- --test-threads=1",
+      "status": "passed",
+      "passed": 5,
+      "failed": 0,
+      "log": "Q:\\graphcoder-builds\\communication\\communication-local-020de9514.out",
+      "log_sha256": "fbb32d46c425174b6c6754f97a7d9914b03d5759617446d53a24a7326138f10d"
+    },
+    {
+      "suite": "scheduler inbox regression",
+      "command": "cargo test -p acyclic-harness --lib task_inbox_is_gapless_and_idempotent -- --test-threads=1",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0,
+      "log": "Q:\\graphcoder-builds\\communication\\scheduler-020de9514.out",
+      "log_sha256": "25e25ffb818d1920792d36c0117b8c46d49b6775244add330d1246d583d89822"
+    },
+    {
+      "suite": "endpoint-scoped staged message path regression",
+      "command": "cargo test -p acyclic-harness --features filesystem-local --lib staged_message_paths_are_scoped_to_both_endpoints -- --test-threads=1",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0,
+      "log": "Q:\\graphcoder-builds\\communication\\staged-path-020de9514.out",
+      "log_sha256": "115dbe6336fb1a6cc84fd7383b0498ae78f468e37c40817357a9176bbe19ef2f"
+    },
+    {
+      "suite": "native GraphCoder wire golden",
+      "command": "bun test typescript/packages/graphcoder/test/graphcoder.test.ts",
+      "status": "passed",
+      "passed": 26,
+      "failed": 0,
+      "log": "Q:\\graphcoder-builds\\communication\\graphcoder-wire-golden-020de9514.out",
+      "log_sha256": "c1d952eda04240a9240083e6bde10be366ef000570aaae59c195bbd5b840b8ad"
+    }
+  ],
+  "known_gates": [
+    {
+      "suite": "GraphCoder TypeScript declaration check",
+      "command": "tsc -p typescript/packages/graphcoder/tsconfig.json --noEmit --typeRoots C:\\Users\\varun\\AppData\\Roaming\\npm\\node_modules\\@types",
+      "status": "preexisting_failure",
+      "error_count": 1,
+      "error": "terminal.ts: ImportMeta.main is absent from the available node type declarations",
+      "log": "Q:\\graphcoder-builds\\communication\\graphcoder-tsc-020de9514.out",
+      "log_sha256": "0ae5b391ffe86b5c402f26149fee9c356d12d919eecfa9c69b932fd1a47fd163"
+    },
+    {
+      "suite": "acyclic GraphCoder CLI Rust baseline",
+      "command": "cargo check -p acyclic-graphcoder-cli",
+      "status": "preexisting_failure",
+      "error_count": 65,
+      "error_family": "Result alias and error conversion mismatches in graphcoder-cli main.rs",
+      "log": "Q:\\graphcoder-builds\\communication\\cli-check-final.out",
+      "log_sha256": "f31f4f59be7ab208179767fd796aea46d17d21122ca1772a251eae0386b475df"
+    }
+  ],
+  "boundaries": [
+    "Message page bodies remain absent unless includeBody/include_body is explicit.",
+    "Content references are generation-pinned metadata and require authenticated readFile hydration.",
+    "Models are mocked; this checkpoint does not claim real-model coding quality or sandbox confinement."
+  ]
+}
