@@ -1885,6 +1885,7 @@ mod tests {
     use super::*;
     use crate::{
         filesystem::execution_journal::REJECTION_JOURNAL_BINDING,
+        fork::InheritedConversationPrefix,
         interaction::Interaction,
         Outcome,
         model::{Model, ModelAttempt, ModelEvent, ModelProvider, ModelRequest},
@@ -1942,31 +1943,34 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(prepared.request().clone());
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            let events = if call == 0 {
-                vec![
+            let events = match call {
+                0 | 2 => vec![
                     Ok(ModelEvent::ToolCall {
-                        call_id: "history-invalid-1".into(),
+                        call_id: if call == 0 {
+                            "history-invalid-1"
+                        } else {
+                            "history-invalid-2"
+                        }
+                        .into(),
                         name: "acyclic.stage_file".into(),
-                        arguments: json!({"parameters": {"text": "forged one"}}),
-                    }),
-                    Ok(ModelEvent::ToolCall {
-                        call_id: "history-invalid-2".into(),
-                        name: "acyclic.stage_file".into(),
-                        arguments: json!({"parameters": {"text": "forged two"}}),
+                        arguments: json!({
+                            "parameters": {
+                                "text": if call == 0 { "forged one" } else { "forged two" }
+                            }
+                        }),
                     }),
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
                     }),
-                ]
-            } else {
-                vec![
+                ],
+                _ => vec![
                     Ok(ModelEvent::Content {
                         delta: "history complete".into(),
                     }),
                     Ok(ModelEvent::Completed {
                         metadata: Value::Null,
                     }),
-                ]
+                ],
             };
             Box::pin(stream::iter(events))
         }
@@ -1992,6 +1996,7 @@ mod tests {
         )
         .await?;
         local.run("first operation").await?;
+        local.run("second operation").await?;
         let state = local.storage().conversation_state(Limits::default()).await?;
         let selection = crate::conversation::ModelContextSelection {
             conversation_revision: state.messages.len() as u64,
@@ -2007,10 +2012,10 @@ mod tests {
             ["history-invalid-1", "history-invalid-2"]
         );
 
-        local.run("second operation").await?;
+        local.run("third operation").await?;
         let captured = requests.lock().unwrap().clone();
-        assert!(captured.len() >= 3);
-        assert!(captured[2].messages.iter().any(|message| {
+        assert!(captured.len() >= 5);
+        assert!(captured[4].messages.iter().any(|message| {
             matches!(
                 &message.content,
                 crate::model::ModelContent::Part(
@@ -2096,7 +2101,7 @@ mod tests {
         let mut swapped_state = state.clone();
         swapped_state.messages[rejection_indices[0]]
             .extensions
-            .insert("acyclic.model.rejection-journal".into(), second_binding);
+            .insert("acyclic.model.rejection-journal".into(), second_binding.clone());
         assert!(matches!(
             local
                 .storage()
@@ -2122,27 +2127,72 @@ mod tests {
             .iter()
             .position(|message| message.id == second_call_id)
             .ok_or_else(|| Error::Storage("second rejection call missing".into()))?;
+        let first_binding_value: Value =
+            serde_json::from_slice(&local.storage().read(&binding_ref).await?)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+        let second_binding_value: Value =
+            serde_json::from_slice(&local.storage().read(&second_binding).await?)
+                .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_ne!(
+            first_binding_value["operation_id"],
+            second_binding_value["operation_id"],
+            "cross-operation fixture must use distinct authoritative operations"
+        );
+        let mut cross_binding = second_binding_value;
+        // Keep the first operation as the journal authority while carrying
+        // every other identity from the complete second exchange. The
+        // forged result and call are then internally coherent, so rejection
+        // must come from the journal's operation/call correlation rather
+        // than an incidental message-id mismatch.
+        cross_binding["operation_id"] = first_binding_value["operation_id"].clone();
+        cross_binding["message_id"] = serde_json::to_value(state.messages[first_result].id)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        cross_binding["reply_to"] = serde_json::to_value(
+            state.messages[first_result]
+                .reply_to
+                .ok_or_else(|| Error::Storage("first rejection reply target missing".into()))?,
+        )
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        let cross_binding_ref = local
+            .storage()
+            .stage(
+                OperationId::from_bytes([244; 16]),
+                "tests/rejection-cross-operation.json",
+                &crate::contract::canonical_json_bytes(&cross_binding)?,
+                "application/json",
+                "binding.json",
+            )
+            .await?;
         let mut cross_operation_state = state.clone();
-        cross_operation_state.messages[first_result].extensions =
-            state.messages[second_result].extensions.clone();
+        cross_operation_state.messages[first_result].content =
+            state.messages[second_result].content.clone();
+        cross_operation_state.messages[first_result].attachments =
+            state.messages[second_result].attachments.clone();
         cross_operation_state.messages[first_result].reply_to =
-            state.messages[second_result].reply_to;
+            state.messages[first_result].reply_to;
         cross_operation_state.messages[first_result].tool_call_id =
             state.messages[second_result].tool_call_id.clone();
+        cross_operation_state.messages[first_result].extensions.clear();
+        cross_operation_state.messages[first_result]
+            .extensions
+            .insert(REJECTION_JOURNAL_BINDING.into(), cross_binding_ref);
         cross_operation_state.messages[first_call].content =
             state.messages[second_call].content.clone();
         cross_operation_state.messages[first_call].tool_call_id =
             state.messages[second_call].tool_call_id.clone();
+        let cross_error = local
+            .storage()
+            .selected_rejection_evidence(
+                &cross_operation_state,
+                &selection,
+                Limits::default(),
+            )
+            .await
+            .expect_err("cross-operation rejection exchange was accepted");
         assert!(matches!(
-            local
-                .storage()
-                .selected_rejection_evidence(
-                    &cross_operation_state,
-                    &selection,
-                    Limits::default()
-                )
-                .await,
-            Err(Error::Conflict(_))
+            cross_error,
+            Error::Conflict(message)
+                if message == "rejection journal binding has no authoritative record"
         ));
         let foreign = MemoryHarnessStorage::new(AgentId::from_bytes([250; 16]), 4_096).await?;
         let foreign_binding = foreign
@@ -2201,6 +2251,92 @@ mod tests {
                 .selected_rejection_evidence(&forged_state, &selection, Limits::default())
                 .await,
             Err(Error::Conflict(_))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn inherited_prefix_may_omit_unselected_messages_but_selected_ids_are_required() -> Result<()> {
+        let storage = MemoryHarnessStorage::new(AgentId::from_bytes([252; 16]), 4_096).await?;
+        let body = storage
+            .stage(
+                OperationId::from_bytes([253; 16]),
+                "prefix/body.json",
+                b"prefix body",
+                "application/json",
+                "body.json",
+            )
+            .await?;
+        let inherited = ConversationMessage {
+            id: Uuid::from_bytes([254; 16]),
+            sequence: 1,
+            kind: MessageKind::User,
+            content: body,
+            attachments: ReferencedAttachments::Inline { items: Vec::new() },
+            reply_to: None,
+            tool_call_id: None,
+            extensions: BTreeMap::new(),
+        };
+        let parent = Authority {
+            kind: AggregateKind::Conversation,
+            id: "prefix-parent".into(),
+        };
+        let parent_agent = AgentId::from_bytes([255; 16]);
+        let frozen = InheritedConversationPrefix {
+            parent: parent.clone(),
+            parent_revision: 7,
+            parent_agent,
+            through_sequence: 1,
+            attached_agents: Vec::new(),
+            messages: vec![inherited.clone()],
+        };
+        let prefix_file = storage
+            .stage(
+                OperationId::from_bytes([1; 16]),
+                ".system/inherited-conversation/prefix.json",
+                &frozen.canonical_bytes()?,
+                "application/vnd.acyclic.harness.inherited-conversation+json",
+                "inherited-conversation.json",
+            )
+            .await?;
+        let authenticated = crate::filesystem::execution_journal::AuthenticatedInheritedPrefix {
+            file: prefix_file,
+            parent,
+            parent_revision: 7,
+            parent_agent,
+            through_sequence: 1,
+            attached_agents: Vec::new(),
+        };
+        let historical = ConversationState::default();
+        let unselected = crate::conversation::ModelContextSelection {
+            conversation_revision: 0,
+            message_ids: Vec::new(),
+        };
+        assert!(crate::filesystem::execution_journal::selected_rejection_evidence_from_journal(
+            storage.journal.as_ref(),
+            &historical,
+            &unselected,
+            Limits::default(),
+            Some(&authenticated),
+        )
+        .await
+        .is_ok());
+        let selected = crate::conversation::ModelContextSelection {
+            conversation_revision: 1,
+            message_ids: vec![inherited.id],
+        };
+        let error = crate::filesystem::execution_journal::selected_rejection_evidence_from_journal(
+            storage.journal.as_ref(),
+            &historical,
+            &selected,
+            Limits::default(),
+            Some(&authenticated),
+        )
+        .await
+        .expect_err("selected inherited message was silently omitted");
+        assert!(matches!(
+            error,
+            Error::Conflict(message) if message == "selected rejection message is absent"
         ));
         Ok(())
     }
