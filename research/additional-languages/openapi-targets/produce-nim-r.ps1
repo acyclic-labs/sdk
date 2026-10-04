@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)] [string] $TargetId,
+    [Parameter(Mandatory = $true)] [ValidateSet('nim', 'r')] [string] $TargetId,
     [Parameter(Mandatory = $true)] [string] $SourceRoot,
     [Parameter(Mandatory = $true)] [string] $AuthorityManifest,
     [Parameter(Mandatory = $true)] [string] $OutputRoot,
@@ -16,7 +16,6 @@ function Resolve-RepoPath([string] $Path) {
     return [IO.Path]::GetFullPath((Join-Path $SourceRoot $Path))
 }
 
-if ($TargetId -notin @('bash', 'perl', 'powershell')) { throw "Unsupported HTTP target: $TargetId" }
 foreach ($required in @($AuthorityManifest, $Request)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required source-bound input is missing: $required" }
 }
@@ -32,6 +31,7 @@ $requestedRevision = [string]$requestDocument.source.revision
 if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne [string]$authority.source_revision) {
     throw "Rust source authority revision does not match producer request: expected $requestedRevision, got $($authority.source_revision)"
 }
+
 $stage = Join-Path $OutputRoot 'openapi'
 $stageReceipt = Join-Path $stage 'stage-receipt.json'
 if (-not (Test-Path -LiteralPath $stageReceipt -PathType Leaf)) { throw "Rust OpenAPI stage receipt is missing: $stageReceipt" }
@@ -55,38 +55,52 @@ New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 foreach ($family in $families) {
     $spec = Join-Path $stage "$family.json"
     $destination = Join-Path $packageRoot $family
-    $name = switch ($TargetId) {
-        'bash' { "acyclic-$family-bash" }
-        'perl' { "Acyclic-$family" }
-        'powershell' { "Acyclic$((Get-Culture).TextInfo.ToTitleCase($family))Http" }
-    }
+    $name = "acyclic_" + $family + "_" + $TargetId
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    $properties = if ($TargetId -eq 'powershell') {
-        "packageName=$name,packageVersion=1.0.0,packageGuid=00000000-0000-0000-0000-000000000001,licenseUri=https://www.apache.org/licenses/LICENSE-2.0"
-    } elseif ($TargetId -eq 'perl') {
-        'artifactVersion=0.1.0'
-    } else {
-        'artifactVersion=0.1.0'
+    # OpenAPI Generator's Nim template writes model files without creating the
+    # model directory. Pre-create it so a clean checkout is reproducible.
+    if ($TargetId -eq 'nim') {
+        New-Item -ItemType Directory -Force -Path (Join-Path $destination 'openapiclient/models') | Out-Null
     }
-    & java '-Xmx768m' '-jar' $jar 'generate' '-i' $spec '-g' $TargetId '-o' $destination '--package-name' $name "--additional-properties=$properties"
+    $properties = if ($TargetId -eq 'nim') {
+        "packageVersion=0.1.0,packageName=$name"
+    } else {
+        # R package names cannot contain underscores; use an installable dotted name.
+        "packageVersion=0.1.0,packageName=acyclic.$family.r"
+    }
+    $packageName = if ($TargetId -eq 'nim') { $name } else { "acyclic.$family.r" }
+    & java '-Xmx768m' '-jar' $jar 'generate' '-i' $spec '-g' $TargetId '-o' $destination '--package-name' $packageName "--additional-properties=$properties"
     if ($LASTEXITCODE -ne 0) { throw "OpenAPI Generator failed for $TargetId/$family" }
+    if ($TargetId -eq 'nim') {
+        $nimble = @(
+            "# Generated from Rust-owned OpenAPI projection: $family",
+            'version = "0.1.0"',
+            'author = "Acyclic contributors"',
+            'description = "Rust-derived Acyclic HTTP client"',
+            'license = "Apache-2.0"',
+            'srcDir = "."',
+            'requires "nim >= 2.0.0"'
+        ) -join [Environment]::NewLine
+        Set-Content -LiteralPath (Join-Path $destination "$name.nimble") -Value ($nimble + [Environment]::NewLine) -Encoding utf8NoBOM
+    }
 }
 
-if ($TargetId -eq 'perl') {
-    & pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1') '-GeneratedRoot' (Join-Path $packageRoot 'workers')
-    if ($LASTEXITCODE -ne 0) { throw 'Perl Rust-owned runtime adaptation failed' }
-}
-if ($TargetId -eq 'powershell') {
-    & pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/apply-powershell-byte-adaptation.ps1') '-GeneratedRoot' (Join-Path $packageRoot 'workers')
-    if ($LASTEXITCODE -ne 0) { throw 'PowerShell Rust-owned byte adaptation failed' }
-}
-
-$archive = switch ($TargetId) {
-    'bash' { Join-Path $TargetOutput 'acyclic-http-bash-0.1.0.zip' }
-    'perl' { Join-Path $TargetOutput 'acyclic-http-perl-0.1.0.zip' }
-    'powershell' { Join-Path $TargetOutput 'acyclic-http-powershell-1.0.0.zip' }
-}
 $zipWriter = Join-Path $SourceRoot 'research/additional-languages/openapi-targets/write-deterministic-zip.ps1'
+$archive = Join-Path $TargetOutput ("acyclic-http-" + $TargetId + "-0.1.0.zip")
 & pwsh '-NoProfile' '-File' $zipWriter '-Root' $packageRoot '-Archive' $archive
 if ($LASTEXITCODE -ne 0) { throw "Deterministic archive validation failed for $TargetId" }
-Write-Output "$TargetId Rust-derived five-family HTTP package staged at $TargetOutput"
+$hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+$bytes = (Get-Item -LiteralPath $archive).Length
+$report = [ordered]@{
+    schema = 'acyclic.sdk.openapi.http-producer-receipt.v1'
+    target = $TargetId
+    source_revision = [string]$authority.source_revision
+    source_sha256 = [string]$authority.source_sha256
+    generator = [ordered]@{ name = "OpenAPI Generator $TargetId"; version = '7.25.0'; jar_sha256 = $jarSha256 }
+    families = $families
+    archive = [ordered]@{ path = [IO.Path]::GetFileName($archive); sha256 = $hash; bytes = $bytes }
+    package_layout = if ($TargetId -eq 'nim') { 'Nimble metadata plus generated OpenAPI client tree' } else { 'CRAN DESCRIPTION/NAMESPACE plus generated OpenAPI client tree' }
+    runtime = [ordered]@{ status = 'pending'; reason = if ($TargetId -eq 'nim') { 'nim and nimble are required for compile/install smoke' } else { 'Rscript and R CMD are required for package/check smoke' } }
+}
+$report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $TargetOutput 'producer-receipt.json') -Encoding utf8NoBOM
+Write-Output "$TargetId Rust-derived five-family HTTP package staged at $TargetOutput ($hash)"

@@ -224,7 +224,9 @@ switch ($TargetId) {
         )
         $env:PATH = "$(Split-Path -Parent $java);$([Environment]::GetEnvironmentVariable('PATH'))"
         $toolPaths.Add($java)
-        $toolPaths.Add((Resolve-Path -LiteralPath (Join-Path $SourceRoot 'research/additional-languages/target/bash/openapi-generator-cli-7.25.0.jar')).Path)
+        $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+        $toolPaths.Add((Resolve-Path -LiteralPath $jar).Path)
         & (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/produce-http-target.ps1') -TargetId $TargetId -SourceRoot $SourceRoot -AuthorityManifest $AuthorityManifest -OutputRoot $OutputRoot -TargetOutput $TargetOutput -Request $Request
         if ($LASTEXITCODE -ne 0) { throw "OpenAPI HTTP producer failed for $TargetId with exit code $LASTEXITCODE" }
     }
@@ -232,7 +234,9 @@ switch ($TargetId) {
         $java = Resolve-PinnedTool 'java' @('C:\Program Files\Eclipse Adoptium\jdk-17.0.14.7-hotspot\bin\java.exe', (Join-Path $SourceRoot 'build/jdk-17/bin/java.exe'))
         $env:PATH = "$(Split-Path -Parent $java);$([Environment]::GetEnvironmentVariable('PATH'))"
         $toolPaths.Add($java)
-        $toolPaths.Add((Resolve-Path -LiteralPath (Join-Path $SourceRoot 'research/additional-languages/target/bash/openapi-generator-cli-7.25.0.jar')).Path)
+        $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+        $toolPaths.Add((Resolve-Path -LiteralPath $jar).Path)
         & (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/produce-ada-crystal.ps1') -TargetId $TargetId -SourceRoot $SourceRoot -AuthorityManifest $AuthorityManifest -OutputRoot $OutputRoot -TargetOutput $TargetOutput -Request $Request
         if ($LASTEXITCODE -ne 0) { throw "OpenAPI producer failed for $TargetId with exit code $LASTEXITCODE" }
     }
@@ -240,7 +244,9 @@ switch ($TargetId) {
         $java = Resolve-PinnedTool 'java' @('C:\Program Files\Eclipse Adoptium\jdk-17.0.14.7-hotspot\bin\java.exe', (Join-Path $SourceRoot 'build/jdk-17/bin/java.exe'))
         $env:PATH = "$(Split-Path -Parent $java);$([Environment]::GetEnvironmentVariable('PATH'))"
         $toolPaths.Add($java)
-        $toolPaths.Add((Resolve-Path -LiteralPath (Join-Path $SourceRoot 'research/additional-languages/target/bash/openapi-generator-cli-7.25.0.jar')).Path)
+        $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+        $toolPaths.Add((Resolve-Path -LiteralPath $jar).Path)
         & (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/produce-nim-r.ps1') -TargetId $TargetId -SourceRoot $SourceRoot -AuthorityManifest $AuthorityManifest -OutputRoot $OutputRoot -TargetOutput $TargetOutput -Request $Request
         if ($LASTEXITCODE -ne 0) { throw "OpenAPI producer failed for $TargetId with exit code $LASTEXITCODE" }
     }

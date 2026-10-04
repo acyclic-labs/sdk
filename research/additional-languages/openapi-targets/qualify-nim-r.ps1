@@ -10,17 +10,16 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($Root)) {
     $Root = (Resolve-Path (Join-Path (Join-Path $scriptDir '..') '..')).Path
 }
-$jarSha256 = '41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE'
 $families = @('actors', 'workers', 'stream', 'objects', 'inference')
 $specRoot = Join-Path $Root 'research/additional-languages/target/bash'
 $target = Join-Path $Root ("research/additional-languages/target/" + $TargetId)
 $packages = Join-Path $target 'packages'
-$jar = Join-Path $specRoot 'openapi-generator-cli-7.25.0.jar'
+$jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $scriptDir 'ensure-openapi-generator.ps1') '-SourceRoot' $Root)
 $zipWriter = Join-Path $scriptDir 'write-deterministic-zip.ps1'
 
 New-Item -ItemType Directory -Force -Path $target, $packages | Out-Null
-if (-not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw "Missing pinned OpenAPI Generator jar: $jar" }
-if ((Get-FileHash $jar -Algorithm SHA256).Hash -ne $jarSha256) { throw 'OpenAPI Generator checksum mismatch' }
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+$jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
 
 if (-not $SkipGeneration) {
     foreach ($family in $families) {

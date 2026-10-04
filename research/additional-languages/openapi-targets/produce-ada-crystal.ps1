@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)] [string] $TargetId,
+    [Parameter(Mandatory = $true)] [ValidateSet('ada', 'crystal')] [string] $TargetId,
     [Parameter(Mandatory = $true)] [string] $SourceRoot,
     [Parameter(Mandatory = $true)] [string] $AuthorityManifest,
     [Parameter(Mandatory = $true)] [string] $OutputRoot,
@@ -11,12 +11,6 @@ param(
 $ErrorActionPreference = 'Stop'
 $families = @('actors', 'workers', 'stream', 'objects', 'inference')
 
-function Resolve-RepoPath([string] $Path) {
-    if ([IO.Path]::IsPathRooted($Path)) { return [IO.Path]::GetFullPath($Path) }
-    return [IO.Path]::GetFullPath((Join-Path $SourceRoot $Path))
-}
-
-if ($TargetId -notin @('bash', 'perl', 'powershell')) { throw "Unsupported HTTP target: $TargetId" }
 foreach ($required in @($AuthorityManifest, $Request)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Required source-bound input is missing: $required" }
 }
@@ -32,6 +26,7 @@ $requestedRevision = [string]$requestDocument.source.revision
 if (-not [string]::IsNullOrWhiteSpace($requestedRevision) -and $requestedRevision -ne [string]$authority.source_revision) {
     throw "Rust source authority revision does not match producer request: expected $requestedRevision, got $($authority.source_revision)"
 }
+
 $stage = Join-Path $OutputRoot 'openapi'
 $stageReceipt = Join-Path $stage 'stage-receipt.json'
 if (-not (Test-Path -LiteralPath $stageReceipt -PathType Leaf)) { throw "Rust OpenAPI stage receipt is missing: $stageReceipt" }
@@ -39,54 +34,45 @@ $receipt = Get-Content -LiteralPath $stageReceipt -Raw | ConvertFrom-Json
 if ($receipt.schema -ne 'acyclic.sdk.openapi.stage-receipt.v1' -or $receipt.projections.Count -ne 5) {
     throw 'Rust OpenAPI stage receipt is not the expected five-family projection'
 }
-foreach ($family in $families) {
-    if (-not (Test-Path -LiteralPath (Join-Path $stage "$family.json") -PathType Leaf)) {
-        throw "Rust OpenAPI projection is missing: $family"
-    }
-}
-
 $jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/ensure-openapi-generator.ps1') '-SourceRoot' $SourceRoot)
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
 $jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
-if (-not (Get-Command java -ErrorAction SilentlyContinue)) { throw 'java is required for the pinned OpenAPI Generator jar' }
 
+function ConvertTo-Pascal([string] $Value) {
+    return $Value.Substring(0, 1).ToUpperInvariant() + $Value.Substring(1)
+}
 $packageRoot = Join-Path $TargetOutput 'generated'
 New-Item -ItemType Directory -Force -Path $packageRoot | Out-Null
 foreach ($family in $families) {
     $spec = Join-Path $stage "$family.json"
+    if (-not (Test-Path -LiteralPath $spec -PathType Leaf)) { throw "Rust OpenAPI projection is missing: $family" }
     $destination = Join-Path $packageRoot $family
-    $name = switch ($TargetId) {
-        'bash' { "acyclic-$family-bash" }
-        'perl' { "Acyclic-$family" }
-        'powershell' { "Acyclic$((Get-Culture).TextInfo.ToTitleCase($family))Http" }
-    }
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    $properties = if ($TargetId -eq 'powershell') {
-        "packageName=$name,packageVersion=1.0.0,packageGuid=00000000-0000-0000-0000-000000000001,licenseUri=https://www.apache.org/licenses/LICENSE-2.0"
-    } elseif ($TargetId -eq 'perl') {
-        'artifactVersion=0.1.0'
+    $name = "acyclic_${family}_${TargetId}"
+    $namespace = 'Acyclic' + (ConvertTo-Pascal $family)
+    $properties = if ($TargetId -eq 'ada') {
+        "projectName=$name,openApiName=$namespace,modelPackage=$namespace,apiPackage=$namespace"
     } else {
-        'artifactVersion=0.1.0'
+        "moduleName=${namespace}Http,shardName=$name,shardVersion=0.1.0,shardLicense=Apache-2.0,shardDescription=Rust-derived Acyclic HTTP client"
     }
-    & java '-Xmx768m' '-jar' $jar 'generate' '-i' $spec '-g' $TargetId '-o' $destination '--package-name' $name "--additional-properties=$properties"
+    & java '-Xmx768m' '-jar' $jar 'generate' '-i' $spec '-g' $TargetId '-o' $destination "--additional-properties=$properties"
     if ($LASTEXITCODE -ne 0) { throw "OpenAPI Generator failed for $TargetId/$family" }
 }
 
-if ($TargetId -eq 'perl') {
-    & pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1') '-GeneratedRoot' (Join-Path $packageRoot 'workers')
-    if ($LASTEXITCODE -ne 0) { throw 'Perl Rust-owned runtime adaptation failed' }
-}
-if ($TargetId -eq 'powershell') {
-    & pwsh '-NoProfile' '-File' (Join-Path $SourceRoot 'research/additional-languages/openapi-targets/apply-powershell-byte-adaptation.ps1') '-GeneratedRoot' (Join-Path $packageRoot 'workers')
-    if ($LASTEXITCODE -ne 0) { throw 'PowerShell Rust-owned byte adaptation failed' }
-}
-
-$archive = switch ($TargetId) {
-    'bash' { Join-Path $TargetOutput 'acyclic-http-bash-0.1.0.zip' }
-    'perl' { Join-Path $TargetOutput 'acyclic-http-perl-0.1.0.zip' }
-    'powershell' { Join-Path $TargetOutput 'acyclic-http-powershell-1.0.0.zip' }
-}
 $zipWriter = Join-Path $SourceRoot 'research/additional-languages/openapi-targets/write-deterministic-zip.ps1'
+$archive = Join-Path $TargetOutput ("acyclic-http-$TargetId-0.1.0.zip")
 & pwsh '-NoProfile' '-File' $zipWriter '-Root' $packageRoot '-Archive' $archive
 if ($LASTEXITCODE -ne 0) { throw "Deterministic archive validation failed for $TargetId" }
-Write-Output "$TargetId Rust-derived five-family HTTP package staged at $TargetOutput"
+$hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+$report = [ordered]@{
+    schema = 'acyclic.sdk.openapi.http-producer-receipt.v1'
+    target = $TargetId
+    source_revision = [string]$authority.source_revision
+    source_sha256 = [string]$authority.source_sha256
+    generator = [ordered]@{ name = "OpenAPI Generator $TargetId"; version = '7.25.0'; jar_sha256 = $jarSha256 }
+    families = $families
+    archive = [ordered]@{ path = [IO.Path]::GetFileName($archive); sha256 = $hash; bytes = (Get-Item -LiteralPath $archive).Length }
+    runtime = [ordered]@{ status = 'pending'; reason = if ($TargetId -eq 'ada') { 'GNAT/Alire is required for compile/install smoke' } else { 'Crystal and shards are required for compile/install smoke' } }
+}
+$report | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $TargetOutput 'producer-receipt.json') -Encoding utf8NoBOM
+Write-Output "$TargetId Rust-derived five-family HTTP package staged at $TargetOutput ($hash)"
