@@ -259,6 +259,7 @@ dependencies = [
 name = "acyclic-machines"
 version = "0.2.0"
 dependencies = [
+ "acyclic-sdk-contract-wire",
  "async-trait",
  "futures",
  "hex",
