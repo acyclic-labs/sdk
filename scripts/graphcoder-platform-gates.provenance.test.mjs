@@ -12,6 +12,7 @@ import {
   readLaneReceipt,
   validateManifest,
 } from "./graphcoder-platform-gates.mjs";
+import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 
 test("platform manifest rejects altered source identity and duplicate gate IDs", () => {
   const manifest = loadManifest();
@@ -64,7 +65,7 @@ test("installed lane receipts cannot claim completion from stale, failed, or emp
 test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-source evidence", () => {
   const root = mkdtempSync(join(tmpdir(), "graphcoder-lane-receipt-"));
   const lane = loadManifest().qualification_lanes.find(item => item.id === "installed-native-stage");
-  const source = { commit: "a".repeat(40), tree: "b".repeat(40) };
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40), canonical_worktree: process.cwd() };
   assert.throws(() => readLaneReceipt(join(root, "missing.json"), lane, "native", source, "windows"), /receipt is missing/u);
   const descriptorPath = join(root, "descriptor.json");
   const artifactPath = join(root, "artifact.bin");
@@ -76,6 +77,8 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
     platform: "windows",
     source_commit: source.commit,
     source_tree: source.tree,
+    source_clean: true,
+    source_working_tree_sha256: workingTreeDigest(process.cwd()),
     command: { executable: "node", args: [lane.driver], cwd: process.cwd(), env: [] },
   };
   writeFileSync(descriptorPath, `${JSON.stringify(baseDescriptor)}\n`);
@@ -96,12 +99,12 @@ test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-
   assert.throws(() => readLaneReceipt(stalePath, lane, "native", source, "windows"), /provenance is stale/u);
   const validPath = join(root, "valid.json");
   writeFileSync(validPath, `${JSON.stringify(makeReceipt("passed"))}\n`);
-  readLaneReceipt(validPath, lane, "native", source, "windows");
+  readLaneReceipt(validPath, lane, "native", { ...source, canonical_worktree: process.cwd() }, "windows");
   writeFileSync(artifactPath, "mutated artifact bytes");
-  assert.throws(() => readLaneReceipt(validPath, lane, "native", source, "windows"), /artifact digest does not match/u);
+  assert.throws(() => readLaneReceipt(validPath, lane, "native", { ...source, canonical_worktree: process.cwd() }, "windows"), /artifact digest does not match/u);
   writeFileSync(artifactPath, "artifact bytes");
   writeFileSync(descriptorPath, `${JSON.stringify({ ...baseDescriptor, command: { executable: "node", args: ["-e", `process.exit(0); // ${lane.driver}`], cwd: process.cwd(), env: [] } })}\n`);
-  assert.throws(() => readLaneReceipt(validPath, lane, "native", source, "windows"), /descriptor digest does not match/u);
+  assert.throws(() => readLaneReceipt(validPath, lane, "native", { ...source, canonical_worktree: process.cwd() }, "windows"), /descriptor digest does not match/u);
 });
 
 test("the qualification-suite producer emits a receipt consumed by the platform lane validator", () => {
@@ -130,7 +133,7 @@ test("the qualification-suite producer emits a receipt consumed by the platform 
   execFileSync(process.execPath, ["scripts/graphcoder-qualification-suite.mjs", "capture", configPath], { cwd: process.cwd(), encoding: "utf8" });
   const receiptPath = join(output, "platform-lane-producer-shape.record.json");
   const lane = { ...loadManifest().qualification_lanes.find(item => item.id === "installed-transport-faults"), driver: "-e" };
-  const receipt = readLaneReceipt(receiptPath, lane, "package", { commit: sourceCommit, tree: sourceTree }, "windows");
+  const receipt = readLaneReceipt(receiptPath, lane, "package", { commit: sourceCommit, tree: sourceTree, canonical_worktree: process.cwd() }, "windows");
   assert.equal(receipt.suite_id, "platform-lane-producer-shape");
 });
 

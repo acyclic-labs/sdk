@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { workingTreeDigest } from "./graphcoder-source-fence.mjs";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const HEX40 = /^[0-9a-f]{40}$/;
@@ -124,7 +125,7 @@ function loadConfig(path) {
   };
 }
 
-export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, artifactDigests }) {
+export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, sourceWorkingTreeSha256, artifactDigests }) {
   return {
     protocol: "acyclic.graphcoder.suite-descriptor.v1",
     id: config.id,
@@ -134,6 +135,8 @@ export function makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, ar
     // source drivers without a native binary artifact.
     source_commit: qualifiedCommit,
     source_tree: qualifiedTree,
+    source_clean: true,
+    source_working_tree_sha256: sourceWorkingTreeSha256,
     platform: config.platform,
     execution_kind: config.execution_kind,
     command: {
@@ -159,6 +162,7 @@ function capture(configPath) {
   if (sourceWorktreeChanges(config.command.cwd, ignoredUntrackedPaths) !== "") fail("qualified source worktree has uncommitted changes");
   const qualifiedCommit = git(config.command.cwd, "rev-parse", "HEAD");
   const qualifiedTree = git(config.command.cwd, "rev-parse", "HEAD^{tree}");
+  const sourceWorkingTreeSha256 = workingTreeDigest(config.command.cwd);
   const startedAt = iso(config.started_at, "started_at");
   const before = new Map(config.artifacts.map(item => [item.path, hash(readFileSync(item.path))]));
   for (const item of config.artifacts) {
@@ -186,7 +190,7 @@ function capture(configPath) {
   const descriptorPath = resolve(output, `${config.id}.descriptor.json`);
   const transcriptPath = resolve(output, `${config.id}.transcript.log`);
   const recordPath = resolve(output, `${config.id}.record.json`);
-  const descriptor = makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, artifactDigests: before });
+  const descriptor = makeSuiteDescriptor({ config, qualifiedCommit, qualifiedTree, sourceWorkingTreeSha256, artifactDigests: before });
   writeFileSync(descriptorPath, `${JSON.stringify(descriptor, null, 2)}\n`, { flag: "wx" });
   writeFileSync(transcriptPath, transcript, { flag: "wx" });
   let artifactError;
