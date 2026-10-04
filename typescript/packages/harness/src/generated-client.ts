@@ -35,7 +35,7 @@ export const HARNESS_OPERATIONS = {
   "acyclic.harness.v2.HarnessService/Cancel": { rpc: "acyclic.harness.v2.HarnessService/Cancel", capabilities: ["operation:cancel"], errors: ["ERROR_CODE_UNSPECIFIED", "ERROR_CODE_NOT_FOUND", "ERROR_CODE_CONFLICT", "ERROR_CODE_UNSUPPORTED", "ERROR_CODE_INVALID", "ERROR_CODE_UNAUTHORIZED", "ERROR_CODE_STORAGE", "ERROR_CODE_INDETERMINATE", "ERROR_CODE_INTERACTION_DECLINED", "ERROR_CODE_INTERACTION_CANCELLED", "ERROR_CODE_INTERACTION_EXPIRED", "ERROR_CODE_INTERACTION_DENIED"], validations: ["protocol.identity.exact", "owner.required", "operation_id.nonempty", "idempotency_key.nonempty", "scope.required", "scope.capability.operation_cancel", "status.identity.matches"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "b928bbacbfdea9be8a276aed5dc35398e115aaae213f83740cba864e47ce623e", sourceModelSha256: "b928bbacbfdea9be8a276aed5dc35398e115aaae213f83740cba864e47ce623e", modeledOperations: 5, httpProjection: false } as const;
+export const HARNESS_SOURCE = { family: "harness", rustCrate: "acyclic-harness", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::harness::harness_descriptor", descriptorSha256: "f95cabd9b3c1c9a573542e07f7ecf5f03571510ebad6611edba6a610bfdd766e", sourceContentSha256: "4ef299a7013d80bef4c988ddf4a1b2997cf22e6dcde768c97dc4d02136ee2f26", sourceModelSha256: "4ef299a7013d80bef4c988ddf4a1b2997cf22e6dcde768c97dc4d02136ee2f26", modeledOperations: 5, httpProjection: false } as const;
 
 export const HARNESS_METHODS = {
 
@@ -88,11 +88,9 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
   return path;
 }
 
-export const RUST_OWNED_CREDENTIAL_POLICY = "bearer-no-crlf" as const;
+export const RUST_OWNED_CREDENTIAL_POLICY = "none" as const;
 
-export function validateRustOwnedCredentialPolicy(token: string): void {
-  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
-}
+export function validateRustOwnedCredentialPolicy(_token: string): void {}
 
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
   if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) validateRustOwnedCredentialPolicy(token);

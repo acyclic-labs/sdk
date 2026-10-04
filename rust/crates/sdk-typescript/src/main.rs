@@ -935,7 +935,7 @@ fn typescript_with_paths(
             .collect::<Vec<_>>()
             .join(", ");
         output.push_str(&format!(
-            "export interface RustOwnedTransportOption {{ readonly kind: \"grpc\" | \"grpc-web\" | \"http\"; readonly streaming: boolean; readonly bearerAuth: boolean; }}\nexport interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly requestTimeoutMillis: number; readonly behaviorBinding: {:?}; readonly transport: {{ readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }}; }}\n\n",
+            "export type RustOwnedTransportKind = \"grpc\" | \"grpc-web\" | \"http\";\nexport type RustOwnedRuntime = \"native\" | \"browser\";\nexport interface RustOwnedTransportOption {{ readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }}\nexport interface RustOwnedRemotePolicy {{ readonly protocol: {:?}; readonly auth: {:?}; readonly credentialPolicy: {:?}; readonly requestEncoding: {:?}; readonly responseEncoding: {:?}; readonly responseLimitPolicy: {:?}; readonly requestTimeoutMillis: number; readonly behaviorBinding: {:?}; readonly transport: {{ readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }}; }}\nexport type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;\n\n",
             policy.protocol,
             policy.auth,
             policy.credential_policy,
@@ -945,7 +945,7 @@ fn typescript_with_paths(
             policy.behavior_binding,
         ));
         output.push_str(&format!(
-            "export const {}_REMOTE_POLICY: RustOwnedRemotePolicy = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, requestTimeoutMillis: {}, behaviorBinding: {:?}, transport: {{ native: [{}], browser: [{}] }} }};\n",
+            "export const {}_REMOTE_POLICY = {{ protocol: {:?}, auth: {:?}, credentialPolicy: {:?}, requestEncoding: {:?}, responseEncoding: {:?}, responseLimitPolicy: {:?}, requestTimeoutMillis: {}, behaviorBinding: {:?}, transport: {{ native: [{}], browser: [{}] }} }} as const satisfies RustOwnedRemotePolicy;\n",
             service.family.to_ascii_uppercase(),
             policy.protocol,
             policy.auth,
@@ -958,6 +958,7 @@ fn typescript_with_paths(
             native,
             browser,
         ));
+        output.push_str("\n/** Selects the first Rust-qualified transport that is installed for this runtime. */\nexport function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {\n  const options = policy.transport[runtime];\n  if (requested !== undefined) {\n    const option = options.find(candidate => candidate.kind === requested);\n    if (option === undefined || availability[requested] === false) throw new TypeError(`transport ${requested} is unavailable in the ${runtime} runtime`);\n    return option.kind;\n  }\n  const option = options.find(candidate => availability[candidate.kind] !== false);\n  if (option === undefined) throw new TypeError(`no installed transport is available in the ${runtime} runtime`);\n  return option.kind;\n}\n\n/** Identifies a missing optional adapter without swallowing endpoint or credential errors. */\nexport function isRustOwnedTransportUnavailable(error: unknown): boolean {\n  if (error === null || typeof error !== \"object\") return false;\n  const candidate = error as { readonly code?: unknown; readonly message?: unknown };\n  if (candidate.code === \"ERR_MODULE_NOT_FOUND\" || candidate.code === \"MODULE_NOT_FOUND\") return true;\n  return typeof candidate.message === \"string\" && (/Cannot find (?:module|package)/i.test(candidate.message) || /has no native companion/i.test(candidate.message));\n}\n\n");
     }
     output.push_str("export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }\n\n");
     let operations = service

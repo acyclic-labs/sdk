@@ -45,7 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_REMOTE_POLICY, validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { INFERENCE_REMOTE_POLICY, selectRustOwnedTransport, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import {
   EvaluationsService,
   file_inference_v1_inference,
@@ -455,7 +455,7 @@ export class InferenceTransportError extends Error {
 }
 
 /** The transport kinds exposed by the Rust-qualified Inference policy. */
-export type InferenceTransportKind = "grpc" | "http";
+export type InferenceTransportKind = typeof INFERENCE_REMOTE_POLICY.transport.native[number]["kind"];
 
 /** Endpoint and credential settings for the generated remote facade. */
 export interface InferenceEnvironment {
@@ -474,14 +474,8 @@ export interface InferenceEnvironment {
  */
 export function fromEnv(environment: InferenceEnvironment): InferenceClient {
   const runtime = isNativeRuntime() ? "native" : "browser";
-  const options = INFERENCE_REMOTE_POLICY.transport[runtime];
-  const selected = environment.transport === undefined
-    ? options[0]
-    : options.find(option => option.kind === environment.transport);
-  if (selected === undefined) {
-    throw new TypeError(`Inference transport ${environment.transport ?? "default"} is unavailable in the ${runtime} runtime`);
-  }
-  if (selected.kind !== "http") {
+  const selected = selectRustOwnedTransport(INFERENCE_REMOTE_POLICY, runtime, environment.transport);
+  if (selected !== "http") {
     throw new TypeError("Inference gRPC transport is unavailable in the installed TypeScript facade");
   }
   return new InferenceClient(new HttpInferenceTransport(

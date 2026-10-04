@@ -24,10 +24,35 @@ export interface RustOwnedMethodMetadata {
   readonly responseFields: readonly RustOwnedFieldMetadata[];
 }
 
-export interface RustOwnedTransportOption { readonly kind: "grpc" | "grpc-web" | "http"; readonly streaming: boolean; readonly bearerAuth: boolean; }
-export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
+export type RustOwnedTransportKind = "grpc" | "grpc-web" | "http";
+export type RustOwnedRuntime = "native" | "browser";
+export interface RustOwnedTransportOption { readonly kind: RustOwnedTransportKind; readonly streaming: boolean; readonly bearerAuth: boolean; }
+export interface RustOwnedRemotePolicy { readonly protocol: "https"; readonly auth: "mtls"; readonly credentialPolicy: "mtls-files"; readonly requestEncoding: "protobuf"; readonly responseEncoding: "protobuf"; readonly responseLimitPolicy: "bounded-cumulative-protobuf"; readonly requestTimeoutMillis: number; readonly behaviorBinding: "rust-native-grpc"; readonly transport: { readonly native: readonly RustOwnedTransportOption[]; readonly browser: readonly RustOwnedTransportOption[]; }; }
+export type RustOwnedTransportAvailability = Partial<Record<RustOwnedTransportKind, boolean>>;
 
-export const MACHINES_REMOTE_POLICY: RustOwnedRemotePolicy = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: false }], browser: [] } };
+export const MACHINES_REMOTE_POLICY = { protocol: "https", auth: "mtls", credentialPolicy: "mtls-files", requestEncoding: "protobuf", responseEncoding: "protobuf", responseLimitPolicy: "bounded-cumulative-protobuf", requestTimeoutMillis: 30000, behaviorBinding: "rust-native-grpc", transport: { native: [{ kind: "grpc", streaming: true, bearerAuth: false }], browser: [] } } as const satisfies RustOwnedRemotePolicy;
+
+/** Selects the first Rust-qualified transport that is installed for this runtime. */
+export function selectRustOwnedTransport(policy: RustOwnedRemotePolicy, runtime: RustOwnedRuntime, requested?: RustOwnedTransportKind, availability: RustOwnedTransportAvailability = {}): RustOwnedTransportKind {
+  const options = policy.transport[runtime];
+  if (requested !== undefined) {
+    const option = options.find(candidate => candidate.kind === requested);
+    if (option === undefined || availability[requested] === false) throw new TypeError(`transport ${requested} is unavailable in the ${runtime} runtime`);
+    return option.kind;
+  }
+  const option = options.find(candidate => availability[candidate.kind] !== false);
+  if (option === undefined) throw new TypeError(`no installed transport is available in the ${runtime} runtime`);
+  return option.kind;
+}
+
+/** Identifies a missing optional adapter without swallowing endpoint or credential errors. */
+export function isRustOwnedTransportUnavailable(error: unknown): boolean {
+  if (error === null || typeof error !== "object") return false;
+  const candidate = error as { readonly code?: unknown; readonly message?: unknown };
+  if (candidate.code === "ERR_MODULE_NOT_FOUND" || candidate.code === "MODULE_NOT_FOUND") return true;
+  return typeof candidate.message === "string" && (/Cannot find (?:module|package)/i.test(candidate.message) || /has no native companion/i.test(candidate.message));
+}
+
 export interface RustOwnedOperationMetadata { readonly rpc: string; readonly capabilities: readonly string[]; readonly errors: readonly string[]; readonly validations: readonly string[]; }
 
 export const MACHINES_OPERATIONS = {
@@ -52,7 +77,7 @@ export const MACHINES_OPERATIONS = {
   "acyclic.machines.v1.MachinesService/WatchOperation": { rpc: "acyclic.machines.v1.MachinesService/WatchOperation", capabilities: ["machines.operations"], errors: ["invalid", "not_found", "conflict", "unsupported", "rejected", "unavailable", "operation_indeterminate", "operation_observation_indeterminate", "operation_failed", "operation_cancelled"], validations: ["operation_id.nonzero", "cursor.monotonic", "terminal.required"] }
 } as const satisfies Record<string, RustOwnedOperationMetadata>;
 
-export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "49b150a8cb40e95e101b9908d4512fb63491d3790e4d381550ceee98ac0adbb5", sourceModelSha256: "49b150a8cb40e95e101b9908d4512fb63491d3790e4d381550ceee98ac0adbb5", modeledOperations: 19, httpProjection: false } as const;
+export const MACHINES_SOURCE = { family: "machines", rustCrate: "acyclic-machines", sourceKind: "rust-model", sourceArtifact: "acyclic_sdk_contract_wire::machines::machines_descriptor", descriptorSha256: "05568ddfab813af2a455a059766789f7a1c9f6e85c5d9287aa5d23e2e40f1dd7", sourceContentSha256: "472f5e3768cc30d0c12d5644d2c243abb2ad7ae2bb8b0d7fa2de8eb6292e50ad", sourceModelSha256: "472f5e3768cc30d0c12d5644d2c243abb2ad7ae2bb8b0d7fa2de8eb6292e50ad", modeledOperations: 19, httpProjection: false } as const;
 
 export const MACHINES_METHODS = {
 
@@ -165,9 +190,7 @@ export function interpolateRustOwnedPath(method: RustOwnedMethodMetadata, reques
 
 export const RUST_OWNED_CREDENTIAL_POLICY = "mtls-files" as const;
 
-export function validateRustOwnedCredentialPolicy(token: string): void {
-  if ((RUST_OWNED_CREDENTIAL_POLICY as string) === "bearer-no-crlf" && (!token.trim() || /[\r\n]/.test(token))) throw new TypeError("invalid bearer credential");
-}
+export function validateRustOwnedCredentialPolicy(_token: string): void {}
 
 export function validateRustOwnedCredential(method: RustOwnedMethodMetadata, token: string): void {
   if ((method.credentialPolicy as string) === (RUST_OWNED_CREDENTIAL_POLICY as string)) validateRustOwnedCredentialPolicy(token);

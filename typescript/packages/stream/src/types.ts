@@ -127,7 +127,9 @@ export interface StreamProvider {
   createToken?(request: CreateTokenRequest, signal?: AbortSignal): Promise<AccessToken>;
 }
 
-export type StreamTransport = "grpc" | "http";
+import type { STREAM_REMOTE_POLICY } from "./generated-client.js";
+
+export type StreamTransport = typeof STREAM_REMOTE_POLICY.transport.native[number]["kind"];
 export interface StreamEnvironment {
   readonly endpoint: string;
   readonly token: string;
