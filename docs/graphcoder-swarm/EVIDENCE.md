@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Local composition and uncertainty claim](checkpoint-local-composition-claim-2026-10-04.json) records the initial 6/7 failing real-storage run and subsequent 7/7 pass at `f2a02e1dc`, preserving the failing executable/log and exact source/artifact digests. Full recovery and swarm qualification remain separate.
+
 [Integrated uncertain-replay fence](checkpoint-integrated-uncertain-replay-fence-2026-10-04.json) records 19 passing host-execution tests, including malicious receipt provider substitution rejection and actual native Windows subprocess behavior. This is scoped to source `177d127c4`; broader cleanup/recovery and final qualification remain open.
 
 [Current production fork admission](checkpoint-current-fork-admission-2026-10-04.json) records failed attempts at `bc6b5baf5` and `7ea55504f`: real recursive model swarm 0/1 and local recovery faults 1/5 on each. Executables and logs are preserved before subsequent rebuilds. No production recursive swarm qualification is claimed.

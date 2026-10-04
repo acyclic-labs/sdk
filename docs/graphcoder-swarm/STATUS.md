@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Shared durable-local composition and terminal uncertainty claim ordering now pass 7/7 existing real-storage regressions at `f2a02e1dc`. The earlier 6/7 failure is preserved in [local composition/claim evidence](checkpoint-local-composition-claim-2026-10-04.json). Historical pending records no longer mask a verified terminal Unknown outcome; no-rerun fences remain enforced. This does not qualify the full effect or recursive swarm matrix.
+
 Integrated immutable execution-fence repair passes 19/19 existing host execution tests on Rust tree `e3d9a3c39ca21684b5e9e29b38c96fdae94c63ef`, including substituted Unknown-receipt rejection and actual Windows subprocess checks. [Scoped evidence](checkpoint-integrated-uncertain-replay-fence-2026-10-04.json) excludes held cleanup/reaper changes, local-provider recovery and the full fault matrix.
 
 Latest production swarm qualification at `c6ab87bbb` still fails: recursive model swarm 0/1, local recovery faults 1/5. Precise diagnostics identify the admission failure as `inherited conversation differs from authoritative parent history`; direct-parent declaration selection and guarded model-reference attachment did not clear it. All attempts and source-scoped artifacts are recorded in [current fork admission evidence](checkpoint-current-fork-admission-2026-10-04.json). Immutable boundary versus publication revision binding is under repair; no required gate has been waived.
