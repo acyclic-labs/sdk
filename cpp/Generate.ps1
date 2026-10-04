@@ -7,7 +7,9 @@ param(
     [string]$GrpcCppPlugin,
 
     [string]$ProtoRoot = (Join-Path $PSScriptRoot "..\proto"),
-    [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\build\sdk-cpp\generated")
+    [string]$OutputDirectory = (Join-Path $PSScriptRoot "..\build\sdk-cpp\generated"),
+
+    [string]$AuthorityManifest = ""
 )
 
 Set-StrictMode -Version Latest
@@ -64,12 +66,18 @@ if ($LASTEXITCODE -ne 0) {
     throw "Pinned C++ generation failed with exit code $LASTEXITCODE"
 }
 
+if ($AuthorityManifest) {
+    Require-File $AuthorityManifest "Rust authority manifest"
+    Copy-Item -LiteralPath $AuthorityManifest -Destination (Join-Path $OutputDirectory "rust-authority.json") -Force
+}
+
 $sourceRows = foreach ($proto in $protoFiles) {
     $relative = $proto.FullName.Substring($include.Length).TrimStart('\', '/') -replace '\\', '/'
     $hash = (Get-FileHash -LiteralPath $proto.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     [ordered]@{ path = $relative; sha256 = $hash }
 }
-$sourceDigestText = ($sourceRows | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "`n"
+$sourceDigestText = ($sourceRows | ForEach-Object { "$($_.path) $($_.sha256)" }) -join "
+"
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 try {
     $sourceDigestBytes = $sha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($sourceDigestText))
@@ -98,6 +106,9 @@ $receipt | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Output
 Write-Host "Generated $($protoFiles.Count) protobuf source files under $OutputDirectory"
 Write-Host "Source-bound generation receipt: $(Join-Path $OutputDirectory 'generation-receipt.json')"
 Write-Host "Status: transport bindings only; run the CMake and conformance gates before packaging."
+
+
+
 
 
 

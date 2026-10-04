@@ -9,6 +9,10 @@ use acyclic_fs::wire::filesystem::v2 as fs_wire;
 use acyclic_harness::{grpc::HarnessGrpcService, wire as harness_wire, wire_api::HarnessWireApi};
 use acyclic_objects::wire as objects_wire;
 use acyclic_sdk_examples::transport_fixtures;
+use acyclic_sdk_examples::tls_fixture::{
+    AllRoutesMachinesFixture, InferenceMetadataFixture, InferenceRunsFixture,
+    new_method_transcript_log,
+};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider, wire as stream_wire,
@@ -776,6 +780,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             )
             .max_decoding_message_size(MAX_BODY_BYTES)
             .max_encoding_message_size(MAX_BODY_BYTES),
+            interceptor.clone(),
+        );
+        let transcript = new_method_transcript_log();
+        let machines = tonic::service::interceptor::InterceptedService::new(
+            acyclic_machines::wire::machines_service_server::MachinesServiceServer::new(
+                AllRoutesMachinesFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let models = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::models_service_server::ModelsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let contexts = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::contexts_service_server::ContextsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let warm_contexts = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::warm_contexts_service_server::WarmContextsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let evaluations = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::evaluations_service_server::EvaluationsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let runs = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::runs_service_server::RunsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript),
+            ),
             interceptor,
         );
         Server::builder()
@@ -787,6 +828,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .add_service(harness)
             .add_service(filesystem)
             .add_service(streams)
+            .add_service(machines)
+            .add_service(models)
+            .add_service(contexts)
+            .add_service(warm_contexts)
+            .add_service(evaluations)
+            .add_service(runs)
             .serve_with_incoming_shutdown(TcpListenerStream::new(grpc_listener), async move {
                 grpc_shutdown.notified().await;
             })
