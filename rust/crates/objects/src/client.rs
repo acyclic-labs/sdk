@@ -144,7 +144,8 @@ async fn connect_with_trust(
     })
 }
 
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 impl ObjectsProvider for Client {
     async fn create_bucket(
         &self,
@@ -178,9 +179,13 @@ impl ObjectsProvider for Client {
         header: wire::PutObjectHeader,
         body: bytes::Bytes,
     ) -> Result<wire::ObjectInfo, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let body = futures::stream::once(async move { Ok(body) }).boxed();
+        #[cfg(target_arch = "wasm32")]
+        let body = futures::stream::once(async move { Ok(body) }).boxed_local();
         self.put_stream(
             header,
-            futures::stream::once(async move { Ok(body) }).boxed(),
+            body,
         )
         .await
     }
@@ -239,9 +244,13 @@ impl ObjectsProvider for Client {
         header: wire::UploadPartHeader,
         body: bytes::Bytes,
     ) -> Result<wire::UploadedPart, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let body = futures::stream::once(async move { Ok(body) }).boxed();
+        #[cfg(target_arch = "wasm32")]
+        let body = futures::stream::once(async move { Ok(body) }).boxed_local();
         self.upload_part_stream(
             header,
-            futures::stream::once(async move { Ok(body) }).boxed(),
+            body,
         )
         .await
     }

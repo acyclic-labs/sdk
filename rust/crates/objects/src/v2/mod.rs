@@ -133,10 +133,18 @@ pub struct Download {
     /// Metadata for the complete selected representation.
     pub header: wire::GetObjectHeader,
     /// Decoded body chunks; a truncated body or terminal service error is an error item.
+    #[cfg(not(target_arch = "wasm32"))]
     pub body: futures::stream::BoxStream<'static, Result<bytes::Bytes, Error>>,
+    /// Decoded body chunks; a truncated body or terminal service error is an error item.
+    #[cfg(target_arch = "wasm32")]
+    pub body: futures::stream::LocalBoxStream<'static, Result<bytes::Bytes, Error>>,
 }
 /// Caller-owned upload chunks. A source failure aborts publication, preserving its category.
+#[cfg(not(target_arch = "wasm32"))]
 pub type UploadBody = futures::stream::BoxStream<'static, Result<bytes::Bytes, Error>>;
+/// Caller-owned upload chunks. A source failure aborts publication, preserving its category.
+#[cfg(target_arch = "wasm32")]
+pub type UploadBody = futures::stream::LocalBoxStream<'static, Result<bytes::Bytes, Error>>;
 impl Download {
     /// Collects chunks within an explicit allocation bound, preserving terminal failures.
     pub async fn collect(self, maximum_bytes: u64) -> Result<Object, Error> {
@@ -161,7 +169,8 @@ impl Download {
 }
 
 /// Transport-independent logical Objects interface.
-#[async_trait::async_trait]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 pub trait ObjectsProvider: Send + Sync {
     /// Creates a tenant-scoped logical bucket.
     async fn create_bucket(
