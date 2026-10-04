@@ -6,7 +6,7 @@
   "requirements": [
     {
       "id": "isolation",
-      "evidence": "Original checkout HEAD 31b9ff52d63c91f2b9bf87e16b78ad682d26546f and no tracked changes; isolated SDK and website branches inspected. No merge/publish/deploy performed.",
+      "evidence": "Original checkout reverified at31b9ff52d63c91f2b9bf87e16b78ad682d26546f with no tracked edits. Three embedded artifact commits accidentally landed on main; all were preserved under codex/embedded-artifact-recovery-a3d0ebede and mixed reset restored main while retaining artifact bytes. Isolated SDK and website branches remain required; no merge/publish/deploy performed.",
       "state": "verified"
     },
     {
@@ -21,7 +21,7 @@
     },
     {
       "id": "clean-generation",
-      "evidence": "Root inspected failed frozen64484b output: product/wire/rustdoc reject unresolved Cargo.lock under --locked; Python lacks wire outputs. Examples declares Rust .tgz package containing PE executable prefix4D5A900003000000, SHA8c3bf97dc0ff96496ff32707613736384f25728e1d835772369ffedfa21532b4, same bytes as compile artifact. No qualification manifest emitted; coherent lock/package repair and actual successful reproducibility remain required. Repairs347bfef6b/4936736bf now parse pinned OSS tar/gzip and reject executable/generic consumer archives;33 generator tests pass. Current committed tree has sdk-typescript baseline8131e594d, but sdk-examples and sdk-python essential manifests/source remain missing. No fresh full success exists.",
+      "evidence": "The retained frozen64484b generation remains failed. Required sdk-examples, sdk-python and sdk-typescript baselines are now tracked; root lock290873ab2 matches tracked manifests. Independent detached source snapshot0ef84f162 has exact own Git identity and clean status. Source archive ancestor-identity bug is rejected by docs b8b8e888a. Current full successful deterministic generation remains absent: examples archive consumption and compiler fixes, strict docs graphs and executable per-language recipes are outstanding.",
       "state": "failed"
     },
     {
@@ -31,12 +31,12 @@
     },
     {
       "id": "language-packages",
-      "evidence": "Multiple local installed-package receipts exist. Complete inventoried language, family and supported-platform qualification remains required; narrow fixtures cannot qualify full targets.",
+      "evidence": "Fresh Python wheel import/RECORD checks and actual Python/Go Inference and Machines mTLS checks pass in owner receipts. Java Machines mTLS passes. Windows .NET ECDSA client credential acquisition and PHP native extension shutdown remain failed; corrected RSA fixture and supported runtime lanes are assigned. Current public Rust inventory runs successfully but reports pending qualification for catalogued targets; concrete staged producer adapters and complete family/platform/snippet coverage remain required.",
       "state": "partial"
     },
     {
       "id": "embedded-and-platform-defaults",
-      "evidence": "Actual installed Windows x64 Stream addon runtime fixture f7518d29d passes TLS CA, rotation, append/idempotency, reads and follow cancellation; binary SHA7275E037DBCFE9C5E8BE83B011D490E14AA79C95951F3589AF2286ACFD62B15B. Machines direct addon tested, TypeScript fromEnv still pending. Harness installed archive and scoped real browser smoke reported; complete cross-platform native and FS/Harness browser behavior qualification remains outstanding.",
+      "evidence": "Scoped installed Windows FS native/WASM and Harness Node/Bun packages pass against frozen27a2ff30c source archive with independent Git tree audit. Installed Machines TypeScript fromEnv packed fixture passes inspect/events/usage/cancellation/recovery;19 modeled identities are not all actual runtime RPCs. Linux/Darwin native prebuilds and complete browser/platform qualification remain outstanding.",
       "state": "partial"
     },
     {
@@ -46,7 +46,7 @@
     },
     {
       "id": "docs-source-coverage",
-      "evidence": "Docs9e400b8b3 retains actual generated OUT_DIR bytes with valid source spans and emits readable signatureText plus raw compiler AST.24 library tests and historical Actors/Stream strict Node validator pass. Current full49 graph output and website ingestion remain required.",
+      "evidence": "Docs strict consumer rejects missing generated-source diagnostics; retained historical Stream sample fails, so prior profile flags cannot qualify it. Source-fallback audit inventories19 crates,4930 symbols,4468 documented symbols,53 guides and23 examples. This is not compiler graph qualification. Exact-root provenance guard has28 passing producer tests. Fresh full graph output and website ingestion remain outstanding.",
       "state": "partial"
     },
     {
@@ -61,7 +61,7 @@
     },
     {
       "id": "typescript-removal",
-      "evidence": "Generated facades and thin adapters replacing shared code. Current source contains remaining shared TypeScript changes and migration backlog; complete removal audit pending.",
+      "evidence": "Public generate:sdk/check:sdk/drift:sdk/inventory:sdk/qualify:sdk now delegate directly to Rust through a thin Node process launcher; actual inventory passes and missing-manifest drift fails. Legacy generation wrappers and duplicated adapters remain until replacements qualify. Rust Objects limit exports exist but TypeScript adapter consumption/removal is still assigned; complete shared TypeScript removal remains outstanding.",
       "state": "partial"
     },
     {
