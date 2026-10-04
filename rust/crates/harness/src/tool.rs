@@ -5,6 +5,7 @@ use crate::{
     core::{AuthorityVerifier, Scope},
     registry::validate_component_label,
 };
+use crate::conversation::FileRef;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -172,6 +173,7 @@ impl ToolDefinition {
             jsonschema::validator_for(schema)
                 .map_err(|error| Error::Invalid(format!("invalid tool schema: {error}")))?;
         }
+        validate_model_output_reference_schema(&self.model_output_schema, 0)?;
         Ok(())
     }
 
@@ -180,6 +182,222 @@ impl ToolDefinition {
         self.validate()?;
         crate::contract::canonical_json_digest(self)
     }
+
+    /// Extracts immutable content references declared by the model-output
+    /// schema. Tool output is model-visible JSON, so references must be
+    /// declared by the pinned schema rather than discovered by scanning
+    /// arbitrary objects.
+    pub(crate) fn model_output_file_refs(&self, value: &Value) -> Result<Vec<FileRef>> {
+        self.validate()?;
+        let validator = jsonschema::validator_for(&self.model_output_schema)
+            .map_err(|error| Error::Invalid(format!("invalid model output schema: {error}")))?;
+        if let Err(error) = validator.validate(value) {
+            return Err(Error::Invalid(format!("tool projection does not match schema: {error}")));
+        }
+        let mut refs = Vec::new();
+        collect_declared_file_refs(&self.model_output_schema, value, &mut refs, 0)?;
+        Ok(refs)
+    }
+}
+
+const MAX_DECLARED_FILE_REF_DEPTH: usize = 32;
+const MAX_DECLARED_FILE_REFS: usize = 256;
+const MAX_REFERENCE_SCHEMA_DEPTH: usize = 32;
+
+const UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS: &[&str] = &[
+    "$ref",
+    "$dynamicRef",
+    "allOf",
+    "anyOf",
+    "oneOf",
+    "not",
+    "if",
+    "then",
+    "else",
+    "dependentSchemas",
+    "dependentRequired",
+    "patternProperties",
+    "prefixItems",
+    "contains",
+    "propertyNames",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "$defs",
+    "definitions",
+];
+
+fn schema_contains_file_ref_annotation(schema: &Value, depth: usize) -> Result<bool> {
+    if depth > MAX_REFERENCE_SCHEMA_DEPTH {
+        return Err(Error::Invalid(
+            "model-output reference schema exceeds depth limit".into(),
+        ));
+    }
+    match schema {
+        Value::Object(object) => {
+            if object
+                .get("x-acyclic-file-ref")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                return Ok(true);
+            }
+            let mut children = Vec::new();
+            for key in [
+                "items",
+                "additionalProperties",
+                "contains",
+                "propertyNames",
+                "unevaluatedProperties",
+                "unevaluatedItems",
+                "not",
+                "if",
+                "then",
+                "else",
+            ] {
+                if let Some(value) = object.get(key) {
+                    children.push(value);
+                }
+            }
+            for key in [
+                "properties",
+                "patternProperties",
+                "$defs",
+                "definitions",
+                "dependentSchemas",
+            ] {
+                if let Some(values) = object.get(key).and_then(Value::as_object) {
+                    children.extend(values.values());
+                }
+            }
+            for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+                if let Some(values) = object.get(key).and_then(Value::as_array) {
+                    children.extend(values);
+                }
+            }
+            children.into_iter().try_fold(false, |found, value| {
+                Ok(found || schema_contains_file_ref_annotation(value, depth + 1)?)
+            })
+        }
+        Value::Array(values) => values.iter().try_fold(false, |found, value| {
+            Ok(found || schema_contains_file_ref_annotation(value, depth + 1)?)
+        }),
+        _ => Ok(false),
+    }
+}
+
+fn validate_model_output_reference_schema(schema: &Value, depth: usize) -> Result<()> {
+    if depth > MAX_REFERENCE_SCHEMA_DEPTH {
+        return Err(Error::Invalid(
+            "model-output reference schema exceeds depth limit".into(),
+        ));
+    }
+    let Some(object) = schema.as_object() else {
+        return Ok(());
+    };
+    if let Some(annotation) = object.get("x-acyclic-file-ref")
+        && annotation != &Value::Bool(true)
+    {
+        return Err(Error::Invalid(
+            "x-acyclic-file-ref must be true when present".into(),
+        ));
+    }
+    let local_annotation = object
+        .get("x-acyclic-file-ref")
+        .and_then(Value::as_bool)
+        == Some(true);
+    for keyword in UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS {
+        let Some(value) = object.get(*keyword) else { continue; };
+        let contains_annotation = if matches!(
+            *keyword,
+            "patternProperties" | "$defs" | "definitions" | "dependentSchemas"
+        ) {
+            value
+                .as_object()
+                .map(|values| {
+                    values.values().try_fold(false, |found, child| {
+                        Ok::<bool, Error>(found
+                            || schema_contains_file_ref_annotation(child, depth + 1)?)
+                    })
+                })
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            schema_contains_file_ref_annotation(value, depth + 1)?
+        };
+        if local_annotation || contains_annotation {
+            return Err(Error::Invalid(format!(
+                "unsupported model-output reference schema keyword {keyword}"
+            )));
+        }
+    }
+    if let Some(additional) = object.get("additionalProperties")
+        && additional.is_object()
+        && schema_contains_file_ref_annotation(additional, depth + 1)?
+    {
+        return Err(Error::Invalid(
+            "dynamic model-output properties cannot carry file references".into(),
+        ));
+    }
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        for child in properties.values() {
+            validate_model_output_reference_schema(child, depth + 1)?;
+        }
+    }
+    if let Some(items) = object.get("items") {
+        if items.is_object() {
+            validate_model_output_reference_schema(items, depth + 1)?;
+        } else if items.is_array() && schema_contains_file_ref_annotation(items, depth + 1)? {
+            return Err(Error::Invalid(
+                "tuple item schemas cannot carry file references".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_declared_file_refs(
+    schema: &Value,
+    value: &Value,
+    refs: &mut Vec<FileRef>,
+    depth: usize,
+) -> Result<()> {
+    if depth > MAX_DECLARED_FILE_REF_DEPTH {
+        return Err(Error::Invalid("tool output reference schema exceeds depth limit".into()));
+    }
+    let Some(schema_object) = schema.as_object() else { return Ok(()); };
+    if !schema_contains_file_ref_annotation(schema, 0)? {
+        return Ok(());
+    }
+    if schema_object.get("x-acyclic-file-ref").and_then(Value::as_bool) == Some(true) {
+        let reference: FileRef = serde_json::from_value(value.clone())
+            .map_err(|error| Error::Invalid(format!("declared tool output FileRef is invalid: {error}")))?;
+        reference.validate()?;
+        if refs.len() >= MAX_DECLARED_FILE_REFS {
+            return Err(Error::Invalid("tool output declares too many file references".into()));
+        }
+        refs.push(reference);
+        return Ok(());
+    }
+    if let Some(properties) = schema_object.get("properties").and_then(Value::as_object) {
+        if let Some(object) = value.as_object() {
+            for (name, child_schema) in properties {
+                if let Some(child) = object.get(name) {
+                    collect_declared_file_refs(child_schema, child, refs, depth + 1)?;
+                }
+            }
+        }
+    }
+    if let Some(items) = schema_object.get("items") {
+        let Some(array) = value.as_array() else { return Ok(()); };
+        if items.is_boolean() { return Ok(()); }
+        if array.len() > MAX_DECLARED_FILE_REFS {
+            return Err(Error::Invalid("tool output reference array exceeds limit".into()));
+        }
+        for child in array {
+            collect_declared_file_refs(items, child, refs, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 /// One admitted invocation.
@@ -554,6 +772,110 @@ mod tests {
         fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
             Ok(result.value.clone())
         }
+    }
+
+    fn reference_definition(schema: Value) -> ToolDefinition {
+        ToolDefinition {
+            name: "example.references".into(),
+            revision: "1".into(),
+            description: "test".into(),
+            input_schema: json!({"type": "object"}),
+            output_schema: json!({"type": "object"}),
+            model_output_schema: schema,
+        }
+    }
+
+    #[test]
+    fn model_output_reference_walker_rejects_forgery_and_unsupported_schema() {
+        let valid_complex = reference_definition(json!({
+            "oneOf": [{"type": "null"}, {"type": "string"}],
+            "additionalProperties": true,
+            "type": "null",
+            "properties": {"ignored": {"type": "object"}}
+        }));
+        assert!(valid_complex.model_output_file_refs(&Value::Null).unwrap().is_empty());
+
+        let forged = reference_definition(json!({
+            "type": "object",
+            "properties": {"file": {"type": "object", "x-acyclic-file-ref": true}}
+        }));
+        assert!(matches!(
+            forged.model_output_file_refs(&json!({"file": {"path": "forged"}})),
+            Err(Error::Invalid(_))
+        ));
+        for (keyword, schema) in [
+            (
+                "oneOf",
+                json!({"oneOf": [{"type": "object", "properties": {"file": {"x-acyclic-file-ref": true}}}]}),
+            ),
+            (
+                "prefixItems",
+                json!({"prefixItems": [{"type": "object", "properties": {"file": {"x-acyclic-file-ref": true}}}]}),
+            ),
+            (
+                "patternProperties",
+                json!({"patternProperties": {"^file$": {"type": "object", "properties": {"nested": {"x-acyclic-file-ref": true}}}}}),
+            ),
+        ] {
+            let definition = reference_definition(schema);
+            let result = definition.model_output_file_refs(&Value::Null);
+            assert!(matches!(result, Err(Error::Invalid(ref error)) if error.contains(keyword)), "{keyword}: {result:?}");
+        }
+        let annotated_defs = reference_definition(json!({
+            "$ref": "#/$defs/file",
+            "$defs": {"file": {"type": "object", "x-acyclic-file-ref": true}}
+        }));
+        assert!(matches!(
+            annotated_defs.model_output_file_refs(&Value::Null),
+            Err(Error::Invalid(_))
+        ));
+        assert!(matches!(
+            reference_definition(json!({"$ref": []})).validate(),
+            Err(Error::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn reference_limits_apply_only_to_annotated_values() -> Result<()> {
+        let ordinary = reference_definition(json!({
+            "type": "array",
+            "items": {"type": "integer"}
+        }));
+        let ordinary_values = Value::Array((0..257).map(|value| json!(value)).collect());
+        assert!(ordinary.model_output_file_refs(&ordinary_values)?.is_empty());
+
+        let const_object = reference_definition(json!({
+            "const": {"x-acyclic-file-ref": true},
+            "type": "object"
+        }));
+        assert!(const_object
+            .model_output_file_refs(&json!({"x-acyclic-file-ref": true}))?
+            .is_empty());
+
+        let reference = FileRef::new(
+            crate::conversation::VolumeRef::new(
+                crate::resources::ProviderRef::new("test", "filesystem", "2")?,
+                "volume",
+                crate::conversation::VolumeClass::Project,
+                crate::conversation::VolumeOwner::Project("test".into()),
+            )?,
+            "file.txt",
+            "generation-1",
+            crate::conversation::FileDescriptor::from_bytes(b"x", "text/plain")?,
+            "file.txt",
+        )?;
+        let annotated = reference_definition(json!({
+            "type": "array",
+            "items": {"type": "object", "x-acyclic-file-ref": true}
+        }));
+        let encoded = serde_json::to_value(&reference)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        let values = Value::Array(
+            std::iter::repeat_n(encoded, MAX_DECLARED_FILE_REFS + 1).collect(),
+        );
+        let result = annotated.model_output_file_refs(&values);
+        assert!(matches!(result, Err(Error::Invalid(ref error)) if error.contains("exceeds limit")), "{result:?}");
+        Ok(())
     }
 
     #[test]

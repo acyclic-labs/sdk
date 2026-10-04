@@ -383,6 +383,19 @@ pub struct StockExecutor {
 }
 
 impl StockExecutor {
+    fn visible_tool_definitions(&self) -> Result<Vec<crate::tool::ToolDefinition>> {
+        Ok(self
+            .tools
+            .definitions()?
+            .into_iter()
+            .filter(|tool| {
+                self.tool_scope
+                    .grants()
+                    .contains(&format!("tool:call:{}", tool.name))
+            })
+            .collect())
+    }
+
     /// Creates the stock loop without installing hidden stages or tools.
     #[must_use]
     pub fn new(
@@ -679,8 +692,8 @@ impl StockExecutor {
             self.provider.admit(&request)?;
             for message in &request.messages {
                 message.content.validate_limits(self.limits)?;
-                for reference in message.content.file_refs() {
-                    journal.verify_input_file(reference).await?;
+                for reference in crate::model_input::message_file_refs(message, &request.tools)? {
+                    journal.verify_input_file(&reference).await?;
                 }
             }
             prepared
@@ -700,29 +713,21 @@ impl StockExecutor {
             if context.messages.len() > self.limits.context_messages {
                 return Err(Error::Invalid("model context exceeds message limit".into()));
             }
+            let tools = self.visible_tool_definitions()?;
             for message in &context.messages {
                 message.content.validate_limits(self.limits)?;
                 // Stages may introduce references beyond the original turn selection.
                 // Resolve each final reference under this journal's exact authority
                 // before admission, reconciliation, or dispatch reaches a provider.
-                for reference in message.content.file_refs() {
-                    journal.verify_input_file(reference).await?;
+                for reference in crate::model_input::message_file_refs(message, &tools)? {
+                    journal.verify_input_file(&reference).await?;
                 }
             }
             let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
                 ModelRequest {
                     model: self.model.clone(),
                     messages: context.messages,
-                    tools: self
-                        .tools
-                        .definitions()?
-                        .into_iter()
-                        .filter(|tool| {
-                            self.tool_scope
-                                .grants()
-                                .contains(&format!("tool:call:{}", tool.name))
-                        })
-                        .collect(),
+                    tools,
                     max_output_tokens: None,
                 },
                 self.limits,
@@ -1764,10 +1769,11 @@ impl StockExecutor {
             journal
                 .verify_selected_context(input.operation_id, selected)
                 .await?;
+            let tools = self.visible_tool_definitions()?;
             for message in &selected.messages {
                 message.content.validate_limits(self.limits)?;
-                for reference in message.content.file_refs() {
-                    journal.verify_input_file(reference).await?;
+                for reference in crate::model_input::message_file_refs(message, &tools)? {
+                    journal.verify_input_file(&reference).await?;
                 }
             }
         }
