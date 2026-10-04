@@ -21,7 +21,7 @@ The fixture IDs are stable qualification references:
 
 | ID | Black-box coverage |
 | --- | --- |
-| `PKG-NATIVE-01` | Installed package exports; native snake_case wire fields; summary-only listing and bounded `limit`; lazy activity, messages, approvals, changes, diff, and file reads; approval and writeback receipt; cancel/resume; terminal adapter commands. |
+| `PKG-NATIVE-01` | Installed package exports; native snake_case wire fields; summary-only listing and bounded `limit`; durable provider/model identity and explicit mock fixture visibility; lazy activity, messages, approvals, changes, diff, and file reads; approval and writeback receipt; cancel/resume; terminal adapter commands. |
 | `NEG-CANCEL-01` | A hung history request must not prevent an explicit cancellation from reaching the transport. |
 | `NEG-EPOCH-01` | A canceled process request ID is quarantined so a delayed old reply cannot settle a later request with the same ID. |
 | `NEG-PATH-01` | Empty, traversal, absolute, separator, NUL, and 4097-byte paths are rejected before the bridge; a 4096-byte relative path is the accepted boundary case. |

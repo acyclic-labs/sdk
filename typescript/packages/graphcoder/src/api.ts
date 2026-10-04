@@ -16,12 +16,22 @@ export type SessionState = "idle" | "running" | "completed" | "failed" | "cancel
 export type AgentState = "queued" | "running" | "waiting" | "completed" | "failed" | "cancelled";
 export type ApprovalState = "pending" | "approved" | "declined" | "cancelled" | "expired" | "denied";
 
+/** Immutable Harness model/provider selection retained by the session. */
+export interface ModelIdentity {
+  readonly provider: string;
+  readonly name: string;
+  readonly revision: string;
+  /** Provider-owned options, including an explicit mock fixture when used. */
+  readonly options: unknown;
+}
+
 export interface SessionSummary {
   readonly id: SessionId;
   readonly title: string;
   readonly state: SessionState;
   readonly updatedAt: string;
   readonly rootAgentId: AgentId;
+  readonly model: ModelIdentity;
 }
 
 export interface AgentSummary {

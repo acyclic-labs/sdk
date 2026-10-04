@@ -92,7 +92,7 @@ describe("native GraphCoder JSON-lines dispatcher", () => {
       await new Promise<void>(resolve => { releaseList = resolve; });
       return { items: [] };
     };
-    transport.cancelSession = async id => ({ summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1" }, agents: [], workspaceGeneration: 0n });
+    transport.cancelSession = async id => ({ summary: { id, title: "cancelled", state: "cancelled", updatedAt: "0", rootAgentId: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } }, agents: [], workspaceGeneration: 0n });
     const serving = runNodeGraphCoderDispatcher({ transport, input, output, maximumInFlight: 1 });
     input.write(JSON.stringify({ request_id: "model-1", method: "list_sessions", params: {} }) + "\n");
     input.write(JSON.stringify({ request_id: "cancel-1", method: "cancel_session", params: { session_id: "session-1" } }) + "\n");

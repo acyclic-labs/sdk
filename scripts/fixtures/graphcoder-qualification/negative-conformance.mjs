@@ -37,7 +37,7 @@ async function withProcessBridge(nodeApi, bridgeApi, hostPath, run, options = {}
 
 function snapshot(api, id = "session-1") {
   return {
-    summary: { id: api.sessionId(id), title: "qualification", state: "running", updatedAt: "2026-01-01T00:00:00.000Z", rootAgentId: api.agentId("agent-1") },
+    summary: { id: api.sessionId(id), title: "qualification", state: "running", updatedAt: "2026-01-01T00:00:00.000Z", rootAgentId: api.agentId("agent-1"), model: { provider: "fixture-provider", name: "negative-model", revision: "1", options: { fixture: "negative-protocol" } } },
     agents: [{ id: api.agentId("agent-1"), parentId: null, task: "qualification", state: "running", depth: 0, children: [] }],
     workspaceGeneration: 7n,
   };

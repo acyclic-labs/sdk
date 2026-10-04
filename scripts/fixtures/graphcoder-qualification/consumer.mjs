@@ -40,6 +40,10 @@ const transport = new bridgeApi.HarnessGraphCoderTransport(processBridge);
 try {
   const sessions = await transport.listSessions({ limit: 32 });
   assert(sessions.items.length === 1 && sessions.items[0].id === api.sessionId("session-1"), "installed bridge did not decode session listing");
+  assert(sessions.items[0].model.provider === "fixture-provider", "installed bridge did not expose model provider identity");
+  assert(sessions.items[0].model.name === "canonical-model", "installed bridge did not expose model name identity");
+  assert(sessions.items[0].model.revision === "1", "installed bridge did not expose model revision identity");
+  assert(sessions.items[0].model.options?.fixture === "native-protocol", "installed bridge did not expose explicit mock fixture identity");
 
   const ui = new api.GraphCoderUi(transport);
   await ui.dispatch({ kind: "open_session", sessionId: api.sessionId("session-1") });

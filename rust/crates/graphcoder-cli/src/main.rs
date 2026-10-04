@@ -788,6 +788,7 @@ fn session_summary(session: acyclic_harness::filesystem::LocalSwarmSession) -> V
     let acyclic_harness::filesystem::LocalSwarmSession {
         task,
         task_description,
+        model,
         phase,
         ..
     } = session;
@@ -797,6 +798,7 @@ fn session_summary(session: acyclic_harness::filesystem::LocalSwarmSession) -> V
         "state": session_state(&phase),
         "updated_at": "0",
         "root_agent_id": task.to_string(),
+        "model": model,
     })
 }
 

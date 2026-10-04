@@ -51,7 +51,10 @@ const REGISTRY_STREAM: &str = "swarm/records";
 // safely decodable as the original single-fork record. Keep recovery
 // deliberately fenced at the registry boundary until an explicit migration
 // can validate every legacy record.
-const REGISTRY_VERSION: u32 = 2;
+// Session descriptors now retain the complete Harness model identity. Older
+// records cannot prove which provider options created their requests, so they
+// are fenced at reopen rather than silently receiving the current config.
+const REGISTRY_VERSION: u32 = 3;
 /// Completion payloads stay small enough for a Stream record. Larger outputs
 /// are staged in the child agent-private volume and the registry retains only
 /// their immutable reference and digest.
@@ -1545,6 +1548,8 @@ pub struct LocalSwarmSession {
     pub depth: usize,
     /// Child task declaration, retained without starting the task.
     pub task_description: String,
+    /// Durable provider/model selection used by this task.
+    pub model: Model,
     /// Pinned operation used for the latest turn.
     pub operation: Option<OperationId>,
     /// Current durable lifecycle phase.
@@ -1640,6 +1645,7 @@ struct StoredSession {
     parent: Option<TaskId>,
     depth: usize,
     task_description: String,
+    model: Model,
     operation: Option<OperationId>,
     phase: StoredPhase,
 }
@@ -1784,6 +1790,7 @@ impl From<StoredSession> for LocalSwarmSession {
             parent: value.parent,
             depth: value.depth,
             task_description: value.task_description,
+            model: value.model,
             operation: value.operation,
             phase: value.phase.into(),
         }
@@ -1798,6 +1805,7 @@ impl From<LocalSwarmSession> for StoredSession {
             parent: value.parent,
             depth: value.depth,
             task_description: value.task_description,
+            model: value.model,
             operation: value.operation,
             phase: value.phase.into(),
         }
@@ -1916,11 +1924,33 @@ impl PersistentLocalSwarm {
                 parent: None,
                 depth: 0,
                 task_description: "root".into(),
+                model: config.model.clone(),
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
             append_record(&stream, StoredEvent::Session(root_session.clone().into())).await?;
             sessions.insert(root_task, root_session);
+        }
+        let persisted_root = sessions
+            .values()
+            .find(|session| session.parent.is_none())
+            .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        if persisted_root.model != config.model {
+            return Err(Error::Conflict(
+                "local swarm model identity differs from the persisted session".into(),
+            ));
+        }
+        for session in sessions.values() {
+            if let Some(parent) = session.parent {
+                let parent_session = sessions.get(&parent).ok_or_else(|| {
+                    Error::Conflict("local swarm session refers to a missing parent".into())
+                })?;
+                if session.model != parent_session.model {
+                    return Err(Error::Conflict(
+                        "local swarm child model identity differs from its parent".into(),
+                    ));
+                }
+            }
         }
         let root_task = sessions
             .values()
@@ -2701,6 +2731,7 @@ impl PersistentLocalSwarm {
                         parent: Some(request.parent),
                         depth: parent_session.depth + 1,
                         task_description: request.task.clone(),
+                        model: parent_session.model.clone(),
                         operation: Some(request.child_operation),
                         phase: LocalSessionPhase::Activating,
                     },
@@ -2912,6 +2943,7 @@ impl PersistentLocalSwarm {
                 parent: Some(request.parent),
                 depth: parent.depth + 1,
                 task_description: request.task.clone(),
+                model: parent.model.clone(),
                 operation: Some(request.child_operation),
                 phase: LocalSessionPhase::Activating,
             },
@@ -3688,6 +3720,7 @@ fn apply_record(
                     parent: Some(parent),
                     depth: parent_session.depth + 1,
                     task_description: task.clone(),
+                    model: parent_session.model.clone(),
                     operation: Some(child_operation),
                     phase,
                 },
@@ -3929,6 +3962,73 @@ mod tests {
             .expect_err("incomplete parent must not activate a child");
         assert!(error.to_string().contains("completed model boundary"));
         assert_eq!(swarm.sessions().await.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn session_descriptor_retains_model_identity_across_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new(
+            "mock",
+            "fixture",
+            "7",
+            json!({"fixture": "descriptor-contract", "seed": 42}),
+        )?;
+        let swarm = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let descriptor = swarm
+            .sessions()
+            .await
+            .into_iter()
+            .find(|session| session.parent.is_none())
+            .ok_or_else(|| Error::Storage("root session descriptor is missing".into()))?;
+        assert_eq!(descriptor.model, model);
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        )
+        .await?;
+        let reopened_descriptor = reopened
+            .sessions()
+            .await
+            .into_iter()
+            .find(|session| session.parent.is_none())
+            .ok_or_else(|| Error::Storage("reopened root session descriptor is missing".into()))?;
+        assert_eq!(reopened_descriptor.model, model);
+
+        let changed_model = Model::new(
+            "mock",
+            "fixture",
+            "7",
+            json!({"fixture": "different"}),
+        )?;
+        let result = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            changed_model,
+            provider,
+            Limits::default(),
+        )
+        .await;
+        match result {
+            Err(Error::Conflict(message)) => {
+                assert!(message.contains("model identity"));
+            }
+            Err(error) => panic!("unexpected reopen error: {error}"),
+            Ok(_) => panic!("reopen with a changed model identity must be rejected"),
+        }
         Ok(())
     }
 }

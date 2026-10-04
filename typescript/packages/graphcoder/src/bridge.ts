@@ -16,6 +16,7 @@ import {
   type FileBody,
   type GraphCoderTransport,
   type GraphMessage,
+  type ModelIdentity,
   type PageQuery,
   type SessionPage,
   type SessionId,
@@ -359,6 +360,12 @@ function text(value: unknown, label: string): string {
   return value;
 }
 
+function requiredText(value: unknown, label: string): string {
+  const result = text(value, label);
+  if (result.length === 0) throw new GraphCoderError("transport", `${label} is empty`);
+  return result;
+}
+
 function oneOf<T extends string>(value: unknown, choices: readonly T[], label: string): T {
   if (typeof value !== "string" || !choices.includes(value as T)) throw new GraphCoderError("transport", `${label} is invalid`);
   return value as T;
@@ -372,7 +379,18 @@ function wireBigInt(value: unknown, label: string): bigint {
 
 function decodeSessionSummary(value: unknown): SessionSummary {
   const raw = record(value, "session summary");
-  return { id: sessionId(text(raw.id, "session id")), title: text(raw.title, "session title"), state: oneOf(raw.state, ["idle", "running", "completed", "failed", "cancelled"], "session state"), updatedAt: text(raw.updated_at, "session updated_at"), rootAgentId: agentId(text(raw.root_agent_id, "root agent id")) };
+  return { id: sessionId(text(raw.id, "session id")), title: text(raw.title, "session title"), state: oneOf(raw.state, ["idle", "running", "completed", "failed", "cancelled"], "session state"), updatedAt: text(raw.updated_at, "session updated_at"), rootAgentId: agentId(text(raw.root_agent_id, "root agent id")), model: decodeModelIdentity(raw.model) };
+}
+
+function decodeModelIdentity(value: unknown): ModelIdentity {
+  const raw = record(value, "session model");
+  if (raw.options === undefined) throw new GraphCoderError("transport", "session model options are missing");
+  return {
+    provider: requiredText(raw.provider, "session model provider"),
+    name: requiredText(raw.name, "session model name"),
+    revision: requiredText(raw.revision, "session model revision"),
+    options: raw.options,
+  };
 }
 
 function boundSnapshot(snapshot: SessionSnapshot, expectedSession: SessionSnapshot["summary"]["id"], operation: string): SessionSnapshot {

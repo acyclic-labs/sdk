@@ -19,7 +19,7 @@ function fail(request, code, message) {
 }
 
 function summary(id = "session-1") {
-  return { id, title: "hostile fixture", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" };
+  return { id, title: "hostile fixture", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "hostile-model", revision: "1", options: { fixture: "hostile-protocol" } } };
 }
 
 function snapshot(id = "session-1") {

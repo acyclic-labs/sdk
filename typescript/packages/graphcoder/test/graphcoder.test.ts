@@ -20,7 +20,7 @@ describe("GraphCoder UI transport boundary", () => {
         requests.push(request);
         const response = (result: unknown): GraphCoderWireResponse => ({ request_id: request.request_id, ok: true, result });
         switch (request.method) {
-          case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] }));
+          case "list_sessions": return Promise.resolve(response({ items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } }] }));
           case "list_changes": return Promise.resolve(response({ session_id: "session-1", generation: "7", items: [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }] }));
           case "read_change": return Promise.resolve(response({ session_id: "session-1", path: "README.md", unified_diff: "@@ -1 +1 @@", generation: "7" }));
           case "read_file": return Promise.resolve(response({ session_id: "session-1", path: "README.md", media_type: "text/markdown", bytes: new Uint8Array([72, 105]), generation: "7" }));
@@ -49,7 +49,7 @@ describe("GraphCoder UI transport boundary", () => {
           request_id: request.request_id,
           ok: true,
           result: {
-            summary: { id: "session-1", title: "inspect", state: "completed", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" },
+            summary: { id: "session-1", title: "inspect", state: "completed", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } },
             agents: [],
             workspace_generation: "0",
           },
@@ -80,6 +80,8 @@ describe("GraphCoder UI transport boundary", () => {
   test("bridge rejects malformed pages, invalid bounds, bad bytes, and oversized envelopes", async () => {
     const malformedPage = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: {} }) });
     await expect(malformedPage.listSessions()).rejects.toMatchObject({ code: "transport" });
+    const missingModel = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] } }) });
+    await expect(missingModel.listSessions()).rejects.toMatchObject({ code: "transport" });
     await expect(malformedPage.listSessions({ limit: 0 })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", -1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), 7 as unknown as string, 1n)).rejects.toMatchObject({ code: "invalid_input" });
@@ -90,12 +92,12 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedPage.readFile(sessionId("session-1"), "x".repeat(4_097), 1n)).rejects.toMatchObject({ code: "invalid_input" });
     const malformedFile = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { path: "README.md", media_type: "text/markdown", bytes: [256], generation: "1" } }) });
     await expect(malformedFile.readFile(sessionId("session-1"), "README.md", 1n)).rejects.toMatchObject({ code: "transport" });
-    const oversized = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "x".repeat(128), state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] } }) }, "test", 256);
+    const oversized = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "x".repeat(128), state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } }] } }) }, "test", 256);
     await expect(oversized.listSessions()).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bridge rejects response bindings that do not match the requested session, path, generation, or receipt", async () => {
-    const snapshot = { summary: { id: "other", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }, agents: [], workspace_generation: "3" };
+    const snapshot = { summary: { id: "other", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } }, agents: [], workspace_generation: "3" };
     const wrongSession = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: snapshot }) });
     await expect(wrongSession.openSession(sessionId("session-1"))).rejects.toMatchObject({ code: "transport" });
 
@@ -116,7 +118,7 @@ describe("GraphCoder UI transport boundary", () => {
         requests.push(request);
         if (request.method === "approve_writeback") return Promise.resolve({ request_id: request.request_id, ok: true, result: { operation_id: "op-7", session_id: "session-1", generation: "3", applied: true } });
         if (request.method === "resolve_approval") return Promise.resolve({ request_id: request.request_id, ok: true, result: { id: "approval-1", session_id: "session-1", agent_id: "agent-1", operation_id: "op-7", action_digest: "digest", description: "approve", state: "approved", created_at: "2026-01-01T00:00:00.000Z" } });
-        return Promise.resolve({ request_id: request.request_id, ok: true, result: { summary: { id: "session-1", title: "inspect", state: "cancelled", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }, agents: [], workspace_generation: "3" } });
+        return Promise.resolve({ request_id: request.request_id, ok: true, result: { summary: { id: "session-1", title: "inspect", state: "cancelled", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { fixture: "stage" } } }, agents: [], workspace_generation: "3" } });
       },
     };
     const transport = new BridgeGraphCoderTransport(bridge);
@@ -149,6 +151,7 @@ describe("GraphCoder UI transport boundary", () => {
     const ui = new GraphCoderUi(transport);
     await ui.dispatch({ kind: "start_session", operationId: "op-inspect-1", prompt: "inspect the repository" });
     const id = ui.state().selectedSession!.summary.id;
+    expect(ui.state().selectedSession!.summary.model.options).toEqual({ fixture: "deterministic" });
 
     expect(transport.calls.map(call => call.method)).toEqual(["startSession"]);
     await ui.dispatch({ kind: "load_activity" });

@@ -28,6 +28,7 @@ function summary() {
     state: sessionState,
     updated_at: "2026-01-01T00:00:00.000Z",
     root_agent_id: agentId,
+    model: { provider: "fixture-provider", name: "canonical-model", revision: "1", options: { fixture: "native-protocol" } },
   };
 }
 

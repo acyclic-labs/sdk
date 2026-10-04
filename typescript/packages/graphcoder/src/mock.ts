@@ -98,7 +98,14 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     const sessionId = `session-${number}` as SessionId;
     const rootAgentId = `agent-${number}-root` as AgentId;
     const at = nowIso(this.#now);
-    const summary: SessionSummary = { id: sessionId, title: input.prompt.slice(0, 80), state: "running", updatedAt: at, rootAgentId };
+    const summary: SessionSummary = {
+      id: sessionId,
+      title: input.prompt.slice(0, 80),
+      state: "running",
+      updatedAt: at,
+      rootAgentId,
+      model: { provider: "graphcoder.mock", name: "fixture", revision: "1", options: { fixture: this.#fixture } },
+    };
     const root: AgentSummary = { id: rootAgentId, parentId: null, task: input.prompt, state: "running", depth: 0, children: [] };
     const operationId = `mock-writeback-${number}`;
     const approval: ApprovalRequest = {
