@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use tar::Archive;
 
+mod installed_package_receipts;
+
 const GENERATION_SCHEMA: &str = "acyclic.sdk.generation.manifest.v1";
 const REQUEST_SCHEMA: &str = "acyclic.sdk.generation.request.v1";
 const EVIDENCE_SCHEMA: &str = "acyclic.sdk.qualification.evidence.v1";
@@ -330,7 +332,11 @@ fn run() -> Result<(), CliError> {
         Operation::Generate => generate(&source_root, &output),
         Operation::Check => check(&source_root, &output),
         Operation::Drift => drift(&source_root, &output),
-        Operation::Qualify => qualify(&source_root, &output),
+        Operation::Qualify => qualify(
+            &source_root,
+            &output,
+            args.package_root.as_deref(),
+        ),
         Operation::QualifyEmbedded => qualify_embedded(
             &source_root,
             &output,
@@ -670,9 +676,20 @@ fn drift(source_root: &Path, output: &Path) -> Result<(), CliError> {
     print_json(&report)
 }
 
-fn qualify(source_root: &Path, output: &Path) -> Result<(), CliError> {
+fn qualify(
+    source_root: &Path,
+    output: &Path,
+    package_root: Option<&Path>,
+) -> Result<(), CliError> {
     check(source_root, output)?;
     let source = source_identity(source_root)?;
+    let package_root = package_root
+        .ok_or_else(|| CliError::new("qualify requires --package-root PATH"))?;
+    let installed_packages = installed_package_receipts::validate_installed_package_receipts(
+        package_root,
+        &source.revision,
+    )
+    .map_err(CliError::new)?;
     let expectations = evidence_expectations(source_root, output)?;
     let statuses =
         language_inventory(source_root, output, &source.revision, expectations.as_ref())?;
@@ -703,6 +720,7 @@ fn qualify(source_root: &Path, output: &Path) -> Result<(), CliError> {
         "qualified_languages": qualified,
         "pending_languages": pending,
         "active_languages": statuses.iter().filter(|item| !item.excluded).count(),
+        "installed_packages": installed_packages,
         "status": if pending == 0 && qualified == statuses.iter().filter(|item| !item.excluded).count() { "qualified" } else { "pending" },
     });
     write_json_value(&output.join("qualification.json"), &report)?;
@@ -5360,6 +5378,7 @@ fn receipt_family_is_partial(
 #[derive(Debug, Clone)]
 struct ConsumerScenario {
     shape: String,
+    execution_mode: String,
     checks: BTreeSet<String>,
 }
 
@@ -5471,6 +5490,11 @@ fn consumer_scenario_inventory(
         if !matches!(transport, "grpc" | "http" | "http-json" | "grpc-web") {
             return None;
         }
+        let execution_mode = result
+            .get("execution_mode")
+            .and_then(Value::as_str)
+            .filter(|mode| matches!(*mode, "remote" | "in-process"))?
+            .to_owned();
         let checks = result.get("checks").and_then(Value::as_array)?;
         let mut check_set = BTreeSet::new();
         for check in checks {
@@ -5491,6 +5515,7 @@ fn consumer_scenario_inventory(
                 (family.to_owned(), rpc.to_owned()),
                 ConsumerScenario {
                     shape: shape.to_owned(),
+                    execution_mode,
                     checks: check_set,
                 },
             )
@@ -5745,6 +5770,13 @@ fn evidence_test_receipt(
                 else {
                     return false;
                 };
+                if capability == "remote"
+                    && scenarios
+                        .values()
+                        .any(|scenario| scenario.execution_mode != "remote")
+                {
+                    return false;
+                }
                 let mut covered = BTreeSet::new();
                 let valid_entries = families.iter().all(|entry| {
                     let Some(family) = entry.get("family").and_then(Value::as_str) else {
@@ -6979,7 +7011,7 @@ mod tests {
         fs::write(&consumer, b"compiled-consumer-v1").expect("write consumer");
         let consumer_digest = hash_bytes(b"compiled-consumer-v1");
         let scenario = root.join("qualification/consumers/remote-scenario.json");
-        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"revision","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"list","shape":"unary","transport":"grpc","checks":["invocation","transport","serialization"]}"#;
+        let scenario_bytes = br#"{"schema":"acyclic.sdk.rpc-scenario-result.v1","source_revision":"revision","status":"passed","invoked":true,"exit_code":0,"family":"actors","rpc":"list","shape":"unary","transport":"grpc","execution_mode":"remote","checks":["invocation","transport","serialization"]}"#;
         fs::write(&scenario, scenario_bytes).expect("write scenario result");
         let scenario_digest = hash_bytes(scenario_bytes);
         let expected = EvidenceExpectations {
