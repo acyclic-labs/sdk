@@ -1,0 +1,73 @@
+{
+  "schema": "graphcoder.swarm.validation.receipt.v1",
+  "scope": "current budget owner checkpoint metered stream failure and persistent recovery",
+  "source_commit": "f65ed335457ad9127a4a3927d32123f16e6a6d57",
+  "implementation_commit": "67bd6944b06884b27ca7c44bc4653aaa3bdb319f",
+  "branch_under_test": "codex/budget-root-current",
+  "worktree_under_test": "D:\\graphcoder-builds\\budget-owner-current-review",
+  "target_dir": "D:\\graphcoder-builds\\budget-owner-current-target",
+  "source_hashes": {
+    "swarm_budget.rs": "be2cc8cb2c9e2af7cd8157edd9afaed373877a77",
+    "swarm_budget_journal.rs": "1b10c6f8475e80d1059b988300bd21a9840f9a04",
+    "swarm_budget_production_contracts_v3.rs": "889b190558c5c54037f43836e0c01e97bda39bea",
+    "swarm_budget_journal_local.rs": "2b78d1417d395d118c7c611b277430affa574bcc",
+    "swarm_budget_contracts_v2.rs": "096f9835a24bc271aa3aed66e53985219f6c6de2",
+    "swarm_budget_scheduler_contracts_v2.rs": "93d2c9fe091a8ce353d9634d102928e271b8f597",
+    "swarm_budget_usage_contracts_v2.rs": "e8ff010d7cf0f8318bf10237245331404714508"
+  },
+  "drop_failure_unit": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --lib swarm_budget::tests::metered_stream_drop_surfaces_execution_accounting_failure --target-dir D:\\graphcoder-builds\\budget-owner-current-target -j1 -- --nocapture",
+    "passed": 1,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-owner-current-drop-unit.log",
+    "log_sha256": "9D5CD7A0716B9A0D32629A2BC0438C10B1378E56302EF3E5F81EFF6ACCF39A0C",
+    "executable_sha256": "8E544A0CB41505580F2818D4593FC0AE5AA9E2968BD80D120824A52C2D366CA5"
+  },
+  "journal_gate": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --lib swarm_budget_journal::tests --target-dir D:\\graphcoder-builds\\budget-owner-current-target -j1 -- --nocapture",
+    "passed": 9,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-owner-current-journal.log",
+    "log_sha256": "8771B68D73F9464FB9C1763E620A738A7D653402AD212F7A28C8B8030D3B1E7B",
+    "assertions": [
+      "postdispatch_provider_denial_after_confirmation_remains_uncertain retains active reservation and returns Error::Indeterminate",
+      "verified dispatch confirmation precedes provider entry",
+      "recovery and stale-owner fences remain durable"
+    ]
+  },
+  "production_matrix": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test swarm_budget_production_contracts_v3 --test swarm_budget_journal_local --test swarm_budget_contracts_v2 --test swarm_budget_scheduler_contracts_v2 --test swarm_budget_usage_contracts_v2 --target-dir D:\\graphcoder-builds\\budget-owner-current-target -j1 --no-fail-fast -- --nocapture",
+    "passed": 21,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-owner-current-budget-matrix.log",
+    "log_sha256": "72C49607BAB02FDCC2EA4285F826B868DE444271279710ABD8A93EA78B237DC4"
+  },
+  "persistent_local_root": {
+    "fixture_source": "codex/budget-root-compatible:rust/crates/harness/tests/persistent_local_swarm_budget_root_e2e.rs",
+    "fixture_sha256": "48074d4a707c898d1fcbd72be2cf659960a66ee3",
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test persistent_local_swarm_budget_root_e2e --target-dir D:\\graphcoder-builds\\budget-owner-current-target -j1 -- --nocapture",
+    "passed": 2,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-owner-current-persistent.log",
+    "log_sha256": "B54D5396C5DC04B93114EB3D7CECFC80708A7B6A9994E2518D9BF1511AEB5EDD"
+  },
+  "drop_failure_cold_restart_overlay": {
+    "test": "swarm_budget_journal::tests::drop_accounting_failure_blocks_receipt_and_survives_restart",
+    "result": "passed",
+    "log": "D:\\graphcoder-builds\\budget-owner-current-drop-restart.log",
+    "log_sha256": "C67DAAC601EB7351224CF1EAE608FCCE44E01CBB9A803D5F85E2661BAE0424C3",
+    "overlay_patch": "D:\\graphcoder-builds\\budget-owner-current-drop-restart.patch",
+    "overlay_patch_sha256": "BADA31D24915A76D1215D650389D8D9609E7349F04C55F66C77F017C31086DE7",
+    "overlay_source_sha256": "C67DAAC601EB7351224CF1EAE608FCCE44E01CBB9A803D5F85E2661BAE0424C3",
+    "assertions": [
+      "second runtime accounting write fails during MeteredStream Drop",
+      "deferred error prevents issue_usage_receipt",
+      "active_agents and reserved capacity remain held",
+      "cold reopen preserves usage and resume_dispatch_token succeeds"
+    ]
+  },
+  "causal_conclusion": "A provider Conflict after durable ChildDispatchConfirmed is intentionally Error::Indeterminate with reservation retained. A pre-confirmation admission or identity failure remains a typed Conflict and cannot enter provider execution."
+}
+
+
+
