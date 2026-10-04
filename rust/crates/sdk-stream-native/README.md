@@ -10,12 +10,14 @@ are returned as decimal strings so Node and Bun callers cannot lose `u64` precis
 `NativeStreamCancellation` handle wakes a Rust `follow` operation and lets the canonical gRPC
 stream be dropped from Rust.
 
-The `npm/` fixtures describe the eight platform companion packages expected by a later package
-publisher. The native `.node` file is produced by the N-API build for the matching target and is
-loaded by each fixture's `index.js`.
+The `npm/` fixtures describe the eight platform companion packages. The native `.node` file is
+produced by the N-API build for the matching target and is loaded by each fixture's `index.js`.
+The release builder includes a `BUILD.json` provenance record in every package, binding the
+source Git revision, napi-rs pins, Rust target, loader hash, and binary hash.
 
-The checked-in runtime qualification currently builds and loads the Windows x64 module. It
-exercises append, read, follow cancellation, private-CA TLS, endpoint rotation, and the
-canonical capability bounds against a local Rust gRPC service. The other five platform
-directories are package metadata and loader-shape fixtures; they are not binary-qualified by
-that test.
+The checked-in runtime qualification currently builds and loads the Windows x64 module through a
+clean `node_modules/@acyclic-labs/stream-win32-x64` consumer. It exercises append, read, follow
+cancellation, private-CA TLS, endpoint rotation, and the canonical capability bounds against a
+local Rust gRPC service. The release workflow builds and packs all eight targets and verifies the
+packed Windows x64 archive in a second clean consumer; its install record is retained beside the
+archive.

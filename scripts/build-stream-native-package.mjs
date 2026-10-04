@@ -19,7 +19,7 @@ const targets = new Map([
 ]);
 
 function usage() {
-  console.error("usage: build-stream-native-package.mjs --target <package-target> --target-dir <dir> --output <dir> [--verify-install]");
+  console.error("usage: build-stream-native-package.mjs --target <package-target> --target-dir <dir> --output <dir> [--provenance <file>] [--verify-install]");
   process.exit(2);
 }
 
@@ -31,6 +31,7 @@ const value = (name) => {
 const packageTarget = value("--target");
 const targetDir = value("--target-dir");
 const output = value("--output");
+const provenancePath = value("--provenance");
 const verifyInstall = args.includes("--verify-install");
 if (!targets.has(packageTarget) || !targetDir || !output || args.includes("--help")) usage();
 
@@ -56,6 +57,14 @@ const cargo = spawnSync("cargo", [
 if (cargo.status !== 0) process.exit(cargo.status ?? 1);
 if (!existsSync(binarySource)) throw new Error(`cargo did not produce ${binarySource}`);
 
+// The orchestrator supplies the immutable checkout identity. Keeping this
+// explicit avoids asking a package build to discover Git through a host shell
+// and makes the same builder usable from the Rust generation output tree.
+const revision = process.env.SOURCE_REVISION?.trim();
+if (!revision || !/^[0-9a-f]{40}$/i.test(revision)) {
+  throw new Error("cannot bind native package to an immutable Git source revision");
+}
+
 const packageRoot = join(artifactRoot, packageTarget);
 rmSync(packageRoot, { recursive: true, force: true });
 mkdirSync(packageRoot, { recursive: true });
@@ -65,15 +74,70 @@ cpSync(binarySource, join(packageRoot, "acyclic_stream_native.node"));
 
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
 const binaryHash = createHash("sha256").update(readFileSync(join(packageRoot, "acyclic_stream_native.node"))).digest("hex");
-writeFileSync(join(packageRoot, "BUILD.json"), `${JSON.stringify({
-  package: packageManifest.name,
-  version: packageManifest.version,
-  package_target: packageTarget,
-  rust_target: target.rust,
-  binary_sha256: binaryHash,
-  rustc: process.env.RUSTC_VERSION ?? "not supplied by caller",
-}, null, 2)}\n`);
+const manifestHash = createHash("sha256").update(readFileSync(join(packageRoot, "package.json"))).digest("hex");
+const loaderHash = createHash("sha256").update(readFileSync(join(packageRoot, "index.js"))).digest("hex");
+const build = {
+  schema: "acyclic.sdk.stream.native.build.v1",
+  source_revision: revision,
+  source_revision_kind: "git-oid",
+  generator: {
+    name: "scripts/build-stream-native-package.mjs",
+    version: "1",
+  },
+  napi: {
+    project: "napi-rs/napi-rs",
+    napi: "3.6.1",
+    napi_derive: "3.3.3",
+    napi_build: "2.3.1",
+    abi: "napi8",
+  },
+  package: {
+    name: packageManifest.name,
+    version: packageManifest.version,
+    target: packageTarget,
+    rust_target: target.rust,
+  },
+  artifacts: {
+    binary: "acyclic_stream_native.node",
+    binary_sha256: `sha256:${binaryHash}`,
+    manifest: "package.json",
+    manifest_sha256: `sha256:${manifestHash}`,
+    loader: "index.js",
+    loader_sha256: `sha256:${loaderHash}`,
+  },
+  toolchain: {
+    rustc: process.env.RUSTC_VERSION ?? "not supplied by caller",
+    node: process.version,
+  },
+  install: {
+    verified: verifyInstall,
+    resolver: "node_modules package name",
+  },
+};
+writeFileSync(join(packageRoot, "BUILD.json"), `${JSON.stringify(build,
+  null, 2)}\n`);
 
+if (provenancePath) {
+  const destination = resolve(provenancePath);
+  mkdirSync(join(destination, ".."), { recursive: true });
+  writeFileSync(destination, `${JSON.stringify({
+    schema: "acyclic.sdk.stream.native.provenance.v1",
+    source_revision: revision,
+    source_revision_kind: "git-oid",
+    package_target: packageTarget,
+    rust_target: target.rust,
+    package_root: packageRoot,
+    package_manifest: packageManifest.name,
+    package_version: packageManifest.version,
+    build: `BUILD.json`,
+    build_sha256: `sha256:${createHash("sha256").update(readFileSync(join(packageRoot, "BUILD.json"))).digest("hex")}`,
+    binary_sha256: `sha256:${binaryHash}`,
+    installed_consumer: {
+      verified: verifyInstall,
+      resolver: "node_modules package name",
+    },
+  }, null, 2)}\n`);
+}
 if (verifyInstall) {
   const packageName = packageManifest.name.split("/");
   const consumer = join(targetRoot, `${packageTarget}-consumer`);
@@ -91,4 +155,11 @@ if (verifyInstall) {
   if (process.platform !== "win32") rmSync(consumer, { recursive: true, force: true });
 }
 
-console.log(JSON.stringify({ packageTarget, rustTarget: target.rust, packageRoot }));
+console.log(JSON.stringify({
+  schema: "acyclic.sdk.stream.native.build-result.v1",
+  packageTarget,
+  rustTarget: target.rust,
+  packageRoot,
+  provenance: provenancePath ? resolve(provenancePath) : undefined,
+  installedConsumerVerified: verifyInstall,
+}));

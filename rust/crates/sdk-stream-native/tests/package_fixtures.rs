@@ -70,6 +70,7 @@ fn every_platform_fixture_is_loadable_shape_with_matching_binary_name() {
         assert!(package.contains(&format!("\"cpu\":[\"{cpu}\"]")));
         assert!(package.contains("\"main\":\"index.js\""));
         assert!(package.contains("\"acyclic_stream_native.node\""));
+        assert!(package.contains("\"BUILD.json\""));
         let loader = match fs::read_to_string(root.join(target).join("index.js")) {
             Ok(value) => value,
             Err(_) => {

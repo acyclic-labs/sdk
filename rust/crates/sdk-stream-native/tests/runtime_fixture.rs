@@ -69,10 +69,13 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         module_source.exists(),
         "native N-API module must be built before runtime qualification"
     );
-    let fixture_package = std::env::temp_dir().join(format!(
-        "acyclic-stream-native-package-{}",
+    let consumer_root = std::env::temp_dir().join(format!(
+        "acyclic-stream-native-installed-consumer-{}",
         std::process::id()
     ));
+    let fixture_package = consumer_root.join(
+        "node_modules/@acyclic-labs/stream-win32-x64",
+    );
     std::fs::create_dir_all(&fixture_package)?;
     let package_source = Path::new(env!("CARGO_MANIFEST_DIR")).join("npm/win32-x64");
     for file in ["package.json", "index.js"] {
@@ -82,7 +85,12 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         &module_source,
         fixture_package.join("acyclic_stream_native.node"),
     )?;
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
+    // Run the fixture from the clean consumer root. The package is resolved by
+    // its installed companion name, so this covers package metadata, Node's
+    // module resolver, and the platform loader in one scenario.
+    let source_script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/runtime_client.mjs");
+    let script = consumer_root.join("runtime_client.mjs");
+    std::fs::copy(source_script, &script)?;
     let commit_request = acyclic_stream::wire::CommitRequest {
         conditions: vec![acyclic_stream::wire::CommitCondition {
             condition: Some(acyclic_stream::wire::commit_condition::Condition::Absent(
@@ -104,9 +112,14 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
     };
     let mut commit_request_bytes = Vec::new();
     commit_request.encode(&mut commit_request_bytes)?;
-    let output = Command::new("node")
+    let mut command = Command::new("node");
+    command
         .arg(script)
-        .env("ACYCLIC_STREAM_NATIVE_MODULE", &fixture_package)
+        .current_dir(&consumer_root)
+        .env(
+            "ACYCLIC_STREAM_NATIVE_MODULE",
+            "@acyclic-labs/stream-win32-x64",
+        )
         .env("ACYCLIC_STREAM_FIXTURE_ENDPOINT", endpoint)
         .env(
             "ACYCLIC_STREAM_FIXTURE_CA",
@@ -115,11 +128,30 @@ async fn built_native_module_runs_against_canonical_tls_grpc_fixture()
         .env(
             "ACYCLIC_STREAM_FIXTURE_COMMIT_REQUEST",
             base64(&commit_request_bytes),
-        )
-        .output()?;
+        );
+    for (name, value) in [
+        ("ACYCLIC_STREAM_SOURCE_REVISION", std::env::var("SOURCE_REVISION").ok()),
+        (
+            "ACYCLIC_STREAM_SCENARIO_DIR",
+            std::env::var("ACYCLIC_STREAM_SCENARIO_DIR").ok(),
+        ),
+        (
+            "ACYCLIC_STREAM_SCENARIO_PREFIX",
+            std::env::var("ACYCLIC_STREAM_SCENARIO_PREFIX").ok(),
+        ),
+        (
+            "ACYCLIC_STREAM_CONSUMER_OUTPUT",
+            std::env::var("ACYCLIC_STREAM_CONSUMER_OUTPUT").ok(),
+        ),
+    ] {
+        if let Some(value) = value {
+            command.env(name, value);
+        }
+    }
+    let output = command.output()?;
     let _ = shutdown_sender.send(());
     let _ = server.await?;
-    let _ = std::fs::remove_dir_all(&fixture_package);
+    let _ = std::fs::remove_dir_all(&consumer_root);
     if !output.status.success() {
         return Err(format!(
             "native runtime fixture failed: {}{}",
