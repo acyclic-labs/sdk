@@ -34,6 +34,12 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact source revision to qualify
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -52,7 +58,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Verify qualification policy
@@ -62,7 +68,7 @@ jobs:
 
   qualify:
     # Full source and downstream qualification runs on releases or explicit requests.
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
     name: ${{ matrix.platform }}
     strategy:
       fail-fast: false
@@ -85,7 +91,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
@@ -176,7 +182,7 @@ jobs:
           test -s "$out/manifest.json"
 
   platform-package-verification:
-    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
     name: ${{ matrix.package }} pinned platform scope
     strategy:
       fail-fast: false
@@ -195,7 +201,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
