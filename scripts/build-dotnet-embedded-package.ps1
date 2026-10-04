@@ -25,6 +25,10 @@ $lockfilePath = Join-Path $root 'rust/crates/sdk-embedded-prototype/Cargo.lock'
 $lockfileSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $lockfilePath).Hash.ToLowerInvariant()
 $cargoCommand = 'cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
 $out = if ([System.IO.Path]::IsPathRooted($Output)) { [System.IO.Path]::GetFullPath($Output) } else { [System.IO.Path]::GetFullPath((Join-Path $root $Output)) }
+$authorityRoot = Join-Path $out "sdk-contract"
+$authorityExporter = Join-Path $PSScriptRoot "export-rust-contract-authority.ps1"
+$authorityManifestPath = Join-Path $authorityRoot "rust-authority.json"
+$authorityManifestSha256 = $null
 $targetMap = [ordered]@{
   "x86_64-pc-windows-msvc" = @{ Rid = "win-x64"; File = "acyclic_sdk_embedded_prototype.dll" }
   "aarch64-pc-windows-msvc" = @{ Rid = "win-arm64"; File = "acyclic_sdk_embedded_prototype.dll" }
@@ -187,6 +191,16 @@ if ($NativeOnly) {
   exit 0
 }
 
+if (-not (Test-Path -LiteralPath $authorityExporter -PathType Leaf)) {
+  throw "Rust authority exporter is missing: $authorityExporter"
+}
+& $authorityExporter -Root $root -Output $authorityRoot | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "Rust contract authority export failed with exit code $LASTEXITCODE" }
+if (-not (Test-Path -LiteralPath $authorityManifestPath -PathType Leaf)) {
+  throw "Rust contract authority export did not produce $authorityManifestPath"
+}
+$authorityManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $authorityManifestPath).Hash.ToLowerInvariant()
+
 $dotnetVersion = '8.0.425'
 $dotnetCandidates = @()
 $dotnetCommand = Get-Command dotnet -ErrorAction SilentlyContinue
@@ -215,6 +229,7 @@ New-Item -ItemType Directory -Force -Path $packageOutput, $obj, $build | Out-Nul
 $project = Join-Path $root "dotnet/Acyclic.Sdk.Embedded.csproj"
 & $dotnetPath pack $project --configuration Release --nologo \`
   "-p:EmbeddedNativeRoot=$nativeRoot" \`
+  "-p:SchemaRoot=$authorityRoot" \`
   "-p:BaseOutputPath=$build\" \`
   "-p:BaseIntermediateOutputPath=$obj\" \`
   "-p:PackageOutputPath=$packageOutput\" \`
@@ -239,6 +254,8 @@ $manifestOutput = [ordered]@{
   package_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
   native_manifest = "native/native-manifest.json"
   native_manifest_sha256 = $nativeManifestSha256
+  contract_authority = "sdk-contract"
+  contract_authority_manifest_sha256 = $authorityManifestSha256
   native_assets = @($records)
   dotnet_sdk = $dotnetVersion
   targets = @($targets)
