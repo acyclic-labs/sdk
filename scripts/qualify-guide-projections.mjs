@@ -3,7 +3,7 @@
 import { createHash } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, relative, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // Resolve from the script directory so this remains correct when invoked from a docs checkout, a release archive, or a clean worktree.
@@ -33,6 +33,43 @@ function command(name, commandArgs, cwd = repo, extraEnv = {}) {
     stdout: result.stdout ?? "",
     stderr: result.stderr ?? (result.error?.message ?? ""),
   };
+}
+
+async function startFixture() {
+  const binary = join(repo, "rust", "crates", "sdk-examples", "target", "debug", process.platform === "win32" ? "fixture-server.exe" : "fixture-server");
+  if (!existsSync(binary)) return null;
+  const child = spawn(binary, ["--port", "0", "--grpc-port", "0", "--max-requests", "128"], {
+    cwd: repo,
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+  const address = await new Promise((resolveAddress, reject) => {
+    let buffer = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk;
+      for (const line of buffer.split(/\r?\n/).slice(0, -1)) {
+        try {
+          const record = JSON.parse(line);
+          if (record.grpc_address) {
+            resolveAddress(record.grpc_address);
+            return;
+          }
+        } catch {}
+      }
+      buffer = buffer.split(/\r?\n/).at(-1) ?? "";
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => reject(new Error(`fixture server exited before readiness (${code})`)));
+  });
+  child.unref();
+  return { child, address };
+}
+
+function fixtureEnvironment(language, address) {
+  const normalized = address.replace(/^https?:\/\//, "");
+  const urlLanguages = new Set(["typescript", "csharp"]);
+  return { FIXTURE_GRPC_ADDRESS: urlLanguages.has(language) ? address : normalized };
 }
 
 function allFiles(root) {
@@ -199,6 +236,11 @@ if (manifestCommand.exitCode !== 0) {
 }
 const projections = JSON.parse(manifestCommand.stdout);
 const receipts = [];
+const fixture = args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS ? await startFixture() : null;
+if (args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS && !fixture) {
+  console.error("--execute requires FIXTURE_GRPC_ADDRESS or a built sdk-examples fixture-server binary");
+}
+if (fixture) process.on("exit", () => fixture.child.kill());
 for (const projection of projections) {
   const directory = join(snippets, projection.scenario_id, projection.language);
   mkdirSync(directory, { recursive: true });
@@ -236,7 +278,11 @@ for (const projection of projections) {
       receipt.status = checked.exitCode === 0 ? "compiled" : "compile-failed";
     }
     if (receipt.status === "compiled" && args.has("--execute")) {
-      const ran = execute(projection.language, file, directory, prepared.environment);
+      const executionEnvironment = {
+        ...(fixture ? fixtureEnvironment(projection.language, fixture.address) : {}),
+        ...prepared.environment,
+      };
+      const ran = execute(projection.language, file, directory, executionEnvironment);
       receipt.execution = ran;
       receipt.status = ran.exitCode === 0 ? "executed" : "execution-failed";
     }
