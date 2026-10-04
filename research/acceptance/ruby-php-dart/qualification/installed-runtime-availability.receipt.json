@@ -93,7 +93,24 @@
         "ntstatus_without_cleanup": "0xC0000005",
         "ntstatus_with_cleanup": "0xC0000409",
         "repro_script_scope": "official PHP 8.2.34 NTS plus PECL gRPC 1.82.0 and protobuf 5.36.2; no network call; process exit is sampled after constructor output",
-        "cleanup_result": "explicit object cleanup and autoloader unregister are timing-dependent and do not qualify the whole process"
+        "cleanup_result": "explicit object cleanup and autoloader unregister are timing-dependent and do not qualify the whole process",
+        "runtime_variants": {
+          "grpc_only_with_composer_protobuf_exit": -1073740791,
+          "grpc_only_with_composer_protobuf_ntstatus": "0xC0000409",
+          "native_grpc_and_native_protobuf_exit": -1073741819,
+          "php_runtime": "8.2.34 NTS x64, Visual C++ 2019",
+          "grpc_extension": "1.82.0",
+          "protobuf_extension": "5.36.2"
+        },
+        "official_ini_controls": {
+          "grpc_enable_fork_support_default": 0,
+          "grpc_enable_fork_support_scope": "official PHP pcntl_fork support; no Windows shutdown control",
+          "grpc_poll_strategy_scope": "official documentation marks GRPC_POLL_STRATEGY posix-style environments only",
+          "poll_strategy_poll_sample_exits": [0, -1073741819],
+          "poll_strategy_legacy_sample_exit": -1073740791,
+          "qualification": "no supported Windows flag produced a stable whole-process exit 0"
+        },
+        "isolated_linux": "not run: WSL enumeration returned access denied on this host"
       }
     },
     "dart": {
@@ -153,6 +170,7 @@
   },
   "failure_policy": "The PHP native shutdown access violation remains failed despite all constructors completing; constructor output is not promoted to a whole-process pass."
 }
+
 
 
 
