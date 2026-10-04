@@ -24,11 +24,19 @@ fn native_library_name() -> &'static str {
 
 fn node_module_path() -> PathBuf {
     let test_binary = std::env::current_exe().expect("test executable path");
-    test_binary
+    let target_root = test_binary
         .parent()
         .and_then(Path::parent)
-        .expect("Cargo target directory")
-        .join(native_library_name())
+        .expect("Cargo target directory");
+    let library = native_library_name();
+    let direct = target_root.join(library);
+    if direct.exists() {
+        return direct;
+    }
+    // Cargo places cdylib outputs in `deps` for integration tests. Keep the
+    // lookup target-aware so the installed consumer test uses the exact module
+    // produced by the same Cargo invocation.
+    target_root.join("deps").join(library)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
