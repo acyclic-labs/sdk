@@ -8548,7 +8548,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
     }
 
-    pub(crate) fn bind_authored_operation(&mut self, operation_id: OperationId) {
+    /// Binds authored identities to one caller supplied operation key.
+    ///
+    /// This deterministic composition seam is intended for Rust-owned
+    /// fixtures and importers. Normal customer mutations should use the
+    /// transaction APIs, which bind identity from their idempotency key.
+    #[doc(hidden)]
+    pub fn bind_authored_operation(&mut self, operation_id: OperationId) {
         self.authored_operation_id = Some(operation_id);
     }
 
@@ -8904,7 +8910,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = metadata.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(FileKind::Regular, &path);
         let mut operations = Vec::new();
         if bytes.len() <= crate::kernel::MAXIMUM_INLINE_FILE_BYTES {
             operations.push(Mutation::Create {
@@ -9001,7 +9007,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = tree.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(FileKind::Directory, &path);
         let mutation = self
             .mutate(
                 vec![Mutation::Create {
@@ -9258,7 +9264,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             )
             .await?;
         work = metadata.1;
-        let file_id = FileId::new();
+        let file_id = self.authored_file_id(kind, &path);
         let mutation = self
             .mutate(
                 vec![Mutation::Create {
