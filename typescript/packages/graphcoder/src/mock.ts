@@ -113,7 +113,7 @@ export class MockGraphCoderTransport implements GraphCoderTransport {
     };
     const changes: ChangeSummary[] = [{ path: "README.md", kind: "modified", additions: 1, deletions: 0 }];
     const generation = 1n;
-    const snapshot: SessionSnapshot = { summary, agents: [root], workspaceGeneration: generation };
+    const snapshot: MockSession["snapshot"] = { summary, agents: [root], workspaceGeneration: generation };
     const activity: ActivityEvent[] = [
       { sequence: 1n, id: `activity-${number}-1`, kind: "session", actorId: rootAgentId, text: "session started", at },
       { sequence: 2n, id: `activity-${number}-2`, kind: "model", actorId: rootAgentId, text: `fixture ${this.#fixture} accepted the prompt`, at },

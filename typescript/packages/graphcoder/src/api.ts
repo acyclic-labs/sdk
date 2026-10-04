@@ -39,7 +39,7 @@ export interface ActivityEvent {
   readonly kind: "session" | "agent" | "message" | "approval" | "workspace" | "model";
   readonly actorId: AgentId | null;
   readonly text: string;
-  readonly at: string;
+  readonly at: string | null;
 }
 
 export interface GraphMessage {
@@ -57,9 +57,9 @@ export interface ApprovalRequest {
   readonly agentId: AgentId;
   readonly operationId: string;
   readonly actionDigest: string;
-  readonly description: string;
+  readonly description: string | null;
   readonly state: ApprovalState;
-  readonly createdAt: string;
+  readonly createdAt: string | null;
 }
 
 export interface ChangeSummary {

@@ -146,7 +146,7 @@ export function decodeSnapshot(value: unknown): SessionSnapshot {
 
 export function decodeActivity(value: unknown): ActivityEvent {
   const raw = record(value, "activity event");
-  return { sequence: decodeGeneration(raw.sequence, "activity sequence"), id: text(raw.id, "activity id"), kind: oneOf(raw.kind, ["session", "agent", "message", "approval", "workspace", "model"], "activity kind"), actorId: raw.actor_id === null ? null : agentId(text(raw.actor_id, "activity actor id")), text: text(raw.text, "activity text"), at: text(raw.at, "activity timestamp") };
+  return { sequence: decodeGeneration(raw.sequence, "activity sequence"), id: text(raw.id, "activity id"), kind: oneOf(raw.kind, ["session", "agent", "message", "approval", "workspace", "model"], "activity kind"), actorId: raw.actor_id === null ? null : agentId(text(raw.actor_id, "activity actor id")), text: text(raw.text, "activity text"), at: raw.at === null ? null : text(raw.at, "activity timestamp") };
 }
 
 export function decodeMessage(value: unknown): GraphMessage {
@@ -156,7 +156,7 @@ export function decodeMessage(value: unknown): GraphMessage {
 
 export function decodeApproval(value: unknown): ApprovalRequest {
   const raw = record(value, "approval");
-  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: checkedPublicText(raw.operation_id, "approval operation id", MAX_OPERATION_ID_BYTES), actionDigest: text(raw.action_digest, "approval action digest"), description: text(raw.description, "approval description"), state: oneOf(raw.state, ["pending", "approved", "declined", "cancelled", "expired", "denied"], "approval state"), createdAt: text(raw.created_at, "approval created_at") };
+  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: checkedPublicText(raw.operation_id, "approval operation id", MAX_OPERATION_ID_BYTES), actionDigest: text(raw.action_digest, "approval action digest"), description: raw.description === null ? null : text(raw.description, "approval description"), state: oneOf(raw.state, ["pending", "approved", "declined", "cancelled", "expired", "denied"], "approval state"), createdAt: raw.created_at === null ? null : text(raw.created_at, "approval created_at") };
 }
 
 export function decodeChangeSummary(value: unknown): ChangeSummary {

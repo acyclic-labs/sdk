@@ -63,6 +63,23 @@ describe("GraphCoder UI transport boundary", () => {
     expect(requests[0]?.params).toEqual({ prompt: "inspect", operation_id: "op-stable-1", model_fixture: "stage" });
   });
 
+  test("preserves unknown activity and approval metadata as null", async () => {
+    const bridge = {
+      request: async (request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> => {
+        const result = request.method === "read_activity"
+          ? { session_id: "session-1", items: [{ sequence: "1", id: "event-1", kind: "model", actor_id: null, text: "model event", at: null }] }
+          : { session_id: "session-1", items: [{ id: "approval-1", session_id: "session-1", agent_id: "agent-1", operation_id: "op-1", action_digest: "digest", description: null, state: "pending", created_at: null }] };
+        return { request_id: request.request_id, ok: true, result };
+      },
+    };
+    const transport = new BridgeGraphCoderTransport(bridge);
+    const activity = await transport.readActivity(sessionId("session-1"));
+    const approvals = await transport.listApprovals(sessionId("session-1"));
+    expect(activity.items[0]?.at).toBeNull();
+    expect(approvals.items[0]?.description).toBeNull();
+    expect(approvals.items[0]?.createdAt).toBeNull();
+  });
+
   test("does not treat absent workspace generation as generation zero", async () => {
     let reads = 0;
     const transport = {

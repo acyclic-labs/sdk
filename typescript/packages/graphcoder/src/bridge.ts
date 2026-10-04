@@ -132,9 +132,9 @@ export const MAX_BRIDGE_FILE_BYTES = 64 * 1024 * 1024;
 
 export type GraphCoderWireSessionSummary = Omit<SessionSummary, "id" | "rootAgentId"> & { readonly id: string; readonly root_agent_id: string };
 export type GraphCoderWireAgentSummary = Omit<AgentSummary, "id" | "parentId" | "children"> & { readonly id: string; readonly parent_id: string | null; readonly children: readonly string[] };
-export type GraphCoderWireActivityEvent = Omit<ActivityEvent, "sequence" | "actorId"> & { readonly sequence: string; readonly actor_id: string | null };
+export type GraphCoderWireActivityEvent = Omit<ActivityEvent, "sequence" | "actorId" | "at"> & { readonly sequence: string; readonly actor_id: string | null; readonly at: string | null };
 export type GraphCoderWireMessage = Omit<GraphMessage, "id" | "sessionId" | "senderId" | "recipientId"> & { readonly id: string; readonly session_id: string; readonly sender_id: string; readonly recipient_id: string };
-export type GraphCoderWireApproval = Omit<ApprovalRequest, "id" | "sessionId" | "agentId"> & { readonly id: string; readonly session_id: string; readonly agent_id: string };
+export type GraphCoderWireApproval = Omit<ApprovalRequest, "id" | "sessionId" | "agentId" | "description" | "createdAt"> & { readonly id: string; readonly session_id: string; readonly agent_id: string; readonly description: string | null; readonly created_at: string | null };
 export type GraphCoderWireChangeSummary = Omit<ChangeSummary, "oldPath"> & { readonly old_path?: string };
 export type GraphCoderWireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly session_id: string; readonly generation: string; readonly unified_diff: string };
 export type GraphCoderWireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly session_id: string; readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
