@@ -32,6 +32,21 @@
       "required_markers": ["approval transitions to approved", "writeback applied only with matching operation and generation", "cancellation and resume state transitions"]
     },
     {
+      "id": "installed-recursive-swarm",
+      "execution_kinds": ["native"],
+      "platforms": ["windows", "linux", "macos"],
+      "driver": "scripts/graphcoder-installed-swarm-e2e.mjs",
+      "scenario": "docs/graphcoder-swarm/graphcoder-installed-swarm-scenarios.json",
+      "capture": "scripts/graphcoder-qualification-suite.mjs",
+      "requires_installed_package": true,
+      "requires_process_ownership": true,
+      "requires_native_approval": true,
+      "requires_recursive_agents": true,
+      "allows_mock_fixture": false,
+      "receipt_environment": "GRAPHCODER_INSTALLED_SWARM_RECEIPT",
+      "required_markers": ["two direct children", "one grandchild", "approved native execution", "root writeback"]
+    },
+    {
       "id": "installed-pty",
       "execution_kinds": ["pty"],
       "platforms": ["windows"],

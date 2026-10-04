@@ -1,0 +1,9 @@
+{
+  "protocol": "acyclic.graphcoder.installed-swarm-scenarios.v1",
+  "driver": "scripts/graphcoder-installed-swarm-e2e.mjs",
+  "execution_kind": "native",
+  "fixture": "recursive",
+  "required_effects": ["two direct children", "one grandchild", "ordered messages", "approved native execution", "root writeback"],
+  "required_routes": ["list_sessions", "start_session", "read_activity", "read_messages", "list_approvals", "list_changes", "read_change", "approve_writeback"],
+  "failure_policy": "The driver fails closed on missing recursive agents, missing pending approval, unsupported changes, stale generations, failed writeback, or unverified bridge cleanup. Transport/package smoke output cannot satisfy this scenario."
+}
