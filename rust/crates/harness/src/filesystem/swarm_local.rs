@@ -5676,7 +5676,8 @@ mod tests {
         fresh.mark_activation_failed_if_safe(
             fresh_task, unstarted, Some(&harness), &failure,
         ).await?;
-        assert_eq!(fresh.session(fresh_task).await?.phase, LocalSessionPhase::Failed);
+        assert_eq!(fresh.session(fresh_task).await?.phase,
+            LocalSessionPhase::Failed(failure.to_string()));
         assert!(fresh.claim_child_activation(&registry, fresh_task, unstarted).await?);
         Ok(())
     }
