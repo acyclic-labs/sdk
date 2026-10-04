@@ -11,7 +11,8 @@
     ],
     "clang": "17.0.2",
     "docker": "installed, Linux daemon unavailable",
-    "wsl": "installed, distro enumeration denied"
+    "wsl": "installed, distro enumeration denied",
+    "zig": "not installed; pinned Scoop download attempt was blocked by the local network proxy"
   },
   "attempts": [
     {
@@ -34,6 +35,11 @@
       "platform": "Linux-WSL",
       "result": "unavailable-runtime",
       "evidence": "WSL distro enumeration returned E_ACCESSDENIED"
+    },
+    {
+      "platform": "x86_64-unknown-linux-musl",
+      "result": "sysroot-provisioning-blocked",
+      "evidence": "A pinned Zig 0.16.0 bootstrap attempt was rejected before download by the local network proxy; no unverified sysroot was introduced"
     }
   ],
   "qualification_policy": "Only an executed foreign consumer against a produced Rust package can change this record to qualified. CI workflow definitions do not count as execution evidence.",

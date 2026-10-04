@@ -2,7 +2,7 @@
   "schema": "acyclic.sdk.embedded.platform-qualification.v1",
   "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
   "source_crate": "rust/crates/sdk-embedded-prototype",
-  "source_digest": "sha256:e60273cd4f2bbf6132c67872a411a86328291628a2fbd91e3033725809f2c8a3",
+  "source_digest": "sha256:36055ba48a01d08909cc152f480f3570e0fd81cad29cce0b5aca229f852a7555",
   "platforms": {
     "windows-x86_64-msvc": {
       "status": "qualified",

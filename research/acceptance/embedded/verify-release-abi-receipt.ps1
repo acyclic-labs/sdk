@@ -92,7 +92,7 @@ function Test-PeImage([string]$Path) {
     return [ordered]@{ mz = $true; pe = $true; export = 'acyclic_embedded_abi_version' }
 }
 
-function Assert-ReceiptPackage([object]$Receipt, [string]$Root) {
+function Assert-ReceiptPackage([object]$Receipt, [string]$Root, [string]$SourceRoot) {
     if ($Receipt.schema -ne 'acyclic.sdk.embedded.release-abi.v1') { throw 'Unsupported embedded release ABI receipt schema' }
     if ($Receipt.status -ne 'qualified-local-release-package') { throw 'Receipt is not qualified' }
     if ($Receipt.source.revision -notmatch '^[0-9a-fA-F]{40}$' -or $Receipt.source.source_digest -notmatch '^[0-9a-fA-F]{64}$') { throw 'Rust source binding is not immutable' }
@@ -104,9 +104,19 @@ function Assert-ReceiptPackage([object]$Receipt, [string]$Root) {
     }
     foreach ($name in @('c','python','cpp')) {
         $consumer = $Receipt.consumer_receipts.$name
-        if ($consumer.status -ne 'passed' -or [string]::IsNullOrWhiteSpace($consumer.language) -or [string]::IsNullOrWhiteSpace($consumer.source) -or [string]::IsNullOrWhiteSpace($consumer.command) -or $consumer.package_artifact -ne 'bin/acyclic_sdk_embedded_prototype.dll' -or @($consumer.checks).Count -eq 0) {
+        $requiredChecks = switch ($name) {
+            'c' { @('layout','append','read','release','stale_handles') }
+            'python' { @('append','follow','owned_buffers','cancel','stale_handles') }
+            'cpp' { @('blocked_pull_wakeup','cross_thread_cancel','clean_prefix_install') }
+        }
+        if ($consumer.status -ne 'passed' -or $consumer.scope -ne 'embedded-native-abi' -or $consumer.invoked -ne $true -or [int]$consumer.exit_code -ne 0 -or $consumer.source_revision -ne $Receipt.source.revision -or $consumer.source_sha256 -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace($consumer.language) -or [string]::IsNullOrWhiteSpace($consumer.source) -or [string]::IsNullOrWhiteSpace($consumer.command) -or $consumer.package_artifact -ne 'bin/acyclic_sdk_embedded_prototype.dll' -or $consumer.package_artifact_sha256 -notmatch '^[0-9a-fA-F]{64}$' -or @($consumer.checks).Count -eq 0 -or @($requiredChecks | Where-Object { $_ -notin @($consumer.checks) }).Count -ne 0) {
             throw "Actual foreign consumer receipt is incomplete: $name"
         }
+        $consumerSourcePath = Get-ArtifactPath $SourceRoot ([string]$consumer.source)
+        if (-not (Test-Path -LiteralPath $consumerSourcePath -PathType Leaf)) { throw "Consumer source is missing: $name" }
+        if ((Get-FileHash -LiteralPath $consumerSourcePath -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$consumer.source_sha256).ToLowerInvariant()) { throw "Consumer source hash mismatch: $name" }
+        $consumerArtifactPath = Get-ArtifactPath $Root ([string]$consumer.package_artifact)
+        if ((Get-FileHash -LiteralPath $consumerArtifactPath -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$consumer.package_artifact_sha256).ToLowerInvariant()) { throw "Consumer artifact hash mismatch: $name" }
     }
     if ([int]$Receipt.foreign_consumers.cmake_ctest.passed -ne [int]$Receipt.foreign_consumers.cmake_ctest.total) { throw 'CMake test receipt is incomplete' }
     if ([int]$Receipt.reproducibility.independent_clean_builds -ne 2 -or $Receipt.reproducibility.source_digests_equal -ne $true -or $Receipt.reproducibility.artifact_hashes_equal -ne $true) { throw 'Clean build reproducibility receipt is incomplete' }
@@ -158,7 +168,7 @@ $receipt = Get-Content -Raw -LiteralPath $ReceiptPath | ConvertFrom-Json
 $schemaPath = Join-Path $PSScriptRoot 'release-abi-receipt.schema.json'
 $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
 if ($schema.'$id' -ne 'https://sdk.acyclic.dev/schemas/embedded-release-abi-receipt.v1.json') { throw 'Receipt schema identity changed unexpectedly' }
-$validated = Assert-ReceiptPackage $receipt $packageFull
+$validated = Assert-ReceiptPackage $receipt $packageFull $sourceFull
 $unifiedEvidencePath = Join-Path $PSScriptRoot 'release-abi-generation-evidence.json'
 $unifiedEvidence = Get-Content -Raw -LiteralPath $unifiedEvidencePath | ConvertFrom-Json
 if ($unifiedEvidence.schema -ne 'acyclic.sdk.qualification.evidence.v1' -or $unifiedEvidence.language -ne 'cpp' -or $unifiedEvidence.source_revision -ne $receipt.source.revision -or $unifiedEvidence.contract_digest -ne ('sha256:' + $receipt.source.source_digest) -or $unifiedEvidence.artifact_digest -ne (Get-UnifiedArtifactDigest $receipt.artifacts) -or $unifiedEvidence.embedded.status -ne 'qualified' -or $unifiedEvidence.install.status -ne 'qualified' -or @($unifiedEvidence.embedded.tests).Count -lt 5) {
@@ -176,7 +186,7 @@ if (-not $SkipTamperCheck) {
         if ($tamperedBytes.Length -lt 0x200) { throw 'Runtime artifact is unexpectedly small for tamper test' }
         $tamperedBytes[0x1ff] = $tamperedBytes[0x1ff] -bxor 0x01
         [IO.File]::WriteAllBytes($tamperedDll, $tamperedBytes)
-        try { Assert-ReceiptPackage $receipt $tampered | Out-Null; throw 'Tampered artifact was accepted' } catch { $tamperRejected = $_.Exception.Message -like '*Artifact hash mismatch*' }
+        try { Assert-ReceiptPackage $receipt $tampered $sourceFull | Out-Null; throw 'Tampered artifact was accepted' } catch { $tamperRejected = $_.Exception.Message -like '*Artifact hash mismatch*' }
         if (-not $tamperRejected) { throw 'Tamper rejection did not identify the modified artifact' }
     } finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
