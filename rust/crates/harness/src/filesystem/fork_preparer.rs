@@ -44,6 +44,21 @@ struct SeedBinding {
     digest: [u8; 32],
 }
 
+/// Durable intent for changing an already allocated seed to the exact
+/// publication boundary selected by the parent. The intent is written before
+/// `/seed.json` is changed, so recovery can finish the same transition without
+/// guessing whether the seed mutation happened.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SeedRebindIntent {
+    operation_id: OperationId,
+    parent: Authority,
+    child: Authority,
+    volume: VolumeRef,
+    from: [u8; 32],
+    to: [u8; 32],
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CaptureAttempt {
@@ -915,27 +930,15 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     async fn bind_fork_seed(&self, seed: &ForkSeed) -> Result<()> {
         let binding = seed_binding(seed)?;
-        for volume in [
-            &seed.child_private_volume,
-            seed.resources
-                .iter()
-                .find_map(|resource| {
-                    if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                        Some(volume)
-                    } else {
-                        None
-                    }
-                })
-                .ok_or_else(|| Error::Invalid("fork has no child project".into()))?,
-        ] {
-            let journal = allocation_ref(self.provider.clone(), volume)?;
+        for volume in seed_allocation_volumes(seed)? {
+            let journal = allocation_ref(self.provider.clone(), &volume)?;
             let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
                 .await?
                 .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
             if claim.operation_id != seed.operation_id
                 || claim.parent != seed.parent
                 || claim.child != seed.child
-                || claim.volume != *volume
+                || claim.volume != volume
             {
                 return Err(Error::Conflict(
                     "fork child volume belongs to another preparation".into(),

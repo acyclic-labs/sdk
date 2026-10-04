@@ -1376,6 +1376,17 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 {
                     continue;
                 }
+                // A retry may arrive after the parent publication succeeded
+                // but before child binding. Reuse the exact seed retained by
+                // the durable admission only when the parent aggregate proves
+                // that publication already exists; otherwise continue through
+                // the rebind intent below.
+                if let Ok(existing_seed) = swarm.published_seed(child).await {
+                    if parent.reducer().fork(&existing_seed.child) == Some(&existing_seed) {
+                        prepared.push((plan, existing_seed));
+                        continue;
+                    }
+                }
                 // Multiple children selected by one completed batch publish
                 // sequentially on the same parent stream. Their immutable
                 // captures remain stable, while each seed pins the parent's
@@ -3933,7 +3944,8 @@ impl PersistentLocalSwarm {
             });
         }
         let seed = self.published_seed(task).await?;
-        if let Ok(report) = self.prepared_report(task).await {
+        if parent.reducer().fork(&seed.child) != Some(&seed) {
+            let report = self.prepared_report(task).await?;
             let mut child = StreamAggregate::open(
                 &stream,
                 seed.child.clone(),
@@ -4409,24 +4421,6 @@ fn apply_record(
                             "persisted fork report is not bound to its typed seed".into(),
                         ));
                     }
-=======
-            if let (Some(seed), Some(report)) = (&seed, &report) {
-                report.validate()?;
-                if report.clone().into_seed()? != *seed {
-                    return Err(Error::Conflict(
-                        "persisted fork report is not bound to its typed seed".into(),
-                    ));
-                }
-                seed.validate()?;
-                if report.request.operation_id != seed.operation_id
-                    || report.request.child != seed.child
-                    || report.request.child_agent != seed.child_agent
-                {
-                    return Err(Error::Conflict(
-                        "persisted fork report and seed operation binding changed".into(),
-                    ));
-                }
-            }
             let parent_session = sessions
                 .get(&parent)
                 .ok_or_else(|| Error::Storage("fork parent session is missing".into()))?;
