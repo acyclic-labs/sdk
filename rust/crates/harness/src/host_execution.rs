@@ -1127,6 +1127,21 @@ impl ExecutionRunner for NativeExecutionRunner {
                         reason: "process descendants retained output handles".into(),
                     });
                 };
+                match child.wait_termination_complete() {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return Ok(RunnerOutcome::Unknown {
+                            reason: "process root exited before native ownership boundary completed".into(),
+                        });
+                    }
+                    Err(error) => {
+                        return Ok(RunnerOutcome::Unknown {
+                            reason: format!(
+                                "native ownership completion could not be observed: {error}"
+                            ),
+                        });
+                    }
+                }
                 return Ok(RunnerOutcome::Exited {
                     status_code: status.code(),
                     stdout,
@@ -1251,6 +1266,29 @@ impl ManagedChild {
             Self::Direct(_) => false,
             #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
             Self::Tree(_) => true,
+        }
+    }
+
+    fn termination_complete(&mut self) -> std::io::Result<bool> {
+        match self {
+            // The direct fallback has no descendant owner. The caller has
+            // already proved the root exit and both output pipes are closed.
+            Self::Direct(_) => Ok(true),
+            #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+            Self::Tree(tree) => tree.termination_complete(),
+        }
+    }
+
+    fn wait_termination_complete(&mut self) -> std::io::Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.termination_complete()? {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -2675,14 +2713,23 @@ mod tests {
         } else {
             b"graphcoder-approved".to_vec()
         };
-        assert_eq!(
-            output,
-            RunnerOutcome::Exited {
-                status_code: Some(0),
-                stdout: expected,
-                stderr: Vec::new()
-            }
-        );
+        if cfg!(target_os = "linux") && std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT").is_none() {
+            assert!(matches!(
+                output,
+                RunnerOutcome::Unknown { ref reason }
+                    if reason.contains("native ownership boundary")
+                        || reason.contains("ownership completion")
+            ));
+        } else {
+            assert_eq!(
+                output,
+                RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: expected,
+                    stderr: Vec::new()
+                }
+            );
+        }
         Ok(())
     }
 
@@ -2704,14 +2751,23 @@ mod tests {
         } else {
             b"exact-value".to_vec()
         };
-        assert_eq!(
-            output,
-            RunnerOutcome::Exited {
-                status_code: Some(0),
-                stdout: expected,
-                stderr: Vec::new()
-            }
-        );
+        if cfg!(target_os = "linux") && std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT").is_none() {
+            assert!(matches!(
+                output,
+                RunnerOutcome::Unknown { ref reason }
+                    if reason.contains("native ownership boundary")
+                        || reason.contains("ownership completion")
+            ));
+        } else {
+            assert_eq!(
+                output,
+                RunnerOutcome::Exited {
+                    status_code: Some(0),
+                    stdout: expected,
+                    stderr: Vec::new()
+                }
+            );
+        }
         Ok(())
     }
 

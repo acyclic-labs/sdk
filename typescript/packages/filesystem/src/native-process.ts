@@ -109,6 +109,35 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
         child.emit("close", child.exitCode, child.signalCode);
       };
       state.finish = finish;
+      const failAndTerminate = (message: string): void => {
+        state.failed = true;
+        state.stopping = true;
+        if (state.timer !== undefined) {
+          clearInterval(state.timer);
+          state.timer = undefined;
+        }
+        child.emit("error", new Error(message));
+        if (state.termination !== undefined) return;
+        const operation = Promise.resolve().then(() => {
+          const result = io.terminate(launch.token);
+          return result.kind === "terminated"
+            ? { kind: "terminated", pid: child.pid ?? -1 } satisfies NativeProcessTermination
+            : result;
+        }).catch(error => ({
+          kind: "unknown",
+          pid: child.pid ?? -1,
+          reason: error instanceof Error ? error.message : String(error),
+        } satisfies NativeProcessTermination));
+        state.termination = operation;
+        void operation.then(result => {
+          if (result.kind === "terminated") {
+            tokens.delete(child);
+            state.finish();
+          } else if (state.termination === operation) {
+            state.termination = undefined;
+          }
+        });
+      };
       const poll = (): void => {
         if (state.closed || state.stopping) return;
         try {
@@ -118,13 +147,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
             const value = io.pollOutput(launch.token, stream);
             if (value.kind === "data" && value.bytes !== undefined) {
               if (value.bytes.byteLength > NATIVE_STREAM_HIGH_WATER_MARK) {
-                state.failed = true;
-                state.stopping = true;
-                if (state.timer !== undefined) {
-                  clearInterval(state.timer);
-                  state.timer = undefined;
-                }
-                child.emit("error", new Error(`${stream} output chunk exceeds the bounded stream limit`));
+                failAndTerminate(`${stream} output chunk exceeds the bounded stream limit`);
                 return;
               }
               if (!target.write(Buffer.from(value.bytes))) {
@@ -137,13 +160,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
               }
             }
             if (value.kind === "error") {
-              state.failed = true;
-              state.stopping = true;
-              if (state.timer !== undefined) {
-                clearInterval(state.timer);
-                state.timer = undefined;
-              }
-              child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+              failAndTerminate(value.reason ?? `${stream} read failed`);
               return;
             }
             if (value.kind === "eof") {
@@ -158,7 +175,7 @@ export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProc
             if (stdoutDone && stderrDone) finish();
           }
         } catch (error) {
-          child.emit("error", error instanceof Error ? error : new Error(String(error)));
+          failAndTerminate(error instanceof Error ? error.message : String(error));
         }
       };
       state.resume = (): void => {

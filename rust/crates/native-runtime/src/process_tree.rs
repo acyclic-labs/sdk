@@ -227,6 +227,17 @@ impl ProcessTree {
     /// Returns whether the platform-owned process boundary has disappeared.
     /// A successful termination request alone is not proof of completion.
     pub fn termination_complete(&mut self) -> io::Result<bool> {
+        // Reap a naturally exited direct root before asking the platform
+        // boundary whether the tree is gone. This keeps the child handle from
+        // being dropped as an unreaped process and lets Linux validate the
+        // retained root identity before reporting completion.
+        let exited = match self.child.as_mut() {
+            Some(child) => child.try_wait()?.is_some(),
+            None => false,
+        };
+        if exited {
+            self.child.take();
+        }
         self.guard.termination_complete()
     }
 }
