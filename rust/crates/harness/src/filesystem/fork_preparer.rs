@@ -861,6 +861,131 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         Ok(())
     }
 
+    /// Rebinds an already prepared allocation when an earlier sibling fork
+    /// advanced the parent's publication revision. The child identities,
+    /// captured bytes, and provider generations must remain identical; only
+    /// the authenticated history reference may move to the new predecessor.
+    /// The old seed binding is checked before the replacement is written, so
+    /// a stale publisher cannot overwrite another publication's allocation.
+    pub(crate) async fn rebind_fork_seed(
+        &self,
+        previous: &ForkSeed,
+        next: &ForkSeed,
+    ) -> Result<()> {
+        previous.validate()?;
+        next.validate()?;
+        if previous.operation_id != next.operation_id
+            || previous.parent != next.parent
+            || previous.child != next.child
+            || previous.child_agent != next.child_agent
+            || previous.child_private_volume != next.child_private_volume
+            || previous.child_private_generation != next.child_private_generation
+            || previous.inherited_parent_revision != next.inherited_parent_revision
+            || previous.inherited_through_sequence != next.inherited_through_sequence
+            || previous.attached_agents != next.attached_agents
+            || previous.omissions != next.omissions
+            || previous.inherited_context != next.inherited_context
+            || previous.shared_grants != next.shared_grants
+            || previous.reference_grants != next.reference_grants
+            || previous.attachment_manifests != next.attachment_manifests
+            || previous.boundary != next.boundary
+            || previous.model_boundary != next.model_boundary
+            || next.parent_revision <= previous.parent_revision
+            || previous.resources.len() != next.resources.len()
+        {
+            return Err(Error::Conflict(
+                "fork seed rebind changed immutable allocation state".into(),
+            ));
+        }
+        for (old, new) in previous.resources.iter().zip(&next.resources) {
+            if !same_rebind_resource(old, new) {
+                return Err(Error::Conflict(
+                    "fork seed rebind changed a captured resource".into(),
+                ));
+            }
+        }
+        let old_binding = seed_binding(previous)?;
+        let new_binding = seed_binding(next)?;
+        let previous_project = previous
+            .resources
+            .iter()
+            .find_map(|resource| {
+                if let ResourceRevision::Project { volume, .. } = &resource.revision {
+                    Some(volume)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
+        let next_project = next
+            .resources
+            .iter()
+            .find_map(|resource| {
+                if let ResourceRevision::Project { volume, .. } = &resource.revision {
+                    Some(volume)
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| Error::Invalid("fork has no child project".into()))?;
+        if previous_project != next_project {
+            return Err(Error::Conflict(
+                "fork seed rebind changed the child project allocation".into(),
+            ));
+        }
+        for volume in [&next.child_private_volume, next_project] {
+            let journal = allocation_ref(self.provider.clone(), volume)?;
+            let claim = read_record::<A, O, AllocationClaim>(self, &journal, "/claim.json", 4_096)
+                .await?
+                .ok_or_else(|| Error::Unauthorized("fork child volume was not allocated".into()))?;
+            if claim.operation_id != next.operation_id
+                || claim.parent != next.parent
+                || claim.child != next.child
+                || claim.volume != *volume
+            {
+                return Err(Error::Conflict(
+                    "fork child volume belongs to another preparation".into(),
+                ));
+            }
+            let prior = read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096)
+                .await?
+                .ok_or_else(|| {
+                    Error::Unauthorized("fork seed was not bound to its allocation".into())
+                })?;
+            if prior != old_binding {
+                return Err(Error::Conflict(
+                    "fork allocation changed before seed rebind".into(),
+                ));
+            }
+            let observed = self.resolve(&journal).await?;
+            let key = IdempotencyKey::new(format!(
+                "fork:{}:seed-rebind:{}",
+                next.operation_id, next.parent_revision
+            ))?;
+            match self
+                .apply(
+                    &journal,
+                    Some(&observed.generation),
+                    &[WorkspaceMutation::PutFile {
+                        path: "/seed.json".into(),
+                        bytes: encode_record(&new_binding, 4_096)?,
+                    }],
+                    &key,
+                )
+                .await
+            {
+                Ok(_) | Err(Error::Conflict(_)) => {}
+                Err(error) => return Err(error),
+            }
+            match read_record::<A, O, SeedBinding>(self, &journal, "/seed.json", 4_096).await? {
+                Some(binding) if binding == new_binding => {}
+                Some(_) => return Err(Error::Conflict("fork allocation seed changed".into())),
+                None => return Err(Error::Indeterminate(next.operation_id)),
+            }
+        }
+        Ok(())
+    }
+
     async fn bind_fork_seed(&self, seed: &ForkSeed) -> Result<()> {
         let binding = seed_binding(seed)?;
         for volume in [
@@ -982,6 +1107,21 @@ fn seed_binding(seed: &ForkSeed) -> Result<SeedBinding> {
     Ok(SeedBinding {
         digest: *blake3::hash(&encode_record(seed, MAX_REPORT_BYTES)?).as_bytes(),
     })
+}
+
+fn same_rebind_resource(previous: &CapturedResource, next: &CapturedResource) -> bool {
+    fn same_revision(previous: &ResourceRevision, next: &ResourceRevision) -> bool {
+        match (previous, next) {
+            (ResourceRevision::History(previous), ResourceRevision::History(next)) => {
+                previous.as_resource().provider() == next.as_resource().provider()
+                    && previous.as_resource().key() == next.as_resource().key()
+            }
+            _ => previous == next,
+        }
+    }
+
+    same_revision(&previous.source, &next.source)
+        && same_revision(&previous.revision, &next.revision)
 }
 
 fn validate_capture(selection: &ForkSelection, capture: &Capture) -> Result<()> {

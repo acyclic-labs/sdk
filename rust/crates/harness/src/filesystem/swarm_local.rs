@@ -1313,7 +1313,12 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 // current stream revision before its append.
                 let current_revision = parent.reducer().revision();
                 if plan.report.request.parent_revision != current_revision {
+                    let previous_seed = plan.report.clone().into_seed()?;
                     rebind_report_history(&mut plan.report, current_revision)?;
+                    let rebound_seed = plan.report.clone().into_seed()?;
+                    plan.host
+                        .rebind_fork_seed(&previous_seed, &rebound_seed)
+                        .await?;
                 }
                 let seed = swarm
                     .publish_child_seed_with_publication(
