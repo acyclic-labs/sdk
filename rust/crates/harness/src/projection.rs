@@ -1,5 +1,6 @@
 //! Explicit, provenance-preserving selection from canonical history to model context.
 
+use crate::BoxFuture;
 pub use crate::conversation::ModelContextSelection;
 use crate::{
     Error, Result,
@@ -10,7 +11,6 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
 };
-use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
@@ -40,7 +40,7 @@ struct ProjectedToolInvocation {
 }
 
 /// Provider-owned, grant-checked resolver for a complete attachment manifest.
-pub trait AttachmentListResolver: Send + Sync {
+pub trait AttachmentListResolver: crate::runtime::HostThreadSafety {
     /// Verifies the pinned manifest bytes and returns its complete ordered list.
     fn resolve<'a>(
         &'a self,
