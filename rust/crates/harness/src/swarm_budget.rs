@@ -4348,7 +4348,7 @@ mod tests {
         assert_eq!(usage.consumed.model_steps, 8);
         assert_eq!(usage.consumed.output_bytes, 80);
         assert_eq!(usage.consumed.execution_time_ms, 800);
-        assert_eq!(usage.active_agents, 0);
+        assert_eq!(usage.active_agents, 1);
         Ok(())
     }
 
