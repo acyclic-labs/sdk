@@ -114,6 +114,14 @@ if ([string]::IsNullOrWhiteSpace($RustTarget)) {
 if ([string]::IsNullOrWhiteSpace($RustTarget) -or $RustTarget -notmatch '^[^-]+-pc-windows-msvc$') {
     throw "RustTarget must be a Windows MSVC target triple: $RustTarget"
 }
+if ($RustTarget -eq "aarch64-pc-windows-msvc" -and -not $SkipExecution) {
+    $nativeArchitectures = @($env:PROCESSOR_ARCHITEW6432, $env:PROCESSOR_ARCHITECTURE) |
+        Where-Object { $_ } |
+        ForEach-Object { $_.ToUpperInvariant() }
+    if ($nativeArchitectures -notcontains "ARM64") {
+        throw "Native ARM64 execution requires an ARM64 Windows host; observed $($nativeArchitectures -join ', ')"
+    }
+}
 
 $manifest = Join-Path $rootPath "rust\crates\sdk-embedded-prototype\Cargo.toml"
 $consumerSource = Join-Path $rootPath "cpp\embedded-consumer"
