@@ -1,0 +1,52 @@
+{
+  "schema": "graphcoder.budget.static-review.v1",
+  "review": "fa8e11e241947f783cd631b6dd883f222d171018",
+  "baseline": "9e787a6897622a09e70e5f2509a43dad4bd91660",
+  "reviewer_branch": "codex/budget-root-compatible",
+  "generated_at": "2026-10-04T12:00:00+01:00",
+  "qualification": "static-only",
+  "build_skipped": "D target disk constrained; parent instructed no new builds",
+  "delta": {
+    "changed_files": 17,
+    "explicit_output_bound_methods": 24,
+    "budget_core_files_changed": false,
+    "root_zero_receipt_guard": true,
+    "diff_check": "pass"
+  },
+  "source_hashes": {
+    "swarm_budget": "be2cc8cb2c9e2af7cd8157edd9afaed373877a77",
+    "swarm_budget_journal": "1b10c6f8475e80d1059b988300bd21a9840f9a04",
+    "swarm_local": "959915bc4b7c2a28e2298985a91e988b9bb134cf",
+    "model": "027cb1fedd4452d7e4e13951ea976cc9c975e2cc",
+    "executor": "72687f323b340763410b4775c92a7f8f4d1cdec8",
+    "model_input": "b605bee32d2b92eb6d759979822af6f4c0988989"
+  },
+  "checks": [
+    {
+      "name": "output-bound-unit-contract",
+      "status": "pass",
+      "evidence": "All 24 additions use u32::try_from(max_output_bytes) with positive filtering; test helper documents one-byte-per-token wire contract; production executor rejects None before request construction."
+    },
+    {
+      "name": "hidden-context-delta",
+      "status": "pass",
+      "evidence": "fa8 delta contains no model-input composition, retrieval, summary, history, or UI metadata changes."
+    },
+    {
+      "name": "old-root-schema-overwrite",
+      "status": "pass",
+      "evidence": "No swarm_budget.rs or swarm_budget_journal.rs changes in 9e..fa; BUDGET_EVENT_VERSION remains 1 and Started.root_dispatch_id remains serde-defaulted."
+    },
+    {
+      "name": "stale-zero-root-receipt",
+      "status": "pass",
+      "evidence": "persist_root_budget_usage returns before issuing a receipt when local meter usage is default."
+    },
+    {
+      "name": "root-pre-receipt-recovery",
+      "status": "open",
+      "severity": "high",
+      "evidence": "fa8 swarm_local.rs:2406 uses cursor.usage.is_some_and(|previous| previous != measured). When durable root sequence is 0 and provider source measured usage is nonzero after interruption, refresh skips reconciliation; RootModelStepClaimed remains live and later root admission can remain fenced. Use cursor.usage != Some(measured), while still suppressing measured=zero with cursor=None."
+    }
+  ]
+}
