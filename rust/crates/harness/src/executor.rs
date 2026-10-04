@@ -1788,7 +1788,11 @@ impl Executor for StockExecutor {
             self.validate_turn_input(journal, &input).await?;
             self.ensure_started(journal, &input).await?;
             let mut prior_messages = Vec::new();
-            let mut rejection_evidence = Vec::new();
+            let mut rejection_evidence = input
+                .selected_context
+                .as_ref()
+                .map(|context| context.rejection_evidence.clone())
+                .unwrap_or_default();
             let mut text = String::new();
             for step in 0..input.max_steps {
                 let step_text_start = text.len();

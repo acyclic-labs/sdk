@@ -55,6 +55,7 @@ struct CapturedModel {
     binding_digests: Mutex<Vec<[u8; 32]>>,
     root: bool,
     read_first: bool,
+    reject_first: bool,
     overlap_barrier: Option<Arc<Barrier>>,
 }
 impl ModelProvider for CapturedModel {
@@ -75,7 +76,18 @@ impl ModelProvider for CapturedModel {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(binding_digest);
         let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
-        let events = if !self.root && self.read_first && first {
+        let events = if !self.root && self.reject_first && first {
+            vec![
+                ModelEvent::ToolCall {
+                    call_id: "child-invalid".into(),
+                    name: "acyclic.stage_file".into(),
+                    arguments: json!({"parameters": {"text": "wrong child"}}),
+                },
+                ModelEvent::Completed {
+                    metadata: Value::Null,
+                },
+            ]
+        } else if !self.root && self.read_first && first {
             let file = self.requests.lock().unwrap().last().and_then(|request| {
                 request
                     .messages
@@ -930,6 +942,7 @@ impl ForkAtBatch {
                 Ok::<_, Error>((
                     index,
                     storage,
+                    bundle,
                     child_publisher,
                     child_authority,
                     child_issuer,
@@ -980,12 +993,54 @@ impl ForkAtBatch {
         for result in all_children.await {
             completed_children.push(result?);
         }
+        let child_zero = completed_children
+            .iter()
+            .find(|entry| entry.0 == 0)
+            .ok_or_else(|| Error::Storage("child zero completion missing".into()))?;
+        let child_zero_records = child_zero
+            .1
+            .journal()
+            .replay(OperationId::from_bytes([60; 16]))
+            .await?;
+        assert!(child_zero_records.iter().any(|record| matches!(
+            record.event,
+            ExecutionEvent::ToolAdmissionRejected {
+                reason: acyclic_harness::executor::ToolRejectionKind::InvalidArguments,
+                feedback: Some(_),
+                ..
+            }
+        )));
+        let child_follow_operation = OperationId::from_bytes([61; 16]);
+        let child_follow_input = child_zero
+            .1
+            .stage(
+                child_follow_operation,
+                "input/child-follow-up.txt",
+                b"child rejection follow-up",
+                "text/plain",
+                "child-follow-up.txt",
+            )
+            .await?;
+        child_zero
+            .1
+            .run_conversation(
+                &child_zero.2,
+                child_follow_operation,
+                child_follow_input,
+                Vec::new(),
+                3,
+            )
+            .await
+            .map_err(|error| Error::Storage(format!("child rejection follow-up failed: {error}")))?;
+        assert_eq!(self.children[0].calls.load(Ordering::SeqCst), 3);
         let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
             .manifest()
             .binding_digest;
-        for (index, storage, _, _, _, _, _, operation) in &completed_children {
-            self.assert_model_read(storage, *operation, "root request")
-                .await?;
+        for (index, storage, _, _, _, _, _, _, operation) in &completed_children {
+            if *index != 0 {
+                self.assert_model_read(storage, *operation, "root request")
+                    .await?;
+            }
             let child_model = self
                 .children
                 .get(*index as usize)
@@ -1415,6 +1470,8 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
     )?;
+    let restart_private = private.clone();
+    let restart_authority = authority.clone();
     let project = VolumeRef::new(
         provider,
         "root-project",
@@ -1442,17 +1499,19 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         overlap_barrier: None,
         root: true,
         read_first: false,
+        reject_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let children = (0..2)
-        .map(|_| {
+        .map(|index| {
             Arc::new(CapturedModel {
                 overlap_barrier: Some(sibling_overlap_barrier.clone()),
                 root: false,
                 read_first: true,
+                reject_first: index == 0,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
                 serialized_requests: Mutex::new(Vec::new()),
@@ -1464,6 +1523,7 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         overlap_barrier: None,
         root: false,
         read_first: true,
+        reject_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
@@ -1653,6 +1713,62 @@ async fn native_forks_capture_completed_authoritative_exchange_and_exact_model_p
         Some(&expected)
     );
     drop(requests);
+
+    // Reopen the same durable composition and run a fresh operation. The
+    // selected historical messages still contain the prior malformed call,
+    // but its rejection evidence must be reloaded from the authoritative
+    // journal rather than inferred from the visible envelope.
+    let restarted_model = Arc::new(CapturedModel {
+        overlap_barrier: None,
+        root: true,
+        read_first: false,
+        reject_first: false,
+        calls: AtomicUsize::new(0),
+        requests: Mutex::new(Vec::new()),
+        serialized_requests: Mutex::new(Vec::new()),
+        binding_digests: Mutex::new(Vec::new()),
+    });
+    let restarted = HarnessStorage::from_providers(
+        agent,
+        limits.file_bytes,
+        publisher.host.clone(),
+        publisher.stream.clone(),
+        restart_private,
+        restart_authority,
+        publisher.issuer.clone(),
+    )
+    .await?;
+    let restarted_bundle = restarted
+        .builder()
+        .model(Model::new("test", "frozen", "1", Value::Null)?, restarted_model.clone())
+        .grant("model:generate")
+        .tools(restarted.default_tools(limits)?)
+        .grant("tool:call:acyclic.read_file")
+        .grant("tool:call:acyclic.stage_file")
+        .grant("tool:call:acyclic.list_files")
+        .limits(limits)
+        .build()?;
+    let restarted_operation = OperationId::from_bytes([4; 16]);
+    let restarted_input = restarted
+        .stage(
+            restarted_operation,
+            "input/restarted-follow-up.txt",
+            b"restarted follow-up",
+            "text/plain",
+            "restarted-follow-up.txt",
+        )
+        .await?;
+    restarted
+        .run_conversation(
+            &restarted_bundle,
+            restarted_operation,
+            restarted_input,
+            Vec::new(),
+            3,
+        )
+        .await
+        .map_err(|error| Error::Storage(format!("restarted follow-up failed: {error}")))?;
+    assert_eq!(restarted_model.calls.load(Ordering::SeqCst), 2);
     assert!(matches!(
         storage.completed_conversation(operation, 0, limits).await,
         Err(Error::Conflict(_))
@@ -1942,6 +2058,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         overlap_barrier: None,
         root: true,
         read_first: false,
+        reject_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
@@ -1953,6 +2070,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
                 overlap_barrier: None,
                 root: false,
                 read_first: false,
+                reject_first: false,
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
                 serialized_requests: Mutex::new(Vec::new()),
@@ -1964,6 +2082,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         overlap_barrier: None,
         root: false,
         read_first: false,
+        reject_first: false,
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),

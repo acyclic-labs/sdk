@@ -700,14 +700,18 @@ impl crate::context::ContextStage for InheritedModelContext {
             messages.extend(self.suffix.iter().cloned());
             messages.append(&mut context.messages);
             context.messages = messages;
-            if !context.rejection_evidence.is_empty()
-                && context.rejection_evidence != self.boundary.rejection_evidence
+            let inherited_len = self.boundary.rejection_evidence.len();
+            if context.rejection_evidence.len() >= inherited_len
+                && context.rejection_evidence[..inherited_len]
+                    == self.boundary.rejection_evidence[..]
             {
-                return Err(Error::Conflict(
-                    "recursive context changed inherited rejection evidence".into(),
-                ));
+                // A caller may already carry the frozen prefix plus new,
+                // current-operation evidence. Preserve that ordered suffix.
+            } else {
+                let own = std::mem::take(&mut context.rejection_evidence);
+                context.rejection_evidence = self.boundary.rejection_evidence.clone();
+                context.rejection_evidence.extend(own);
             }
-            context.rejection_evidence = self.boundary.rejection_evidence.clone();
             Ok(context)
         })
     }
@@ -1145,6 +1149,37 @@ mod tests {
         let mut composed = boundary.request.clone();
         composed.messages.push(text("child task; fresh scratch"));
         inherited.verify_composition(&composed, &[], Limits::default())?;
+        let own_invocation = crate::tool::ToolInvocation {
+            operation_id: crate::OperationId::from_bytes([9; 16]),
+            call_id: "child-own-rejection".into(),
+            name: "fork".into(),
+            arguments: json!({"unexpected": "child"}),
+        };
+        let own_feedback = crate::tool::ToolRejectionFeedback::invalid_arguments(
+            &own_invocation,
+            &definition.input_schema,
+            "invalid child arguments",
+        )?;
+        let applied = futures::executor::block_on(
+            <InheritedModelContext as crate::context::ContextStage>::apply(
+                &inherited,
+                &crate::context::ContextInput {
+                    input: ModelContent::Text("child follow-up".into()),
+                    selected_context: None,
+                    step: 0,
+                    prior_messages: Vec::new(),
+                },
+                crate::context::Context {
+                    messages: Vec::new(),
+                    metadata: std::collections::BTreeMap::new(),
+                    rejection_evidence: vec![feedback.clone(), own_feedback.clone()],
+                },
+            ),
+        )?;
+        assert_eq!(
+            applied.rejection_evidence,
+            vec![feedback.clone(), own_feedback]
+        );
 
         // A fork cannot make the model-visible rejection self-authenticating
         // by dropping the durable evidence from the inherited boundary.

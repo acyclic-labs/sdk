@@ -79,6 +79,11 @@ pub struct SelectedModelContext {
     pub selection: ModelContextSelection,
     /// Typed model-visible values; do not append them to conversation history.
     pub messages: Vec<ModelMessage>,
+    /// Authenticated rejection evidence loaded from authoritative execution
+    /// history. This is transport metadata only; it is never rendered into
+    /// model-visible messages.
+    #[serde(default)]
+    pub rejection_evidence: Vec<crate::tool::ToolRejectionFeedback>,
 }
 
 /// Derives the complete ordered message identity set through one admitted user
@@ -383,6 +388,7 @@ pub async fn select_model_context_with_projection_limit<R: AttachmentListResolve
     Ok(SelectedModelContext {
         selection,
         messages,
+        rejection_evidence: Vec::new(),
     })
 }
 
@@ -743,6 +749,7 @@ mod tests {
                 role: ModelRole::User,
                 content: ModelContent::Text("hello".into()),
             }],
+            rejection_evidence: Vec::new(),
         };
         assert!(selected.validate_for_dispatch(Limits::default()).is_ok());
 

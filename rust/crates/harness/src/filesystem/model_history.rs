@@ -1,5 +1,9 @@
 //! Publish the exact completed model exchange into ref-only conversation storage.
 use super::*;
+use super::super::execution_journal::{
+    selected_rejection_evidence_from_journal, RejectionJournalBinding,
+    REJECTION_JOURNAL_BINDING,
+};
 use crate::{
     executor::{ExecutionRecord, load_json},
     model::{ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelRequest, ModelRole},
@@ -14,6 +18,7 @@ struct HistoryMessage {
     attachments: ReferencedAttachments,
     reply_to: Option<Uuid>,
     call_id: Option<String>,
+    extensions: BTreeMap<String, FileRef>,
 }
 
 struct HistoryBatch {
@@ -279,7 +284,7 @@ where
         calls: &mut BTreeMap<String, (Uuid, crate::tool::ToolInvocation)>,
     ) -> Result<HistoryMessage> {
         let id = Uuid::from_bytes(publication.into_bytes());
-        let (kind, content, attachments, reply_to, call_id) =
+        let (kind, content, attachments, reply_to, call_id, extensions) =
             match (&message.role, &message.content) {
                 (ModelRole::Assistant, ModelContent::Text(text)) => (
                     MessageKind::Assistant,
@@ -288,6 +293,7 @@ where
                     ReferencedAttachments::Inline { items: Vec::new() },
                     Some(user),
                     None,
+                    BTreeMap::new(),
                 ),
                 (
                     ModelRole::Assistant,
@@ -317,6 +323,7 @@ where
                         ReferencedAttachments::Inline { items: Vec::new() },
                         Some(user),
                         Some(call_id.clone()),
+                        BTreeMap::new(),
                     )
                 }
                 (
@@ -333,9 +340,13 @@ where
                     if invocation.name != *name {
                         return Err(Error::Conflict("completed result changed tool".into()));
                     }
-                    let (result, projection) = self
+                    let (result, projection, rejection_binding) = self
                         .history_result(operation, step, invocation, path, value, tools, records)
                         .await?;
+                    let mut extensions = BTreeMap::new();
+                    if let Some(binding) = rejection_binding {
+                        extensions.insert(REJECTION_JOURNAL_BINDING.to_owned(), binding);
+                    }
                     (
                         MessageKind::ToolResult,
                         result,
@@ -347,6 +358,7 @@ where
                         },
                         Some(*call),
                         Some(call_id.clone()),
+                        extensions,
                     )
                 }
                 _ => {
@@ -362,6 +374,7 @@ where
             attachments,
             reply_to,
             call_id,
+            extensions,
         })
     }
 
@@ -418,6 +431,22 @@ where
             .await
     }
 
+    /// Loads rejection evidence through the storage's owner-bound journal.
+    pub(super) async fn selected_rejection_evidence(
+        &self,
+        historical: &ConversationState,
+        selection: &crate::conversation::ModelContextSelection,
+        limits: Limits,
+    ) -> Result<Vec<crate::tool::ToolRejectionFeedback>> {
+        selected_rejection_evidence_from_journal(
+            self.journal.as_ref(),
+            historical,
+            selection,
+            limits,
+        )
+        .await
+    }
+
     async fn history_result(
         &self,
         operation: OperationId,
@@ -427,7 +456,7 @@ where
         value: &Value,
         tools: &[crate::tool::ToolDefinition],
         records: &[ExecutionRecord],
-    ) -> Result<(FileRef, FileRef)> {
+    ) -> Result<(FileRef, FileRef, Option<FileRef>)> {
         let mut completed = None;
         for record in records {
             let ExecutionEvent::ToolCompleted {
@@ -493,6 +522,7 @@ where
                 .await?,
                 self.stage_history_json(operation, &format!("{path}-projection.json"), &actual)
                     .await?,
+                None,
             ));
         }
         let mut rejection = None;
@@ -569,6 +599,17 @@ where
         // digests, so they are intentionally validated through
         // `ToolRejectionFeedback` above rather than the successful result's
         // model projection schema.
+        let binding = self
+            .stage_history_json(
+                operation,
+                &format!("{path}-rejection-binding.json"),
+                &RejectionJournalBinding {
+                    operation_id: operation,
+                    step,
+                    call_id: invocation.call_id.clone(),
+                },
+            )
+            .await?;
         Ok((
             self.stage_history_json(
                 operation,
@@ -580,6 +621,7 @@ where
             .await?,
             self.stage_history_json(operation, &format!("{path}-projection.json"), value)
                 .await?,
+            Some(binding),
         ))
     }
 
@@ -601,7 +643,7 @@ where
             attachments: item.attachments,
             reply_to: item.reply_to,
             tool_call_id: item.call_id,
-            extensions: BTreeMap::new(),
+            extensions: item.extensions,
         };
         if let Some(existing) = state.messages.iter().find(|message| message.id == id) {
             let mut expected = message;

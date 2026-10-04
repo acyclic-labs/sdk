@@ -1260,7 +1260,7 @@ where
                 "turn identity is bound to another context selection".into(),
             ));
         }
-        let selected = select_model_context(
+        let mut selected = select_model_context(
             &historical,
             selection,
             self.content_verifier.as_ref(),
@@ -1269,6 +1269,9 @@ where
             limits.render_bytes,
         )
         .await?;
+        selected.rejection_evidence = self
+            .selected_rejection_evidence(&historical, &selected.selection, limits)
+            .await?;
         let output = bundle
             .run(TurnInput::from_selected_context(
                 operation_id,
@@ -1882,6 +1885,180 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    struct RejectionHistoryModel {
+        calls: AtomicUsize,
+        requests: Arc<Mutex<Vec<ModelRequest>>>,
+    }
+
+    impl ModelProvider for RejectionHistoryModel {
+        fn generate<'a>(
+            &'a self,
+            prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            self.requests
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(prepared.request().clone());
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            let events = if call == 0 {
+                vec![
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "history-invalid".into(),
+                        name: "acyclic.stage_file".into(),
+                        arguments: json!({"parameters": {"text": "forged"}}),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]
+            } else {
+                vec![
+                    Ok(ModelEvent::Content {
+                        delta: "history complete".into(),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]
+            };
+            Box::pin(stream::iter(events))
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn historical_rejection_evidence_is_journal_bound_across_operations() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let provider = Arc::new(RejectionHistoryModel {
+            calls: AtomicUsize::new(0),
+            requests: requests.clone(),
+        });
+        let local = LocalHarness::new(
+            Model::new("test", "history", "1", Value::Null)?,
+            provider.clone(),
+        )
+        .await?;
+        local.run("first operation").await?;
+        let state = local.storage().conversation_state(Limits::default()).await?;
+        let selection = crate::conversation::ModelContextSelection {
+            conversation_revision: state.messages.len() as u64,
+            message_ids: state.messages.iter().map(|message| message.id).collect(),
+        };
+        let evidence = local
+            .storage()
+            .selected_rejection_evidence(&state, &selection, Limits::default())
+            .await?;
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].call_id, "history-invalid");
+
+        local.run("second operation").await?;
+        let captured = requests.lock().unwrap().clone();
+        assert!(captured.len() >= 3);
+        assert!(captured[2].messages.iter().any(|message| {
+            matches!(
+                &message.content,
+                crate::model::ModelContent::Part(
+                    crate::model::ModelContentPart::ToolResult { value, .. }
+                ) if value.get("kind") == Some(&Value::String("tool_rejection".into()))
+            )
+        }));
+
+        let binding_ref = state
+            .messages
+            .iter()
+            .find_map(|message| message.extensions.get("acyclic.model.rejection-journal"))
+            .cloned()
+            .ok_or_else(|| Error::Storage("rejection journal binding missing".into()))?;
+        let binding: Value = serde_json::from_slice(&local.storage().read(&binding_ref).await?)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        for (suffix, operation_id, call_id) in [
+            ("missing", OperationId::from_bytes([240; 16]), "history-invalid"),
+            (
+                "changed",
+                serde_json::from_value(
+                    binding
+                        .get("operation_id")
+                        .cloned()
+                        .ok_or_else(|| Error::Storage("binding operation is missing".into()))?,
+                )
+                .map_err(|error| Error::Storage(error.to_string()))?,
+                "changed-call",
+            ),
+        ] {
+            let mut forged = binding.clone();
+            forged["operation_id"] =
+                serde_json::to_value(operation_id).map_err(|error| Error::Storage(error.to_string()))?;
+            forged["call_id"] = Value::String(call_id.into());
+            let forged_path = format!("tests/rejection-{suffix}.json");
+            let forged_ref = local
+                .storage()
+                .stage(
+                    OperationId::from_bytes([241; 16]),
+                    &forged_path,
+                    &crate::contract::canonical_json_bytes(&forged)?,
+                    "application/json",
+                    "binding.json",
+                )
+                .await?;
+            let mut forged_state = state.clone();
+            let result = forged_state
+                .messages
+                .iter_mut()
+                .find(|message| message.extensions.contains_key("acyclic.model.rejection-journal"))
+                .ok_or_else(|| Error::Storage("rejection result message missing".into()))?;
+            result.extensions.insert(
+                "acyclic.model.rejection-journal".into(),
+                forged_ref,
+            );
+            assert!(matches!(
+                local
+                    .storage()
+                    .selected_rejection_evidence(&forged_state, &selection, Limits::default())
+                    .await,
+                Err(Error::Conflict(_))
+            ));
+        }
+        let call_index = state
+            .messages
+            .iter()
+            .position(|message| message.kind == MessageKind::ToolCall)
+            .ok_or_else(|| Error::Storage("rejection tool call missing".into()))?;
+        let mut altered_invocation: ToolInvocation = serde_json::from_slice(
+            &local
+                .storage()
+                .read(&state.messages[call_index].content)
+                .await?,
+        )
+        .map_err(|error| Error::Storage(error.to_string()))?;
+        altered_invocation.arguments = json!({"parameters": {"text": "changed invocation"}});
+        let altered_call = local
+            .storage()
+            .stage(
+                OperationId::from_bytes([243; 16]),
+                "tests/rejection-altered-call.json",
+                &crate::contract::canonical_json_bytes(&altered_invocation)?,
+                "application/json",
+                "tool-call.json",
+            )
+            .await?;
+        let mut forged_state = state.clone();
+        forged_state.messages[call_index].content = altered_call;
+        assert!(matches!(
+            local
+                .storage()
+                .selected_rejection_evidence(&forged_state, &selection, Limits::default())
+                .await,
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
     }
 
     #[tokio::test]

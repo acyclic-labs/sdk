@@ -9,7 +9,7 @@ use crate::{
         ContentGrant, ContentResidencyVerifier, FileRef, VolumeClass, VolumeOperation, VolumeRef,
     },
     core::{AuthorityVerifier, SchemaRegistry, Scope},
-    executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord},
+    executor::{ExecutionEvent, ExecutionJournal, ExecutionRecord, load_json},
     host_execution::{ExecutionApproval, ExecutionApprovalContext, ExecutionApprovalVerifier},
     interaction::{Interaction, InteractionOutcome, InteractionResolution, InteractionResponse},
     projection::{SelectedModelContext, select_model_context},
@@ -27,12 +27,133 @@ use std::{collections::HashSet, sync::Arc};
 
 const MAX_RECORDS: u64 = 1_000_000;
 
+/// Hidden metadata linking a model-visible rejection to the authoritative
+/// execution journal that produced it. The visible envelope is never trusted
+/// as the source of evidence on a later turn.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RejectionJournalBinding {
+    pub(crate) operation_id: OperationId,
+    pub(crate) step: u32,
+    pub(crate) call_id: String,
+}
+
+pub(crate) const REJECTION_JOURNAL_BINDING: &str = "acyclic.model.rejection-journal";
+
+/// Loads rejection evidence for selected historical messages from the journal
+/// records named by authenticated hidden conversation metadata. The message
+/// and its call are checked against the same journal invocation, so callers
+/// cannot pair a valid rejection with a different set of arguments.
+pub(crate) async fn selected_rejection_evidence_from_journal(
+    journal: &dyn ExecutionJournal,
+    historical: &crate::conversation::ConversationState,
+    selection: &crate::conversation::ModelContextSelection,
+    limits: crate::conversation::Limits,
+) -> Result<Vec<crate::tool::ToolRejectionFeedback>> {
+    let mut evidence = Vec::new();
+    for message_id in &selection.message_ids {
+        let Some(message) = historical.messages.iter().find(|message| &message.id == message_id)
+        else {
+            return Err(Error::Conflict("selected rejection message is absent".into()));
+        };
+        let Some(binding_ref) = message.extensions.get(REJECTION_JOURNAL_BINDING) else {
+            continue;
+        };
+        if message.kind != crate::conversation::MessageKind::ToolResult {
+            return Err(Error::Conflict("rejection binding is not attached to a tool result".into()));
+        }
+        let binding: RejectionJournalBinding = serde_json::from_slice(&journal.load(binding_ref).await?)
+            .map_err(|error| Error::Storage(format!("rejection journal binding is invalid: {error}")))?;
+        if message.tool_call_id.as_deref() != Some(binding.call_id.as_str()) {
+            return Err(Error::Conflict("rejection binding call identity differs from conversation result".into()));
+        }
+        let call_id = message.reply_to.ok_or_else(|| {
+            Error::Conflict("rejection result has no tool-call reply target".into())
+        })?;
+        let call = historical.messages.iter().find(|candidate| candidate.id == call_id)
+            .ok_or_else(|| Error::Conflict("rejection result reply target is absent".into()))?;
+        if call.kind != crate::conversation::MessageKind::ToolCall
+            || call.tool_call_id.as_deref() != Some(binding.call_id.as_str())
+        {
+            return Err(Error::Conflict("rejection result reply target is not its tool call".into()));
+        }
+        let message_invocation: crate::tool::ToolInvocation =
+            serde_json::from_slice(&journal.load(&call.content).await?)
+                .map_err(|error| Error::Storage(format!("tool-call invocation is invalid: {error}")))?;
+        if message_invocation.call_id != binding.call_id {
+            return Err(Error::Conflict("tool-call content identity differs from binding".into()));
+        }
+        let records = journal.replay(binding.operation_id).await?;
+        let mut found = None;
+        for record in records {
+            let crate::executor::ExecutionEvent::ToolAdmissionRejected {
+                step,
+                invocation,
+                reason: crate::executor::ToolRejectionKind::InvalidArguments,
+                feedback: Some(feedback),
+            } = record.event
+            else {
+                continue;
+            };
+            if step != binding.step {
+                continue;
+            }
+            let invocation: crate::tool::ToolInvocation = load_json(journal, &invocation).await?;
+            if invocation != message_invocation {
+                return Err(Error::Conflict("tool-call content differs from authoritative invocation".into()));
+            }
+            if invocation.call_id != binding.call_id {
+                continue;
+            }
+            if found.is_some() {
+                return Err(Error::Storage("rejection journal binding is duplicated".into()));
+            }
+            let feedback: crate::tool::ToolRejectionFeedback = load_json(journal, &feedback).await?;
+            if feedback.call_id != invocation.call_id || feedback.name != invocation.name {
+                return Err(Error::Conflict("rejection journal evidence changed identity".into()));
+            }
+            found = Some(feedback);
+        }
+        let feedback = found.ok_or_else(|| {
+            Error::Conflict("rejection journal binding has no authoritative record".into())
+        })?;
+        evidence.push(feedback);
+    }
+    if evidence.len() > limits.context_messages {
+        return Err(Error::Invalid("rejection evidence exceeds context limit".into()));
+    }
+    Ok(evidence)
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Observation {
     operation_id: OperationId,
     retry_digest: String,
     event: ExecutionEvent,
+}
+
+async fn verify_selected_rejection_evidence(
+    journal: &dyn ExecutionJournal,
+    historical: &crate::conversation::ConversationState,
+    selected: &SelectedModelContext,
+) -> Result<()> {
+    let authoritative = selected_rejection_evidence_from_journal(
+        journal,
+        historical,
+        &selected.selection,
+        crate::conversation::Limits {
+            context_messages: selected.selection.message_ids.len(),
+            ..crate::conversation::Limits::default()
+        },
+    )
+    .await?;
+    if authoritative != selected.rejection_evidence {
+        return Err(Error::Conflict(
+            "selected rejection evidence differs from authoritative journal".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Durable, ref-only journal for one exact agent-private volume.
@@ -774,7 +895,7 @@ where
                 ));
             }
             historical.messages.truncate(length);
-            let projected = select_model_context(
+            let mut projected = select_model_context(
                 &historical,
                 committed.clone(),
                 verifier.as_ref(),
@@ -783,11 +904,13 @@ where
                 self.maximum_payload_bytes,
             )
             .await?;
+            projected.rejection_evidence = selected.rejection_evidence.clone();
             if &projected != selected {
                 return Err(Error::Conflict(
                     "model context differs from committed conversation projection".into(),
                 ));
             }
+            verify_selected_rejection_evidence(self, &historical, selected).await?;
             Ok(())
         })
     }
