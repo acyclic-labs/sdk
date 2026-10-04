@@ -211,6 +211,7 @@ fn verify(
         {
             return Err(format!("scenario result is not a passed invocation: {rpc}"));
         }
+        verify_outcome(rpc, result.get("outcome"))?;
         let expected_hash = object
             .get("output_sha256")
             .and_then(Value::as_str)
@@ -247,6 +248,96 @@ fn verify(
         "consumer_feature_flags_required": false,
         "environment_transport_override": false,
     }))
+}
+
+fn verify_outcome(rpc: &str, value: Option<&Value>) -> Result<(), String> {
+    let outcome = value
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("scenario outcome is missing: {rpc}"))?;
+    if outcome.get("code").and_then(Value::as_str) != Some("OK") {
+        return Err(format!("Stream RPC did not return OK: {rpc}"));
+    }
+    let method = rpc.rsplit('/').next().unwrap_or_default();
+    match method {
+        "Append" => {
+            expect_bool(outcome, "committed", true, rpc)?;
+            expect_string(outcome, "start", "0", rpc)?;
+            expect_string(outcome, "end", "1", rpc)?;
+            expect_string(outcome, "tail", "1", rpc)?;
+        }
+        "Read" => {
+            expect_u64(outcome, "records", 1, rpc)?;
+            expect_string(outcome, "firstSequence", "0", rpc)?;
+            expect_string(outcome, "firstValue", "one", rpc)?;
+        }
+        "Children" => expect_bool(outcome, "containsFork", true, rpc)?,
+        "InspectIdempotency" | "ChildrenPage" => {
+            expect_positive_u64(outcome, "bytes", rpc)?;
+        }
+        "Commit" | "ReadCommit" => expect_u64(outcome, "commitIdBytes", 32, rpc)?,
+        "Follow" => {
+            expect_bool(outcome, "cancelled", true, rpc)?;
+            expect_u64(outcome, "records", 1, rpc)?;
+            expect_string(outcome, "firstValue", "two", rpc)?;
+        }
+        "Fork" => {
+            expect_string(outcome, "destination", "native/fork", rpc)?;
+            expect_string(outcome, "forkedAt", "1", rpc)?;
+        }
+        "Tail" => {
+            expect_string(outcome, "tail", "2", rpc)?;
+            expect_bool(outcome, "recovery", true, rpc)?;
+        }
+        _ => return Err(format!("unknown Stream RPC outcome: {rpc}")),
+    }
+    Ok(())
+}
+
+fn expect_bool(
+    outcome: &serde_json::Map<String, Value>,
+    key: &str,
+    expected: bool,
+    rpc: &str,
+) -> Result<(), String> {
+    if outcome.get(key).and_then(Value::as_bool) != Some(expected) {
+        return Err(format!("{rpc} outcome {key} was not {expected}"));
+    }
+    Ok(())
+}
+
+fn expect_string(
+    outcome: &serde_json::Map<String, Value>,
+    key: &str,
+    expected: &str,
+    rpc: &str,
+) -> Result<(), String> {
+    if outcome.get(key).and_then(Value::as_str) != Some(expected) {
+        return Err(format!("{rpc} outcome {key} was not {expected}"));
+    }
+    Ok(())
+}
+
+fn expect_u64(
+    outcome: &serde_json::Map<String, Value>,
+    key: &str,
+    expected: u64,
+    rpc: &str,
+) -> Result<(), String> {
+    if outcome.get(key).and_then(Value::as_u64) != Some(expected) {
+        return Err(format!("{rpc} outcome {key} was not {expected}"));
+    }
+    Ok(())
+}
+
+fn expect_positive_u64(
+    outcome: &serde_json::Map<String, Value>,
+    key: &str,
+    rpc: &str,
+) -> Result<(), String> {
+    match outcome.get(key).and_then(Value::as_u64) {
+        Some(value) if value > 0 => Ok(()),
+        _ => Err(format!("{rpc} outcome {key} was empty")),
+    }
 }
 
 fn verify_archive(path: &Path, package_root: &Path, package_name: &str) -> Result<Value, String> {
