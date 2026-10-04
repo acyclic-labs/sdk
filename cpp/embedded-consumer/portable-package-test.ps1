@@ -91,6 +91,8 @@ $sourceFiles = @(
     "rust/crates/sdk-embedded-prototype/Cargo.lock",
     "rust/crates/sdk-embedded-prototype/build.rs",
     "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+    "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
     "cpp/embedded-consumer/CMakeLists.txt",
     "cpp/embedded-consumer/AcyclicEmbeddedConfig.cmake.in",
     "cpp/embedded-consumer/include/acyclic/embedded.hpp",
