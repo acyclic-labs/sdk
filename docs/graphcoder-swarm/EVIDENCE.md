@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Current production fork admission](checkpoint-current-fork-admission-2026-10-04.json) records failed attempts at `bc6b5baf5` and `7ea55504f`: real recursive model swarm 0/1 and local recovery faults 1/5 on each. Executables and logs are preserved before subsequent rebuilds. No production recursive swarm qualification is claimed.
+
 These are checkpoint results, not final product qualification.
 
 [Executor rejection occurrences](checkpoint-executor-rejection-occurrences-2026-10-04.json): fresh isolated native executor selection passes 25/25, including exact provider bytes, repeated equal rejection envelopes, fresh-provider replay, and duplicate preparation refusal. Its journal is in memory. [Native rejection/reference checks](checkpoint-native-input-rejection-2026-10-04.json): 2/2 cases pass with actual persistent storage; descriptor corruption does not prove physical requested-object corruption. Both are scoped checkpoints, not recursive swarm or final artifact qualification.
