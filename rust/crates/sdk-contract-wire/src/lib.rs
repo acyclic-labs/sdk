@@ -22,6 +22,7 @@ pub mod protocol;
 pub mod semantic_oracle;
 pub mod stream;
 pub mod transport;
+pub mod wire_semantics;
 pub mod workers;
 
 pub use bindings::{
@@ -57,6 +58,11 @@ pub use transport::{
     ClientRuntime, FamilyTransportPolicy, RuntimeTransportPolicy, TransportAvailability,
     TransportKind, TransportOption, TransportRequirements, TransportSelection,
     TransportSelectionError, TransportSelectionRequest, select_transport, select_transport_by_name,
+};
+pub use wire_semantics::{
+    compare_family_rpc_message, compare_message, compare_message_with_options,
+    compare_rpc_message, compare_rpc_message_with_options, CompareOptions, FloatPolicy,
+    RpcDirection, RpcSemanticError, SemanticMismatch, UnknownFieldPolicy,
 };
 pub use workers::{WORKERS, WORKERS_ROUTES, WORKERS_SERVICE, workers_descriptor, workers_proto};
 
