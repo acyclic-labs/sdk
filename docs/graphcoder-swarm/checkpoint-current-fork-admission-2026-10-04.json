@@ -67,6 +67,24 @@
     "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/precise-fork-validation.exit",
     "next_action": "Repair immutable inherited boundary versus sequential publication revision binding without weakening prefix equality"
   },
+  "admission_regressions": {
+    "scope": "Existing reducer admission, authority, replay and fork visibility tests; not production swarm recovery",
+    "source_commit_at_dispatch": "78a84dd519620190c398fb437cf7dd16d16174c4",
+    "rust_tree_before_and_after": "5c13f3a705b4c51bcc1b4f6909643b4241c4d71a",
+    "source": {"path": "rust/crates/harness/src/core.rs", "sha256": "22da38bdb77bb96f318898b3c5f65a2329648033f0acaef85460051d01b13146"},
+    "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --lib core::tests --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+    "process_session": 65409,
+    "exit_code": 0,
+    "passed": 25,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 299,
+    "build_duration_seconds": 180,
+    "test_duration_seconds": 0.02,
+    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "245eb7ac5f1c8548f3a936adb253ebb068b7e9ff7143576fc97d8eb276bb7f7b"},
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/precise-fork-core-regressions.log", "sha256": "959f4ee0f79d266ef16fe89baff73f13132cad33949c8918ff49998e2ab039b2"},
+    "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/precise-fork-core-regressions.exit"
+  },
   "failures": [
     "Recursive model swarm: fork manifest command/parent revision binding",
     "Cancelled child: child did not reach provider",
