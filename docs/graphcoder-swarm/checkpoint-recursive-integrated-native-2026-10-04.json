@@ -1,0 +1,69 @@
+{
+  "platform": "windows",
+  "source_commit": "97d11a74aa2439d3e2fb590346feb2ec2ced199f",
+  "exit_code": 101,
+  "limitations": [
+    "Cancellation fault gate failed; source is not qualified",
+    "No installed package qualification",
+    "Mock model runtime evidence, no sandbox"
+  ],
+  "faults": {
+    "passed": 4,
+    "failed": 1,
+    "ignored": 0
+  },
+  "source_tree": "a176e77741a4490864be43d1980036432b7a716b",
+  "source_clean_after": true,
+  "failed_case": "cancelled_child_after_publication_cannot_be_reactivated",
+  "files": [
+    {
+      "sha256": "d8edb506e6453ee1925e64150d9754fcef44b863a0e692d3365ad16021239e4f",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\recursive-integrated-97d11a74a.log",
+      "source_path": "C:\\graphcoder-builds\\recursive-integrated-97d11a74a.log"
+    },
+    {
+      "sha256": "3288392d28c186f8dad8b37dd28366b7b4b831a2b7f7858fbea7f68e9c21e9aa",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\acyclic_harness-641f85f696abacc6.exe",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\acyclic_harness-641f85f696abacc6.exe"
+    },
+    {
+      "sha256": "7b40b808e7c9576879e2c9b7c12e126584d8bd17bf1ab1cb923457f4f06a82a9",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\local_model_swarm-b5d1df9216f26b8b.exe",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\local_model_swarm-b5d1df9216f26b8b.exe"
+    },
+    {
+      "sha256": "a9d6d83f2e79282c84aa5d8d649ec6c26eead8c83705e4ce7eef48d28b9a04d8",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\local_swarm_faults-cf47ef77f7bcbf61.exe",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\local_swarm_faults-cf47ef77f7bcbf61.exe"
+    },
+    {
+      "sha256": "205e43bc05aa1dcd7b00bdbdbb8e5f59fa0a8f2593543b7b8092422837f8b619",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\local_model_swarm.rs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\local_model_swarm.rs"
+    },
+    {
+      "sha256": "55fd37b2f08bd744b1829ce3949093c2a2bc1765bdd6522bb925d8f3906f89a8",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\local_swarm_faults.rs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\tests\\local_swarm_faults.rs"
+    },
+    {
+      "sha256": "58e0c78948551cfad52d076ac34a99663abd7ea9c733d0a7a4ef9410c132161b",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\97d11a74a\\recursive-integrated\\swarm_local.rs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\harness\\src\\filesystem\\swarm_local.rs"
+    }
+  ],
+  "command": "cargo test -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults -- --nocapture",
+  "library": {
+    "passed": 365,
+    "failed": 0,
+    "ignored": 0
+  },
+  "recorded_at": "2026-10-04T21:16:36.1848501Z",
+  "recursive": {
+    "passed": 1,
+    "failed": 0,
+    "ignored": 0
+  },
+  "failure": "Timeout after release: cancelled publication did not finish at local_swarm_faults.rs:805",
+  "kind": "integrated-native-recursive-checkpoint"
+}
