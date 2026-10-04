@@ -1906,6 +1906,8 @@ enum StoredEvent {
         publication: Option<ModelBatchPublication>,
         #[serde(default)]
         declaration: Option<LocalInheritedModelDeclaration>,
+        #[serde(default)]
+        rebind_proof: Option<ForkRebindProof>,
     },
     ForkAdmitted {
         parent: TaskId,
@@ -1932,6 +1934,8 @@ enum StoredEvent {
         publication: Option<ModelBatchPublication>,
         #[serde(default)]
         declaration: Option<LocalInheritedModelDeclaration>,
+        #[serde(default)]
+        rebind_proof: Option<ForkRebindProof>,
     },
     ForkCompleted {
         child: TaskId,
@@ -3174,6 +3178,7 @@ impl PersistentLocalSwarm {
                         report: Some(report.clone()),
                         publication: Some(publication.clone()),
                         declaration: Some(declaration.clone()),
+                        rebind_proof: None,
                     },
                     observed_tail,
                 )
@@ -3285,6 +3290,7 @@ impl PersistentLocalSwarm {
         seed: &ForkSeed,
         publication: ModelBatchPublication,
         declaration: LocalInheritedModelDeclaration,
+        rebind_proof: Option<&ForkRebindProof>,
     ) -> Result<()> {
         request.validate()?;
         if request.child_authority.is_none() || request.child_agent.is_none() {
@@ -3295,7 +3301,11 @@ impl PersistentLocalSwarm {
         let fork_operation = request.fork_operation.ok_or_else(|| {
             Error::Invalid("typed fork publication requires a fork operation identity".into())
         })?;
-        report.validate_rebound()?;
+        if let Some(proof) = rebind_proof {
+            report.validate_with_rebind_proof(proof)?;
+        } else {
+            report.validate()?;
+        }
         let parent_storage = self.open_session(request.parent).await?;
         if report.request.parent != *parent_storage.storage().conversation()
             || report.request.operation_id != fork_operation
@@ -3315,7 +3325,11 @@ impl PersistentLocalSwarm {
                 "fork report child binding differs from fork request".into(),
             ));
         }
-        let reported_seed = report.clone().into_seed()?;
+        let reported_seed = if let Some(proof) = rebind_proof {
+            report.clone().into_seed_with_rebind_proof(proof)?
+        } else {
+            report.clone().into_seed()?
+        };
         if &reported_seed != seed {
             return Err(Error::Conflict(
                 "prepared fork report does not match the typed seed".into(),
@@ -3417,6 +3431,7 @@ impl PersistentLocalSwarm {
                 report: Some(report.clone()),
                 publication: Some(publication.clone()),
                 declaration: Some(declaration.clone()),
+                rebind_proof: rebind_proof.cloned(),
             },
             observed_tail,
         )
@@ -3543,8 +3558,15 @@ impl PersistentLocalSwarm {
         } else {
             report.clone().into_seed()?
         };
-        self.preadmit_published_child(&request, &report, &preview, publication, declaration)
-            .await?;
+        self.preadmit_published_child(
+            &request,
+            &report,
+            &preview,
+            publication,
+            declaration,
+            rebind_proof,
+        )
+        .await?;
         let mut child = StreamAggregate::open(
             &stream,
             preview.child.clone(),
@@ -4335,6 +4357,7 @@ fn apply_record(
             report,
             publication,
             declaration,
+            rebind_proof,
         }
         | StoredEvent::ForkAdmitted {
             parent,
@@ -4352,6 +4375,7 @@ fn apply_record(
             report,
             publication,
             declaration,
+            rebind_proof,
             ..
         } => {
             if seed.is_some() != report.is_some() {
@@ -4360,11 +4384,20 @@ fn apply_record(
                 ));
             }
             if let (Some(seed), Some(report)) = (&seed, &report) {
-                report.validate()?;
-                if report.clone().into_seed()? != *seed {
-                    return Err(Error::Conflict(
-                        "persisted fork report is not bound to its typed seed".into(),
-                    ));
+                if let Some(proof) = &rebind_proof {
+                    report.validate_with_rebind_proof(proof)?;
+                    if report.clone().into_seed_with_rebind_proof(proof)? != *seed {
+                        return Err(Error::Conflict(
+                            "persisted rebound fork report is not bound to its typed seed".into(),
+                        ));
+                    }
+                } else {
+                    report.validate()?;
+                    if report.clone().into_seed()? != *seed {
+                        return Err(Error::Conflict(
+                            "persisted fork report is not bound to its typed seed".into(),
+                        ));
+                    }
                 }
                 seed.validate()?;
                 if report.request.operation_id != seed.operation_id
@@ -4430,7 +4463,11 @@ fn apply_record(
                 seeds.insert(child, seed);
             }
             if let Some(report) = report {
-                report.validate()?;
+                if let Some(proof) = &rebind_proof {
+                    report.validate_with_rebind_proof(proof)?;
+                } else {
+                    report.validate()?;
+                }
                 if let Some(existing) = reports.get(&child)
                     && existing != &report
                 {
