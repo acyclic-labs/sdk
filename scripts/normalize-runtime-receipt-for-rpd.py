@@ -76,6 +76,10 @@ def normalize(inventory: dict[str, Any], receipt: dict[str, Any], language: str)
         raise ValueError("Rust RPD inventory authority is missing")
     if not isinstance(observations, list):
         raise ValueError("runtime receipt observations are missing")
+    source_revision = receipt.get("source_revision")
+    source_git_sha = authority.get("source_git_sha")
+    if not isinstance(source_revision, str) or source_revision != source_git_sha:
+        raise ValueError("runtime receipt source_revision does not match the Rust authority")
     observed = {}
     for item in observations:
         if not isinstance(item, dict):
