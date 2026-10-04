@@ -64,6 +64,7 @@ mod public_contract_tests {
     }
 }
 
+pub mod accounting;
 pub mod async_storage;
 mod collection;
 pub use collection::{Collection, PublicationHold};

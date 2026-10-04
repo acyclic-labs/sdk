@@ -877,6 +877,7 @@ impl IndexedDbAuthorityStore {
             previous_digest: actual.digest,
             digest,
             payload: commit.payload,
+            settled_at_micros: None,
         };
         let next_head = Head {
             epoch,

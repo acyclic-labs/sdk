@@ -678,6 +678,7 @@ fn defensive_memory_state_failures_are_typed_and_fail_closed()
         previous_digest: Digest::ZERO,
         digest: Digest::from_bytes([45; 32]),
         payload: Bytes::from_static(b"prior"),
+        settled_at_micros: None,
     };
     exhausted_sequence
         .authorities

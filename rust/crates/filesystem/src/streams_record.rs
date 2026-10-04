@@ -125,6 +125,7 @@ impl StreamsDurableRecord {
             previous_digest,
             digest,
             payload: Bytes::from(payload),
+            settled_at_micros: None,
         }))
     }
 }

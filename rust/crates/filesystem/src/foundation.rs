@@ -303,6 +303,9 @@ pub struct DurableCommit {
     pub digest: Digest,
     /// Canonical schema-versioned operation bytes.
     pub payload: Bytes,
+    /// Replicated settlement time when supplied by the authority backend.
+    /// Legacy and offline backends may omit it; billing must reject such records.
+    pub settled_at_micros: Option<u64>,
 }
 
 /// Canonical non-payload bytes hashed into one authority commit identity.
