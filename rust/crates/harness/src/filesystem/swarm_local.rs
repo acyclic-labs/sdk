@@ -709,7 +709,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         "fork publication parent has no authoritative conversation".into(),
                     )
                 })?;
-            let request = ForkRequest {
+            let mut request = ForkRequest {
                 operation_id: intent.fork_operation,
                 parent: parent.reducer().authority().clone(),
                 parent_revision,
@@ -740,6 +740,14 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 boundary: None,
                 model_boundary: None,
             };
+            storage
+                .attach_model_fork_references_from_parts(
+                    &boundary,
+                    &publication,
+                    &parent,
+                    &mut request,
+                )
+                .await?;
             let parent_reader = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
                 storage.verifier(),

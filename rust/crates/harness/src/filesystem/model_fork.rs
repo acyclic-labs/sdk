@@ -45,8 +45,28 @@ where
         verified: &VerifiedModelForkBoundary<P>,
         request: &mut crate::fork::ForkRequest,
     ) -> Result<()> {
+        self.attach_model_fork_references_from_parts(
+            &verified.boundary,
+            &verified.publication,
+            &verified.parent,
+            request,
+        )
+        .await
+    }
+
+    /// Attach references after the verified boundary has been split into its
+    /// existing typed parts. This keeps the immutable model evidence owned by
+    /// Harness while allowing Filesystem fork preparation to retain its
+    /// established aggregate flow.
+    pub async fn attach_model_fork_references_from_parts(
+        &self,
+        boundary: &CompletedModelBoundary,
+        publication: &ModelBatchPublication,
+        parent: &StreamAggregate<P>,
+        request: &mut crate::fork::ForkRequest,
+    ) -> Result<()> {
         request.validate()?;
-        let parent = verified.parent.reducer();
+        let parent = parent.reducer();
         if request.parent != *parent.authority()
             || request.parent != *self.issuer.verifier().audience()
             || request.parent_revision != parent.revision()
@@ -65,7 +85,7 @@ where
         }
         let mut unique = std::collections::BTreeSet::new();
         let mut files = Vec::new();
-        for message in &verified.boundary.request.messages {
+        for message in &boundary.request.messages {
             for file in message.content.file_refs() {
                 if unique.insert(file.read_capability()?) {
                     self.content_verifier.verify(file).await?;
@@ -74,9 +94,9 @@ where
             }
         }
         let mut references = crate::fork::ModelBoundaryReferences {
-            publication: verified.publication.operation_id,
-            publication_digest: crate::contract::canonical_json_digest(&verified.publication)?,
-            boundary_digest: crate::contract::canonical_json_digest(&verified.boundary)?,
+            publication: publication.operation_id,
+            publication_digest: crate::contract::canonical_json_digest(publication)?,
+            boundary_digest: crate::contract::canonical_json_digest(boundary)?,
             inherited_parent_revision: request.parent_revision,
             inherited_through_sequence: request.preparation.inherited_through_sequence,
             inherited_prefix_digest: {
