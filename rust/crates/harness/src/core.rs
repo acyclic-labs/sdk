@@ -1881,16 +1881,16 @@ impl Reducer {
                     "fork must be published by the parent agent".into(),
                 ));
             }
-            if seed.validate().is_err()
-                || seed.operation_id != command.operation_id
+            seed.validate()?;
+            if seed.operation_id != command.operation_id
                 || seed.parent != self.authority
                 || seed.parent_revision != self.revision
-                || self.validate_fork_reference_ownership(seed).is_err()
             {
                 return Err(Error::Invalid(
                     "fork manifest is not bound to its command and parent revision".into(),
                 ));
             }
+            self.validate_fork_reference_ownership(seed)?;
             self.require_fresh_fork(seed)?;
         }
         if let Action::PublishProjectMerge { receipt } = &command.action
