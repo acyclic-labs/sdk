@@ -25,6 +25,10 @@ pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>
 }
 pub(crate) fn value(route: &str, input: &[u8]) -> Result<Option<Value>> {
     let value = match route {
+        "delivery/acknowledge" => {
+            wire::AcknowledgeDeliveryResponse::decode(input).map_err(|_| "invalid_response")?;
+            json_object(vec![])
+        }
         "append" => {
             append_value(wire::AppendResponse::decode(input).map_err(|_| "invalid_response")?)?
         }

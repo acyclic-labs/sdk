@@ -32,6 +32,7 @@ const stream = {
   InspectIdempotency: "idempotency/inspect", Append: "append", Tail: "tail", Fork: "fork",
   Read: "read", Follow: "tail + read (polling)", Children: "children", ChildrenPage: "children/page",
   Commit: "commit", ReadCommit: "commits/read",
+  AcknowledgeDelivery: "delivery/acknowledge",
 };
 function routes(family) {
   const source = readFileSync(new URL(`../rust/crates/${family}/src/lib.rs`, import.meta.url), "utf8");

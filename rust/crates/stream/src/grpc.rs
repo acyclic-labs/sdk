@@ -36,6 +36,7 @@ use crate::{
 const OPERATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 const OPERATION_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 const FOLLOW_ENDPOINT_ATTEMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+const DELIVERY_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(10);
 /// Maximum independently reachable endpoints in one operation or follow pool.
 pub const MAX_ENDPOINTS: usize = 16;
@@ -73,18 +74,31 @@ pub struct Client {
     channels: Arc<[Channel]>,
     authorization: MetadataValue<Ascii>,
     preferred: Arc<AtomicUsize>,
+    acknowledge_deliveries: bool,
 }
 
 /// Thin server adapter from the canonical wire service to one provider.
 pub struct Service<P> {
     provider: Arc<P>,
+    #[cfg(test)]
+    test_delivery: Option<(Bytes, Arc<AtomicUsize>)>,
 }
 
 impl<P> Service<P> {
     /// Binds the generated server to one semantic provider.
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
-        Self { provider }
+        Self {
+            provider,
+            #[cfg(test)]
+            test_delivery: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_test_delivery(mut self, token: Bytes, acknowledgements: Arc<AtomicUsize>) -> Self {
+        self.test_delivery = Some((token, acknowledgements));
+        self
     }
 }
 
@@ -92,6 +106,8 @@ impl<P> Clone for Service<P> {
     fn clone(&self) -> Self {
         Self {
             provider: Arc::clone(&self.provider),
+            #[cfg(test)]
+            test_delivery: self.test_delivery.clone(),
         }
     }
 }
@@ -220,7 +236,17 @@ impl Client {
             channels,
             authorization,
             preferred: Arc::new(AtomicUsize::new(0)),
+            acknowledge_deliveries: true,
         })
+    }
+
+    /// Disables upstream delivery acknowledgements for a translating server.
+    /// Such a server must establish its own downstream delivery evidence before
+    /// it can count customer egress. Direct SDK clients should keep the default.
+    #[must_use]
+    pub fn without_delivery_acknowledgements(mut self) -> Self {
+        self.acknowledge_deliveries = false;
+        self
     }
 
     #[allow(
@@ -259,6 +285,28 @@ impl Client {
         )
         .await
         .map(|(response, _)| response)
+    }
+
+    async fn unary_with_endpoint<T, U, F>(
+        &self,
+        body: T,
+        mut call: F,
+    ) -> Result<(U, usize), StreamError>
+    where
+        T: Clone,
+        F: FnMut(
+            wire::stream_service_client::StreamServiceClient<Channel>,
+            Request<T>,
+        ) -> Pin<Box<dyn Future<Output = Result<Response<U>, Status>> + Send>>,
+    {
+        self.unary_on(
+            &self.channels,
+            &self.preferred,
+            body,
+            OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            &mut call,
+        )
+        .await
     }
 
     async fn follow_unary<T, U, F>(&self, body: T, mut call: F) -> Result<(U, usize), StreamError>
@@ -355,18 +403,33 @@ impl Client {
                     };
                     let active_endpoint = active.endpoint;
                     match active.records.next().await {
-                        Some(Ok(response)) => match read_response(response) {
-                            Ok(record) if record.sequence == cursor.next => {
+                        Some(Ok(response)) => {
+                            let delivery_token = response.delivery_token.clone();
+                            let record = match read_response(response) {
+                                Ok(record) => record,
+                                Err(error) => return Some((Err(error), cursor)),
+                            };
+                            // A duplicate response after a reconnect still crossed the
+                            // transport, even when the SDK discards it by cursor. Direct
+                            // clients ACK before that decision; translating servers need
+                            // their own downstream delivery evidence.
+                            if cursor.client.acknowledge_deliveries && delivery_token.len() == 32 {
+                                let _ = cursor
+                                    .client
+                                    .acknowledge_delivery(active_endpoint, delivery_token)
+                                    .await;
+                            }
+                            if record.sequence == cursor.next {
                                 cursor.next = cursor.next.saturating_add(1);
                                 if let Some(remaining) = &mut cursor.remaining {
                                     *remaining = remaining.saturating_sub(1);
                                 }
                                 return Some((Ok(record), cursor));
                             }
-                            Ok(record) if record.sequence < cursor.next => continue,
-                            Ok(_) => return Some((Err(StreamError::Unavailable), cursor)),
-                            Err(error) => return Some((Err(error), cursor)),
-                        },
+                            if record.sequence > cursor.next {
+                                return Some((Err(StreamError::Unavailable), cursor));
+                            }
+                        }
                         Some(Err(error)) if retryable(&error) => {
                             cursor.advance_follow(active_endpoint);
                             tokio::time::sleep(RETRY_DELAY).await;
@@ -384,6 +447,27 @@ impl Client {
             },
         )
         .boxed())
+    }
+
+    /// Acknowledges transport receipt to the issuing endpoint's index in the
+    /// configured endpoint list. Tokens must not be sent to another endpoint.
+    pub async fn acknowledge_delivery(
+        &self,
+        endpoint: usize,
+        token: Bytes,
+    ) -> Result<(), StreamError> {
+        if endpoint >= self.channels.len() || token.len() != 32 {
+            return Err(StreamError::InvalidArgument);
+        }
+        let mut service = Self::service(&self.channels, endpoint);
+        let request = self.request(wire::AcknowledgeDeliveryRequest {
+            delivery_token: token,
+        });
+        tokio::time::timeout(DELIVERY_ACK_TIMEOUT, service.acknowledge_delivery(request))
+            .await
+            .map_err(|_| StreamError::Unavailable)?
+            .map_err(|error| status(&error))?;
+        Ok(())
     }
 }
 
@@ -425,7 +509,7 @@ impl RecordCursor {
     async fn open(&self) -> Result<ActiveRecords, StreamError> {
         if let Some(limit) = self.remaining {
             self.client
-                .unary(
+                .unary_with_endpoint(
                     wire::ReadRequest {
                         path: self.path.to_string(),
                         from: self.next,
@@ -434,10 +518,7 @@ impl RecordCursor {
                     |mut service, request| Box::pin(async move { service.read(request).await }),
                 )
                 .await
-                .map(|records| ActiveRecords {
-                    records,
-                    endpoint: 0,
-                })
+                .map(|(records, endpoint)| ActiveRecords { records, endpoint })
         } else {
             self.client
                 .follow_unary(
@@ -821,13 +902,25 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
             })
             .await
             .map_err(|error| error_status(&error))?;
+        #[cfg(test)]
+        let test_delivery = self.test_delivery.clone();
         Ok(Response::new(
             records
-                .map(|record| {
+                .map(move |record| {
                     record
                         .map(record_wire)
                         .map(|record| wire::ReadResponse {
                             record: Some(record),
+                            delivery_token: {
+                                #[cfg(test)]
+                                if let Some((token, _)) = &test_delivery {
+                                    token.clone()
+                                } else {
+                                    Bytes::new()
+                                }
+                                #[cfg(not(test))]
+                                Bytes::new()
+                            },
                         })
                         .map_err(|error| error_status(&error))
                 })
@@ -856,10 +949,28 @@ impl<P: StreamProvider> wire::stream_service_server::StreamService for Service<P
                         .map(record_wire)
                         .map(|record| wire::ReadResponse {
                             record: Some(record),
+                            delivery_token: Bytes::new(),
                         })
                         .map_err(|error| error_status(&error))
                 })
                 .boxed(),
+        ))
+    }
+
+    async fn acknowledge_delivery(
+        &self,
+        _request: Request<wire::AcknowledgeDeliveryRequest>,
+    ) -> Result<Response<wire::AcknowledgeDeliveryResponse>, Status> {
+        #[cfg(test)]
+        if let Some((token, acknowledgements)) = &self.test_delivery {
+            if _request.get_ref().delivery_token != *token {
+                return Err(Status::invalid_argument("wrong delivery token"));
+            }
+            acknowledgements.fetch_add(1, Ordering::Relaxed);
+            return Ok(Response::new(wire::AcknowledgeDeliveryResponse {}));
+        }
+        Err(Status::unimplemented(
+            "delivery acknowledgements are hosted-only",
         ))
     }
 
@@ -1146,6 +1257,52 @@ mod tests {
             "fixture",
         )?;
         crate::conformance::verify(&transport).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn translating_client_does_not_ack_before_downstream_delivery()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let provider = Arc::new(MemoryStream::default());
+        provider
+            .append(AppendRequest {
+                path: StreamPath::new("accounts/events")?,
+                records: vec![Bytes::from_static(b"delivered")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"delivery"))?),
+            })
+            .await?;
+        let acknowledgements = Arc::new(AtomicUsize::new(0));
+        let channel = provider_channel(
+            Service::new(provider)
+                .with_test_delivery(Bytes::from(vec![9; 32]), Arc::clone(&acknowledgements)),
+        );
+        let direct = Client::from_channels(Arc::from([channel.clone()]), "fixture")?;
+        let translating = Client::from_channels(Arc::from([channel]), "fixture")?
+            .without_delivery_acknowledgements();
+        let request = ReadRequest {
+            path: StreamPath::new("accounts/events")?,
+            from: 0,
+            limit: 1,
+        };
+
+        let record = direct
+            .read(request.clone())
+            .await?
+            .next()
+            .await
+            .ok_or("empty read")??;
+        assert_eq!(record.value, Bytes::from_static(b"delivered"));
+        assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
+
+        let record = translating
+            .read(request)
+            .await?
+            .next()
+            .await
+            .ok_or("empty read")??;
+        assert_eq!(record.value, Bytes::from_static(b"delivered"));
+        assert_eq!(acknowledgements.load(Ordering::Relaxed), 1);
         Ok(())
     }
 

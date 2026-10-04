@@ -233,6 +233,7 @@ mod browser {
                 Either::Left((Some(Ok(value)), _)) => Ok(Some(
                     wire::ReadResponse {
                         record: Some(record(value)),
+                        delivery_token: Bytes::new(),
                     }
                     .encode_to_vec(),
                 )),
@@ -331,6 +332,7 @@ mod browser {
             while let Some(item) = records.next().await {
                 let frame = wire::ReadResponse {
                     record: Some(record(item.map_err(error)?)),
+                    delivery_token: Bytes::new(),
                 }
                 .encode_to_vec();
                 result.push(&js_sys::Uint8Array::from(frame.as_slice()));

@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const scriptPath = fileURLToPath(import.meta.url);
 const KINDS = new Set([
   "observation", "sequence", "append", "fork",
-  "records", "children", "children_page", "commit", "envelope", "token",
+  "records", "children", "children_page", "commit", "envelope", "token", "empty",
 ]);
 
 function readRustContract(root) {
@@ -54,6 +54,7 @@ ${routes}
 export type HttpRoute = keyof typeof HTTP_RESPONSE_CONTRACT;
 
 type HttpResponseByKind = {
+  empty: void;
   observation: IdempotencyObservation | undefined;
   sequence: Sequence;
   append: AppendResult;

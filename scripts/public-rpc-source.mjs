@@ -51,6 +51,7 @@ export function createSourceInspector(root, read = path => {
     if (family === "objects" && version === "v1") return empty;
     const objects = family === "objects";
     const stream = family === "stream";
+    const deliveryAck = stream && rpc.name === "AcknowledgeDelivery";
     const rustBase = `rust/crates/${family}/src/`;
     const tsBase = `typescript/packages/${family}/src/`;
     const operation = objects ? objectMethods[rpc.name] ?? rpc.localName : rpc.localName;
@@ -60,11 +61,11 @@ export function createSourceInspector(root, read = path => {
     const http = source(`${rustBase}${objects ? "v2/" : ""}http.rs`);
     const module = name => new RegExp(`^pub mod ${name};`, "m").test(rustRoot);
     const rustGrpc = module("grpc") && (objects || stream
-      ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : "impl StreamProvider for Client"), rustName)
+      ? rustMethod(rustImpl(grpc, objects ? "impl ObjectsProvider for GrpcObjects" : deliveryAck ? "impl Client" : "impl StreamProvider for Client"), rustName)
       : grpc.includes(`pub type Client = wire::${family}_service_client::${serviceName}Client<`) &&
         rustMethod(source(`${rustBase}generated/acyclic.${family}.${version}.tonic.rs`).split(`pub mod ${family}_service_server`)[0], rustName));
     const rustHttp = module("http") && rustMethod(objects || stream
-      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : "impl StreamProvider for HttpStream") : http, rustName);
+      ? rustImpl(http, objects ? "impl ObjectsProvider for HttpObjects" : deliveryAck ? "impl HttpStream" : "impl StreamProvider for HttpStream") : http, rustName);
     const grpcPath = `${tsBase}${objects ? "v2-grpc" : "grpc"}.ts`;
     const typescriptGrpcNodeBun = factory(grpcPath, objects ? "createObjectsV2GrpcClients" : `create${family[0].toUpperCase()}${family.slice(1)}GrpcClient`, serviceName);
     const typescriptHttp = objects
