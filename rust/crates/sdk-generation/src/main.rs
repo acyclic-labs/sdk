@@ -6,10 +6,10 @@
 //! artifact hashes in a manifest. Missing tools and missing qualification
 //! evidence remain "pending"; they are never represented as successful output.
 
-use acyclic_sdk_contract_wire::{explicit_http_family_views, FAMILY_VIEWS};
+use acyclic_sdk_contract_wire::{FAMILY_VIEWS, explicit_http_family_views};
 use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -119,6 +119,7 @@ enum Operation {
     Generate,
     Check,
     Drift,
+    Seal,
     Qualify,
     QualifyEmbedded,
     Inventory,
@@ -332,6 +333,7 @@ fn run() -> Result<(), CliError> {
         Operation::Generate => generate(&source_root, &output),
         Operation::Check => check(&source_root, &output),
         Operation::Drift => drift(&source_root, &output),
+        Operation::Seal => seal(&source_root, &output),
         Operation::Qualify => qualify(&source_root, &output, args.package_root.as_deref()),
         Operation::QualifyEmbedded => qualify_embedded(
             &source_root,
@@ -357,17 +359,18 @@ fn parse_args() -> Result<Args, CliError> {
         Some("generate") => Operation::Generate,
         Some("check") => Operation::Check,
         Some("drift") => Operation::Drift,
+        Some("seal") => Operation::Seal,
         Some("qualify") => Operation::Qualify,
         Some("qualify-embedded") => Operation::QualifyEmbedded,
         Some("inventory") => Operation::Inventory,
         Some(other) => {
             return Err(CliError::new(format!(
-                "unknown operation {other}; expected generate, check, drift, qualify, qualify-embedded, or inventory"
+                "unknown operation {other}; expected generate, check, drift, seal, qualify, qualify-embedded, or inventory"
             )));
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
             ));
         }
     };
@@ -419,7 +422,7 @@ fn parse_args() -> Result<Args, CliError> {
             }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
+                    "usage: sdk-generation <generate|check|drift|seal|qualify|qualify-embedded|inventory> --source-root PATH [--output PATH] [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -504,6 +507,91 @@ fn generate(source_root: &Path, output: &Path) -> Result<(), CliError> {
         )));
     }
     Ok(())
+}
+
+/// Refresh the Rust generation manifest after a release-only consumer has
+/// been built into the same bundle.  The consumer is an external producer,
+/// but its bytes still become Rust-owned evidence: this operation verifies the
+/// existing entries, re-collects the complete output tree, and recomputes the
+/// canonical artifact digest before a qualification receipt can consume it.
+fn seal(source_root: &Path, output: &Path) -> Result<(), CliError> {
+    let manifest_path = output.join("sdk-generation-manifest.json");
+    let mut manifest: Manifest = read_json(&manifest_path)?;
+    if manifest.schema != GENERATION_SCHEMA {
+        return Err(CliError::new(
+            "cannot seal an unsupported generation manifest",
+        ));
+    }
+    verify_generator_identity(&manifest.generator)?;
+    if manifest.status != "generated" {
+        return Err(CliError::new(format!(
+            "cannot seal a generation manifest in {} state",
+            manifest.status
+        )));
+    }
+    // The seal operation may add release-only consumer evidence, but it must
+    // never repair or reinterpret a damaged source generation. Verify the
+    // original artifact set and its digest before looking at any new files.
+    let original_digest = artifact_digest(&manifest.artifacts);
+    if manifest.artifact_digest.as_deref() != Some(original_digest.as_str()) {
+        return Err(CliError::new(
+            "cannot seal a manifest whose original artifact digest is invalid",
+        ));
+    }
+    let source = source_identity(source_root)?;
+    if source.dirty || source.revision == "uncommitted" {
+        return Err(CliError::new(
+            "qualification sealing requires a clean source checkout",
+        ));
+    }
+    if manifest.source.revision != source.revision
+        || manifest.source.digest != source.digest
+        || manifest.source.dirty
+    {
+        return Err(CliError::new(
+            "generation manifest source identity does not match the clean checkout",
+        ));
+    }
+    let authoritative = authoritative_source_identity(source_root)?;
+    let expected_authoritative = manifest
+        .authoritative_source
+        .as_ref()
+        .unwrap_or(&manifest.source);
+    if authoritative.revision != expected_authoritative.revision
+        || authoritative.digest != expected_authoritative.digest
+        || authoritative.dirty != expected_authoritative.dirty
+    {
+        return Err(CliError::new(
+            "authoritative source identity does not match the generation manifest",
+        ));
+    }
+    verify_required_tools(&manifest.tools, source_root, output)?;
+    verify_authority_manifest(source_root, output)?;
+    verify_manifest_entries(output, &manifest.artifacts)?;
+    let artifacts = collect_artifacts(output)?;
+    let original_paths = manifest
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.path.as_str())
+        .collect::<BTreeSet<_>>();
+    for artifact in artifacts
+        .iter()
+        .filter(|artifact| !original_paths.contains(artifact.path.as_str()))
+    {
+        // Downstream release qualification may contribute only its own
+        // Rust-bound consumer evidence. A package copied into this bundle is
+        // not allowed to become current merely because seal saw its bytes.
+        if !artifact.path.starts_with("qualification/consumers/") {
+            return Err(CliError::new(format!(
+                "seal found an unapproved new output path: {}",
+                artifact.path
+            )));
+        }
+    }
+    manifest.artifact_digest = Some(artifact_digest(&artifacts));
+    manifest.artifacts = artifacts;
+    write_json(&manifest_path, &manifest)?;
+    print_json(&manifest)
 }
 
 fn check(source_root: &Path, output: &Path) -> Result<(), CliError> {
@@ -974,17 +1062,30 @@ fn qualify_embedded(
             .and_then(Value::as_str)
             == Some("qualified");
     if !evidence_ok {
-        return Err(CliError::new(
-            format!(
-                "unified embedded evidence is not bound to the Rust source and artifact set (schema={}, language={}, revision={}, contract={}, artifact={}, expected_artifact={})",
-                evidence.get("schema").and_then(Value::as_str).unwrap_or("missing"),
-                evidence.get("language").and_then(Value::as_str).unwrap_or("missing"),
-                evidence.get("source_revision").and_then(Value::as_str).unwrap_or("missing"),
-                evidence.get("contract_digest").and_then(Value::as_str).unwrap_or("missing"),
-                evidence.get("artifact_digest").and_then(Value::as_str).unwrap_or("missing"),
-                expected_artifact_digest,
-            ),
-        ));
+        return Err(CliError::new(format!(
+            "unified embedded evidence is not bound to the Rust source and artifact set (schema={}, language={}, revision={}, contract={}, artifact={}, expected_artifact={})",
+            evidence
+                .get("schema")
+                .and_then(Value::as_str)
+                .unwrap_or("missing"),
+            evidence
+                .get("language")
+                .and_then(Value::as_str)
+                .unwrap_or("missing"),
+            evidence
+                .get("source_revision")
+                .and_then(Value::as_str)
+                .unwrap_or("missing"),
+            evidence
+                .get("contract_digest")
+                .and_then(Value::as_str)
+                .unwrap_or("missing"),
+            evidence
+                .get("artifact_digest")
+                .and_then(Value::as_str)
+                .unwrap_or("missing"),
+            expected_artifact_digest,
+        )));
     }
     let platform_runtime_artifact = if let Some(platform_receipt_path) = platform_receipt_path {
         Some(validate_embedded_platform_receipt(
@@ -3113,6 +3214,7 @@ fn operation_name(operation: Operation) -> &'static str {
         Operation::Generate => "generate",
         Operation::Check => "check",
         Operation::Drift => "drift",
+        Operation::Seal => "seal",
         Operation::Qualify => "qualify",
         Operation::QualifyEmbedded => "qualify-embedded",
         Operation::Inventory => "inventory",
@@ -4372,6 +4474,7 @@ fn tool_command(
             // drift comparison because the tree starts empty.
             Operation::Generate | Operation::Check => "packages-write",
             Operation::Drift
+            | Operation::Seal
             | Operation::Qualify
             | Operation::QualifyEmbedded
             | Operation::Inventory => "packages-check",
@@ -4582,6 +4685,37 @@ fn canonicalize_language_families(
     normalized.into_iter().collect()
 }
 
+fn catalog_exclusion_allowed(family: &Value, classification: &str) -> bool {
+    if !matches!(
+        classification,
+        "not-qualifiable" | "adapter-only" | "excluded"
+    ) || family.get("kind").and_then(Value::as_str) != Some("tooling")
+    {
+        return false;
+    }
+    let pinned = family
+        .get("generator_pin")
+        .and_then(Value::as_str)
+        .is_some_and(|pin| {
+            pin.split(|character: char| !character.is_ascii_hexdigit())
+                .any(|token| token.len() == 40 || token.len() == 64)
+        });
+    let concrete_evidence = family
+        .get("exclusion_evidence")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items.iter().any(|item| {
+                item.get("url").and_then(Value::as_str).is_some_and(|url| {
+                    (url.starts_with("https://") || url.starts_with("http://")) && url.len() > 8
+                }) && item
+                    .get("claim")
+                    .and_then(Value::as_str)
+                    .is_some_and(|claim| !claim.trim().is_empty())
+            })
+        });
+    pinned && concrete_evidence
+}
+
 fn language_inventory(
     root: &Path,
     output: &Path,
@@ -4633,8 +4767,8 @@ fn language_inventory(
                 };
                 let id = aliases.get(raw_id).map(String::as_str).unwrap_or(raw_id);
                 if let Some(existing) = families.get_mut(id) {
-                    if existing.get("status").is_none() {
-                        if let Some(object) = existing.as_object_mut() {
+                    if let Some(object) = existing.as_object_mut() {
+                        if object.get("status").is_none() {
                             object.insert(
                                 "status".into(),
                                 target
@@ -4642,6 +4776,24 @@ fn language_inventory(
                                     .cloned()
                                     .unwrap_or_else(|| Value::String("candidate".into())),
                             );
+                        }
+                        if object.get("kind").is_none() {
+                            if let Some(kind) = target.get("kind") {
+                                object.insert("kind".into(), kind.clone());
+                            }
+                        }
+                        if object.get("generator_pin").is_none() {
+                            if let Some(pin) = target
+                                .get("generator")
+                                .and_then(|generator| generator.get("pin"))
+                            {
+                                object.insert("generator_pin".into(), pin.clone());
+                            }
+                        }
+                        if object.get("exclusion_evidence").is_none() {
+                            if let Some(evidence) = target.get("evidence") {
+                                object.insert("exclusion_evidence".into(), evidence.clone());
+                            }
                         }
                     }
                     continue;
@@ -4659,12 +4811,28 @@ fn language_inventory(
                     .get("status")
                     .and_then(Value::as_str)
                     .unwrap_or("candidate");
+                let kind = target
+                    .get("kind")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String("language".into()));
+                let generator_pin = target
+                    .get("generator")
+                    .and_then(|generator| generator.get("pin"))
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let exclusion_evidence = target
+                    .get("evidence")
+                    .cloned()
+                    .unwrap_or_else(|| Value::Array(Vec::new()));
                 families.insert(
                     id.to_owned(),
                     json!({
                         "registry": registry,
                         "umbrella": package,
                         "status": classification,
+                        "kind": kind,
+                        "generator_pin": generator_pin,
+                        "exclusion_evidence": exclusion_evidence,
                     }),
                 );
             }
@@ -4700,10 +4868,7 @@ fn language_inventory(
             .and_then(Value::as_str)
             .unwrap_or("candidate")
             .to_owned();
-        let excluded = matches!(
-            classification.as_str(),
-            "not-qualifiable" | "adapter-only" | "excluded"
-        );
+        let excluded = catalog_exclusion_allowed(&family, &classification);
         let package = family
             .get("umbrella")
             .and_then(Value::as_str)
@@ -4733,7 +4898,7 @@ fn language_inventory(
                 ("snippets", &evidence.snippets),
                 ("install", &evidence.install),
             ] {
-                if capability_excluded(capability) {
+                if capability_excluded(output, &id, name, capability, expected) {
                     continue;
                 }
                 match capability_qualification(output, &id, name, capability, expected) {
@@ -4752,7 +4917,7 @@ fn language_inventory(
                 }
             }
             let capability_status = |name: &str, capability: &CapabilityEvidence| {
-                if capability_excluded(capability) {
+                if capability_excluded(output, &id, name, capability, expected) {
                     "excluded".to_owned()
                 } else {
                     match capability_qualification(output, &id, name, capability, expected) {
@@ -4903,7 +5068,21 @@ fn verify_required_tools(
             .map(|part| part.replace('\\', "/"))
             .collect::<Vec<_>>();
         let source_bound = command_text.iter().any(|part| part == &source_binding);
-        let output_bound = command_text.iter().any(|part| part == &output_binding);
+        let output_leaf = output
+            .file_name()
+            .and_then(OsStr::to_str)
+            .unwrap_or_default();
+        // Release qualification consumes the exact generated bundle uploaded
+        // by the source-generation job. Runner temp roots differ between
+        // jobs, so retain the absolute binding when available and otherwise
+        // accept only the same dedicated output directory name. The source
+        // identity, retained tool logs, authority manifest, and every
+        // artifact hash are still verified before this relocation is trusted.
+        let output_bound = command_text.iter().any(|part| {
+            part == &output_binding
+                || (!output_leaf.is_empty()
+                    && Path::new(part).file_name().and_then(OsStr::to_str) == Some(output_leaf))
+        });
         let retained_logs_bound = [
             ("stdout", tool.stdout_sha256.as_deref()),
             ("stderr", tool.stderr_sha256.as_deref()),
@@ -5475,12 +5654,84 @@ fn is_sha256_digest_in(value: &str) -> bool {
 /// and another must be its exact SHA-256 digest, for example:
 /// `stream-unary qualification/receipts/stream.json sha256:<64 hex>`. This
 /// keeps qualification tied to bytes produced by the current generation run.
-fn capability_excluded(capability: &CapabilityEvidence) -> bool {
+fn capability_excluded(
+    output: &Path,
+    language: &str,
+    capability_name: &str,
+    capability: &CapabilityEvidence,
+    expected: &EvidenceExpectations,
+) -> bool {
+    let Some(scope) = capability
+        .scope
+        .as_deref()
+        .filter(|scope| !scope.trim().is_empty())
+    else {
+        return false;
+    };
     capability.status == "excluded"
-        && capability
-            .scope
-            .as_deref()
-            .is_some_and(|scope| !scope.trim().is_empty())
+        && !capability.tests.is_empty()
+        && capability.tests.iter().all(|test| {
+            exclusion_test_receipt(output, language, capability_name, expected, scope, test)
+        })
+}
+
+fn exclusion_test_receipt(
+    output: &Path,
+    language: &str,
+    capability: &str,
+    expected: &EvidenceExpectations,
+    scope: &str,
+    value: &str,
+) -> bool {
+    let Some(digest) = value
+        .split_whitespace()
+        .find(|part| is_sha256(part))
+        .and_then(|part| part.strip_prefix("sha256:"))
+    else {
+        return false;
+    };
+    value.split_whitespace().any(|token| {
+        let token = token.strip_prefix("receipt=").unwrap_or(token);
+        if token.starts_with("sha256:")
+            || token.contains(':')
+            || token.is_empty()
+            || !is_portable_relative(token)
+            || !token.starts_with("qualification/receipts/")
+        {
+            return false;
+        }
+        let path = output.join(token);
+        let Ok(bytes) = fs::read(&path) else {
+            return false;
+        };
+        if hash_bytes(&bytes) != format!("sha256:{digest}") {
+            return false;
+        }
+        let Ok(receipt) = serde_json::from_slice::<Value>(&bytes) else {
+            return false;
+        };
+        let receipt_scope = receipt.get("scope").and_then(Value::as_str).unwrap_or("");
+        receipt.get("schema").and_then(Value::as_str)
+            == Some("acyclic.sdk.qualification.receipt.v1")
+            && receipt.get("language").and_then(Value::as_str) == Some(language)
+            && receipt.get("capability").and_then(Value::as_str) == Some(capability)
+            && receipt.get("source_revision").and_then(Value::as_str)
+                == Some(expected.source_revision.as_str())
+            && receipt.get("source_revision_kind").and_then(Value::as_str) == Some("git-oid")
+            && receipt.get("contract_digest").and_then(Value::as_str)
+                == Some(expected.contract_digest.as_str())
+            && receipt.get("artifact_digest").and_then(Value::as_str)
+                == Some(expected.artifact_digest.as_str())
+            && receipt.get("status").and_then(Value::as_str) == Some("excluded")
+            && receipt
+                .get("reason")
+                .and_then(Value::as_str)
+                .is_some_and(|reason| !reason.trim().is_empty())
+            && scope.contains(token)
+            && scope.contains(&format!("sha256:{digest}"))
+            && receipt_scope.contains(token)
+            && receipt_scope.contains(&expected.artifact_digest)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6162,7 +6413,7 @@ fn collect_output_files(
     Ok(())
 }
 
-fn verify_artifacts(output: &Path, artifacts: &[Artifact]) -> Result<(), CliError> {
+fn verify_manifest_entries(output: &Path, artifacts: &[Artifact]) -> Result<(), CliError> {
     for artifact in artifacts {
         if !is_portable_relative(&artifact.path) {
             return Err(CliError::new(format!(
@@ -6186,6 +6437,11 @@ fn verify_artifacts(output: &Path, artifacts: &[Artifact]) -> Result<(), CliErro
             )));
         }
     }
+    Ok(())
+}
+
+fn verify_artifacts(output: &Path, artifacts: &[Artifact]) -> Result<(), CliError> {
+    verify_manifest_entries(output, artifacts)?;
     let actual = collect_artifacts(output)?;
     if actual != artifacts {
         return Err(CliError::new(
@@ -6379,7 +6635,7 @@ fn clear_repository_selection_environment(command: &mut Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flate2::{write::GzEncoder, Compression};
+    use flate2::{Compression, write::GzEncoder};
     use tar::Builder;
 
     fn test_directory(name: &str) -> PathBuf {
@@ -6564,6 +6820,15 @@ mod tests {
     }
 
     #[test]
+    fn seal_is_a_distinct_manifest_operation() {
+        assert_eq!(operation_name(Operation::Seal), "seal");
+        assert_ne!(
+            operation_name(Operation::Seal),
+            operation_name(Operation::Check)
+        );
+    }
+
+    #[test]
     fn openapi_check_keeps_existing_stage_receipt() {
         let root = test_directory("openapi-check-receipt-preserved");
         fs::create_dir_all(root.join("openapi")).expect("create OpenAPI output");
@@ -6677,6 +6942,52 @@ mod tests {
     }
 
     #[test]
+    fn exclusion_requires_a_run_bound_receipt() {
+        let output = test_directory("exclusion-receipt-required");
+        let expected = EvidenceExpectations {
+            source_revision: "head".into(),
+            contract_digest: "sha256:contract".into(),
+            artifact_digest: "sha256:artifacts".into(),
+            artifacts: Vec::new(),
+        };
+        let evidence = CapabilityEvidence {
+            status: "excluded".into(),
+            tests: vec!["upstream unavailable".into()],
+            scope: Some("upstream unavailable".into()),
+        };
+        assert!(!capability_excluded(
+            &output, "python", "remote", &evidence, &expected
+        ));
+        cleanup(&output);
+    }
+
+    #[test]
+    fn exclusion_receipt_binds_scope_and_digest() {
+        let output = test_directory("exclusion-receipt-binding");
+        let receipt_path = output.join("qualification/receipts/python-remote.json");
+        fs::create_dir_all(receipt_path.parent().unwrap()).expect("create receipt directory");
+        let receipt = r#"{"schema":"acyclic.sdk.qualification.receipt.v1","language":"python","capability":"remote","source_revision":"head","source_revision_kind":"git-oid","contract_digest":"sha256:contract","artifact_digest":"sha256:artifacts","status":"excluded","reason":"pinned upstream limitation","scope":"qualification/receipts/python-remote.json sha256:artifacts"}"#;
+        fs::write(&receipt_path, receipt).expect("write receipt");
+        let digest = hash_bytes(receipt.as_bytes());
+        let scope = format!("qualification/receipts/python-remote.json {digest}");
+        let expected = EvidenceExpectations {
+            source_revision: "head".into(),
+            contract_digest: "sha256:contract".into(),
+            artifact_digest: "sha256:artifacts".into(),
+            artifacts: Vec::new(),
+        };
+        let evidence = CapabilityEvidence {
+            status: "excluded".into(),
+            tests: vec![format!("{scope} sha256:{digest}")],
+            scope: Some(format!("{scope} sha256:{digest}")),
+        };
+        assert!(capability_excluded(
+            &output, "python", "remote", &evidence, &expected
+        ));
+        cleanup(&output);
+    }
+
+    #[test]
     fn qualification_manifest_must_match_current_source_identity() {
         let expected = EvidenceExpectations {
             source_revision: "head".into(),
@@ -6758,9 +7069,11 @@ mod tests {
         assert!(!first_output.starts_with(&first));
         assert!(!second_output.starts_with(&second));
         assert_ne!(first_output, second_output);
-        assert!(first_output
-            .to_string_lossy()
-            .contains("acyclic-sdk-generation-"));
+        assert!(
+            first_output
+                .to_string_lossy()
+                .contains("acyclic-sdk-generation-")
+        );
         cleanup(&first);
         cleanup(&second);
     }
@@ -6953,9 +7266,10 @@ mod tests {
             args[rustdoc_index + 1],
             output.join("rustdoc-json").to_string_lossy()
         );
-        assert!(args
-            .iter()
-            .any(|argument| argument == "--strict-rustdoc-json"));
+        assert!(
+            args.iter()
+                .any(|argument| argument == "--strict-rustdoc-json")
+        );
         let registry_index = args
             .iter()
             .position(|argument| argument == "--registry-manifest")
@@ -7010,9 +7324,10 @@ mod tests {
             .map(|argument| argument.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert!(args.iter().any(|argument| argument == "sdk-rpc-contracts"));
-        assert!(args
-            .iter()
-            .any(|argument| argument == &root.to_string_lossy()));
+        assert!(
+            args.iter()
+                .any(|argument| argument == &root.to_string_lossy())
+        );
         assert!(args.iter().any(|argument| {
             argument
                 == &output
@@ -7141,56 +7456,68 @@ mod tests {
         let mut source_command = command.clone();
         source_command[separator + 3] = root.as_os_str().to_os_string();
         let output_command = command.clone();
-        assert!(ensure_generation_destination(
-            &root,
-            &output,
-            "sdk-typescript",
-            Operation::Generate,
-            &source_command,
-        )
-        .is_err());
-        assert!(ensure_generation_destination(
-            &root,
-            &output,
-            "sdk-typescript",
-            Operation::Generate,
-            &output_command,
-        )
-        .is_ok());
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &output,
+                "sdk-typescript",
+                Operation::Generate,
+                &source_command,
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &output,
+                "sdk-typescript",
+                Operation::Generate,
+                &output_command,
+            )
+            .is_ok()
+        );
         let mut source_input_command = command.clone();
         source_input_command[separator + 2] = output.as_os_str().to_os_string();
-        assert!(ensure_generation_destination(
-            &root,
-            &output,
-            "sdk-typescript",
-            Operation::Generate,
-            &source_input_command,
-        )
-        .is_err());
-        assert!(ensure_generation_destination(
-            &root,
-            &root,
-            "sdk-typescript",
-            Operation::Generate,
-            &output_command,
-        )
-        .is_err());
-        assert!(ensure_generation_destination(
-            &root,
-            &root,
-            "sdk-typescript",
-            Operation::Check,
-            &source_command,
-        )
-        .is_ok());
-        assert!(ensure_generation_destination(
-            &root,
-            &output,
-            "sdk-docs",
-            Operation::Generate,
-            &source_command,
-        )
-        .is_ok());
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &output,
+                "sdk-typescript",
+                Operation::Generate,
+                &source_input_command,
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &root,
+                "sdk-typescript",
+                Operation::Generate,
+                &output_command,
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &root,
+                "sdk-typescript",
+                Operation::Check,
+                &source_command,
+            )
+            .is_ok()
+        );
+        assert!(
+            ensure_generation_destination(
+                &root,
+                &output,
+                "sdk-docs",
+                Operation::Generate,
+                &source_command,
+            )
+            .is_ok()
+        );
         cleanup(&root);
     }
 
@@ -7656,60 +7983,70 @@ mod tests {
                 }
             }]
         });
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &manifest,
-            revision
-        )
-        .is_ok());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &manifest,
+                revision
+            )
+            .is_ok()
+        );
         let mut missing_consumer_log = manifest.clone();
         missing_consumer_log["snippets"][0]["validation"]["receipt"]["package_resolution"]
             .as_object_mut()
             .expect("package resolution object")
             .remove("consumer_stdout_path");
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &missing_consumer_log,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &missing_consumer_log,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&consumer_stdout_path, b"tampered consumer output\n")
             .expect("tamper consumer stdout");
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &manifest,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &manifest,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&consumer_stdout_path, consumer_stdout_bytes).expect("restore consumer stdout");
         let mut generic_identity = manifest.clone();
-        generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]
-            ["package_name"] = Value::String("sdk-example-consumer".to_owned());
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &generic_identity,
-            revision
-        )
-        .is_err());
+        generic_identity["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_name"] =
+            Value::String("sdk-example-consumer".to_owned());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &generic_identity,
+                revision
+            )
+            .is_err()
+        );
         let mut unbound_package = manifest.clone();
-        unbound_package["snippets"][0]["validation"]["receipt"]["package_resolution"]
-            ["compiled_snippet_sha256"] = Value::String(hash_bytes(b"different snippet"));
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &unbound_package,
-            revision
-        )
-        .is_err());
+        unbound_package["snippets"][0]["validation"]["receipt"]["package_resolution"]["compiled_snippet_sha256"] =
+            Value::String(hash_bytes(b"different snippet"));
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &unbound_package,
+                revision
+            )
+            .is_err()
+        );
 
         // A package with the same Cargo name/version is not interchangeable:
         // the consumer path, extracted tree, and archive metadata must all
@@ -7744,27 +8081,31 @@ mod tests {
         coincident_resolution["package_tree_sha256"] = Value::String(unrelated_tree_digest);
         coincident_resolution["consumer_manifest_sha256"] =
             Value::String(hash_bytes(unrelated_consumer_manifest));
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &coincident_package,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &coincident_package,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&consumer_manifest_path, consumer_manifest_bytes)
             .expect("restore consumer manifest");
 
         fs::write(package_root.join("src.rs"), b"pub fn changed_actors() {}\n")
             .expect("alter extracted package source");
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &manifest,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &manifest,
+                revision
+            )
+            .is_err()
+        );
         fs::write(package_root.join("src.rs"), b"pub fn actors() {}\n")
             .expect("restore extracted package source");
 
@@ -7775,16 +8116,18 @@ mod tests {
         let mut mismatched_archive = manifest.clone();
         mismatched_archive["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
             Value::String(hash_bytes(&mismatched_package_bytes));
-        mismatched_archive["snippets"][0]["validation"]["receipt"]["package_resolution"]
-            ["package_artifact_sha256"] = Value::String(hash_bytes(&mismatched_package_bytes));
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &mismatched_archive,
-            revision
-        )
-        .is_err());
+        mismatched_archive["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
+            Value::String(hash_bytes(&mismatched_package_bytes));
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &mismatched_archive,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&package_path, &package_bytes).expect("restore package archive");
 
         let mut trailing_archive = package_bytes.clone();
@@ -7793,44 +8136,50 @@ mod tests {
         let mut trailing_receipt = manifest.clone();
         trailing_receipt["snippets"][0]["validation"]["receipt"]["package_artifact_sha256"] =
             Value::String(hash_bytes(&trailing_archive));
-        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]
-            ["package_artifact_sha256"] = Value::String(hash_bytes(&trailing_archive));
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &trailing_receipt,
-            revision
-        )
-        .is_err());
+        trailing_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]["package_artifact_sha256"] =
+            Value::String(hash_bytes(&trailing_archive));
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &trailing_receipt,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&package_path, &package_bytes).expect("restore package archive after junk test");
 
         let changed_lock =
             b"# disposable locked consumer\nversion = 4\n\n[[package]]\nname = \"actors-sdk\"\nversion = \"0.1.0\"\nsource = \"registry+https://example.invalid/index\"\n";
         fs::write(&consumer_lock_path, changed_lock).expect("alter lock source");
         let mut changed_lock_receipt = manifest.clone();
-        changed_lock_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]
-            ["consumer_lock_sha256"] = Value::String(hash_bytes(changed_lock));
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &changed_lock_receipt,
-            revision
-        )
-        .is_err());
+        changed_lock_receipt["snippets"][0]["validation"]["receipt"]["package_resolution"]["consumer_lock_sha256"] =
+            Value::String(hash_bytes(changed_lock));
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &changed_lock_receipt,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&consumer_lock_path, consumer_lock_bytes).expect("restore consumer lock");
 
         fs::write(&snippet_path, b"fn main() { println!(\"changed\"); }\n")
             .expect("change rendered snippet");
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &manifest,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &manifest,
+                revision
+            )
+            .is_err()
+        );
         fs::write(&snippet_path, snippet_bytes).expect("restore rendered snippet");
         let generic = json!({
             "source": { "revision": revision },
@@ -7850,14 +8199,16 @@ mod tests {
                 }
             }]
         });
-        assert!(verify_rust_snippet_receipts(
-            &root,
-            &root,
-            &root.join("sdk-examples-manifest.json"),
-            &generic,
-            revision
-        )
-        .is_err());
+        assert!(
+            verify_rust_snippet_receipts(
+                &root,
+                &root,
+                &root.join("sdk-examples-manifest.json"),
+                &generic,
+                revision
+            )
+            .is_err()
+        );
         cleanup(&root);
     }
 
@@ -8133,16 +8484,20 @@ mod tests {
         )
         .expect("write tampered authority manifest");
         let error = authority_rpc_inventory(&root).expect_err("tampered method metadata rejected");
-        assert!(error
-            .to_string()
-            .contains("RPC methods do not match descriptor"));
+        assert!(
+            error
+                .to_string()
+                .contains("RPC methods do not match descriptor")
+        );
 
         let actual_methods = descriptor_rpc_methods(descriptor, "actors/v1/actors.proto")
             .expect("derive methods from Rust descriptor");
-        manifest["families"][0]["rpc_methods"] = json!(actual_methods
-            .iter()
-            .map(|(rpc, shape)| json!({ "rpc": rpc, "shape": shape }))
-            .collect::<Vec<_>>());
+        manifest["families"][0]["rpc_methods"] = json!(
+            actual_methods
+                .iter()
+                .map(|(rpc, shape)| json!({ "rpc": rpc, "shape": shape }))
+                .collect::<Vec<_>>()
+        );
         manifest["families"][0]["source"] = json!("stream/v2/stream.proto");
         fs::write(
             root.join("wire/rust-authority.json"),
@@ -8413,9 +8768,11 @@ mod tests {
         fs::create_dir_all(&nested).expect("create nested source path");
         let error =
             source_identity(&nested).expect_err("nested path must not inherit parent Git root");
-        assert!(error
-            .to_string()
-            .contains("does not match requested source root"));
+        assert!(
+            error
+                .to_string()
+                .contains("does not match requested source root")
+        );
         cleanup(&root);
     }
 

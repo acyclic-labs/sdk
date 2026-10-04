@@ -131,7 +131,7 @@
           "bidi"
         ],
         "wire": "protobuf-grpc",
-        "notes": "Generated SwiftPM package is portable across Swift hosts for GRPCCore/GRPCProtobuf; network transport must select NIO on Windows and Linux."
+        "notes": "Python remote clients are generated from the Rust-owned protobuf contract; embedded behavior remains behind the Rust FFI/WASM boundary."
       },
       "embedded": {
         "level": "ffi-or-wasm",
