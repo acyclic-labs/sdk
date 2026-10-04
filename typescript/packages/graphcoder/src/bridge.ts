@@ -1,5 +1,6 @@
 import {
   GraphCoderError,
+  checkedPath,
   checkedPublicText,
   MAX_MESSAGE_BODY_BYTES,
   MAX_OPERATION_ID_BYTES,
@@ -316,19 +317,6 @@ function wireQuery(query: PageQuery | undefined): GraphCoderWirePageQuery | unde
 function queryParams(query: PageQuery | undefined): { readonly query?: GraphCoderWirePageQuery } {
   const value = wireQuery(query);
   return value === undefined ? {} : { query: value };
-}
-
-function checkedPath(path: unknown): string {
-  if (typeof path !== "string") throw new GraphCoderError("invalid_input", "path must be text");
-  const bytes = new TextEncoder().encode(path);
-  if (bytes.byteLength === 0 || bytes.byteLength > 4_096) throw new GraphCoderError("invalid_input", "path must be between 1 and 4096 UTF-8 bytes");
-  if (path.includes("\\") || path.startsWith("/") || /^[A-Za-z]:/u.test(path) || /[\u0000-\u001f\u007f]/u.test(path)) {
-    throw new GraphCoderError("invalid_input", "path must be a relative slash-separated path");
-  }
-  if (path.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
-    throw new GraphCoderError("invalid_input", "path contains an empty or traversal segment");
-  }
-  return path;
 }
 
 function checkedGeneration(generation: bigint, label: string): string {

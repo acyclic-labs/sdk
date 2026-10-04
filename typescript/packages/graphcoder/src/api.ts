@@ -223,7 +223,8 @@ function checkedId(value: string, label: string): string {
   return value;
 }
 
-export function checkedPath(value: string): string {
+export function checkedPath(value: unknown): string {
+  if (typeof value !== "string") throw new GraphCoderError("invalid_input", "path must be text");
   const bytes = new TextEncoder().encode(value);
   if (bytes.byteLength === 0 || bytes.byteLength > 4_096) throw new GraphCoderError("invalid_input", "path must be between 1 and 4096 UTF-8 bytes");
   if (value.includes("\\") || value.startsWith("/") || /^[A-Za-z]:/u.test(value) || /[\u0000-\u001f\u007f]/u.test(value)) {
