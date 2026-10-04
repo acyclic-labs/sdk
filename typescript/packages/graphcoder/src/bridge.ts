@@ -16,6 +16,8 @@ import {
   type FileBody,
   type GraphCoderTransport,
   type GraphMessage,
+  type GraphMessageContentRef,
+  type MessagePageQuery,
   type PageQuery,
   type SessionPage,
   type SessionId,
@@ -54,6 +56,11 @@ export interface GraphCoderWirePageQuery {
   readonly limit?: number;
 }
 
+export interface GraphCoderWireMessagePageQuery extends GraphCoderWirePageQuery {
+  /** Body hydration is opt-in; omitted means content reference only. */
+  readonly include_body?: boolean;
+}
+
 /**
  * Method-specific request parameters. Keeping this map public gives native
  * and process hosts one source of truth for the dispatcher boundary instead
@@ -65,7 +72,7 @@ export interface GraphCoderWireParamsByMethod {
   readonly open_session: { readonly session_id: string };
   readonly resume_session: { readonly session_id: string };
   readonly read_activity: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
-  readonly read_messages: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
+  readonly read_messages: { readonly session_id: string; readonly query?: GraphCoderWireMessagePageQuery };
   readonly send_message: { readonly session_id: string; readonly sender_id: string; readonly recipient_id: string; readonly body: string };
   readonly list_approvals: { readonly session_id: string; readonly query?: GraphCoderWirePageQuery };
   readonly resolve_approval: { readonly approval_id: string; readonly approved: boolean; readonly session_id: string };
@@ -191,8 +198,8 @@ export class BridgeGraphCoderTransport implements GraphCoderTransport {
     return this.#page("read_activity", { session_id: id, ...queryParams(query) }, decodeActivity, id);
   }
 
-  async readMessages(id: SessionSnapshot["summary"]["id"], query?: PageQuery): Promise<{ readonly items: readonly GraphMessage[]; readonly next?: string }> {
-    return this.#page("read_messages", { session_id: id, ...queryParams(query) }, decodeMessage, id);
+  async readMessages(id: SessionSnapshot["summary"]["id"], query?: MessagePageQuery): Promise<{ readonly items: readonly GraphMessage[]; readonly next?: string }> {
+    return this.#page("read_messages", { session_id: id, ...messageQueryParams(query) }, decodeMessage, id);
   }
 
   async sendMessage(input: { readonly sessionId: SessionSnapshot["summary"]["id"]; readonly senderId: AgentSummary["id"]; readonly recipientId: AgentSummary["id"]; readonly body: string }): Promise<GraphMessage> {
@@ -304,6 +311,17 @@ function queryParams(query: PageQuery | undefined): { readonly query?: GraphCode
   return value === undefined ? {} : { query: value };
 }
 
+function messageQueryParams(query: MessagePageQuery | undefined): { readonly query?: GraphCoderWireMessagePageQuery } {
+  if (query === undefined) return {};
+  const value = wireQuery(query);
+  const message: { after?: string; limit?: number; include_body?: boolean } = { ...value };
+  if (query.includeBody !== undefined) {
+    if (typeof query.includeBody !== "boolean") throw new GraphCoderError("invalid_input", "includeBody must be boolean");
+    message.include_body = query.includeBody;
+  }
+  return { query: message };
+}
+
 function checkedPath(path: unknown): string {
   if (typeof path !== "string") throw new GraphCoderError("invalid_input", "path must be text");
   const bytes = new TextEncoder().encode(path);
@@ -398,7 +416,40 @@ function decodeActivity(value: unknown): ActivityEvent {
 
 function decodeMessage(value: unknown): GraphMessage {
   const raw = record(value, "message");
-  return { id: messageId(text(raw.id, "message id")), sessionId: sessionId(text(raw.session_id, "message session id")), senderId: agentId(text(raw.sender_id, "message sender id")), recipientId: agentId(text(raw.recipient_id, "message recipient id")), body: checkedPublicText(raw.body, "message body", MAX_MESSAGE_BODY_BYTES), deliveredAt: raw.delivered_at === null ? null : text(raw.delivered_at, "message delivery timestamp") };
+  const body = raw.body === undefined ? undefined : checkedPublicText(raw.body, "message body", MAX_MESSAGE_BODY_BYTES);
+  const content = raw.content === undefined ? undefined : decodeMessageContent(raw.content);
+  if (body === undefined && content === undefined) throw new GraphCoderError("transport", "message must contain content or an explicitly hydrated body");
+  return {
+    id: messageId(text(raw.id, "message id")),
+    sessionId: sessionId(text(raw.session_id, "message session id")),
+    senderId: agentId(text(raw.sender_id, "message sender id")),
+    recipientId: agentId(text(raw.recipient_id, "message recipient id")),
+    ...(body === undefined ? {} : { body }),
+    ...(content === undefined ? {} : { content }),
+    deliveredAt: raw.delivered_at === null ? null : text(raw.delivered_at, "message delivery timestamp"),
+  };
+}
+
+function decodeMessageContent(value: unknown): GraphMessageContentRef {
+  const raw = record(value, "message content reference");
+  const volume = record(raw.volume, "message content volume");
+  const descriptor = record(raw.descriptor, "message content descriptor");
+  const digest = array(descriptor.sha256, "message content digest");
+  if (digest.length !== 32 || !digest.every(byte => Number.isInteger(byte) && (byte as number) >= 0 && (byte as number) <= 255)) {
+    throw new GraphCoderError("transport", "message content digest must contain 32 octets");
+  }
+  if (!Number.isSafeInteger(descriptor.byte_length) || (descriptor.byte_length as number) < 0) {
+    throw new GraphCoderError("transport", "message content byte length is invalid");
+  }
+  const mediaType = text(descriptor.media_type, "message content media type");
+  if (!/^[A-Za-z0-9]+\/[A-Za-z0-9.+_-]+$/u.test(mediaType)) throw new GraphCoderError("transport", "message content media type is invalid");
+  return {
+    volume,
+    path: checkedPath(text(raw.path, "message content path")),
+    version: text(raw.version, "message content version"),
+    descriptor: { sha256: digest as readonly number[], byte_length: descriptor.byte_length as number, media_type: mediaType },
+    display_name: text(raw.display_name, "message content display name"),
+  };
 }
 
 function decodeApproval(value: unknown): ApprovalRequest {

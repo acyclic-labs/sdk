@@ -587,6 +587,11 @@ async fn model_selected_mail_and_wait_use_the_coordinator_host_after_reopen() ->
     )
     .await?;
     let root_task = swarm.root_task().await?;
+    let unknown_task = TaskId::from_bytes([250; 16]);
+    assert!(matches!(
+        swarm.read_inbox(unknown_task, 0, 8).await,
+        Err(Error::NotFound(message)) if message.contains("local swarm task")
+    ));
     assert!(matches!(
         host.admit(fixture.admission(OperationId::from_bytes(root_task.into_bytes()), None)?).await?,
         Admission::Accepted(id) if id == root_task

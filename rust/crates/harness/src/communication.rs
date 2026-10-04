@@ -1787,6 +1787,41 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn wait_rechecks_timeout_after_slow_durable_admission() -> Result<()> {
+        let mut host = host(BTreeMap::new())?;
+        Arc::get_mut(&mut host)
+            .expect("recording host is uniquely owned")
+            .observe_delay = Duration::from_millis(30);
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::StreamClient::new(provider);
+        let waits = Arc::new(StreamWaitStore::new(stream.clone()));
+        let timeout = unix_millis()?.saturating_add(5);
+        let completion = DurableCommunication::new(host)
+            .with_wait_store(waits)
+            .wait(
+                WaitRequest {
+                    operation_id: operation(49),
+                    waiter: task(1),
+                    target: WaitTarget::Messages {
+                        task_id: task(1),
+                        after: 0,
+                        limit: 1,
+                    },
+                    timeout_epoch_ms: Some(timeout),
+                    cancellation_id: None,
+                },
+                None,
+            )
+            .await?;
+        assert_eq!(completion, WaitCompletion::TimedOut);
+        let journal = stream
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert_eq!(journal.bounds().await?.tail, 2);
+        Ok(())
+    }
+
     #[test]
     fn future_deadline_must_fit_the_wait_horizon() -> Result<()> {
         let now = unix_millis()?;
@@ -2008,6 +2043,38 @@ mod tests {
             reopened_store.open(mismatched).await,
             Err(Error::Conflict(message)) if message.contains("identity")
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn cancellation_cannot_cross_owner_wait_store() -> Result<()> {
+        let host = host(BTreeMap::new())?;
+        let owner_provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let foreign_provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let request = WaitRequest {
+            operation_id: operation(47),
+            waiter: task(1),
+            target: WaitTarget::Messages {
+                task_id: task(1),
+                after: 0,
+                limit: 1,
+            },
+            timeout_epoch_ms: None,
+            cancellation_id: Some(operation(48)),
+        };
+        let owner_store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            owner_provider,
+        )));
+        owner_store.open(request.clone()).await?;
+        let foreign_store = Arc::new(StreamWaitStore::new(acyclic_stream::StreamClient::new(
+            foreign_provider,
+        )));
+        let error = DurableCommunication::new(host)
+            .with_wait_store(foreign_store)
+            .cancel(request)
+            .await
+            .expect_err("a foreign owner must not cancel another wait");
+        assert!(matches!(error, Error::Conflict(message) if message.contains("retained admission")));
         Ok(())
     }
 

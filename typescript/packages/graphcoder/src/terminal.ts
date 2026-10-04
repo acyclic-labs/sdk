@@ -71,7 +71,7 @@ export class GraphCoderTerminal {
     const command = parts[0];
     if (command === undefined || command === "") return;
     if (command === "help") {
-      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <operation> <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
+      writeLine(this.#io, { ok: true, commands: ["list [cursor]", "start <operation> <prompt>", "open <id>", "resume <id>", "activity [cursor]", "messages [cursor] [body]", "approvals [cursor]", "approve <id> <yes|no>", "message <sender> <recipient> <body>", "cancel", "changes", "diff <path>", "file <path>", "writeback <operation> <generation> <yes|no>", "quit"] });
       return;
     }
     if (command === "quit" || command === "exit") {
@@ -101,7 +101,11 @@ export class GraphCoderTerminal {
     if (command === "activity" || command === "messages" || command === "approvals") {
       const after = parts[1];
       const page = after === undefined ? {} : { after };
-      await this.#ui.dispatch(command === "activity" ? { kind: "load_activity", ...page } : command === "messages" ? { kind: "load_messages", ...page } : { kind: "load_approvals", ...page });
+      const includeBody = command === "messages" && parts[2] !== undefined
+        ? parts[2] === "body" || parts[2] === "--body"
+        : undefined;
+      if (command === "messages" && parts[2] !== undefined && includeBody === false) throw new GraphCoderError("invalid_input", "messages body selector must be body");
+      await this.#ui.dispatch(command === "activity" ? { kind: "load_activity", ...page } : command === "messages" ? { kind: "load_messages", ...page, ...(includeBody === undefined ? {} : { includeBody }) } : { kind: "load_approvals", ...page });
       const state = this.#ui.state();
       writeLine(this.#io, { ok: true, value: command === "activity" ? state.activity : command === "messages" ? state.messages : state.approvals, next: command === "activity" ? state.activityNext : command === "messages" ? state.messagesNext : state.approvalsNext });
       return;

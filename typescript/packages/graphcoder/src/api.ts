@@ -42,12 +42,32 @@ export interface ActivityEvent {
   readonly at: string;
 }
 
+/**
+ * Immutable content metadata returned with a message.  The native Harness
+ * owns the bytes; callers hydrate them explicitly through readFile (or opt
+ * into the bounded body field on a message page).
+ */
+export interface GraphMessageContentRef {
+  readonly volume: Readonly<Record<string, unknown>>;
+  readonly path: string;
+  readonly version: string;
+  readonly descriptor: Readonly<{
+    readonly sha256: readonly number[];
+    readonly byte_length: number;
+    readonly media_type: string;
+  }>;
+  readonly display_name: string;
+}
+
 export interface GraphMessage {
   readonly id: MessageId;
   readonly sessionId: SessionId;
   readonly senderId: AgentId;
   readonly recipientId: AgentId;
-  readonly body: string;
+  /** Present only when the caller explicitly requests message bodies. */
+  readonly body?: string;
+  /** Generation-pinned content reference; never requires eager hydration. */
+  readonly content?: GraphMessageContentRef;
   readonly deliveredAt: string | null;
 }
 
@@ -92,6 +112,11 @@ export interface SessionSnapshot {
 export interface PageQuery {
   readonly after?: string;
   readonly limit?: number;
+}
+
+export interface MessagePageQuery extends PageQuery {
+  /** Explicitly hydrate each returned body; defaults to reference-only. */
+  readonly includeBody?: boolean;
 }
 
 export interface SessionPage {
@@ -143,7 +168,7 @@ export interface GraphCoderTransport {
   openSession(sessionId: SessionId): Promise<SessionSnapshot>;
   resumeSession(sessionId: SessionId): Promise<SessionSnapshot>;
   readActivity(sessionId: SessionId, query?: PageQuery): Promise<ActivityPage>;
-  readMessages(sessionId: SessionId, query?: PageQuery): Promise<MessagePage>;
+  readMessages(sessionId: SessionId, query?: MessagePageQuery): Promise<MessagePage>;
   sendMessage(input: { readonly sessionId: SessionId; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }): Promise<GraphMessage>;
   listApprovals(sessionId: SessionId, query?: PageQuery): Promise<ApprovalPage>;
   resolveApproval(input: { readonly approvalId: ApprovalId; readonly approved: boolean; readonly sessionId: SessionId }): Promise<ApprovalRequest>;
@@ -199,7 +224,7 @@ export type GraphCoderUiCommand =
   | { readonly kind: "open_session"; readonly sessionId: SessionId }
   | { readonly kind: "resume_session"; readonly sessionId: SessionId }
   | { readonly kind: "load_activity"; readonly after?: string; readonly limit?: number }
-  | { readonly kind: "load_messages"; readonly after?: string; readonly limit?: number }
+  | { readonly kind: "load_messages"; readonly after?: string; readonly limit?: number; readonly includeBody?: boolean }
   | { readonly kind: "send_message"; readonly senderId: AgentId; readonly recipientId: AgentId; readonly body: string }
   | { readonly kind: "load_approvals"; readonly after?: string; readonly limit?: number }
   | { readonly kind: "resolve_approval"; readonly approvalId: ApprovalId; readonly approved: boolean }
@@ -247,6 +272,15 @@ function pageQuery(after: string | undefined, limit: number | undefined): PageQu
   const checked = checkedPageLimit(limit);
   if (checked !== undefined) query.limit = checked;
   return query;
+}
+
+function messagePageQuery(after: string | undefined, limit: number | undefined, includeBody: boolean | undefined): MessagePageQuery {
+  const value: MessagePageQuery = pageQuery(after, limit);
+  if (includeBody !== undefined) {
+    if (typeof includeBody !== "boolean") throw new GraphCoderError("invalid_input", "includeBody must be boolean");
+    return { ...value, includeBody };
+  }
+  return value;
 }
 
 /**
@@ -368,7 +402,7 @@ export class GraphCoderUi {
       }
       case "load_messages": {
         const session = this.#requireSelected();
-        const page = await this.transport.readMessages(session.summary.id, pageQuery(command.after, command.limit));
+        const page = await this.transport.readMessages(session.summary.id, messagePageQuery(command.after, command.limit, command.includeBody));
         if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, messages: command.after ? [...this.#state.messages, ...page.items] : page.items, messagesNext: page.next };
         return;

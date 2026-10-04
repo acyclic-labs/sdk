@@ -41,6 +41,36 @@ describe("GraphCoder UI transport boundary", () => {
     expect(requests[2]?.params).toEqual({ session_id: "session-1", path: "README.md", generation: "7" });
   });
 
+  test("native message pages keep content references lazy and opt into body hydration", async () => {
+    const requests: GraphCoderWireRequest[] = [];
+    const content = {
+      volume: { provider: { namespace: "acyclic", family: "filesystem", version: "2" }, id: "agent-volume", class: "agent_private", owner: { kind: "agent", id: "agent-1" } },
+      path: "system/swarm/messages/agent-1/agent-2/message-1.txt",
+      version: "generation-7",
+      descriptor: { sha256: Array.from({ length: 32 }, (_, index) => index), byte_length: 5, media_type: "text/plain" },
+      display_name: "message-1.txt",
+    };
+    const bridge = {
+      request(request: GraphCoderWireRequest): Promise<GraphCoderWireResponse> {
+        requests.push(request);
+        if (request.method !== "read_messages") return Promise.resolve({ request_id: request.request_id, ok: false, error: { code: "unsupported", message: "fixture" } });
+        const includeBody = (request.params.query as { readonly include_body?: boolean } | undefined)?.include_body === true;
+        return Promise.resolve({ request_id: request.request_id, ok: true, result: {
+          session_id: "session-1",
+          items: [{ id: "message-1", session_id: "session-1", sender_id: "agent-1", recipient_id: "agent-2", content, ...(includeBody ? { body: "hello" } : {}), delivered_at: "2026-01-01T00:00:00.000Z" }],
+        } });
+      },
+    };
+    const transport = new BridgeGraphCoderTransport(bridge);
+    const lazy = await transport.readMessages(sessionId("session-1"));
+    expect(lazy.items[0]?.content?.path).toBe(content.path);
+    expect(lazy.items[0]?.body).toBeUndefined();
+    expect(requests[0]?.params).toEqual({ session_id: "session-1" });
+    const hydrated = await transport.readMessages(sessionId("session-1"), { includeBody: true });
+    expect(hydrated.items[0]?.body).toBe("hello");
+    expect(requests[1]?.params).toEqual({ session_id: "session-1", query: { include_body: true } });
+  });
+
   test("start requests carry a caller-owned stable operation identity", async () => {
     const requests: GraphCoderWireRequest[] = [];
     const bridge = {

@@ -2146,7 +2146,7 @@ pub struct InboxItem {
     pub task_id: TaskId,
     /// Authenticated sender retained by the owner journal.
     pub sender: TaskId,
-    /// Owner clock captured when the mail event was committed.
+    /// Owner stream commit timestamp used for delivery ordering and replay.
     pub delivered_at_epoch_ms: u64,
     /// Gapless one-based sequence.
     pub sequence: u64,
