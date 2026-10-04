@@ -3,9 +3,12 @@ package dev.acyclic.transport;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.google.protobuf.ByteString;
 import io.grpc.CallOptions;
 import io.grpc.Channel;
 import io.grpc.ClientCall;
+import io.grpc.ManagedChannel;
+import io.grpc.ManagedChannelBuilder;
 import io.grpc.MethodDescriptor;
 import io.grpc.Server;
 import io.grpc.ServerServiceDefinition;
@@ -25,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -119,6 +123,10 @@ final class RpcScenarioEvidenceTest {
 
   private static List<Scenario> exerciseService(ServiceDescriptor descriptor, String revision,
       Path consumerRoot) throws Exception {
+    String endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT");
+    if (endpoint != null && !endpoint.isBlank()) {
+      return exerciseRemoteService(descriptor, revision, endpoint);
+    }
     String name = InProcessServerBuilder.generateName();
     ServerServiceDefinition.Builder service = ServerServiceDefinition.builder(descriptor);
     for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
@@ -129,15 +137,34 @@ final class RpcScenarioEvidenceTest {
     try {
       List<Scenario> scenarios = new ArrayList<>();
       for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
-        invoke(channel, method);
+        invoke(channel, method, true);
         String rpc = method.getFullMethodName();
         scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
-            shape(method.getType())));
+            shape(method.getType()), "in-process"));
       }
       return scenarios;
     } finally {
       ((io.grpc.ManagedChannel) channel).shutdownNow();
       server.shutdownNow();
+    }
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static List<Scenario> exerciseRemoteService(ServiceDescriptor descriptor, String revision,
+      String endpoint) throws Exception {
+    String target = endpoint.replaceFirst("^https?://", "");
+    ManagedChannel channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build();
+    try {
+      List<Scenario> scenarios = new ArrayList<>();
+      for (MethodDescriptor<?, ?> method : descriptor.getMethods()) {
+        invoke(channel, method);
+        String rpc = method.getFullMethodName();
+        scenarios.add(new Scenario(revision, familyForRpc(rpc), rpc,
+            shape(method.getType()), "remote"));
+      }
+      return scenarios;
+    } finally {
+      channel.shutdownNow();
     }
   }
 
@@ -173,23 +200,54 @@ final class RpcScenarioEvidenceTest {
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static void invoke(Channel channel, MethodDescriptor method) throws Exception {
-    Object request = empty(method.getRequestMarshaller());
+    invoke(channel, method, false);
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static void invoke(Channel channel, MethodDescriptor method, boolean remote) throws Exception {
+    Object request = remote ? requestFor(method) : empty(method.getRequestMarshaller());
+    CallOptions options = CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS);
     switch (method.getType()) {
-      case UNARY -> ClientCalls.blockingUnaryCall(channel, method, CallOptions.DEFAULT, request);
+      case UNARY -> ClientCalls.blockingUnaryCall(channel, method, options, request);
       case SERVER_STREAMING -> {
         java.util.Iterator<?> responses = ClientCalls.blockingServerStreamingCall(
-            channel, method, CallOptions.DEFAULT, request);
+            channel, method, options, request);
         while (responses.hasNext()) responses.next();
       }
-      case CLIENT_STREAMING -> streamCall(channel, method, request, false);
-      case BIDI_STREAMING -> streamCall(channel, method, request, true);
+      case CLIENT_STREAMING -> streamCall(channel, method, request, false, options);
+      case BIDI_STREAMING -> streamCall(channel, method, request, true, options);
       default -> throw new IllegalArgumentException("unsupported gRPC method type: " + method.getType());
     }
+  }
+
+  private static Object requestFor(MethodDescriptor<?, ?> method) {
+    if (method.getFullMethodName().equals("acyclic.actors.v1.ActorsService/CreateActor")) {
+      byte[] codeSha256 = new byte[32];
+      Arrays.fill(codeSha256, (byte) 1);
+      return acyclic.actors.v1.Actors.CreateActorRequest.newBuilder()
+          .setCodeSha256(ByteString.copyFrom(codeSha256))
+          .setHomeRegion("fixture")
+          .setIdempotencyKey("jvm-remote-actor")
+          .setLimits(acyclic.actors.v1.Actors.ActorLimits.newBuilder()
+              .setHandlerTimeoutMillis(1_000).setMemoryBytes(1_048_576).setCheckpointBytes(4_096))
+          .addSubscriptions(acyclic.actors.v1.Actors.SubscriptionSpec.newBuilder()
+              .setSubscriptionId("events").setStreamPath("actors/jvm/events")
+              .setStart(acyclic.actors.v1.Actors.SubscriptionStart.newBuilder().setCursor(0)))
+          .build();
+    }
+    return empty(method.getRequestMarshaller());
   }
 
   @SuppressWarnings({"rawtypes", "unchecked"})
   private static void streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi)
       throws Exception {
+    streamCall(channel, method, request, bidi,
+        CallOptions.DEFAULT.withDeadlineAfter(10, TimeUnit.SECONDS));
+  }
+
+  @SuppressWarnings({"rawtypes", "unchecked"})
+  private static void streamCall(Channel channel, MethodDescriptor method, Object request, boolean bidi,
+      CallOptions options) throws Exception {
     CountDownLatch done = new CountDownLatch(1);
     AtomicReference<Throwable> failure = new AtomicReference<>();
     StreamObserver response = new StreamObserver() {
@@ -197,7 +255,7 @@ final class RpcScenarioEvidenceTest {
       @Override public void onError(Throwable error) { failure.set(error); done.countDown(); }
       @Override public void onCompleted() { done.countDown(); }
     };
-    ClientCall call = channel.newCall(method, CallOptions.DEFAULT);
+    ClientCall call = channel.newCall(method, options);
     StreamObserver requests = bidi
         ? ClientCalls.asyncBidiStreamingCall(call, response)
         : ClientCalls.asyncClientStreamingCall(call, response);
@@ -252,12 +310,14 @@ final class RpcScenarioEvidenceTest {
     return methods;
   }
 
-  private record Scenario(String revision, String family, String rpc, String shape) {
+  private record Scenario(String revision, String family, String rpc, String shape,
+      String executionMode) {
     String json() {
       return "{\"schema\":\"acyclic.sdk.rpc-scenario-result.v1\",\"source_revision\":\""
           + RpcScenarioEvidenceTest.json(revision) + "\",\"status\":\"passed\",\"invoked\":true,\"exit_code\":0,"
           + "\"family\":\"" + RpcScenarioEvidenceTest.json(family) + "\",\"rpc\":\"" + RpcScenarioEvidenceTest.json(rpc)
-          + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\",\"execution_mode\":\"in-process\","
+          + "\",\"shape\":\"" + shape + "\",\"transport\":\"grpc\",\"execution_mode\":\""
+          + RpcScenarioEvidenceTest.json(executionMode) + "\","
           + "\"checks\":[\"invocation\",\"transport\",\"serialization\"]}\n";
     }
   }
