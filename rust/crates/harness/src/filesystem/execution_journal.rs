@@ -626,6 +626,23 @@ where
             }
             event.validate_schema_version()?;
             self.verify_event_refs(operation_id, &event).await?;
+            let (step, request_digest) = match &event {
+                ExecutionEvent::ModelStarted {
+                    step,
+                    request_digest,
+                } => (*step, *request_digest),
+                _ => {
+                    return Err(Error::Invalid(
+                        "budget dispatch permit requires a model start event".into(),
+                    ));
+                }
+            };
+            crate::swarm_budget_journal::validate_model_dispatch_permit(
+                &permit,
+                operation_id,
+                step,
+                request_digest,
+            )?;
             let digest = blake3::hash(format!("{operation_id}:{claim_id}").as_bytes());
             let retry_digest = digest.to_hex().to_string();
             let bytes = serde_json::to_vec(&Observation {
@@ -641,7 +658,7 @@ where
             }
             let budget_path = StreamPath::new(&permit.budget_path)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
-            let execution_path = self.path(operation_id)?;
+            let execution_path = self.path(operation_id)?.path().clone();
             let idempotency_key = StreamKey::new(Bytes::from(permit.idempotency_key))
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let outcome = self

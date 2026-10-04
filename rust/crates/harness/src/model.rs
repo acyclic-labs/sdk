@@ -396,6 +396,8 @@ pub struct ModelAttempt {
 /// the admission has become durable.
 #[derive(Clone, Debug)]
 pub struct ModelDispatchPermit {
+    /// Session whose budget stream is conditionally advanced.
+    pub(crate) budget_session: OperationId,
     /// Budget stream path whose tail is being conditionally advanced.
     pub(crate) budget_path: String,
     /// Budget tail observed while preparing this permit.
