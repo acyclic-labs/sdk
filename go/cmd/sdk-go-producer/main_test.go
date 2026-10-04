@@ -69,3 +69,32 @@ func TestValidateRequestRejectsMissingOutput(t *testing.T) {
 		t.Fatal("missing output was accepted")
 	}
 }
+
+func TestCopyModuleFilesIncludesRustGeneratedFacade(t *testing.T) {
+	root := t.TempDir()
+	sourceRoot := filepath.Join(root, "source")
+	outputRoot := filepath.Join(root, "output")
+	if err := os.MkdirAll(filepath.Join(sourceRoot, "go"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"go.mod", "go.sum", "README.md", "client.go"} {
+		if err := os.WriteFile(filepath.Join(sourceRoot, "go", name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"LICENSE", "NOTICE"} {
+		if err := os.WriteFile(filepath.Join(sourceRoot, name), []byte(name), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := copyModuleFiles(sourceRoot, outputRoot); err != nil {
+		t.Fatalf("copy module files: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outputRoot, "client.go"))
+	if err != nil {
+		t.Fatalf("generated facade was not staged: %v", err)
+	}
+	if string(got) != "client.go" {
+		t.Fatalf("generated facade contents = %q", got)
+	}
+}
