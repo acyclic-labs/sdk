@@ -261,3 +261,7 @@ See checkpoint-integrated-native-fork-budget.json for source-bound suite/artifac
 
 These receipts qualify only their stated source and scope. They do not constitute final qualification or replace the locked 68-entry matrix.
 
+## Fresh normal native application build
+
+[Build provenance](checkpoint-native-distributable-build-2026-10-04.json) records the successful isolated Windows build at root Rust tree `a5f6c3630340c003efc11370d5b7812af5cf8d12` and normal application binary SHA-256 `9046f9a6015404399d54c252629fde10469ada5661a496ba664c122890dc4469`. This is compilation evidence only. Installed-package execution and ConPTY qualification against this exact artifact are assigned and remain pending.
+

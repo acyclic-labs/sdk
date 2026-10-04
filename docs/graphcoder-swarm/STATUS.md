@@ -1,5 +1,9 @@
 # Local swarm implementation status
 
+Latest root checkpoint: isolated executor contracts pass 25/25 at `48e079fae`, including repeated rejection occurrences, actual serialized provider input, cold replay, and duplicate preparation refusal. These tests use an in-memory executor journal and do not prove real swarm recovery. The normal native application build finished successfully; [build provenance](checkpoint-native-distributable-build-2026-10-04.json) identifies its exact binary. Installed package and ConPTY execution against that binary are pending.
+
+The provider-level lazy-loading audit found unmet LOAD01/02 behavior: registry listing loads embedded inherited prefixes; session snapshots and message/activity pages open complete conversation aggregates. Summary-only transport tests do not qualify provider laziness. Harness metadata/index and bounded page repairs are assigned separately, with real provider read instrumentation required.
+
 Fresh Windows native CLI tests pass 7/7 at `ca8a9ed9d`, including a real staged-file tool exchange and successful cold response replay. Harness now retains the registered provider option policy when capturing completed batches and verifies the original request manifest before publication. See [checkpoint-native-cli-option-policy-2026-10-04.json](checkpoint-native-cli-option-policy-2026-10-04.json). This focused result does not qualify the still-failing recursive swarm fault matrix or installed terminal PTY gates.
 
 Fresh isolated native results exist for Rust source `454797822`: exact frozen request/manifest conformance passes 2/2, read projections pass 2/2, and real local swarm faults pass 1/5. The four failures include manifest command/revision binding and missing child dispatch. These are blocking failures with source-qualified artifacts. See [checkpoint-isolated-native-2026-10-04.json](checkpoint-isolated-native-2026-10-04.json). Final qualification remains incomplete.
