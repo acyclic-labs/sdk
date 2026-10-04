@@ -11,6 +11,19 @@ $ErrorActionPreference = "Stop"
 $root = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $sourceRevision = (& git -C $root rev-parse HEAD).Trim()
 if ($sourceRevision -notmatch '^[0-9a-fA-F]{40}$') { throw "The embedded package requires an exact Git source revision" }
+$sourceInputs = @(
+  'rust/crates/sdk-embedded-prototype/Cargo.toml',
+  'rust/crates/sdk-embedded-prototype/Cargo.lock',
+  'rust/crates/sdk-embedded-prototype/build.rs',
+  'rust/crates/sdk-embedded-prototype/src/lib.rs',
+  'rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs'
+)
+foreach ($sourceInput in $sourceInputs) {
+  if (-not (Test-Path -LiteralPath (Join-Path $root $sourceInput) -PathType Leaf)) { throw "Embedded source input is missing: $sourceInput" }
+}
+$lockfilePath = Join-Path $root 'rust/crates/sdk-embedded-prototype/Cargo.lock'
+$lockfileSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $lockfilePath).Hash.ToLowerInvariant()
+$cargoCommand = 'cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
 $out = if ([System.IO.Path]::IsPathRooted($Output)) { [System.IO.Path]::GetFullPath($Output) } else { [System.IO.Path]::GetFullPath((Join-Path $root $Output)) }
 $targetMap = [ordered]@{
   "x86_64-pc-windows-msvc" = @{ Rid = "win-x64"; File = "acyclic_sdk_embedded_prototype.dll" }
@@ -122,6 +135,11 @@ $nativeManifest = [ordered]@{
   schema = "acyclic.sdk.dotnet.embedded.native-manifest.v1"
   source_revision = $sourceRevision
   source_revision_kind = "git-oid"
+  source_inputs = @($sourceInputs)
+  cargo_manifest = "rust/crates/sdk-embedded-prototype/Cargo.toml"
+  cargo_lock = "rust/crates/sdk-embedded-prototype/Cargo.lock"
+  cargo_lock_sha256 = $lockfileSha256
+  cargo_command = $cargoCommand
   assets = @($records)
 }
 $nativeManifestPath = Join-Path $nativeRoot "native-manifest.json"
@@ -175,6 +193,11 @@ $manifestOutput = [ordered]@{
   source = "rust/crates/sdk-embedded-prototype"
   source_revision = $sourceRevision
   source_revision_kind = "git-oid"
+  source_inputs = @($sourceInputs)
+  cargo_manifest = "rust/crates/sdk-embedded-prototype/Cargo.toml"
+  cargo_lock = "rust/crates/sdk-embedded-prototype/Cargo.lock"
+  cargo_lock_sha256 = $lockfileSha256
+  cargo_command = $cargoCommand
   package = "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg"
   package_sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $package).Hash.ToLowerInvariant()
   native_manifest = "native/native-manifest.json"

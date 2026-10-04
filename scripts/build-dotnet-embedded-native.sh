@@ -21,6 +21,18 @@ root=$(cd "$root" && pwd)
 mkdir -p "$output"
 source_revision=$(git -C "$root" rev-parse HEAD)
 [[ "$source_revision" =~ ^[0-9a-fA-F]{40}$ ]]
+source_inputs=(
+  rust/crates/sdk-embedded-prototype/Cargo.toml
+  rust/crates/sdk-embedded-prototype/Cargo.lock
+  rust/crates/sdk-embedded-prototype/build.rs
+  rust/crates/sdk-embedded-prototype/src/lib.rs
+  rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs
+)
+for source_input in "${source_inputs[@]}"; do
+  test -f "$root/$source_input"
+done
+lockfile_sha256=$(sha256sum "$root/rust/crates/sdk-embedded-prototype/Cargo.lock" | awk '{print $1}')
+cargo_command='cargo build --locked --release --manifest-path rust/crates/sdk-embedded-prototype/Cargo.toml --target <rust_target> --target-dir <target_dir>'
 target_dir=${target_dir:-"$output/rust-target"}
 manifest="$root/rust/crates/sdk-embedded-prototype/Cargo.toml"
 
@@ -64,6 +76,17 @@ cat > "$output/native/$rid/native-producer.json" <<EOF
   "schema": "acyclic.sdk.dotnet.embedded.native.v1",
   "source_revision": "$source_revision",
   "source_revision_kind": "git-oid",
+  "source_inputs": [
+    "rust/crates/sdk-embedded-prototype/Cargo.toml",
+    "rust/crates/sdk-embedded-prototype/Cargo.lock",
+    "rust/crates/sdk-embedded-prototype/build.rs",
+    "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs"
+  ],
+  "cargo_manifest": "rust/crates/sdk-embedded-prototype/Cargo.toml",
+  "cargo_lock": "rust/crates/sdk-embedded-prototype/Cargo.lock",
+  "cargo_lock_sha256": "$lockfile_sha256",
+  "cargo_command": "$cargo_command",
   "rust_target": "$target",
   "rid": "$rid",
   "file": "$file",
@@ -78,6 +101,17 @@ cat > "$output/native/native-manifest.json" <<EOF
   "schema": "acyclic.sdk.dotnet.embedded.native-manifest.v1",
   "source_revision": "$source_revision",
   "source_revision_kind": "git-oid",
+  "source_inputs": [
+    "rust/crates/sdk-embedded-prototype/Cargo.toml",
+    "rust/crates/sdk-embedded-prototype/Cargo.lock",
+    "rust/crates/sdk-embedded-prototype/build.rs",
+    "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/src/uniffi_polling.rs"
+  ],
+  "cargo_manifest": "rust/crates/sdk-embedded-prototype/Cargo.toml",
+  "cargo_lock": "rust/crates/sdk-embedded-prototype/Cargo.lock",
+  "cargo_lock_sha256": "$lockfile_sha256",
+  "cargo_command": "$cargo_command",
   "assets": [
     {
       "rust_target": "$target",
