@@ -36,5 +36,30 @@
     "interpretation": "The first four classes are protocol-level outcomes from the fixture and remain non-qualifying because no terminal response frame was captured. UNAVAILABLE is an unexpected transport failure requiring fixture repair or retry policy investigation."
   },
   "interpretation": "The wheel was installed by pip and produced real RPC traffic. The run is not a qualification because the available fixture returned 51 gRPC failures and 52 scenarios had no response frames; the strict validator rejected it. This is executable evidence, not constructor or enumeration evidence.",
-  "next_bounded_milestone": "Run the same installed wheel against the repaired current Rust fixture and pass the resulting raw frames through the central Rust semantic verifier."
+  "integrated_coherent_fixture_run": {
+    "authority_source_revision": "0147488be8ee55c1c6c5d8724522c7f2f415df85fed682c97f396e593ca6e7ab",
+    "fixture_endpoint": "127.0.0.1:19081",
+    "fixture_binary_sha256": "15ED7F826AD2233A5E7E344174AAE7D9AE4CB93F3411FF3F6AF0F5F77E693991",
+    "wheel_sha256": "144DB2FDBE94AFBC6B0121D70B4EC93AEFC52AD9B70D62BE4363FF81200EBE96",
+    "runtime_receipt": "Q:\\sdk\\work\\python106-integrated-root-20261004\\python-runtime.json",
+    "runtime_receipt_sha256": "2876B15B154A7F50BC36055E33407AC7D73CDC8BDC9BEA6F02B6D71F78484DA2",
+    "validation_receipt": "Q:\\sdk\\work\\python106-integrated-root-20261004\\python-validation.json",
+    "validation_receipt_sha256": "D2E53C810C4F8CD09F858E2462CBF0FD69E847C023512F9CF4BBD306F09E628C",
+    "scenarios": 106,
+    "passed": 55,
+    "failed": 51,
+    "request_frames": 109,
+    "response_frames": 56,
+    "empty_response_scenarios": 52,
+    "terminal_statuses": {
+      "FAILED_PRECONDITION": 24,
+      "ABORTED": 4,
+      "UNIMPLEMENTED": 5,
+      "NOT_FOUND": 6,
+      "UNAVAILABLE": 2,
+      "INVALID_ARGUMENT": 10
+    },
+    "rust_expected_manifest": "failed before emission: Stream Commit returned limit_exceeded"
+  },
+  "next_bounded_milestone": "Repair the Rust expected-manifest Stream Commit limit_exceeded case and then compare each installed Python terminal status and response frame against the emitted Rust expected manifest through the central semantic verifier."
 }
