@@ -1237,7 +1237,8 @@ pub struct ForkReport {
     pub attachment_manifests: Vec<FileRef>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ForkRebindProof {
     operation_id: OperationId,
     original_request_digest: [u8; 32],
