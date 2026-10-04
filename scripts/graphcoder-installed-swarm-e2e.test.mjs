@@ -10,7 +10,7 @@ const driver = readFileSync("scripts/graphcoder-installed-swarm-e2e.mjs", "utf8"
 
 test("installed swarm scenario requires exact recursive/effect evidence", () => {
   assert.equal(scenario.driver, "scripts/graphcoder-installed-swarm-e2e.mjs");
-  for (const marker of ["two direct children with exact tasks child-a and child-b", "distinct typed command and writeback approvals with operation/action binding", "host approval before each public resolution", "physical checkout bytes unchanged before approval and equal to expected bytes after writeback", "a separate declared concurrent user edit is written to the checkout before writeback and survives reconciliation", "verified bridge cleanup"]) {
+  for (const marker of ["exactly four agents with distinct identities and root -> child-a/child-b -> grandchild relationships", "strictly ordered activity and message identities", "distinct typed command and writeback approvals with operation/action binding", "host approval before each public resolution", "exact durable native execution receipt matched byte-for-byte to the expected receipt", "independent physical execution marker and descendant cleanup evidence", "physical checkout bytes unchanged before approval and equal to expected bytes after writeback", "a separate declared concurrent user edit is written to the checkout before writeback and survives reconciliation", "verified bridge cleanup"]) {
     assert.equal(scenario.required_effects.includes(marker), true, marker);
   }
   assert.match(driver, /agent\.task === "child-a"/u);
@@ -27,6 +27,11 @@ test("installed swarm scenario requires exact recursive/effect evidence", () => 
   assert.match(driver, /expectation\.workspace_sha256/u);
   assert.match(driver, /concurrentEdit\.after_sha256/u);
   assert.match(driver, /writeFileSync\(resolve\(checkoutRoot, concurrentPath\)/u);
+  assert.match(driver, /agents\.length !== 4/u);
+  assert.match(driver, /new Set\(agents\.map\(agent => agent\?\.id\)\)\.size !== 4/u);
+  assert.match(driver, /expectedExecution\.receipt/u);
+  assert.match(driver, /execution\.cleanup/u);
+  assert.match(driver, /executionMarker !== expectedExecution\.marker_sha256/u);
   assert.match(driver, /expectation\.after_sha256/u);
   assert.match(driver, /concurrent_user_edit_preserved !== true/u);
   assert.match(driver, /cleanup_verified: true/u);
@@ -37,6 +42,8 @@ test("installed swarm driver rejects ambient bridge configuration and unsupporte
   assert.match(driver, /contains an undeclared key/u);
   assert.match(driver, /list_changes is not available/u);
   assert.match(driver, /read_change is not available/u);
+  assert.match(driver, /operatorToken: bridgeEnvironment\.GRAPHCODER_OPERATOR_TOKEN/u);
+  assert.match(driver, /query: \{ limit: 256 \}/u);
   assert.doesNotMatch(driver, /responseError\(/u);
 });
 
@@ -52,6 +59,7 @@ test("driver rejects invalid qualification configuration before launching or pub
     GRAPHCODER_SWARM_EXPECTED_FILES_JSON: JSON.stringify({ "fixture.txt": {} }),
     GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON: JSON.stringify({ command: {}, writeback: {} }),
     GRAPHCODER_SWARM_EXPECTED_COMMAND_JSON: "{}",
+    GRAPHCODER_SWARM_EXPECTED_EXECUTION_JSON: JSON.stringify({ activity_kind: "execution", operation_id: "operation", receipt: {}, cleanup: {}, marker_path: "marker", marker_sha256: "0".repeat(64) }),
     GRAPHCODER_SWARM_CONCURRENT_EDIT_JSON: "{}",
     GRAPHCODER_SWARM_EVIDENCE_PATH: evidencePath,
   };

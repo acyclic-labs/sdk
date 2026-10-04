@@ -46,6 +46,14 @@ function bytesDigest(value, label) {
   if (!Array.isArray(value) || value.some(item => !Number.isInteger(item) || item < 0 || item > 255)) fail(`${label} bytes are invalid`);
   return createHash("sha256").update(Buffer.from(value)).digest("hex");
 }
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => [key, canonicalJson(item)]));
+  return value;
+}
+function equalJson(left, right) {
+  return JSON.stringify(canonicalJson(left)) === JSON.stringify(canonicalJson(right));
+}
 function relativeCheckoutPath(path) {
   if (typeof path !== "string" || path.trim() === "" || /^[A-Za-z]:/u.test(path) || path.startsWith("/") || path.split(/[\\/]/u).includes("..")) fail(`checkout file path is not relative: ${path}`);
   return path;
@@ -71,10 +79,14 @@ const evidencePath = resolve(process.env.GRAPHCODER_SWARM_EVIDENCE_PATH ?? resol
 const expectedFiles = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_FILES_JSON");
 const expectedApproval = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON");
 const expectedCommand = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_COMMAND_JSON");
+const expectedExecution = requiredJsonObject("GRAPHCODER_SWARM_EXPECTED_EXECUTION_JSON");
 const concurrentEdit = requiredJsonObject("GRAPHCODER_SWARM_CONCURRENT_EDIT_JSON");
 if (Object.keys(expectedFiles).length === 0) fail("GRAPHCODER_SWARM_EXPECTED_FILES_JSON must contain at least one checkout file");
 const commandApproval = requiredJsonObjectValue(expectedApproval, "command", "GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON.command");
 const writebackApproval = requiredJsonObjectValue(expectedApproval, "writeback", "GRAPHCODER_SWARM_EXPECTED_APPROVAL_JSON.writeback");
+if (typeof expectedExecution.activity_kind !== "string" || expectedExecution.activity_kind.trim() === "" || typeof expectedExecution.operation_id !== "string" || expectedExecution.operation_id.trim() === "") fail("GRAPHCODER_SWARM_EXPECTED_EXECUTION_JSON must declare activity_kind and operation_id");
+if (!expectedExecution.receipt || typeof expectedExecution.receipt !== "object" || Array.isArray(expectedExecution.receipt)) fail("expected execution receipt must be an object");
+if (!expectedExecution.cleanup || typeof expectedExecution.cleanup !== "object" || Array.isArray(expectedExecution.cleanup)) fail("expected execution cleanup must be an object");
 const allowedBridgeEnvironment = new Set(["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "GRAPHCODER_MOCK_FIXTURE", "GRAPHCODER_OPERATOR_TOKEN", "GRAPHCODER_LAZY_OBSERVATION_PATH", "GRAPHCODER_REQUIRE_LAZY_COUNTERS"]);
 if (!Array.isArray(bridgeArgs) || bridgeArgs.some(value => typeof value !== "string")) fail("GRAPHCODER_BRIDGE_ARGS_JSON must be a string array");
 if (!bridgeEnvironment || typeof bridgeEnvironment !== "object" || Array.isArray(bridgeEnvironment)) fail("GRAPHCODER_BRIDGE_ENV_JSON must be an object");
@@ -94,11 +106,12 @@ try { bridgePath = resolveExport.resolve("@acyclic-labs/graphcoder/bridge"); }
 catch (error) { fail(`installed bridge export cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); }
 if (relative(packageRoot, bridgePath).startsWith("..") || resolve(packageRoot, bridgePath) === packageRoot) fail("installed bridge export resolved outside the package artifact root");
 const { JsonLineGraphCoderBridge } = await import(pathToFileURL(bridgePath).href);
-const bridge = new JsonLineGraphCoderBridge({ executable: bridgeExecutable, args: bridgeArgs, cwd: bridgeCwd, env: bridgeEnvironment });
+let bridge;
 const observations = [];
 let requestNumber = 0;
 let evidence;
 async function request(method, params) {
+  if (bridge === undefined) fail("bridge was not constructed");
   const requestId = `installed-swarm-${++requestNumber}`;
   const response = await bridge.request({ request_id: requestId, method, params });
   observations.push({ request_id: requestId, method, ok: response?.ok === true, error_code: response?.error?.code ?? null });
@@ -106,6 +119,16 @@ async function request(method, params) {
 }
 
 try {
+  // The process bridge generates a private operator token unless the host
+  // supplies one explicitly. Keep the runtime credential and the host proof
+  // identical; passing it only through env is ignored by the SDK bridge.
+  bridge = new JsonLineGraphCoderBridge({
+    executable: bridgeExecutable,
+    args: bridgeArgs,
+    cwd: bridgeCwd,
+    env: bridgeEnvironment,
+    operatorToken: bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN,
+  });
   const listed = await request("list_sessions", {});
   responseValue(listed.response, listed.requestId, "list_sessions");
 
@@ -118,6 +141,7 @@ try {
   const rootId = snapshot.summary?.id ?? snapshot.summary?.task_id;
   if (typeof rootId !== "string") fail("start_session omitted root identity");
   const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
+  if (agents.length !== 4 || new Set(agents.map(agent => agent?.id)).size !== 4) fail("recursive start must publish exactly four agents with distinct identities");
   const root = agents.find(agent => agent.id === rootId && agent.parent_id === null);
   if (!root) fail("recursive start omitted the root agent tree entry");
   const childA = agents.find(agent => agent.task === "child-a" && agent.parent_id === rootId);
@@ -125,10 +149,22 @@ try {
   const grandchild = agents.find(agent => agent.task === "grandchild" && agent.parent_id === childA?.id);
   if (!childA || !childB || !grandchild) fail("recursive tree is not exactly root -> child-a/child-b -> grandchild");
 
-  const activity = await request("read_activity", { session_id: rootId, limit: 256 });
-  responseValue(activity.response, activity.requestId, "read_activity");
-  const messages = await request("read_messages", { session_id: rootId, limit: 256 });
-  responseValue(messages.response, messages.requestId, "read_messages");
+  const activity = await request("read_activity", { session_id: rootId, query: { limit: 256 } });
+  const activityPage = object(responseValue(activity.response, activity.requestId, "read_activity"), "activity page");
+  const messages = await request("read_messages", { session_id: rootId, query: { limit: 256 } });
+  const messagePage = object(responseValue(messages.response, messages.requestId, "read_messages"), "message page");
+  function assertOrdered(items, label) {
+    if (!Array.isArray(items) || items.length === 0) fail(`${label} is empty`);
+    const ids = items.map(item => item?.id);
+    if (ids.some(id => typeof id !== "string" || id.trim() === "") || new Set(ids).size !== ids.length) fail(`${label} identities are missing or duplicated`);
+    const sequences = items.map(item => {
+      try { return BigInt(item?.sequence); }
+      catch { fail(`${label} sequence is not an unsigned integer`); }
+    });
+    for (let index = 1; index < sequences.length; index += 1) if (sequences[index] <= sequences[index - 1]) fail(`${label} sequence is not strictly ordered`);
+  }
+  assertOrdered(activityPage.items, "activity");
+  assertOrdered(messagePage.items, "messages");
   const beforeFiles = {};
   for (const [path, expectation] of Object.entries(expectedFiles)) {
     if (!expectation || typeof expectation.before_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.before_sha256) || typeof expectation.workspace_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.workspace_sha256) || typeof expectation.after_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectation.after_sha256)) fail(`expected checkout file ${path} lacks valid physical/workspace SHA-256 digests`);
@@ -151,6 +187,19 @@ try {
   const resolved = await request("resolve_approval", { session_id: rootId, approval_id: command.id, approved: true });
   const resolvedApproval = object(responseValue(resolved.response, resolved.requestId, "resolve_approval"), "resolved approval");
   if (resolvedApproval.state !== "approved" || resolvedApproval.operation_id !== command.operation_id) fail("public command approval resolution is not bound to the host approval");
+
+  // The activity projection carries the public, durable execution receipt.
+  // Compare the complete receipt supplied by the host against the explicitly
+  // frozen expected value; do not synthesize fields from a transport result.
+  const executionActivity = await request("read_activity", { session_id: rootId, query: { limit: 256 } });
+  const executionPage = object(responseValue(executionActivity.response, executionActivity.requestId, "read_activity after command"), "execution activity page");
+  assertOrdered(executionPage.items, "execution activity");
+  const execution = executionPage.items.find(item => item?.kind === expectedExecution.activity_kind && item.operation_id === expectedExecution.operation_id);
+  if (!execution || !equalJson(execution.receipt, expectedExecution.receipt)) fail("approved command lacks the exact durable native execution receipt");
+  if (!equalJson(execution.cleanup, expectedExecution.cleanup)) fail("native execution cleanup evidence does not match the expected descendant cleanup");
+  if (typeof expectedExecution.marker_path !== "string" || typeof expectedExecution.marker_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(expectedExecution.marker_sha256)) fail("expected execution marker must declare a relative path and SHA-256 digest");
+  const executionMarker = checkoutDigest(checkoutRoot, expectedExecution.marker_path, "native execution marker");
+  if (executionMarker !== expectedExecution.marker_sha256) fail("native execution marker does not match the expected output");
 
   const changes = await request("list_changes", { session_id: rootId });
   if (changes.response?.ok !== true) fail(`list_changes is not available for installed swarm qualification: ${JSON.stringify(changes.response?.error ?? changes.response)}`);
@@ -194,9 +243,11 @@ try {
 
   evidence = { protocol: "acyclic.graphcoder.installed-swarm-evidence.v1", root_id: rootId, agents, observations, recursive: true, native_approval: true, writeback: true };
 } finally {
-  bridge.close("installed recursive swarm qualification finished");
-  const exit = await bridge.waitForExit(5_000);
-  if (exit.kind !== "closed") fail(`bridge cleanup was not verified: ${JSON.stringify(exit)}`);
+  if (bridge !== undefined) {
+    bridge.close("installed recursive swarm qualification finished");
+    const exit = await bridge.waitForExit(5_000);
+    if (exit.kind !== "closed") fail(`bridge cleanup was not verified: ${JSON.stringify(exit)}`);
+  }
 }
 mkdirSync(dirname(evidencePath), { recursive: true });
 writeFileSync(evidencePath, `${JSON.stringify({ ...evidence, cleanup_verified: true }, null, 2)}\n`, { flag: "wx" });
