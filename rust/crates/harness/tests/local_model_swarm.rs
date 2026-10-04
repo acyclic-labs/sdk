@@ -127,6 +127,62 @@ struct DeterministicProvider {
     grandchild: OperationId,
 }
 
+struct CancellationProvider {
+    dispatches: AtomicUsize,
+    child_dispatches: AtomicUsize,
+    child_started: Arc<tokio::sync::Notify>,
+    reconciliations: AtomicUsize,
+}
+
+impl CancellationProvider {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            dispatches: AtomicUsize::new(0),
+            child_dispatches: AtomicUsize::new(0),
+            child_started: Arc::new(tokio::sync::Notify::new()),
+            reconciliations: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl ModelProvider for CancellationProvider {
+    fn generate<'a>(
+        &'a self,
+        prepared: acyclic_harness::model_input::PreparedModelInput,
+    ) -> BoxStream<'a, Result<ModelEvent>> {
+        self.dispatches.fetch_add(1, Ordering::SeqCst);
+        if latest_declared_child_task(prepared.request()) == Some("cancel-child") {
+            self.child_dispatches.fetch_add(1, Ordering::SeqCst);
+            self.child_started.notify_waiters();
+            return Box::pin(stream::once(async {
+                futures::future::pending::<Result<ModelEvent>>().await
+            }));
+        }
+        Box::pin(stream::iter(vec![
+            Ok(ModelEvent::ToolCall {
+                call_id: "fork-cancel-child".into(),
+                name: "acyclic.fork_child".into(),
+                arguments: json!({
+                    "child_operation": id(0xD2).to_string(),
+                    "task": "cancel-child",
+                    "prompt": "child waits"
+                }),
+            }),
+            Ok(ModelEvent::Completed {
+                metadata: Value::Null,
+            }),
+        ]))
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        _attempt: acyclic_harness::model::ModelAttempt,
+    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        self.reconciliations.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Ok(None) })
+    }
+}
+
 impl DeterministicProvider {
     fn new(child_a: OperationId, child_b: OperationId, grandchild: OperationId) -> Arc<Self> {
         Arc::new(Self {
@@ -541,5 +597,69 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         provider.dispatches.load(Ordering::SeqCst),
         dispatches_before_restart
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancelled_recursive_activation_aborts_child_and_preserves_indeterminate_claim()
+-> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path()).await?;
+    let provider = CancellationProvider::new();
+    let model = Model::new("mock", "local-model-swarm-cancellation", "1", json!({}))?;
+    let limits = Limits::default();
+    let resolver = Arc::new(
+        LocalFilesystemForkResolver::new(
+            host.clone(),
+            stream.clone(),
+            ProviderRef::new("local", "stream", "2")?,
+            project.clone(),
+        )?
+        .with_host_secret([0x5A; 32])?,
+    );
+    let swarm = PersistentLocalSwarm::open_shared_with_model_and_bindings(
+        directory.path(),
+        model.clone(),
+        provider.clone(),
+        limits,
+        LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+    )
+    .await?;
+
+    let root_operation = id(0xD1);
+    let child_operation = id(0xD2);
+    let running = {
+        let swarm = swarm.clone();
+        tokio::spawn(async move {
+            swarm
+                .run_root(root_operation, "start cancellable recursive swarm")
+                .await
+        })
+    };
+    let started = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if provider.child_dispatches.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            provider.child_started.notified().await;
+        }
+    })
+    .await;
+    assert!(started.is_ok(), "child provider was never dispatched");
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+
+    running.abort();
+    let join = running.await;
+    assert!(join.is_err(), "cancelled swarm run unexpectedly completed");
+
+    let child_task = acyclic_harness::TaskId::from_bytes(child_operation.into_bytes());
+    assert_eq!(swarm.session(child_task).await?.phase, LocalSessionPhase::Activating);
+    // The child journal's ModelStarted claim remains durable while its owned
+    // activation task is dropped. The executor recovery contract turns that
+    // claim into an indeterminate outcome; this test focuses on the swarm
+    // boundary proving that cancellation does not detach or redispatch it.
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 2);
+    assert_eq!(provider.child_dispatches.load(Ordering::SeqCst), 1);
+    assert_eq!(provider.reconciliations.load(Ordering::SeqCst), 0);
     Ok(())
 }
