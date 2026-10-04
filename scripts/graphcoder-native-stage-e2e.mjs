@@ -281,7 +281,7 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
     if (typeof connection.bridge.waitForExit !== "function") fail("installed node export does not expose waitForExit");
     const terminalOutput = [];
     const terminalStatus = await withDeadline(runCliWithTransport(
-      [`open ${sessionId}`, "activity", "file graphcoder-fixture.txt"],
+      [`open ${sessionId}`, "activity", "messages", `resume ${sessionId}`, "file graphcoder-fixture.txt"],
       connection.transport,
       { output: { write(value) { terminalOutput.push(String(value)); return true; } } },
     ), "installed terminal adapter");
@@ -290,18 +290,28 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
       try { return JSON.parse(line); }
       catch (error) { fail(`installed terminal adapter emitted invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
     });
-    if (terminalLines.length !== 3 || terminalLines.some(line => line.ok !== true)) {
+    if (terminalLines.length !== 5 || terminalLines.some(line => line.ok !== true)) {
       fail(`installed terminal adapter emitted an unsuccessful result: ${JSON.stringify(terminalLines)}`);
     }
-    if (terminalLines[0].value?.selectedSession?.id !== sessionId || terminalLines[1].value?.length === 0) {
+    if (terminalLines[0].value?.selectedSession?.id !== sessionId || terminalLines[1].value?.length === 0 || !Array.isArray(terminalLines[2].value)) {
       fail(`installed terminal adapter did not decode the native session/activity: ${JSON.stringify(terminalLines)}`);
     }
-    if (terminalLines[2].value?.path !== "graphcoder-fixture.txt" || terminalLines[2].value?.mediaType !== "text/plain") {
-      fail(`installed terminal adapter did not decode the native file projection: ${JSON.stringify(terminalLines[2])}`);
+    if (terminalLines[3].value?.selectedSession?.id !== sessionId || terminalLines[3].value?.selectedSession?.state !== "completed") {
+      fail(`installed terminal adapter did not decode the native resume projection: ${JSON.stringify(terminalLines[3])}`);
+    }
+    if (terminalLines[4].value?.path !== "graphcoder-fixture.txt" || terminalLines[4].value?.mediaType !== "text/plain") {
+      fail(`installed terminal adapter did not decode the native file projection: ${JSON.stringify(terminalLines[4])}`);
     }
     const snapshot = await withDeadline(connection.transport.openSession(sessionId), "installed consumer open_session");
     if (snapshot.workspaceGeneration <= 0n || snapshot.workspaceGeneration !== BigInt(generation)) fail(`installed consumer decoded an unexpected workspace generation: ${snapshot.workspaceGeneration}`);
     assertNoAttachments(snapshot, "installed consumer snapshot");
+    const resumed = await withDeadline(connection.transport.resumeSession(sessionId), "installed consumer resume_session");
+    if (resumed.summary.id !== sessionId || resumed.summary.state !== "completed" || resumed.workspaceGeneration !== snapshot.workspaceGeneration) {
+      fail(`installed consumer resume_session returned an unexpected snapshot: ${JSON.stringify({ id: resumed.summary.id, state: resumed.summary.state, generation: resumed.workspaceGeneration.toString() })}`);
+    }
+    assertNoAttachments(resumed, "installed consumer resumed snapshot");
+    const messages = await withDeadline(connection.transport.readMessages(sessionId), "installed consumer read_messages");
+    if (!Array.isArray(messages.items)) fail(`installed consumer read_messages returned an invalid page: ${JSON.stringify(messages)}`);
     const file = await withDeadline(connection.transport.readFile(sessionId, "graphcoder-fixture.txt", snapshot.workspaceGeneration), "installed consumer read_file");
     if (typeof file.generation !== "bigint" || file.generation !== snapshot.workspaceGeneration) fail(`installed consumer did not preserve BigInt file generation: ${String(file.generation)}`);
     if (file.mediaType !== "text/plain" || Buffer.from(file.bytes).toString("utf8") !== "fixture:stage") fail(`installed consumer decoded unexpected file body: ${JSON.stringify({ path: file.path, mediaType: file.mediaType, bytes: [...file.bytes] })}`);
@@ -310,7 +320,8 @@ async function runInstalledConsumerRead({ packageRoot, runtime, root, sessionId,
       generation: file.generation.toString(),
       mediaType: file.mediaType,
       bytes: [...file.bytes],
-      terminal: { status: terminalStatus, lines: terminalLines.length },
+      terminal: { status: terminalStatus, lines: terminalLines.length, messages: terminalLines[2].value.length },
+      resumed: { state: resumed.summary.state, generation: resumed.workspaceGeneration.toString(), messages: messages.items.length },
       package: packageIdentity,
     };
   } finally {
