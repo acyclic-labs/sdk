@@ -13,6 +13,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| std::path::PathBuf::from(DOC_DESCRIPTOR));
     let descriptors =
         prost_types::FileDescriptorSet::decode(std::fs::read(&descriptor_path)?.as_slice())?;
+    let mut descriptors = descriptors;
+    let control = prost_types::FileDescriptorSet::decode(
+        acyclic_sdk_contract_wire::transport_control::control_descriptor().as_slice(),
+    )?;
+    descriptors.file.extend(control.file);
     let native_target = std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("wasm32");
     if std::env::var_os("CARGO_FEATURE_HOST").is_some() && native_target {
         tonic_prost_build::configure()

@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use prost::Message;
 use tonic::metadata::{Ascii, MetadataValue};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint};
 use tonic::Request;
@@ -25,6 +26,9 @@ pub enum Error {
     /// The service rejected or could not complete the operation.
     #[error("Inference gRPC service failure: {0}")]
     Status(#[from] tonic::Status),
+    /// The authenticated endpoint did not prove the Rust-owned contract.
+    #[error("Inference control handshake failed: {0}")]
+    Negotiation(String),
 }
 
 /// Authenticated native gRPC operations for the Inference customer contract.
@@ -35,8 +39,86 @@ pub struct Client {
 }
 
 impl Client {
-    /// Connect over authenticated HTTPS with a caller-provided trust anchor.
-    pub async fn connect(endpoint: &str, token: &str, ca_pem: &[u8]) -> Result<Self, Error> {
+    /// Connect only after the authenticated, non-mutating control handshake.
+    ///
+    /// `Ok(None)` means the endpoint does not expose the control service and
+    /// permits the caller to try the verified HTTP transport. Any response
+    /// that claims the service exists but fails identity validation is
+    /// terminal.
+    pub async fn connect_verified(
+        endpoint: &str,
+        token: &str,
+        ca_pem: &[u8],
+    ) -> Result<Option<Self>, Error> {
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        use crate::control_wire::protocol::v1::{
+            Capability, CapabilitySet, HandshakeRequest, ProtocolIdentity,
+        };
+
+        let (channel, authorization) = Self::authenticated_channel(endpoint, token, ca_pem).await?;
+        let family = BindingFamily::Inference;
+        let version = control::control_protocol_version(family);
+        let mut probe = crate::control_wire::transport::v1::protocol_service_client::ProtocolServiceClient::new(channel.clone())
+            .max_decoding_message_size(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        let mut request = Request::new(HandshakeRequest {
+            protocol: Some(ProtocolIdentity {
+                version: version.into(),
+                descriptor_digest: control::archived_descriptor_digest(family),
+            }),
+            required: Some(CapabilitySet {
+                capabilities: vec![Capability {
+                    name: family.name().into(),
+                    version: version.into(),
+                }],
+            }),
+        });
+        request.metadata_mut().insert(
+            control::FAMILY_METADATA_KEY,
+            MetadataValue::from_static(family.name()),
+        );
+        let mut bearer = MetadataValue::<Ascii>::try_from(authorization.as_str())
+            .map_err(|_| Error::Invalid)?;
+        bearer.set_sensitive(true);
+        request
+            .metadata_mut()
+            .insert("authorization", bearer);
+        request.set_timeout(Duration::from_secs(10));
+        let response = match probe.handshake(request).await {
+            Ok(response) => response.into_inner(),
+            Err(status)
+                if matches!(
+                    status.code(),
+                    tonic::Code::Unimplemented
+                        | tonic::Code::Unavailable
+                        | tonic::Code::DeadlineExceeded
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(status) => return Err(Error::Status(status)),
+        };
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &response.encode_to_vec(),
+            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES,
+        )
+        .map_err(|error| Error::Negotiation(format!("{error:?}")))?;
+        Ok(Some(Self {
+            channel,
+            authorization,
+        }))
+    }
+
+    async fn authenticated_channel(
+        endpoint: &str,
+        token: &str,
+        ca_pem: &[u8],
+    ) -> Result<(Channel, String), Error> {
         if ca_pem.len() > 64 * 1024 || token.is_empty() || token.len() > 8_192 {
             return Err(Error::Invalid);
         }
@@ -58,10 +140,7 @@ impl Client {
             .tls_config(tls)?
             .connect()
             .await?;
-        Ok(Self {
-            channel,
-            authorization,
-        })
+        Ok((channel, authorization))
     }
 
     fn request<T>(&self, value: T) -> Result<Request<T>, Error> {

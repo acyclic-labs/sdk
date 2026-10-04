@@ -10,6 +10,7 @@ use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{Client as Transport, Url};
 use serde_json::Value;
+use std::time::Duration;
 
 /// HTTP configuration, transport, or canonical service failure.
 #[derive(Debug, thiserror::Error)]
@@ -109,6 +110,79 @@ impl Client {
             descriptors: DescriptorPool::decode(include_bytes!("../inference_descriptor.bin").as_slice())
                 .map_err(|_| Error::MalformedResponse)?,
         })
+    }
+
+    /// Prove the Rust-owned Inference identity before any application call.
+    ///
+    /// A missing control route reports `false`, allowing the facade to try a
+    /// different compatible transport. Authentication failures and identity
+    /// mismatches are terminal errors.
+    pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let family = BindingFamily::Inference;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name()).ok_or(Error::InvalidArgument)?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| Error::InvalidArgument)?;
+        let response = self
+            .transport
+            .get(url.clone())
+            .timeout(Duration::from_secs(10))
+            .bearer_auth(&self.token)
+            .header("accept", "application/json")
+            .send()
+            .await?;
+        if response.url() != &url {
+            return Err(Error::MalformedResponse);
+        }
+        let status = response.status().as_u16();
+        if matches!(status, 404 | 405) {
+            return Ok(false);
+        }
+        if !(200..300).contains(&status) {
+            return Err(Error::Service { status, detail: None });
+        }
+        if !response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
+            })
+        {
+            return Err(Error::MalformedResponse);
+        }
+        let maximum = self.maximum.min(control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES);
+        let (_, bytes) = self.body(response).await?;
+        if bytes.len() > maximum {
+            return Err(Error::ResponseTooLarge);
+        }
+        let pool = DescriptorPool::decode(control::control_descriptor().as_slice())
+            .map_err(|_| Error::MalformedResponse)?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or(Error::MalformedResponse)?;
+        let mut json = serde_json::Deserializer::from_slice(&bytes);
+        let decoded = DynamicMessage::deserialize(descriptor, &mut json)
+            .map_err(|_| Error::MalformedResponse)?;
+        json.end().map_err(|_| Error::MalformedResponse)?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            maximum,
+        )
+        .map_err(|_| Error::MalformedResponse)?;
+        Ok(true)
     }
 
     fn route(&self, method_name: &str, input_name: &str) -> Result<(String, String), Error> {

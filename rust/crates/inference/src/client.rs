@@ -10,6 +10,9 @@ use crate::wire;
 /// Client setup, transport, or canonical service failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Endpoint or credential configuration failed before an application call.
+    #[error("Inference client configuration failed: {0}")]
+    Configuration(String),
     /// Invalid endpoint, credential, request, or descriptor route.
     #[error("invalid Inference client configuration or request")]
     InvalidArgument,
@@ -30,7 +33,7 @@ pub enum Error {
 impl From<crate::http::Error> for Error {
     fn from(error: crate::http::Error) -> Self {
         match error {
-            crate::http::Error::InvalidArgument => Self::InvalidArgument,
+            crate::http::Error::InvalidArgument => Self::Configuration("invalid endpoint or credential".into()),
             crate::http::Error::Transport(error) => Self::Transport(error.to_string()),
             crate::http::Error::ResponseTooLarge => Self::ResponseTooLarge,
             crate::http::Error::MalformedResponse => Self::MalformedResponse,
@@ -47,9 +50,10 @@ impl From<crate::http::Error> for Error {
 impl From<crate::grpc::Error> for Error {
     fn from(error: crate::grpc::Error) -> Self {
         match error {
-            crate::grpc::Error::Invalid => Self::InvalidArgument,
+            crate::grpc::Error::Invalid => Self::Configuration("invalid endpoint or credential".into()),
             crate::grpc::Error::Transport(error) => Self::Transport(error.to_string()),
             crate::grpc::Error::Status(error) => Self::Service(error.to_string()),
+            crate::grpc::Error::Negotiation(error) => Self::Configuration(error),
         }
     }
 }
@@ -94,10 +98,14 @@ impl Client {
 #[cfg(all(feature = "host", not(target_arch = "wasm32")))]
         {
             if endpoint.starts_with("https://") {
-                if let Ok(client) = crate::grpc::Client::connect(endpoint, token, ca_pem).await {
-                    return Ok(Self {
-                        backend: Backend::Grpc(client),
-                    });
+                match crate::grpc::Client::connect_verified(endpoint, token, ca_pem).await {
+                    Ok(Some(client)) => {
+                        return Ok(Self {
+                            backend: Backend::Grpc(client),
+                        });
+                    }
+                    Ok(None) | Err(crate::grpc::Error::Transport(_)) => {}
+                    Err(error) => return Err(error.into()),
                 }
             }
             let client = crate::http::Client::new_with_ca(
@@ -106,6 +114,11 @@ impl Client {
                 maximum_response_bytes,
                 (!ca_pem.is_empty()).then_some(ca_pem),
             )?;
+            if !client.verify_handshake().await? {
+                return Err(Error::Configuration(
+                    "endpoint has no compatible Inference transport".into(),
+                ));
+            }
             return Ok(Self {
                 backend: Backend::Http(client),
             });
@@ -128,6 +141,11 @@ impl Client {
                 maximum_response_bytes,
                 (!ca_pem.is_empty()).then_some(ca_pem),
             )?;
+            if !client.verify_handshake().await? {
+                return Err(Error::Configuration(
+                    "endpoint has no compatible Inference transport".into(),
+                ));
+            }
             Ok(Self {
                 backend: Backend::Http(client),
             })

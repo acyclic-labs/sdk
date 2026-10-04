@@ -20,6 +20,7 @@ http-codec = ["dep:prost-reflect", "dep:serde_json"]
 http-client = ["http-codec", "dep:futures", "dep:reqwest", "dep:thiserror"]
 
 [dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 prost.workspace = true
 futures = { workspace = true, optional = true }
 sha2.workspace = true
@@ -38,6 +39,7 @@ zeroize = { workspace = true, optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream"], optional = true }
 
 [build-dependencies]
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 prost.workspace = true
 prost-build.workspace = true
 prost-types.workspace = true
