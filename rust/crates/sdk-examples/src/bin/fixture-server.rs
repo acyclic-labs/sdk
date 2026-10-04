@@ -10,6 +10,10 @@ use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider, wire as stream_wire,
 };
+use acyclic_workers::{
+    FILE_DESCRIPTOR_SET as WORKERS_FILE_DESCRIPTOR_SET, validate_publish, validate_select,
+    validate_submit, wire as workers_wire,
+};
 use futures::StreamExt;
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
@@ -436,6 +440,11 @@ async fn request_count(app: &App) -> usize {
 async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> {
     match request.path.as_str() {
         "/v1/actors/create" => actors_create(&request.content_type, &request.body),
+        "/v1/workers/versions/publish" => workers_publish(&request.content_type, &request.body),
+        "/v1/workers/deployments/select" => workers_select(&request.content_type, &request.body),
+        "/v1/workers/jobs/submit" => workers_submit(&request.content_type, &request.body),
+        "/v1/workers/jobs/inspect" => workers_inspect(&request.content_type, &request.body),
+        "/v1/workers/jobs/cancel" => workers_cancel(&request.content_type, &request.body),
         "/v1/stream/append" => stream_append(app, &request.body).await,
         "/v1/stream/read" => stream_read(app, &request.body).await,
         "/health" => Ok(json!({
@@ -443,6 +452,12 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
             "status": "ready",
             "service_availability": "not_claimed",
         })),
+        path if path.starts_with("/v1/workers/versions/") && path.ends_with("/invoke") => {
+            workers_invoke_version(&request.content_type, &request.body)
+        }
+        path if path.starts_with("/v1/workers/deployments/") && path.ends_with("/invoke") => {
+            workers_invoke_deployment(&request.content_type, &request.body)
+        }
         path => Err(HttpError {
             status: 404,
             message: format!("unknown fixture route {path}"),
@@ -525,8 +540,259 @@ fn encode_actor_response(response: &actors_wire::CreateActorResponse) -> Result<
     serde_json::to_value(message).map_err(|error| format!("serialize CreateActorResponse: {error}"))
 }
 
+fn workers_publish(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::PublishVersionRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.PublishVersionRequest",
+    )?;
+    validate_publish(&request).map_err(|error| HttpError {
+        status: 422,
+        message: format!("PublishVersionRequest rejected by Rust validation: {error}"),
+    })?;
+    encode_workers_response(
+        &workers_wire::PublishVersionResponse {
+            version: Some(workers_wire::CodeVersion {
+                sha256: request.expected_sha256,
+                size_bytes: request.javascript_module.len() as u64,
+            }),
+        },
+        "acyclic.workers.v1.PublishVersionResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_select(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::SelectDeploymentRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.SelectDeploymentRequest",
+    )?;
+    validate_select(&request).map_err(|error| HttpError {
+        status: 422,
+        message: format!("SelectDeploymentRequest rejected by Rust validation: {error}"),
+    })?;
+    encode_workers_response(
+        &workers_wire::SelectDeploymentResponse {
+            deployment: Some(workers_wire::Deployment {
+                alias: request.alias,
+                version: Some(workers_wire::CodeVersion {
+                    sha256: request.version_sha256,
+                    size_bytes: 1,
+                }),
+                revision: 1,
+            }),
+        },
+        "acyclic.workers.v1.SelectDeploymentResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_submit(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::SubmitJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.SubmitJobRequest",
+    )?;
+    validate_submit(&request).map_err(|error| HttpError {
+        status: 422,
+        message: format!("SubmitJobRequest rejected by Rust validation: {error}"),
+    })?;
+    let resolved_sha256 = match request
+        .target
+        .as_ref()
+        .and_then(|target| target.target.as_ref())
+    {
+        Some(workers_wire::job_target::Target::VersionSha256(value)) => value.clone(),
+        _ => vec![7; 32],
+    };
+    let input = request
+        .input
+        .and_then(|input| input.source)
+        .and_then(|source| match source {
+            workers_wire::payload::Source::InlineBytes(value) => Some(value),
+            workers_wire::payload::Source::Object(_) => None,
+        })
+        .unwrap_or_default();
+    encode_workers_response(
+        &workers_wire::SubmitJobResponse {
+            job: Some(workers_job(
+                "fixture-job",
+                workers_wire::JobState::Accepted,
+                resolved_sha256,
+                input,
+                false,
+            )),
+        },
+        "acyclic.workers.v1.SubmitJobResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_inspect(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InspectJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InspectJobRequest",
+    )?;
+    encode_workers_response(
+        &workers_wire::InspectJobResponse {
+            job: Some(workers_job(
+                &request.job_id,
+                workers_wire::JobState::Succeeded,
+                vec![7; 32],
+                b"fixture-result".to_vec(),
+                false,
+            )),
+        },
+        "acyclic.workers.v1.InspectJobResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_cancel(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::CancelJobRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.CancelJobRequest",
+    )?;
+    encode_workers_response(
+        &workers_wire::CancelJobResponse {
+            job: Some(workers_job(
+                &request.job_id,
+                workers_wire::JobState::Cancelled,
+                vec![7; 32],
+                Vec::new(),
+                true,
+            )),
+        },
+        "acyclic.workers.v1.CancelJobResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_invoke_version(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InvokeVersionRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InvokeVersionRequest",
+    )?;
+    encode_workers_response(
+        &workers_wire::InvokeResponse {
+            status: 200,
+            headers: vec![workers_wire::Header {
+                name: "x-acyclic-fixture".to_owned(),
+                value: "workers".to_owned(),
+            }],
+            body: request.body,
+            resolved_sha256: request.version_sha256,
+            resolved_revision: None,
+        },
+        "acyclic.workers.v1.InvokeResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_invoke_deployment(content_type: &str, body: &[u8]) -> Result<Value, HttpError> {
+    let request = decode_workers_request::<workers_wire::InvokeDeploymentRequest>(
+        content_type,
+        body,
+        "acyclic.workers.v1.InvokeDeploymentRequest",
+    )?;
+    encode_workers_response(
+        &workers_wire::InvokeResponse {
+            status: 200,
+            headers: vec![workers_wire::Header {
+                name: "x-acyclic-fixture".to_owned(),
+                value: "workers".to_owned(),
+            }],
+            body: request.body,
+            resolved_sha256: vec![7; 32],
+            resolved_revision: Some(1),
+        },
+        "acyclic.workers.v1.InvokeResponse",
+    )
+    .map_err(|error| HttpError {
+        status: 500,
+        message: error,
+    })
+}
+
+fn workers_job(
+    job_id: &str,
+    state: workers_wire::JobState,
+    resolved_sha256: Vec<u8>,
+    body: Vec<u8>,
+    cancellation_requested: bool,
+) -> workers_wire::JobObservation {
+    workers_wire::JobObservation {
+        job_id: job_id.to_owned(),
+        state: state as i32,
+        resolved_sha256,
+        attempt: 1,
+        result: Some(workers_wire::JobResult { body }),
+        failure_code: String::new(),
+        cancellation_requested,
+    }
+}
+
 fn decode_json_message<M: Message + Default>(body: &[u8], name: &str) -> Result<M, String> {
-    let pool = DescriptorPool::decode(FILE_DESCRIPTOR_SET)
+    decode_json_message_from_descriptor(body, name, FILE_DESCRIPTOR_SET)
+}
+
+fn decode_workers_request<M: Message + Default>(
+    content_type: &str,
+    body: &[u8],
+    name: &str,
+) -> Result<M, HttpError> {
+    if content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
+        || body
+            .iter()
+            .copied()
+            .find(|byte| !byte.is_ascii_whitespace())
+            == Some(b'{')
+    {
+        decode_json_message_from_descriptor(body, name, WORKERS_FILE_DESCRIPTOR_SET).map_err(
+            |error| HttpError {
+                status: 400,
+                message: format!("invalid {name} Protobuf JSON: {error}"),
+            },
+        )
+    } else {
+        M::decode(body).map_err(|error| HttpError {
+            status: 400,
+            message: format!("invalid {name} protobuf: {error}"),
+        })
+    }
+}
+
+fn decode_json_message_from_descriptor<M: Message + Default>(
+    body: &[u8],
+    name: &str,
+    descriptor_bytes: &[u8],
+) -> Result<M, String> {
+    let pool = DescriptorPool::decode(descriptor_bytes)
         .map_err(|error| format!("decode Actors descriptor: {error}"))?;
     let descriptor = pool
         .get_message_by_name(name)
@@ -539,6 +805,17 @@ fn decode_json_message<M: Message + Default>(body: &[u8], name: &str) -> Result<
     message
         .transcode_to()
         .map_err(|error| format!("transcode JSON message: {error}"))
+}
+
+fn encode_workers_response<M: Message>(response: &M, name: &str) -> Result<Value, String> {
+    let pool = DescriptorPool::decode(WORKERS_FILE_DESCRIPTOR_SET)
+        .map_err(|error| format!("decode Workers descriptor: {error}"))?;
+    let descriptor = pool
+        .get_message_by_name(name)
+        .ok_or_else(|| format!("descriptor is missing: {name}"))?;
+    let message = DynamicMessage::decode(descriptor, response.encode_to_vec().as_slice())
+        .map_err(|error| format!("encode {name}: {error}"))?;
+    serde_json::to_value(message).map_err(|error| format!("serialize {name}: {error}"))
 }
 
 async fn stream_append(app: &App, body: &[u8]) -> Result<Value, HttpError> {
