@@ -163,7 +163,13 @@ mod platform {
     pub(super) fn spawn(command: &mut Command, allow_cgroup: bool) -> io::Result<(Child, Guard)> {
         command.process_group(0);
         #[cfg(target_os = "linux")]
-        let cgroup = match allow_cgroup.then(configured_cgroup_root).flatten() {
+        let configured = if allow_cgroup {
+            configured_cgroup_root()?
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let cgroup = match configured {
             Some(root) => {
                 let value = Cgroup::prepare(&root)?;
                 let procs_path = match value.procs_path() {
@@ -263,10 +269,20 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn configured_cgroup_root() -> Option<PathBuf> {
-        std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
+    fn configured_cgroup_root() -> io::Result<Option<PathBuf>> {
+        let Some(value) =
+            std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT").filter(|value| !value.is_empty())
+        else {
+            return Ok(None);
+        };
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ACYCLIC_PROCESS_CGROUP_ROOT must be absolute",
+            ));
+        }
+        Ok(Some(path))
     }
 
     #[cfg(target_os = "linux")]
@@ -286,6 +302,24 @@ mod platform {
     fn stop_child(child: &mut Child) {
         let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    fn stop_child_bounded(child: &mut Child) -> io::Result<()> {
+        let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if child.try_wait()?.is_some() {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "native root cleanup did not finish after cgroup termination failure",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(target_os = "linux")]
@@ -311,9 +345,9 @@ mod platform {
             )));
         };
         if let Err(error) = cgroup.terminate() {
-            stop_child(child);
+            let direct_cleanup = stop_child_bounded(child);
             return Err(io::Error::other(format!(
-                "native cgroup cleanup failed after launch initialization error: {error}"
+                "native cgroup cleanup failed after launch initialization error: {error}; direct root cleanup: {direct_cleanup:?}; descendants remain uncertain"
             )));
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);

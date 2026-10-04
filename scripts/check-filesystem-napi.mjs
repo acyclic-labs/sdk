@@ -160,7 +160,10 @@ async function qualifyProcessOwner(binding) {
       while (rootActive && Date.now() < cleanupDeadline) {
         try {
           const cleanup = owner.terminate(spawned.token);
-          if (cleanup.kind === "terminated") rootActive = false;
+          if (cleanup.kind === "terminated") {
+            rootTokenRetired = true;
+            rootActive = false;
+          }
         } catch {
           // Keep retrying until the bounded cleanup deadline; uncertainty is
           // surfaced by the original qualification failure or timeout.
