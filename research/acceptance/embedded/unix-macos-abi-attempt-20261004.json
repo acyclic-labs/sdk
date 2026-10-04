@@ -1,0 +1,42 @@
+{
+  "schema": "acyclic.sdk.embedded.platform-attempt.v1",
+  "status": "not-qualified",
+  "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+  "available_toolchains": {
+    "rust_targets": [
+      "aarch64-pc-windows-msvc",
+      "wasm32-unknown-unknown",
+      "x86_64-pc-windows-msvc",
+      "x86_64-unknown-linux-musl"
+    ],
+    "clang": "17.0.2",
+    "docker": "installed, Linux daemon unavailable",
+    "wsl": "installed, distro enumeration denied"
+  },
+  "attempts": [
+    {
+      "platform": "x86_64-unknown-linux-musl",
+      "result": "blocked-before-artifact",
+      "command": "cargo build --locked --offline --release --target x86_64-unknown-linux-musl",
+      "evidence": "clang cross compilation reached ring v0.17.14 and failed because the Windows LLVM installation has no musl sysroot headers (assert.h missing); no Unix artifact or consumer was promoted"
+    },
+    {
+      "platform": "macOS",
+      "result": "unavailable-toolchain",
+      "evidence": "no Apple target or macOS SDK is installed on this Windows host; no cross-platform artifact or consumer was claimed"
+    },
+    {
+      "platform": "Linux-container",
+      "result": "unavailable-runtime",
+      "evidence": "Docker Desktop Linux engine is not running"
+    },
+    {
+      "platform": "Linux-WSL",
+      "result": "unavailable-runtime",
+      "evidence": "WSL distro enumeration returned E_ACCESSDENIED"
+    }
+  ],
+  "qualification_policy": "Only an executed foreign consumer against a produced Rust package can change this record to qualified. CI workflow definitions do not count as execution evidence.",
+  "qualified_embedded_platforms": ["x86_64-pc-windows-msvc"],
+  "next_required_fixture": "A Linux musl or macOS SDK runner with the same Rust source revision and central qualify-embedded receipt gate"
+}

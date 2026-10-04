@@ -7,6 +7,18 @@
     "version": "0.2.0",
     "abi_version": 1,
     "source_digest": "e60273cd4f2bbf6132c67872a411a86328291628a2fbd91e3033725809f2c8a3",
+    "source_inputs": [
+      "rust/crates/sdk-embedded-prototype/Cargo.toml",
+      "rust/crates/sdk-embedded-prototype/Cargo.lock",
+      "rust/crates/sdk-embedded-prototype/build.rs",
+      "rust/crates/sdk-embedded-prototype/src/lib.rs",
+      "cpp/embedded-consumer/CMakeLists.txt",
+      "cpp/embedded-consumer/AcyclicEmbeddedConfig.cmake.in",
+      "cpp/embedded-consumer/include/acyclic/embedded.hpp",
+      "cpp/embedded-consumer/main.cpp",
+      "cpp/embedded-consumer/negative_lifetime_smoke.cpp",
+      "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp"
+    ],
     "cargo_lock_sha256": "6483b04e38523feab1b14815d834f01adc91f6c641afc68cd950bf435016a7c8"
   },
   "toolchain": {
