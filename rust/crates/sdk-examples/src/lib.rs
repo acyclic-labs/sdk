@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 /// Executable source-owned scenarios for each guide family.
 pub mod filesystem_scenarios;
+pub mod fixtures;
 pub mod harness_scenarios;
 pub mod inference_scenarios;
 pub mod machines_scenarios;
