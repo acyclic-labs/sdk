@@ -325,4 +325,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - [Full native regression and WASM drift](checkpoint-native-regression-and-wasm-drift-2026-10-04.json): archived6ebee native suite340/344 exposes four generic receipt identity regressions;441d repair pendingfullrun. c08 WASM compilation proceeds, generated Harness JavaScript drift remains failed.
 
 - [Current native library](checkpoint-native-library-current-2026-10-04.json):441d0eff1 passes344/344 withoutskips onWindows; archived exactartifact and sourcetree/log hashes. Earlier340/344 failure retained. Production/integration/installed/WASM gates remainopen.
-`n- Harness WASM regeneration: [source-bound refresh receipt](checkpoint-harness-wasm-refresh-2026-10-04.json). Build succeeded; full generated audit remains pending.
+
+- Harness WASM regeneration: [source-bound refresh receipt](checkpoint-harness-wasm-refresh-2026-10-04.json). Build succeeded; full generated audit remains pending.
