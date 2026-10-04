@@ -41,7 +41,9 @@ pub trait SwarmOwnerLeaseProof: Send + Sync {
 }
 
 const STREAM_PREFIX: &str = "harness/v2/swarm-budget";
-const BUDGET_EVENT_VERSION: u16 = 1;
+// Version 2 binds root usage events to an authenticated source fingerprint.
+// Older records are rejected explicitly; migration is outside this slice.
+const BUDGET_EVENT_VERSION: u16 = 2;
 const MAX_RECORDS: u64 = 1_000_000;
 const MAX_ADMISSION_RETRIES: u8 = 32;
 
@@ -950,8 +952,12 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmForkReservation> {
+        self.refresh().await?;
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if projected.owner()? != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
         if self.receipt_replayed(operation_id, owner, &receipt, false) {
             return projected
                 .reservation(operation_id)?
@@ -993,9 +999,13 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmUsage> {
+        self.refresh().await?;
         let fingerprint = receipt.source_fingerprint();
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if projected.owner()? != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
         let root_dispatch_id = projected.root_dispatch_id()?.ok_or_else(|| {
             Error::Unauthorized("canonical root dispatch lease required".into())
         })?;
@@ -1108,8 +1118,12 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         owner: &SwarmOwnerFence,
         receipt: VerifiedSwarmUsageReceipt,
     ) -> Result<SwarmForkReservation> {
+        self.refresh().await?;
         let receipt = receipt.into_receipt();
         let projected = SwarmBudget::replay(self.events.clone())?;
+        if projected.owner()? != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
         if self.receipt_replayed(operation_id, owner, &receipt, true) {
             return projected
                 .reservation(operation_id)?
@@ -2346,9 +2360,17 @@ mod tests {
             .report_usage_with_receipt(child, &owner, receipt.clone())
             .await?;
         let retry = journal
-            .report_usage_with_receipt(child, &owner, receipt)
+            .report_usage_with_receipt(child, &owner, receipt.clone())
             .await?;
         assert_eq!(retry.usage, SwarmUsage::default());
+        let mut current =
+            SwarmBudgetJournal::start(&client, session_id, owner.clone(), limits()).await?;
+        current.takeover(&owner, "replacement").await?;
+        let stale = journal
+            .report_usage_with_receipt(child, &owner, receipt)
+            .await
+            .expect_err("a stale owner must not receive an exact-receipt replay shortcut");
+        assert!(matches!(stale, Error::Conflict(message) if message.contains("stale swarm owner")));
         assert_eq!(journal.usage()?.active_agents, 2);
         Ok(())
     }

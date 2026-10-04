@@ -90,6 +90,8 @@ pub struct LocalSwarmUsageSource {
 
 #[cfg(feature = "filesystem-local")]
 const LOCAL_USAGE_SNAPSHOT_VERSION: u16 = 1;
+#[cfg(feature = "filesystem-local")]
+const LOCAL_USAGE_IDENTITY_FILE: &str = "usage.identity";
 
 impl Default for LocalSwarmUsageSource {
     fn default() -> Self {
@@ -128,8 +130,14 @@ impl LocalSwarmUsageSource {
             .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
         let canonical_root = fs::canonicalize(&root)
             .map_err(|error| Error::Storage(format!("local usage journal identity failed: {error}")))?;
+        let storage_identity = Self::load_or_create_storage_identity(&root)?;
         let fingerprint = *blake3::hash(
-            format!("local.runtime.meter:{}", canonical_root.display()).as_bytes(),
+            format!(
+                "local.runtime.meter:{}:{}",
+                canonical_root.display(),
+                storage_identity
+            )
+            .as_bytes(),
         )
         .as_bytes();
         let source = Self {
@@ -140,6 +148,62 @@ impl LocalSwarmUsageSource {
         };
         source.ensure_durable_identity()?;
         Ok(source)
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    fn load_or_create_storage_identity(root: &Path) -> Result<String> {
+        let path = root.join(LOCAL_USAGE_IDENTITY_FILE);
+        match fs::read_to_string(&path) {
+            Ok(identity) => {
+                let identity = identity.trim().to_owned();
+                if identity.is_empty() || identity.chars().any(char::is_control) {
+                    return Err(Error::Storage(
+                        "local usage storage identity is corrupt".into(),
+                    ));
+                }
+                Ok(identity)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let identity = OperationId::new().to_string();
+                let result = OpenOptions::new()
+                    .create_new(true)
+                    .write(true)
+                    .open(&path);
+                let mut file = match result {
+                    Ok(file) => file,
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let identity = fs::read_to_string(&path).map_err(|error| {
+                            Error::Storage(format!(
+                                "local usage storage identity race recovery failed: {error}"
+                            ))
+                        })?;
+                        let identity = identity.trim().to_owned();
+                        if identity.is_empty() || identity.chars().any(char::is_control) {
+                            return Err(Error::Storage(
+                                "local usage storage identity is corrupt".into(),
+                            ));
+                        }
+                        return Ok(identity);
+                    }
+                    Err(error) => {
+                        return Err(Error::Storage(format!(
+                            "local usage storage identity create failed: {error}"
+                        )));
+                    }
+                };
+                file.write_all(identity.as_bytes())
+                    .and_then(|_| file.sync_all())
+                    .map_err(|error| {
+                        Error::Storage(format!(
+                            "local usage storage identity sync failed: {error}"
+                        ))
+                    })?;
+                Ok(identity)
+            }
+            Err(error) => Err(Error::Storage(format!(
+                "local usage storage identity read failed: {error}"
+            ))),
+        }
     }
 
     fn key(operation_id: OperationId, dispatch_id: &IdempotencyKey) -> (OperationId, String) {
@@ -230,27 +294,21 @@ impl LocalSwarmUsageSource {
             Ok(records) => Ok(records),
             Err(Error::NotFound(_)) => {
                 let backup = root.join("usage.snapshot.bak");
-                match self.read_snapshot_file(&backup) {
-                    Ok(records) => Ok(records),
-                    Err(Error::NotFound(_)) => {
-                        if root.join("usage.jsonl").exists() {
-                            return Err(Error::Conflict(
-                                "legacy local usage journal requires explicit migration".into(),
-                            ));
-                        }
-                        Ok(BTreeMap::new())
-                    }
-                    Err(error) => Err(error),
+                if backup.exists() || root.join("usage.snapshot.tmp").exists() {
+                    return Err(Error::Storage(
+                        "local usage snapshot publication is uncertain; operator resolution required".into(),
+                    ));
                 }
-            }
-            Err(error) => {
-                let backup = root.join("usage.snapshot.bak");
-                match self.read_snapshot_file(&backup) {
-                    Ok(records) => Ok(records),
-                    Err(Error::NotFound(_)) => Err(error),
-                    Err(_) => Err(error),
+                if root.join("usage.jsonl").exists() {
+                    return Err(Error::Conflict(
+                        "legacy local usage journal requires explicit migration".into(),
+                    ));
                 }
+                Ok(BTreeMap::new())
             }
+            Err(error) => Err(Error::Storage(format!(
+                "local usage snapshot is uncertain; operator resolution required: {error}"
+            ))),
         }
     }
 
@@ -5903,11 +5961,26 @@ mod tests {
         drop(source);
         fs::write(root.path().join("usage.snapshot"), b"{\"version\":1")
             .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Storage(message)) if message.contains("operator resolution")
+        ));
+        fs::remove_file(root.path().join("usage.snapshot"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Storage(message)) if message.contains("operator resolution")
+        ));
+        fs::copy(
+            root.path().join("usage.snapshot.bak"),
+            root.path().join("usage.snapshot"),
+        )
+        .map_err(|error| Error::Storage(error.to_string()))?;
         let reopened = LocalSwarmUsageSource::durable(root.path())?;
         assert_eq!(
             reopened.cumulative_usage(operation, &dispatch)?,
             first,
-            "a torn current record must recover the last verified snapshot"
+            "operator-resolved recovery may use the last verified snapshot"
         );
         reopened.record_runtime_usage(operation, &dispatch, second)?;
         assert_eq!(reopened.cumulative_usage(operation, &dispatch)?, second);
@@ -5963,6 +6036,19 @@ mod tests {
             second.cumulative_usage(first_operation, &second_dispatch)?,
             SwarmUsage::default()
         );
+        Ok(())
+    }
+
+    #[test]
+    fn local_usage_source_delete_and_recreate_gets_new_storage_identity() -> Result<()> {
+        let parent = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let root = parent.path().join("usage");
+        let first = LocalSwarmUsageSource::durable(&root)?;
+        let first_fingerprint = first.source_fingerprint();
+        drop(first);
+        fs::remove_dir_all(&root).map_err(|error| Error::Storage(error.to_string()))?;
+        let recreated = LocalSwarmUsageSource::durable(&root)?;
+        assert_ne!(recreated.source_fingerprint(), first_fingerprint);
         Ok(())
     }
 
