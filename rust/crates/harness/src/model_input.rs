@@ -637,9 +637,26 @@ impl InheritedModelContext {
         expected.extend(self.suffix.iter().cloned());
         expected.extend(authoritative.iter().cloned());
         if expected != request.messages {
-            return Err(Error::Conflict(
-                "recursive fork differs from declared inherited composition".into(),
-            ));
+            let first_mismatch = expected
+                .iter()
+                .zip(request.messages.iter())
+                .position(|(expected, actual)| expected != actual)
+                .unwrap_or_else(|| expected.len().min(request.messages.len()));
+            let expected_digest = expected
+                .get(first_mismatch)
+                .map(crate::contract::canonical_json_digest)
+                .transpose()?;
+            let actual_digest = request
+                .messages
+                .get(first_mismatch)
+                .map(crate::contract::canonical_json_digest)
+                .transpose()?;
+            return Err(Error::Conflict(format!(
+                "recursive fork differs from declared inherited composition: expected_messages={}, actual_messages={}, first_mismatch={}, expected_message_digest={expected_digest:?}, actual_message_digest={actual_digest:?}",
+                expected.len(),
+                request.messages.len(),
+                first_mismatch,
+            )));
         }
         Ok(())
     }

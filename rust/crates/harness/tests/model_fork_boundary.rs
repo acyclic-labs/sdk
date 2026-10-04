@@ -805,18 +805,21 @@ impl ForkAtBatch {
                 matches!(forged_error, Error::Unauthorized(ref message) if message.contains("attestation")),
                 "unexpected forged model boundary error: {forged_error:?}"
             );
-            assert!(matches!(
-                self.host.resolve(&forged_private_workspace).await,
-                Err(Error::NotFound(_))
-            ));
-            assert!(matches!(
-                self.host.resolve(&forged_project_workspace).await,
-                Err(Error::NotFound(_))
-            ));
-            assert!(matches!(
-                self.host.resolve(&forged_journal).await,
-                Err(Error::NotFound(_))
-            ));
+            let private_result = self.host.resolve(&forged_private_workspace).await;
+            assert!(
+                matches!(&private_result, Err(Error::NotFound(_))),
+                "forged private workspace resolve result: {private_result:?}"
+            );
+            let project_result = self.host.resolve(&forged_project_workspace).await;
+            assert!(
+                matches!(&project_result, Err(Error::NotFound(_))),
+                "forged project workspace resolve result: {project_result:?}"
+            );
+            let journal_result = self.host.resolve(&forged_journal).await;
+            assert!(
+                matches!(&journal_result, Err(Error::NotFound(_))),
+                "forged preparation journal resolve result: {journal_result:?}"
+            );
             let report = parent.prepare_fork(&preparer, request).await?;
             self.prebind_rejections(&parent, &report, &child_issuer)
                 .await?;
@@ -1792,14 +1795,16 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         workspace_ref(provider.clone(), &child_private.storage_name()?)?;
     let parent_project_before = host.resolve(&parent_project_workspace).await?;
     let parent_private_before = host.resolve(&parent_private_workspace).await?;
-    assert!(matches!(
-        host.resolve(&child_project_workspace).await,
-        Err(Error::NotFound(_))
-    ));
-    assert!(matches!(
-        host.resolve(&child_private_workspace).await,
-        Err(Error::NotFound(_))
-    ));
+    let initial_child_project = host.resolve(&child_project_workspace).await;
+    assert!(
+        matches!(&initial_child_project, Err(Error::NotFound(_))),
+        "initial child project workspace resolve result: {initial_child_project:?}"
+    );
+    let initial_child_private = host.resolve(&child_private_workspace).await;
+    assert!(
+        matches!(&initial_child_private, Err(Error::NotFound(_))),
+        "initial child private workspace resolve result: {initial_child_private:?}"
+    );
     let limits = Limits::default();
     let request = ForkRequest {
         operation_id: OperationId::from_bytes([4; 16]),
@@ -1870,18 +1875,21 @@ async fn invalid_model_attestation_is_rejected_before_fork_allocation() -> Resul
         host.resolve(&parent_private_workspace).await?.generation,
         parent_private_before.generation
     );
-    assert!(matches!(
-        host.resolve(&child_project_workspace).await,
-        Err(Error::NotFound(_))
-    ));
-    assert!(matches!(
-        host.resolve(&child_private_workspace).await,
-        Err(Error::NotFound(_))
-    ));
-    assert!(matches!(
-        host.resolve(&preparation_journal).await,
-        Err(Error::NotFound(_))
-    ));
+    let final_child_project = host.resolve(&child_project_workspace).await;
+    assert!(
+        matches!(&final_child_project, Err(Error::NotFound(_))),
+        "final child project workspace resolve result: {final_child_project:?}"
+    );
+    let final_child_private = host.resolve(&child_private_workspace).await;
+    assert!(
+        matches!(&final_child_private, Err(Error::NotFound(_))),
+        "final child private workspace resolve result: {final_child_private:?}"
+    );
+    let final_preparation_journal = host.resolve(&preparation_journal).await;
+    assert!(
+        matches!(&final_preparation_journal, Err(Error::NotFound(_))),
+        "final preparation journal resolve result: {final_preparation_journal:?}"
+    );
     Ok(())
 }
 
