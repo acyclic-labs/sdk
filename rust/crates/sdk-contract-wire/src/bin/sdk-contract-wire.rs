@@ -738,17 +738,25 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
                 let response_rules = validations
                     .iter()
                     .filter(|validation| {
-                        validation.contains("response")
+                        !validation.starts_with("request_identity")
+                            && (validation.contains("response")
                             || validation.contains("identity")
                             || validation.contains("status")
                             || validation.contains("terminal")
                             || validation.contains("cursor")
                             || validation.contains("delivery")
-                            || validation.contains("outcome")
+                            || validation.contains("outcome"))
                     })
                     .map(|validation| format!("\"{validation}\""))
                     .collect::<Vec<_>>()
                     .join(",");
+                let family = family_for_package(&package).unwrap_or("unknown");
+                let semantic_expectations = semantic_expectations_json(
+                    family,
+                    method_name,
+                    &validations,
+                    &response_fields,
+                )?;
                 let fields = response_fields
                     .iter()
                     .map(|field| format!("\"{field}\""))
@@ -760,7 +768,7 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
                     .collect::<Vec<_>>()
                     .join(",");
                 methods.push(format!(
-                    "{{\"rpc\":\"{rpc}\",\"shape\":\"{shape}\",\"request\":\"{request}\",\"response\":\"{response}\",\"response_fields\":[{fields}],\"allow_empty_response\":{},\"validations\":[{all_validations}],\"response_rules\":[{response_rules}]}}",
+                    "{{\"rpc\":\"{rpc}\",\"shape\":\"{shape}\",\"request\":\"{request}\",\"response\":\"{response}\",\"response_fields\":[{fields}],\"allow_empty_response\":{},\"validations\":[{all_validations}],\"response_rules\":[{response_rules}],\"semantic_expectations\":{semantic_expectations}}}",
                     response_fields.is_empty()
                 ));
             }
@@ -777,6 +785,89 @@ fn rpc_shapes_json(descriptor_bytes: &[u8]) -> Result<(String, String), Box<dyn 
         ),
         format!("[{}]", methods.join(",")),
     ))
+}
+
+/// Return the canonical observation map used by remote qualification.
+///
+/// The map is generated beside the descriptor from Rust-owned policy and
+/// response metadata.  Producers must report the decoded values from their
+/// actual fixture invocation; they may not choose a second set of expected
+/// values in a language-specific test.
+fn semantic_expectations_json(
+    family: &str,
+    method: &str,
+    validations: &[&str],
+    response_fields: &[String],
+) -> Result<String, Box<dyn Error>> {
+    let has_identity = validations.iter().any(|validation| {
+        !validation.starts_with("request_identity") && validation.contains("identity")
+    });
+    let identity_pairs = if has_identity {
+        let field = response_fields
+            .iter()
+            .find(|field| {
+                let lower = field.to_ascii_lowercase();
+                lower.contains("id")
+                    || lower.contains("identity")
+                    || lower == "owner"
+                    || lower == "operation"
+                    || lower == "protocol"
+                    || lower == "workspace"
+                    || lower == "generation"
+                    || lower == "authority"
+            })
+            .or_else(|| response_fields.first())
+            .ok_or_else(|| {
+                format!("Rust identity policy for {family}/{method} has no response field oracle")
+            })?;
+        let token = format!("fixture-{family}-{method}");
+        format!(
+            "[{{\"field\":{},\"request\":{},\"response\":{}}}]",
+            json_string(field),
+            json_string(&token),
+            json_string(&token)
+        )
+    } else {
+        "[]".to_owned()
+    };
+    let has_cursor = validations.iter().any(|validation| validation.contains("cursor"));
+    let cursor_trace = if has_cursor { "[0,1]" } else { "[]" };
+    let has_status_rule = validations.iter().any(|validation| {
+        validation.contains("status")
+            || validation.contains("terminal")
+            || validation.contains("outcome")
+    });
+    let revision_trace = if has_status_rule
+        && response_fields.iter().any(|field| {
+        let lower = field.to_ascii_lowercase();
+        lower.contains("revision") && !lower.contains("digest")
+    })
+    {
+        "[1,2]"
+    } else {
+        "[]"
+    };
+    let status_trace = has_status_rule
+        .then(|| {
+            response_fields
+        .iter()
+        .find_map(|field| match field.to_ascii_lowercase().as_str() {
+            "terminal" => Some("COMPLETED"),
+            "state" => Some("SUCCEEDED"),
+            "status" => Some("OK"),
+            _ => None,
+        })
+        .map(|status| format!("[{}]", json_string(status)))
+        .unwrap_or_else(|| "[]".to_owned())
+        })
+        .unwrap_or_else(|| "[]".to_owned());
+    Ok(format!(
+        "{{\"identity_pairs\":{identity_pairs},\"cursor_trace\":{cursor_trace},\"revision_trace\":{revision_trace},\"status_trace\":{status_trace},\"transitions\":[]}}"
+    ))
+}
+
+fn json_string(value: &str) -> String {
+    format!("{value:?}")
 }
 
 fn family_for_package(package: &str) -> Option<&'static str> {

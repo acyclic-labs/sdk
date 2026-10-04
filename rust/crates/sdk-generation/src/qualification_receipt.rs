@@ -59,7 +59,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
     }
     let source_revision = git_head(&source_root)?;
     if !git_status(&source_root)?.is_empty() {
-        return Err("source checkout is dirty; receipts require a clean Git source revision".into());
+        return Err(
+            "source checkout is dirty; receipts require a clean Git source revision".into(),
+        );
     }
 
     let generation = read_json(&output.join("sdk-generation-manifest.json"))?;
@@ -88,7 +90,8 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
     }
     let artifacts = artifact_index(&generation)?;
     let authority = authority_inventory(&output.join("wire/rust-authority.json"))?;
-    let rust_scenarios = rust_scenario_inventory(&output.join("sdk-transport-fixtures-manifest.json"))?;
+    let rust_scenarios =
+        rust_scenario_inventory(&output.join("sdk-transport-fixtures-manifest.json"))?;
 
     let log = read_json(&options.scenario_log)?;
     if log.get("schema").and_then(Value::as_str) != Some(SCENARIO_LOG_SCHEMA) {
@@ -132,7 +135,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         let output_path = portable_consumer_path(nonempty_string(entry, "output_path")?)?;
         let output_digest = nonempty_string(entry, "output_sha256")?;
         if !is_sha256(&output_digest) || !seen_paths.insert(output_path.clone()) {
-            return Err(format!("scenario output {output_path} has an invalid or duplicate path/hash"));
+            return Err(format!(
+                "scenario output {output_path} has an invalid or duplicate path/hash"
+            ));
         }
         verify_artifact(
             &output,
@@ -167,9 +172,13 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 != Some(source_revision.as_str())
             || result.get("status").and_then(Value::as_str) != Some("passed")
             || result.get("invoked").and_then(Value::as_bool) != Some(true)
-            || (result.get("exit_code").and_then(Value::as_i64) != Some(0) && !intentional_cancellation)
+            || (result.get("exit_code").and_then(Value::as_i64) != Some(0)
+                && !intentional_cancellation)
         {
-            return Err(format!("scenario result {} is not an invoked exit-0 pass", output_path));
+            return Err(format!(
+                "scenario result {} is not an invoked exit-0 pass",
+                output_path
+            ));
         }
         let rpc_outcome = result
             .get("rpc_outcome")
@@ -177,7 +186,8 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("scenario result {} has no nominal RPC outcome", output_path))?;
         let nominal_outcome = rpc_outcome.get("status").and_then(Value::as_str) == Some("ok")
             && rpc_outcome.get("code").and_then(Value::as_i64) == Some(0);
-        let canceled_outcome = rpc_outcome.get("status").and_then(Value::as_str) == Some("canceled")
+        let canceled_outcome = rpc_outcome.get("status").and_then(Value::as_str)
+            == Some("canceled")
             && rpc_outcome.get("code").and_then(Value::as_i64) == Some(1);
         if (!nominal_outcome && !(intentional_cancellation && canceled_outcome))
             || rpc_outcome
@@ -214,10 +224,12 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             let operation = rpc_operation_name(&rpc);
             let expected = rust_scenarios
                 .get(&(family.clone(), operation.clone()))
-                .ok_or_else(|| format!("scenario {family}/{rpc} has no Rust-owned semantic seed"))?;
-            let actual = semantic
-                .get("rust_scenario")
-                .ok_or_else(|| format!("scenario {family}/{rpc} has no Rust-owned scenario evidence"))?;
+                .ok_or_else(|| {
+                    format!("scenario {family}/{rpc} has no Rust-owned semantic seed")
+                })?;
+            let actual = semantic.get("rust_scenario").ok_or_else(|| {
+                format!("scenario {family}/{rpc} has no Rust-owned scenario evidence")
+            })?;
             if actual != expected {
                 return Err(format!(
                     "scenario {family}/{rpc} differs from the Rust-owned semantic seed"
@@ -259,6 +271,13 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 ));
             }
         }
+        if !authority_shape.response_rules.is_empty()
+            && authority_shape.semantic_expectations.is_none()
+        {
+            return Err(format!(
+                "scenario {family}/{rpc} has response rules but no Rust semantic expectation map"
+            ));
+        }
         if authority_shape
             .response_rules
             .iter()
@@ -278,9 +297,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .and_then(Value::as_array)
             .ok_or_else(|| format!("scenario {family}/{rpc} has no identity observations"))?;
         for pair in identity_pairs {
-            let pair = pair
-                .as_object()
-                .ok_or_else(|| format!("scenario {family}/{rpc} has an invalid identity observation"))?;
+            let pair = pair.as_object().ok_or_else(|| {
+                format!("scenario {family}/{rpc} has an invalid identity observation")
+            })?;
             let request_value = nonempty_string(pair, "request")?;
             let response_value = nonempty_string(pair, "response")?;
             if request_value != response_value {
@@ -290,7 +309,10 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 ));
             }
         }
-        if authority_shape.response_rules.iter().any(|rule| rule.contains("identity"))
+        if authority_shape
+            .response_rules
+            .iter()
+            .any(|rule| rule.contains("identity"))
             && identity_pairs.is_empty()
         {
             return Err(format!("scenario {family}/{rpc} has no Rust identity pair"));
@@ -301,18 +323,25 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("scenario {family}/{rpc} has no cursor trace"))?;
         let mut previous_cursor = None;
         for cursor in cursor_trace {
-            let cursor = cursor
-                .as_u64()
-                .ok_or_else(|| format!("scenario {family}/{rpc} has a non-integer cursor observation"))?;
+            let cursor = cursor.as_u64().ok_or_else(|| {
+                format!("scenario {family}/{rpc} has a non-integer cursor observation")
+            })?;
             if previous_cursor.is_some_and(|previous| cursor < previous) {
-                return Err(format!("scenario {family}/{rpc} cursor trace is not monotonic"));
+                return Err(format!(
+                    "scenario {family}/{rpc} cursor trace is not monotonic"
+                ));
             }
             previous_cursor = Some(cursor);
         }
-        if authority_shape.response_rules.iter().any(|rule| rule.contains("cursor"))
+        if authority_shape
+            .response_rules
+            .iter()
+            .any(|rule| rule.contains("cursor"))
             && cursor_trace.is_empty()
         {
-            return Err(format!("scenario {family}/{rpc} has no Rust cursor observation"));
+            return Err(format!(
+                "scenario {family}/{rpc} has no Rust cursor observation"
+            ));
         }
         if let Some(revision_trace) = observations.get("revision_trace") {
             let revision_trace = revision_trace
@@ -337,14 +366,18 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             .ok_or_else(|| format!("scenario {family}/{rpc} has no status trace"))?;
         for status in status_trace {
             if status.as_str().is_none_or(str::is_empty) {
-                return Err(format!("scenario {family}/{rpc} has an empty status observation"));
+                return Err(format!(
+                    "scenario {family}/{rpc} has an empty status observation"
+                ));
             }
         }
         if authority_shape.response_rules.iter().any(|rule| {
             rule.contains("status") || rule.contains("terminal") || rule.contains("outcome")
         }) && status_trace.is_empty()
         {
-            return Err(format!("scenario {family}/{rpc} has no Rust status observation"));
+            return Err(format!(
+                "scenario {family}/{rpc} has no Rust status observation"
+            ));
         }
         let transitions = observations
             .get("transitions")
@@ -368,12 +401,17 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             }
         }
         let transport = nonempty_string(&result, "transport")?;
-        if !matches!(transport.as_str(), "grpc" | "http" | "http-json" | "grpc-web") {
+        if !matches!(
+            transport.as_str(),
+            "grpc" | "http" | "http-json" | "grpc-web"
+        ) {
             return Err(format!("scenario {family}/{rpc} has an unknown transport"));
         }
         let execution_mode = nonempty_string(&result, "execution_mode")?;
         if !matches!(execution_mode.as_str(), "remote" | "in-process") {
-            return Err(format!("scenario {family}/{rpc} has an unknown execution mode"));
+            return Err(format!(
+                "scenario {family}/{rpc} has an unknown execution mode"
+            ));
         }
         let checks = result
             .get("checks")
@@ -386,11 +424,17 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
                 .ok_or_else(|| format!("scenario {family}/{rpc} has a non-string check"))?;
             if !matches!(
                 check,
-                "invocation" | "transport" | "receiver-response" | "serialization" | "cancellation" | "recovery"
-            )
-                || !check_set.insert(check.to_owned())
+                "invocation"
+                    | "transport"
+                    | "receiver-response"
+                    | "serialization"
+                    | "cancellation"
+                    | "recovery"
+            ) || !check_set.insert(check.to_owned())
             {
-                return Err(format!("scenario {family}/{rpc} has invalid or duplicate checks"));
+                return Err(format!(
+                    "scenario {family}/{rpc} has invalid or duplicate checks"
+                ));
             }
         }
         if !check_set.contains("invocation")
@@ -398,15 +442,19 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
             || !check_set.contains("receiver-response")
             || !check_set.contains("serialization")
         {
-            return Err(format!("scenario {family}/{rpc} lacks invocation or transport evidence"));
+            return Err(format!(
+                "scenario {family}/{rpc} lacks invocation or transport evidence"
+            ));
+        }
+        if intentional_cancellation && !check_set.contains("cancellation") {
+            return Err(format!(
+                "scenario {family}/{rpc} records an explicit cancellation without a cancellation check"
+            ));
         }
         for required_transition in ["cancellation", "recovery"] {
             if check_set.contains(required_transition)
                 && !transitions.iter().any(|transition| {
-                    transition
-                        .get("kind")
-                        .and_then(Value::as_str)
-                        == Some(required_transition)
+                    transition.get("kind").and_then(Value::as_str) == Some(required_transition)
                 })
             {
                 return Err(format!(
@@ -453,8 +501,13 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
     if observed != service_authority {
         return Err("scenario log does not cover exactly the Rust authority RPC inventory".into());
     }
-    if evidence.iter().any(|scenario| scenario.execution_mode != "remote") {
-        return Err("remote qualification requires execution_mode=remote for every scenario".into());
+    if evidence
+        .iter()
+        .any(|scenario| scenario.execution_mode != "remote")
+    {
+        return Err(
+            "remote qualification requires execution_mode=remote for every scenario".into(),
+        );
     }
 
     let families = authority
@@ -511,7 +564,9 @@ pub fn write(options: &Options) -> Result<PathBuf, String> {
         },
         "families": families,
     });
-    let receipt_path = output.join("qualification/receipts").join(format!("{}.json", options.language));
+    let receipt_path = output
+        .join("qualification/receipts")
+        .join(format!("{}.json", options.language));
     if !is_safe_language_id(&options.language) {
         return Err("language must be a portable identifier".into());
     }
@@ -586,7 +641,9 @@ fn artifact_index(manifest: &Value) -> Result<BTreeMap<String, (String, u64)>, S
             .and_then(Value::as_u64)
             .ok_or_else(|| format!("artifact {path} bytes is not an integer"))?;
         if index.insert(path.clone(), (digest, bytes)).is_some() {
-            return Err(format!("generation manifest contains duplicate artifact {path}"));
+            return Err(format!(
+                "generation manifest contains duplicate artifact {path}"
+            ));
         }
     }
     Ok(index)
@@ -600,10 +657,14 @@ fn verify_artifact(
     label: &str,
 ) -> Result<(), String> {
     let Some((manifest_digest, bytes)) = artifacts.get(path) else {
-        return Err(format!("{label} {path} is absent from the generation manifest"));
+        return Err(format!(
+            "{label} {path} is absent from the generation manifest"
+        ));
     };
     if manifest_digest != digest {
-        return Err(format!("{label} {path} digest does not match the generation manifest"));
+        return Err(format!(
+            "{label} {path} digest does not match the generation manifest"
+        ));
     }
     let data = read_output_file(output, path, label)?;
     if data.len() as u64 != *bytes || sha256(&data) != digest {
@@ -624,11 +685,14 @@ fn read_output_file(output: &Path, relative: &str, label: &str) -> Result<Vec<u8
     if !metadata.file_type().is_file() {
         return Err(format!("{label} {} is not a regular file", path.display()));
     }
-    let canonical = fs::canonicalize(&path)
-        .map_err(|error| format!("{label} {}: {error}", path.display()))?;
+    let canonical =
+        fs::canonicalize(&path).map_err(|error| format!("{label} {}: {error}", path.display()))?;
     let canonical = PathBuf::from(canonical.to_string_lossy().trim_start_matches("\\\\?\\"));
     if canonical.strip_prefix(output).is_err() {
-        return Err(format!("{label} {} escapes the output tree", path.display()));
+        return Err(format!(
+            "{label} {} escapes the output tree",
+            path.display()
+        ));
     }
     fs::read(&path).map_err(|error| format!("{label} {}: {error}", path.display()))
 }
@@ -648,7 +712,10 @@ fn rust_scenario_inventory(path: &Path) -> Result<BTreeMap<(String, String), Val
     for scenario in scenarios {
         let family = string_field(scenario, "family")?;
         let operation = string_field(scenario, "operation")?;
-        if inventory.insert((family, operation), scenario.clone()).is_some() {
+        if inventory
+            .insert((family, operation), scenario.clone())
+            .is_some()
+        {
             return Err("Rust fixture manifest contains duplicate semantic scenarios".into());
         }
     }
@@ -667,7 +734,9 @@ fn rpc_operation_name(rpc: &str) -> String {
     operation
 }
 
-fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, AuthorityMethod>>, String> {
+fn authority_inventory(
+    path: &Path,
+) -> Result<BTreeMap<String, BTreeMap<String, AuthorityMethod>>, String> {
     let value = read_json(path)?;
     let mut inventory = BTreeMap::new();
     for family in value
@@ -711,7 +780,9 @@ fn authority_inventory(path: &Path) -> Result<BTreeMap<String, BTreeMap<String, 
                 )
                 .is_some()
             {
-                return Err(format!("authority family {family_name} contains duplicate RPC {rpc}"));
+                return Err(format!(
+                    "authority family {family_name} contains duplicate RPC {rpc}"
+                ));
             }
         }
         if inventory.insert(family_name.clone(), methods).is_some() {
@@ -733,7 +804,9 @@ fn string_set(value: &impl JsonObject, field: &str) -> Result<BTreeSet<String>, 
             .filter(|text| !text.trim().is_empty())
             .ok_or_else(|| format!("array field {field} contains a non-string value"))?;
         if !result.insert(item.to_owned()) {
-            return Err(format!("array field {field} contains duplicate value {item}"));
+            return Err(format!(
+                "array field {field} contains duplicate value {item}"
+            ));
         }
     }
     Ok(result)
@@ -742,9 +815,13 @@ fn string_set(value: &impl JsonObject, field: &str) -> Result<BTreeSet<String>, 
 fn portable_consumer_path(path: String) -> Result<String, String> {
     if !path.starts_with("qualification/consumers/")
         || path.contains('\\')
-        || path.split('/').any(|part| part.is_empty() || part == "." || part == "..")
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
     {
-        return Err(format!("path {path} must be a portable consumer artifact path"));
+        return Err(format!(
+            "path {path} must be a portable consumer artifact path"
+        ));
     }
     Ok(path)
 }
@@ -761,7 +838,9 @@ fn canonical_dir(path: &Path, label: &str) -> Result<PathBuf, String> {
     if !path.is_dir() {
         return Err(format!("{label} is not a directory: {}", path.display()));
     }
-    Ok(PathBuf::from(path.to_string_lossy().trim_start_matches("\\\\?\\")))
+    Ok(PathBuf::from(
+        path.to_string_lossy().trim_start_matches("\\\\?\\"),
+    ))
 }
 
 fn git_head(root: &Path) -> Result<String, String> {
@@ -789,7 +868,9 @@ fn git_toplevel(root: &Path) -> Result<PathBuf, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    Ok(PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
+    Ok(PathBuf::from(
+        String::from_utf8_lossy(&output.stdout).trim(),
+    ))
 }
 
 fn git_status(root: &Path) -> Result<String, String> {
@@ -848,8 +929,14 @@ mod tests {
         let receipt = read_json(&receipt_path).expect("read receipt");
         assert_eq!(receipt["schema"], RECEIPT_SCHEMA);
         assert_eq!(receipt["source_revision_kind"], SOURCE_REVISION_KIND);
-        assert_eq!(receipt["families"][0]["methods"][0], "acyclic.actors.v1.ActorsService/CreateActor");
-        assert_eq!(receipt["consumer"]["scenarios"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            receipt["families"][0]["methods"][0],
+            "acyclic.actors.v1.ActorsService/CreateActor"
+        );
+        assert_eq!(
+            receipt["consumer"]["scenarios"].as_array().unwrap().len(),
+            1
+        );
         cleanup(&root);
         cleanup(&output);
     }
@@ -876,7 +963,7 @@ mod tests {
     fn receipt_writer_rejects_rpc_errors_marked_as_passes() {
         let (root, output, options) = fixture(false, false, true);
         let error = write(&options).expect_err("RPC errors must not qualify as nominal passes");
-        assert!(error.contains("successful nominal RPC response"));
+        assert!(error.contains("successful nominal"));
         cleanup(&root);
         cleanup(&output);
     }
@@ -906,10 +993,37 @@ mod tests {
     }
 
     #[test]
+    fn receipt_writer_rejects_rule_bearing_authority_without_expectations() {
+        let (root, output, options) = fixture(false, false, false);
+        let authority_path = output.join("wire/rust-authority.json");
+        let mut authority = read_json(&authority_path).expect("read authority");
+        let method = authority["families"][0]["rpc_methods"][0]
+            .as_object_mut()
+            .expect("authority method");
+        method.insert(
+            "response_rules".to_owned(),
+            json!(["response.identity.matches"]),
+        );
+        method.remove("semantic_expectations");
+        write_json(&authority_path, &authority);
+        mutate_scenario(&output, |scenario| {
+            scenario["semantic_evidence"]["checked_rules"] = json!(["response.identity.matches"]);
+            scenario["semantic_evidence"]["rule_results"] =
+                json!({"response.identity.matches": true});
+            scenario["semantic_evidence"]["identity_matches"] = json!(true);
+        });
+        let error = write(&options).expect_err("missing Rust expectation map must fail closed");
+        assert!(error.contains("no Rust semantic expectation map"));
+        cleanup(&root);
+        cleanup(&output);
+    }
+
+    #[test]
     fn receipt_writer_rejects_identity_value_drift() {
         let (root, output, options) = fixture(false, false, false);
         mutate_scenario(&output, |scenario| {
-            scenario["semantic_evidence"]["observations"]["identity_pairs"][0]["response"] = json!("wrong-actor");
+            scenario["semantic_evidence"]["observations"]["identity_pairs"][0]["response"] =
+                json!("wrong-actor");
         });
         let error = write(&options).expect_err("identity value drift must fail closed");
         assert!(error.contains("identity field actor_id changed"));
@@ -947,7 +1061,8 @@ mod tests {
         mutate_scenario(&output, |scenario| {
             scenario["semantic_evidence"]["observations"]["revision_trace"] = json!([3, 4]);
         });
-        let error = write(&options).expect_err("wrong source-owned revision values must fail closed");
+        let error =
+            write(&options).expect_err("wrong source-owned revision values must fail closed");
         assert!(error.contains("revision_trace differs from Rust expectation"));
         cleanup(&root);
         cleanup(&output);
@@ -980,7 +1095,10 @@ mod tests {
     fn receipt_writer_rejects_unproven_cancellation_claim() {
         let (root, output, options) = fixture(false, false, false);
         mutate_scenario(&output, |scenario| {
-            scenario["checks"].as_array_mut().unwrap().push(json!("cancellation"));
+            scenario["checks"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!("cancellation"));
         });
         let error = write(&options).expect_err("cancellation needs a lifecycle transition");
         assert!(error.contains("claims cancellation without a Rust lifecycle transition"));
@@ -988,7 +1106,11 @@ mod tests {
         cleanup(&output);
     }
 
-    fn fixture(missing_rpc: bool, in_process: bool, rpc_error: bool) -> (PathBuf, PathBuf, Options) {
+    fn fixture(
+        missing_rpc: bool,
+        in_process: bool,
+        rpc_error: bool,
+    ) -> (PathBuf, PathBuf, Options) {
         let root = env::temp_dir().join(format!(
             "acyclic-sdk-receipt-helper-{}-{}-{}",
             std::process::id(),
@@ -1006,7 +1128,10 @@ mod tests {
         git(&root, &["config", "user.email", "receipt@example.invalid"]);
         git(&root, &["config", "user.name", "receipt-test"]);
         git(&root, &["add", "."]);
-        git(&root, &["-c", "commit.gpgsign=false", "commit", "-m", "fixture"]);
+        git(
+            &root,
+            &["-c", "commit.gpgsign=false", "commit", "-m", "fixture"],
+        );
 
         let consumer_bytes = b"consumer";
         let execution_mode = if in_process { "in-process" } else { "remote" };
@@ -1021,7 +1146,10 @@ mod tests {
             .expect("fixture JSON")
             .replace("REVISION", &revision)
             .replace("EXECUTION_MODE", execution_mode)
-            .replace("{\"status\":\"ok\",\"code\":0,\"response_count\":1}", outcome)
+            .replace(
+                "{\"status\":\"ok\",\"code\":0,\"response_count\":1}",
+                outcome,
+            )
             .into_bytes();
         let consumer_path = "qualification/consumers/consumer.bin";
         let scenario_path = "qualification/consumers/actors-create.json";
@@ -1084,11 +1212,15 @@ mod tests {
 
         let manifest_path = output.join("sdk-generation-manifest.json");
         let mut manifest = read_json(&manifest_path).expect("read generation manifest");
-        let artifacts = manifest["artifacts"].as_array_mut().expect("manifest artifacts");
+        let artifacts = manifest["artifacts"]
+            .as_array_mut()
+            .expect("manifest artifacts");
         let artifact = artifacts
             .iter_mut()
-            .find(|artifact| artifact.get("path").and_then(Value::as_str)
-                == Some("qualification/consumers/actors-create.json"))
+            .find(|artifact| {
+                artifact.get("path").and_then(Value::as_str)
+                    == Some("qualification/consumers/actors-create.json")
+            })
             .expect("scenario manifest artifact");
         artifact["sha256"] = json!(sha256(&scenario_bytes));
         artifact["bytes"] = json!(scenario_bytes.len());
@@ -1096,7 +1228,9 @@ mod tests {
 
         let log_path = output.join("scenario-log.json");
         let mut log = read_json(&log_path).expect("read scenario log");
-        let scenarios = log["scenarios"].as_array_mut().expect("scenario log entries");
+        let scenarios = log["scenarios"]
+            .as_array_mut()
+            .expect("scenario log entries");
         scenarios[0]["output_sha256"] = json!(sha256(&scenario_bytes));
         write_json(&log_path, &log);
     }
@@ -1109,11 +1243,16 @@ mod tests {
             .current_dir(root)
             .output()
             .expect("git fixture command");
-        assert!(result.status.success(), "git failed: {}", String::from_utf8_lossy(&result.stderr));
+        assert!(
+            result.status.success(),
+            "git failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 
     fn write_json(path: &Path, value: &Value) {
-        fs::write(path, serde_json::to_vec_pretty(value).expect("encode JSON")).expect("write JSON");
+        fs::write(path, serde_json::to_vec_pretty(value).expect("encode JSON"))
+            .expect("write JSON");
     }
 
     fn cleanup(path: &Path) {
