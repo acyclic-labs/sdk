@@ -1039,7 +1039,7 @@ where
             .and_then(|state| state.agent)
             .is_none()
         {
-            aggregate
+            let bind = aggregate
                 .execute(Command {
                     operation_id: OperationId::new(),
                     idempotency_key: IdempotencyKey::new("local-conversation-bind")?,
@@ -1048,7 +1048,30 @@ where
                     causal_parent: None,
                     action: Action::BindConversation { agent },
                 })
+                .await;
+            if let Err(error) = bind {
+                // Two openers may observe the empty aggregate concurrently.
+                // A losing bind is safe to reconcile only after reopening the
+                // authoritative stream and proving that the winner bound the
+                // same agent. Preserve unrelated errors and bindings.
+                let winner = StreamAggregate::open(
+                    &stream,
+                    conversation.clone(),
+                    issuer.verifier(),
+                    SchemaRegistry::new(),
+                )
                 .await?;
+                if winner
+                    .reducer()
+                    .conversation()
+                    .and_then(|state| state.agent)
+                    == Some(agent)
+                {
+                    aggregate = winner;
+                } else {
+                    return Err(error);
+                }
+            }
         }
         if aggregate
             .reducer()

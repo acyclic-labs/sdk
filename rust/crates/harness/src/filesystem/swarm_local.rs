@@ -75,6 +75,27 @@ static LOCAL_FILESYSTEM_CACHE: OnceLock<
     Mutex<BTreeMap<PathBuf, Weak<LocalFilesystemHost>>>,
 > = OnceLock::new();
 
+#[cfg(test)]
+static EMPTY_REGISTRY_OPEN_BARRIER: OnceLock<StdMutex<Option<(PathBuf, Arc<tokio::sync::Barrier>)>>> =
+    OnceLock::new();
+
+#[cfg(test)]
+async fn await_empty_registry_open_barrier(root: &Path) {
+    let barrier = EMPTY_REGISTRY_OPEN_BARRIER
+        .get_or_init(|| StdMutex::new(None))
+        .lock()
+        .expect("empty-registry barrier lock")
+        .as_ref()
+        .filter(|(target, _)| target == root)
+        .map(|(_, barrier)| barrier.clone());
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn await_empty_registry_open_barrier(_root: &Path) {}
+
 async fn shared_local_stream(root: PathBuf) -> Result<StreamClient<LocalStream>> {
     let root = normalized_path(&root);
     let cache = LOCAL_STREAM_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()));
@@ -2180,6 +2201,7 @@ impl PersistentLocalSwarm {
             )?;
         }
         let mut registry_tail = initial_tail;
+        await_empty_registry_open_barrier(&root).await;
         if sessions.is_empty() {
             let root_task = TaskId::new();
             let root_session = LocalSwarmSession {
@@ -2190,16 +2212,59 @@ impl PersistentLocalSwarm {
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
-            append_record_at(
+            match append_record_at(
                 &stream,
                 StoredEvent::Session(root_session.clone().into()),
                 initial_tail,
             )
-            .await?;
-            registry_tail = initial_tail
-                .checked_add(1)
-                .ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?;
-            sessions.insert(root_task, root_session);
+            .await
+            {
+                Ok(()) => {
+                    registry_tail = initial_tail.checked_add(1).ok_or_else(|| {
+                        Error::Storage("swarm registry sequence overflow".into())
+                    })?;
+                    sessions.insert(root_task, root_session);
+                }
+                Err(Error::Conflict(_)) => {
+                    // Another opener won the empty-registry race. Re-read its
+                    // committed root instead of surfacing a transient tail
+                    // conflict or creating a second local root identity.
+                    registry_tail = match stream.tail().await {
+                        Ok(tail) => tail,
+                        Err(StreamError::NotFound) => 0,
+                        Err(error) => return Err(Error::Storage(error.to_string())),
+                    };
+                    let winner_records = load_records_at(&stream, registry_tail).await?;
+                    sessions.clear();
+                    requests.clear();
+                    seeds.clear();
+                    reports.clear();
+                    publications.clear();
+                    declarations.clear();
+                    outcomes.clear();
+                    completion_refs.clear();
+                    for record in winner_records {
+                        apply_record(
+                            &mut sessions,
+                            &mut requests,
+                            &mut seeds,
+                            &mut reports,
+                            &mut publications,
+                            &mut declarations,
+                            &mut outcomes,
+                            &mut completion_refs,
+                            record,
+                        )?;
+                    }
+                    if sessions.is_empty() {
+                        return Err(Error::Conflict(
+                            "local swarm root creation lost its registry race without a winner"
+                                .into(),
+                        ));
+                    }
+                }
+                Err(error) => return Err(error),
+            }
         }
         let root_task = sessions
             .values()
@@ -4288,20 +4353,56 @@ impl PersistentLocalSwarm {
             .registry
             .stream(REGISTRY_STREAM)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        append_record(
-            &stream,
-            StoredEvent::ForkFailed {
-                child: task,
-                reason: bounded.clone(),
-            },
-        )
-        .await?;
-        let _refresh = self.registry_refresh.lock().await;
-        let mut records = self.records.lock().await;
-        if let Some(session) = records.get_mut(&task) {
-            session.phase = LocalSessionPhase::Failed(bounded);
+        // Refresh first, then serialize the local publication. The append is
+        // still CAS-protected for other handles: a cancellation or
+        // completion that wins the tail race must remain terminal.
+        let observed_tail = self.refresh_registry_state_with_tail().await?;
+        let append = {
+            let _refresh = self.registry_refresh.lock().await;
+            let current = self
+                .records
+                .lock()
+                .await
+                .get(&task)
+                .cloned()
+                .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))?;
+            if matches!(
+                current.phase,
+                LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+            ) {
+                return Ok(());
+            }
+            append_record_at(
+                &stream,
+                StoredEvent::ForkFailed {
+                    child: task,
+                    reason: bounded,
+                },
+                observed_tail,
+            )
+            .await
+        };
+        match append {
+            Ok(()) => {
+                // Replay the committed event through the same reducer used on
+                // restart. A terminal event appended by another handle after
+                // the failure is therefore retained in the final projection.
+                self.refresh_registry_state().await?;
+                Ok(())
+            }
+            Err(error) => {
+                self.refresh_registry_state().await?;
+                let current = self.session(task).await?;
+                if matches!(
+                    current.phase,
+                    LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+                ) {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            }
         }
-        Ok(())
     }
 }
 
@@ -4703,7 +4804,15 @@ fn apply_record(
         }
         StoredEvent::ForkFailed { child, reason } => {
             if let Some(session) = sessions.get_mut(&child) {
-                session.phase = LocalSessionPhase::Failed(reason);
+                // Failure is recoverable. Once cancellation or completion is
+                // durable, a late failure publication cannot downgrade the
+                // terminal state during refresh or restart.
+                if !matches!(
+                    session.phase,
+                    LocalSessionPhase::Cancelled | LocalSessionPhase::Completed
+                ) {
+                    session.phase = LocalSessionPhase::Failed(reason);
+                }
             }
         }
         StoredEvent::ForkCancelled { child } => {
@@ -5041,6 +5150,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_empty_openers_reconcile_the_winning_root() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let root_path = normalized_path(root.path());
+        let barrier = Arc::new(tokio::sync::Barrier::new(2));
+        *EMPTY_REGISTRY_OPEN_BARRIER
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("empty-registry barrier lock") = Some((root_path, barrier));
+
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let first = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model.clone(),
+            provider.clone(),
+            Limits::default(),
+        );
+        let second = PersistentLocalSwarm::open_with_model(
+            root.path(),
+            model,
+            provider,
+            Limits::default(),
+        );
+        let opened = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(first, second)
+        })
+        .await
+        .map_err(|_| Error::Storage("concurrent empty opener test timed out".into()))?;
+        *EMPTY_REGISTRY_OPEN_BARRIER
+            .get_or_init(|| StdMutex::new(None))
+            .lock()
+            .expect("empty-registry barrier lock") = None;
+        let (first, second) = opened;
+        let first = first?;
+        let second = second?;
+        assert_eq!(first.root_task().await?, second.root_task().await?);
+        assert_eq!(first.sessions().await?, second.sessions().await?);
+        assert_eq!(first.sessions().await?.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn cold_metadata_snapshot_does_not_open_a_child_harness() -> Result<()> {
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let model = Model::new("mock", "local-swarm", "1", json!({}))?;
@@ -5193,6 +5347,124 @@ mod tests {
         };
         assert_eq!(cancelled.task, task);
         assert_eq!(cancelled.phase, LocalSessionPhase::Cancelled);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn restart_preserves_cancel_and_completion_over_late_failure() -> Result<()> {
+        let cancel_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let first = PersistentLocalSwarm::open_with_model(
+            cancel_root.path(),
+            model.clone(),
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let cancel_task = first.root_task().await?;
+        let registry = first
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::ForkCancelled { child: cancel_task },
+        )
+        .await?;
+        append_record(
+            &registry,
+            StoredEvent::ForkFailed {
+                child: cancel_task,
+                reason: "late failure".into(),
+            },
+        )
+        .await?;
+        drop(first);
+        let reopened = PersistentLocalSwarm::open_with_model(
+            cancel_root.path(),
+            model.clone(),
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        assert_eq!(
+            reopened.session(cancel_task).await?.phase,
+            LocalSessionPhase::Cancelled
+        );
+
+        let completion_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let first = PersistentLocalSwarm::open_with_model(
+            completion_root.path(),
+            model.clone(),
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let completion_task = first.root_task().await?;
+        let operation = OperationId::from_bytes([91; 16]);
+        let output = TurnOutput {
+            text: "completed".into(),
+            attachments: Vec::new(),
+            metadata: Value::Null,
+            steps: 1,
+        };
+        let output_bytes = crate::contract::canonical_json_bytes(&output)?;
+        let output_digest = crate::contract::canonical_json_digest(&output_bytes)?;
+        let registry = first
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(
+            &registry,
+            StoredEvent::ForkFailed {
+                child: completion_task,
+                reason: "recoverable failure".into(),
+            },
+        )
+        .await?;
+        append_record(
+            &registry,
+            StoredEvent::ForkCompleted {
+                child: completion_task,
+                operation,
+                output: Some(output),
+                output_ref: None,
+                output_digest: Some(output_digest),
+            },
+        )
+        .await?;
+        append_record(
+            &registry,
+            StoredEvent::ForkFailed {
+                child: completion_task,
+                reason: "late completion failure".into(),
+            },
+        )
+        .await?;
+        drop(first);
+        let reopened = PersistentLocalSwarm::open_with_model(
+            completion_root.path(),
+            model,
+            Arc::new(MockModel {
+                calls: AtomicUsize::new(0),
+                requests: Mutex::new(Vec::new()),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let session = reopened.session(completion_task).await?;
+        assert_eq!(session.phase, LocalSessionPhase::Completed);
+        assert_eq!(session.operation, Some(operation));
+        assert_eq!(reopened.outcome(completion_task).await?.text, "completed");
         Ok(())
     }
 
