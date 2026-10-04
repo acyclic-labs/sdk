@@ -55,6 +55,13 @@ foreach ($family in @("actors", "workers", "stream", "objects", "inference")) {
     )
 }
 
+$portableCheck = Join-Path $SourceRoot "research/additional-languages/openapi-targets/write-deterministic-zip.ps1"
+& pwsh '-NoProfile' '-File' $portableCheck '-Root' $TargetOutput '-ValidateOnly'
+if ($LASTEXITCODE -ne 0) { throw "Julia generated output failed portable artifact validation" }
+$packageArchive = "$TargetOutput-deterministic.zip"
+& pwsh '-NoProfile' '-File' $portableCheck '-Root' $TargetOutput '-Archive' $packageArchive
+if ($LASTEXITCODE -ne 0) { throw "Julia generated package archive failed deterministic validation" }
+
 @"
 name = "AcyclicWorkers"
 uuid = "a2e0de7a-8af3-4b28-90b7-c4b3be8a2b42"
@@ -85,4 +92,4 @@ See the License for the specific language governing permissions and
 limitations under the License.
 "@ | Set-Content -LiteralPath (Join-Path $TargetOutput "LICENSE") -NoNewline
 
-Write-Output "Rust-owned Julia package staged at $TargetOutput"
+Write-Output "Rust-owned Julia package staged at $TargetOutput; deterministic archive at $packageArchive"

@@ -15,7 +15,7 @@
     "fixture_sha256": "5D663FBD494915AA373A0DC19D1AEA0D1B6737C7C99BF57C567305F8E065AA27",
     "consumer_sha256": "72BB504649D2918FF99974733E121A4C8977034CBA6D215560E9BC3608AF3273",
     "generator_script": "research/additional-languages/openapi-targets/qualify-perl.ps1",
-    "generator_script_sha256": "2DD183D0B7B7D8D7175F9ED3152F66980470BE37792806B459D991F8C6BE20FB",
+    "generator_script_sha256": "2A5028DFEC44C441C3A03EC00D4DE15A5E0EDF8B011EC33A77925A2D4C8B5462",
     "generation_mode": "Rust projections were refreshed and hash-bound before the qualification run; generated Perl packages were tested from those refreshed specs",
     "runtime_adaptation": "research/additional-languages/openapi-targets/apply-perl-runtime-adaptation.ps1",
     "adaptation_sha256": "5A0DDEB0D3C8BCE69E5DD99BF7B324862DE0F17258DDAB1DFDABF975ACFD2486"
@@ -39,7 +39,8 @@
   },
   "package": {
     "name": "acyclic-http-perl-0.1.0.zip",
-    "sha256": "76A09B51F9851AA9DAB7F6EA864B24D338E06657A862D686B2DAF17369FE85EC",
+    "sha256": "014FBF97A287EFB4325E6ED1CF37D436C57E6DDBE8F7C4FB141746BB7EEF7B71",
+    "archive_format": "deterministic ZIP with sorted UTF-8 relative paths and DOS epoch entry timestamps",
     "install": "Five generated Perl libs plus cpanfiles installed into an isolated local-lib-contained directory",
     "publication": "local-only"
   },

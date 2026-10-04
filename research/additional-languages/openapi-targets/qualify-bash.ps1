@@ -62,6 +62,7 @@ try {
   $unauth = $invokeBody | & $bash (Join-Path $packages 'actors/client.sh') @common invokeActor 'Authorization:Bearer wrong' - 2>&1 | Out-String
   if ($LASTEXITCODE -ne 0 -or $unauth -notmatch 'unauthenticated') { throw "Unauthenticated fixture failed: $unauth" }
 } finally { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
-Remove-Item $zip -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $packages '*') -DestinationPath $zip -CompressionLevel Optimal
+$zipWriter = Join-Path $scriptDir 'write-deterministic-zip.ps1'
+& pwsh -NoProfile -File $zipWriter -Root $packages -Archive $zip
+if ($LASTEXITCODE -ne 0) { throw 'Deterministic Bash archive validation failed' }
 Write-Output "Bash five-family qualification passed; artifact SHA256 $((Get-FileHash $zip -Algorithm SHA256).Hash)"

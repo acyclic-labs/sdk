@@ -75,6 +75,7 @@ try {
     Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
 }
 
-Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $packages '*') -DestinationPath $zip -CompressionLevel Optimal
+$zipWriter = Join-Path $scriptDir 'write-deterministic-zip.ps1'
+& pwsh -NoProfile -File $zipWriter -Root $packages -Archive $zip
+if ($LASTEXITCODE -ne 0) { throw 'Deterministic Perl archive validation failed' }
 Write-Output "Perl five-family HTTP qualification passed; artifact SHA256 $((Get-FileHash $zip -Algorithm SHA256).Hash)"

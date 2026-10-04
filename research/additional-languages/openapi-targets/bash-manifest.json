@@ -38,7 +38,8 @@
   },
   "artifact": {
     "name": "acyclic-http-bash-0.1.0.zip",
-    "sha256": "FCC099E6FDF6D9A91B9E1D7B102480BAFF1C7BAB4EF197870E82BC3A1E9C5CC5",
+    "sha256": "B47FCD65CA6AA42986C904A72695286F03DAF8CA64E7BC41D785634AB7B7C03D",
+    "archive_format": "deterministic ZIP with sorted UTF-8 relative paths and DOS epoch entry timestamps",
     "publication": "local-only ignored output",
     "install": "unzip and invoke each family client.sh with Bash 4.3+ and curl"
   },

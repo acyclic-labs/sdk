@@ -13,7 +13,7 @@
       "inference": "37CE9B750C7FEE64556C497FB80ACA82297A23106C95887E1DA27AAAD7669F8A"
     },
     "generator": "research/additional-languages/openapi-targets/qualify-powershell-five.ps1",
-    "generator_sha256": "554EB9E72CC121E3B328481E74F1624EA40BF4E8640CB7E3C5727EB072B4F437",
+    "generator_sha256": "28B67E7261DAE70D03A7C51062233A9A269950D87C84E095DF4470F6E85FDD6F",
     "fixture": "research/additional-languages/openapi-targets/powershell-fixture.py",
     "fixture_sha256": "AB44A11BCD69A2F25DDF3749A8DBD9BC35C5D121078C8477EAA40EFE8B7610C5",
     "consumer": "research/additional-languages/openapi-targets/powershell-consumer-five.ps1",
@@ -37,29 +37,30 @@
   "packages": {
     "actors": {
       "name": "acyclic-actors-powershell-1.0.0.zip",
-      "sha256": "2C0E9B25D6C3AB7E1F04BEC008342AD5CBE35B8ADFDF7B01865095A1210D71D6"
+      "sha256": "E0294B17A841F602AAE7286859704BF6C8B26F65313190B9C45B87C7EB3B279B"
     },
     "workers": {
       "name": "acyclic-workers-powershell-1.0.0.zip",
-      "sha256": "8D3DB9ED7BCDB417E7512115418EE876BD8CD3647CC72846143AB0879A297FF1"
+      "sha256": "2444A1DA311D16399EE2F09517C6C635CF90FAEEDEB01BE494BBEBB1C6C8F9DA"
     },
     "stream": {
       "name": "acyclic-stream-powershell-1.0.0.zip",
-      "sha256": "D1AF24C65C2962348103DDAA53F020D46ED2BB842023D7655FA429463589A45B"
+      "sha256": "931C5574C703F0651133A0B269B42FC9532B0277B98EBAB5148C804AFFF3DD8E"
     },
     "objects": {
       "name": "acyclic-objects-powershell-1.0.0.zip",
-      "sha256": "FD9E8F08E7A68BC9774824560F3A9AF92F090B5E2DB08B3E98A761B6BEFEC629"
+      "sha256": "25123FD731E983168D0827D051D43DDED6BC6A6AD77843B26A18D4757B3480A5"
     },
     "inference": {
       "name": "acyclic-inference-powershell-1.0.0.zip",
-      "sha256": "C3A59540289D72B069BC9E892B1272045DD34424545BC16C31FE1F1764376F1E"
+      "sha256": "A0B9C1A593F36CE57296C9B0B7823EE0E59C467B9AE9E25BC9ADFF03A2211648"
     },
     "combined_installed": {
       "name": "acyclic-http-powershell-1.0.0.zip",
-      "sha256": "787F5AD6E946BE15BF40E00D915873262EC72CB69265A82969399A246F3CFAE0"
+      "sha256": "19F25EF9C723083F0A9CCE77D47DE6C2A7E57F0763C6DCD014ED59A9E9C21230"
     }
   },
+  "archive_format": "deterministic ZIP with sorted UTF-8 relative paths and DOS epoch entry timestamps",
   "tests": {
     "status": "passed",
     "fixture_port": 18767,

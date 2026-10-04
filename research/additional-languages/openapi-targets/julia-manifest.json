@@ -62,7 +62,7 @@
     "source_sha256": "545d3cc97d1d74d8569b8754f036738f99590ff87f7f7e42f5a24a1ab2275661",
     "fixture": "research/additional-languages/openapi-targets/julia-family-fixture.py",
     "fixture_sha256": "7c03bb2ceb220e180725ec5586873b807df79d9a0838e352d7e0e2247adaaff3",
-    "installed_archive": "research/additional-languages/target/julia-current-package.zip",
+    "installed_archive": "research/additional-languages/target/julia-current-package-deterministic.zip",
     "result": "pass: freshly staged Rust-owned package exercised every route and policy for all five families (194 checks)",
     "checks": [
       "HTTP JSON selected automatically as the only qualified Julia transport",
@@ -103,9 +103,10 @@
   "package": {
     "name": "AcyclicWorkers",
     "version": "1.0.0",
-    "archive": "research/additional-languages/target/julia-current-package.zip",
+    "archive": "research/additional-languages/target/julia-current-package-deterministic.zip",
     "archive_bytes": 16846,
-    "archive_sha256": "8db8ee8528d333222b6d8971691172461cc5a3fbeba6ca38ad51c2a67d8e9857",
+    "archive_sha256": "a277782842f0f1d37d8d276d11c779dc1cac2cec30326033e01f30c0b9bd8917",
+    "archive_format": "deterministic ZIP with sorted UTF-8 relative paths and DOS epoch entry timestamps",
     "project_toml_sha256": "7d5724a88d062322b3766f9aee42a4c52f007f29e4038e299f1e0119d7b8f539",
     "manifest_toml_sha256": "bd01b176ec32fb32deeb7ebc4cff06febce90606e0324bad9d7408e4d965f4f4",
     "installation": "pass: official Julia 1.13.1 Pkg.instantiate update_registry=false from the Rust-produced local package",
@@ -141,7 +142,7 @@
     "contract_guard": "acyclic.workers.v1",
     "authority": "Rust ContractSpec plus explicit_http_family_views; OpenAPI stage receipt is checked before emission",
     "producer_script": "research/additional-languages/openapi-targets/produce-julia.ps1",
-    "producer_script_sha256": "669dca484b14d262ce3864844a6f1c0366d7897bdb783b97d467de349c863a43",
+    "producer_script_sha256": "C8F1C9478FDD4C37377155EA2B247A3353A7C15A9A8548EBF828184D69C7F313",
     "producer_recipe": [
       "--source-root {source_root}",
       "--authority {authority_manifest}",

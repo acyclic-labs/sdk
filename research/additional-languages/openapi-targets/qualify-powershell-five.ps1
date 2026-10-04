@@ -20,6 +20,7 @@ $jar = Join-Path $Root "research/additional-languages/target/bash/openapi-genera
 $fixture = Join-Path $scriptDir 'powershell-fixture.py'
 $consumer = Join-Path $scriptDir 'powershell-consumer-five.ps1'
 $adapt = Join-Path $scriptDir 'apply-powershell-byte-adaptation.ps1'
+$zipWriter = Join-Path $scriptDir 'write-deterministic-zip.ps1'
 $port = 18767
 
 New-Item -ItemType Directory -Force -Path $target, $packages, $installed, $artifacts | Out-Null
@@ -47,7 +48,8 @@ foreach ($family in $families) {
     if (-not $manifest) { throw "Missing built PowerShell manifest: $family" }
     $zip = Join-Path $artifacts "acyclic-$family-powershell-1.0.0.zip"
     Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
-    Compress-Archive -Path (Join-Path $package '*') -DestinationPath $zip -CompressionLevel Optimal -Force
+    & pwsh -NoProfile -File $zipWriter -Root $package -Archive $zip
+    if ($LASTEXITCODE -ne 0) { throw "Deterministic PowerShell archive validation failed: $family" }
     $hashes[$family] = (Get-FileHash $zip -Algorithm SHA256).Hash
     $install = Join-Path $installed $family
     if (Test-Path -LiteralPath $install) { Remove-Item -LiteralPath $install -Recurse -Force }
@@ -68,6 +70,7 @@ try {
 
 $combined = Join-Path $artifacts 'acyclic-http-powershell-1.0.0.zip'
 Remove-Item -LiteralPath $combined -Force -ErrorAction SilentlyContinue
-Compress-Archive -Path (Join-Path $installed '*') -DestinationPath $combined -CompressionLevel Optimal -Force
+& pwsh -NoProfile -File $zipWriter -Root $installed -Archive $combined
+if ($LASTEXITCODE -ne 0) { throw 'Deterministic combined PowerShell archive validation failed' }
 $summary = ($hashes.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" }) -join '; '
 Write-Output "PowerShell five-family HTTP qualification passed; packages=$summary; combined=$((Get-FileHash $combined -Algorithm SHA256).Hash)"
