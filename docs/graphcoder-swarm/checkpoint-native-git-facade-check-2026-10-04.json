@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "source_commit": "06209f312",
+  "rust_tree": "c71fee441541ce6c592873f3959601cccd87164c",
+  "command": "cargo check -p acyclic-fs-napi --target-dir D:/graphcoder-builds/root-fork-20261004/target -j2",
+  "exit_code": 0,
+  "log": "D:\\graphcoder-builds\\root-fork-20261004\\logs\\filesystem-napi-public-facade.log",
+  "log_sha256": "1f175e443033481824a9d2295e1c9dd422c75a944b80da0020e36a31b9225981",
+  "scope": "Native adapter compilation against public typed Git transition completion. No native execution or installed artifact qualification claimed.",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+}
