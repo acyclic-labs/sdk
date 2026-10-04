@@ -80,6 +80,16 @@ $authorityDocument = Get-Content -LiteralPath $authority -Raw | ConvertFrom-Json
 if ($null -eq $authorityDocument.families -or @($authorityDocument.families).Count -eq 0) {
     throw 'Authority must contain at least one Rust-owned family'
 }
+$sourceGitSha = [string]$authorityDocument.source_git_sha
+$modelDigest = [string]$authorityDocument.source_revision
+if ($sourceGitSha -notmatch '^[0-9a-fA-F]{40}$') {
+    throw 'Authority must bind the frozen Rust source with a 40-character source_git_sha'
+}
+if ($modelDigest -notmatch '^[0-9a-fA-F]{64}$') {
+    throw 'Authority source_revision must be the 64-character Rust model digest'
+}
+$env:GIT_COMMIT = $sourceGitSha.ToLowerInvariant()
+$env:ACYCLIC_RUST_MODEL_DIGEST = $modelDigest.ToLowerInvariant()
 foreach ($family in @($authorityDocument.families)) {
     if ([string]::IsNullOrWhiteSpace([string] $family.source) -or
         [string]::IsNullOrWhiteSpace([string] $family.source_sha256)) {
@@ -164,7 +174,9 @@ try {
         schema = 'acyclic.ruby-php-dart.package-adapter.v1'
         authority_sha256 = Sha256 $authority
         request_sha256 = Sha256 $request
-        authority_source_revision = $authorityDocument.source_revision
+        source_git_sha = $sourceGitSha.ToLowerInvariant()
+        rust_model_digest = $modelDigest.ToLowerInvariant()
+        authority_source_revision = $modelDigest.ToLowerInvariant()
         source_root = 'caller-supplied authority input (path omitted for portability)'
         languages = $languages
         commands = $commands
