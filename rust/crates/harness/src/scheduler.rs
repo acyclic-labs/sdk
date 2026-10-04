@@ -368,6 +368,19 @@ pub enum SchedulerEvent {
         /// Exact publication evidence produced by the fork helper.
         publication: ForkPublication,
     },
+    /// Binds the authenticated root provider source before any root claim or receipt.
+    SwarmRootProviderBound {
+        /// Budget session and root operation identity.
+        session_id: OperationId,
+        /// Swarm owner fence for the budget session.
+        owner: SwarmOwnerFence,
+        /// Active scheduler lease for the session root.
+        fence: LeaseFence,
+        /// Stable provider identity selected by the host.
+        provider: String,
+        /// Durable source capability fingerprint.
+        fingerprint: [u8; 32],
+    },
     /// Records cumulative child usage while retaining the scheduler lease.
     SwarmUsageReported {
         /// Child operation identity.
@@ -639,6 +652,7 @@ impl Scheduler {
             &event,
             SchedulerEvent::SwarmAdmitted { .. }
                 | SchedulerEvent::SwarmDispatchStarted { .. }
+                | SchedulerEvent::SwarmRootProviderBound { .. }
                 | SchedulerEvent::SwarmUsageReported { .. }
                 | SchedulerEvent::SwarmRootUsageReported { .. }
                 | SchedulerEvent::SwarmCompleted { .. }
@@ -1049,6 +1063,26 @@ impl Scheduler {
                 next.apply_swarm_dispatch_started(operation_id, dispatch_id, owner, publication)?;
                 *self = next;
             }
+            SchedulerEvent::SwarmRootProviderBound {
+                session_id,
+                owner,
+                fence,
+                provider,
+                fingerprint,
+            } => {
+                let mut next = self.clone();
+                let root = next.mutable(session_id)?;
+                require_phase(root, OperationPhase::Running)?;
+                require_fence(root, &fence)?;
+                next.apply_swarm_root_provider_bound(session_id, owner, provider, fingerprint)?;
+                if let Some(operation) = next.operations.get_mut(&session_id) {
+                    operation.revision = operation
+                        .revision
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Invalid("operation revision exhausted".into()))?;
+                }
+                *self = next;
+            }
             SchedulerEvent::SwarmUsageReported {
                 operation_id,
                 fence,
@@ -1412,6 +1446,38 @@ impl Scheduler {
             owner,
             usage,
             receipt: receipt.clone(),
+        });
+        Ok(())
+    }
+
+    fn apply_swarm_root_provider_bound(
+        &mut self,
+        session_id: OperationId,
+        owner: SwarmOwnerFence,
+        provider: String,
+        fingerprint: [u8; 32],
+    ) -> Result<()> {
+        let budget = SwarmBudget::replay(self.swarm_events.clone())?;
+        let (observed_session, _, _) = budget.descriptor()?;
+        if observed_session != session_id {
+            return Err(Error::Conflict(
+                "root provider binding belongs to another swarm session".into(),
+            ));
+        }
+        let root_operation = self
+            .operations
+            .get(&session_id)
+            .ok_or_else(|| Error::NotFound(format!("operation {session_id}")))?;
+        if root_operation.spec.parent.is_some() {
+            return Err(Error::Unauthorized(
+                "root provider binding requires the session root operation".into(),
+            ));
+        }
+        budget.bind_root_provider_identity(&owner, provider.clone(), fingerprint)?;
+        self.swarm_events.push(SwarmBudgetEvent::RootProviderBound {
+            owner,
+            provider,
+            fingerprint,
         });
         Ok(())
     }
@@ -2148,6 +2214,7 @@ fn event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Orchestrated { operation_id, .. }
         | SchedulerEvent::SwarmAdmitted { operation_id, .. }
         | SchedulerEvent::SwarmDispatchStarted { operation_id, .. }
+        | SchedulerEvent::SwarmRootProviderBound { session_id: operation_id, .. }
         | SchedulerEvent::SwarmUsageReported { operation_id, .. }
         | SchedulerEvent::SwarmCompleted { operation_id, .. }
         | SchedulerEvent::SwarmCancelled { operation_id, .. } => *operation_id,

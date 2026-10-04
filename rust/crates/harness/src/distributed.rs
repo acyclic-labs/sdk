@@ -587,6 +587,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             &event,
             SchedulerEvent::SwarmAdmitted { .. }
                 | SchedulerEvent::SwarmDispatchStarted { .. }
+                | SchedulerEvent::SwarmRootProviderBound { .. }
                 | SchedulerEvent::SwarmUsageReported { .. }
                 | SchedulerEvent::SwarmRootUsageReported { .. }
                 | SchedulerEvent::SwarmCompleted { .. }
@@ -901,6 +902,40 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         Err(Error::Unauthorized(
             "provider usage receipt required for swarm root usage".into(),
         ))
+    }
+
+    /// Binds the authenticated root provider source before root model work.
+    pub async fn bind_swarm_root_provider(
+        &mut self,
+        owner: &Authority,
+        scope: &Scope,
+        verifier: &AuthorityVerifier,
+        session_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        swarm_owner: SwarmOwnerFence,
+        fence: LeaseFence,
+        provider: String,
+        fingerprint: [u8; 32],
+    ) -> Result<CoordinatorApply> {
+        self.refresh().await?;
+        self.authorize_operation(owner, scope, verifier, session_id, "operation:bind_provider")?;
+        if swarm_owner.owner != owner.id {
+            return Err(Error::Unauthorized(
+                "swarm owner fence is not bound to the authenticated authority".into(),
+            ));
+        }
+        self.apply_internal(
+            session_id,
+            idempotency_key,
+            SchedulerEvent::SwarmRootProviderBound {
+                session_id,
+                owner: swarm_owner,
+                fence,
+                provider,
+                fingerprint,
+            },
+        )
+        .await
     }
 
     /// Records provider-issued root usage while holding the root scheduler
@@ -1566,6 +1601,7 @@ fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::Orchestrated { operation_id, .. }
         | SchedulerEvent::SwarmAdmitted { operation_id, .. }
         | SchedulerEvent::SwarmDispatchStarted { operation_id, .. }
+        | SchedulerEvent::SwarmRootProviderBound { session_id: operation_id, .. }
         | SchedulerEvent::SwarmUsageReported { operation_id, .. }
         | SchedulerEvent::SwarmCompleted { operation_id, .. }
         | SchedulerEvent::SwarmCancelled { operation_id, .. } => *operation_id,

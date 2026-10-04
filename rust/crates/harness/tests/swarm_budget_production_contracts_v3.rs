@@ -61,6 +61,10 @@ impl SwarmUsageSource for &MeasuredSequence {
         "local-production-measurement"
     }
 
+    fn source_fingerprint(&self) -> [u8; 32] {
+        *blake3::hash(b"local-production-measurement").as_bytes()
+    }
+
     fn cumulative_usage(
         &self,
         _operation_id: OperationId,
@@ -96,6 +100,13 @@ async fn production_root_context_uses_remaining_capacity_and_durable_cursor() ->
         root_dispatch,
     )
     .await?;
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            "local-production-measurement",
+            *blake3::hash(b"local-production-measurement").as_bytes(),
+        )
+        .await?;
     journal
         .reserve_child(request(OperationId::new(), "child-reservation".into()))
         .await?;

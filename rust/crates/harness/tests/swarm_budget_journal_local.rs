@@ -62,6 +62,10 @@ impl SwarmUsageSource for LocalMeasuredUsage {
         "local-stream-test-provider"
     }
 
+    fn source_fingerprint(&self) -> [u8; 32] {
+        *blake3::hash(b"local-stream-test-provider").as_bytes()
+    }
+
     fn cumulative_usage(
         &self,
         _operation_id: OperationId,
@@ -92,6 +96,10 @@ impl LocalMeasuredUsageSequence {
 impl SwarmUsageSource for LocalMeasuredUsageSequence {
     fn provider_identity(&self) -> &str {
         &self.provider
+    }
+
+    fn source_fingerprint(&self) -> [u8; 32] {
+        *blake3::hash(format!("local-stream-sequence:{}", self.provider).as_bytes()).as_bytes()
     }
 
     fn cumulative_usage(
@@ -159,7 +167,16 @@ async fn local_stream_budget_restarts_and_fences_stale_owner() {
     )
     .await
     .expect("start budget");
-    let mut root_usage = SwarmUsageReceiptIssuer::new(LocalMeasuredUsage, session, root_dispatch)
+    let root_source = LocalMeasuredUsage;
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            root_source.provider_identity(),
+            root_source.source_fingerprint(),
+        )
+        .await
+        .expect("bind root usage source");
+    let mut root_usage = SwarmUsageReceiptIssuer::new(root_source, session, root_dispatch)
         .expect("root usage issuer");
     journal
         .report_root_usage_with_receipt(&owner, root_usage.issue().expect("root usage receipt"))
@@ -362,7 +379,16 @@ async fn local_stream_wrong_dispatch_receipt_is_rejected_before_append_and_reope
     )
     .await
     .expect("start budget");
-    let mut issuer = SwarmUsageReceiptIssuer::new(LocalMeasuredUsage, session, dispatch_id.clone())
+    let root_source = LocalMeasuredUsage;
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            root_source.provider_identity(),
+            root_source.source_fingerprint(),
+        )
+        .await
+        .expect("bind root usage source");
+    let mut issuer = SwarmUsageReceiptIssuer::new(root_source, session, dispatch_id.clone())
         .expect("usage issuer");
     journal
         .report_root_usage_with_receipt(&owner, issuer.issue().expect("first receipt"))
@@ -427,12 +453,17 @@ async fn local_stream_resumed_receipt_cursor_preserves_cumulative_usage() {
     )
     .await
     .expect("start budget");
-    let mut issuer = SwarmUsageReceiptIssuer::new(
-        LocalMeasuredUsageSequence::new("provider-a", [first_usage]),
-        session,
-        dispatch_id.clone(),
-    )
-    .expect("usage issuer");
+    let root_source = LocalMeasuredUsageSequence::new("provider-a", [first_usage]);
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            root_source.provider_identity(),
+            root_source.source_fingerprint(),
+        )
+        .await
+        .expect("bind root usage source");
+    let mut issuer = SwarmUsageReceiptIssuer::new(root_source, session, dispatch_id.clone())
+        .expect("usage issuer");
     let first_receipt = issuer.issue().expect("first receipt");
     journal
         .report_root_usage_with_receipt(&owner, first_receipt)
@@ -499,12 +530,17 @@ async fn local_stream_sixteen_independent_receipt_issuers_share_one_cas_append()
     )
     .await
     .expect("start budget");
-    let mut issuer = SwarmUsageReceiptIssuer::new(
-        LocalMeasuredUsageSequence::new("bootstrap-provider", [first_usage]),
-        session,
-        dispatch_id.clone(),
-    )
-    .expect("bootstrap issuer");
+    let bootstrap_source = LocalMeasuredUsageSequence::new("bootstrap-provider", [first_usage]);
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            bootstrap_source.provider_identity(),
+            bootstrap_source.source_fingerprint(),
+        )
+        .await
+        .expect("bind root usage source");
+    let mut issuer = SwarmUsageReceiptIssuer::new(bootstrap_source, session, dispatch_id.clone())
+        .expect("bootstrap issuer");
     journal
         .report_root_usage_with_receipt(&owner, issuer.issue().expect("bootstrap receipt"))
         .await
@@ -519,7 +555,7 @@ async fn local_stream_sixteen_independent_receipt_issuers_share_one_cas_append()
     // and race sixteen independent provider receipt issuers/journal handles
     // through that shared CAS stream; separate provider processes belong in
     // the provider conformance suite.
-    let results = join_all((0..16).map(|index| {
+    let results = join_all((0..16).map(|_| {
         let client = client.clone();
         let owner = owner.clone();
         let dispatch_id = dispatch_id.clone();
@@ -528,10 +564,7 @@ async fn local_stream_sixteen_independent_receipt_issuers_share_one_cas_append()
                 .await
                 .expect("open shared-provider journal");
             let mut issuer = SwarmUsageReceiptIssuer::resume(
-                LocalMeasuredUsageSequence::new(
-                    format!("independent-provider-{index}"),
-                    [second_usage],
-                ),
+                LocalMeasuredUsageSequence::new("bootstrap-provider", [second_usage]),
                 session,
                 dispatch_id,
                 1,
@@ -690,8 +723,17 @@ async fn local_stream_root_receipt_respects_live_descendant_boundary() {
     )
     .await
     .expect("start budget");
+    let root_source = LocalMeasuredUsageSequence::new("root-boundary-provider", [first_usage, second_usage]);
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            root_source.provider_identity(),
+            root_source.source_fingerprint(),
+        )
+        .await
+        .expect("bind root usage source");
     let mut issuer = SwarmUsageReceiptIssuer::with_limits(
-        LocalMeasuredUsageSequence::new("root-boundary-provider", [first_usage, second_usage]),
+        root_source,
         session,
         dispatch_id,
         SwarmResourceRequest {

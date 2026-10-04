@@ -1554,6 +1554,10 @@ mod tests {
             "journal-runtime-provider"
         }
 
+        fn source_fingerprint(&self) -> [u8; 32] {
+            *blake3::hash(b"journal-runtime-provider").as_bytes()
+        }
+
         fn cumulative_usage(
             &self,
             _operation_id: OperationId,
@@ -1622,6 +1626,14 @@ mod tests {
             &self.provider
         }
 
+        fn source_fingerprint(&self) -> [u8; 32] {
+            *blake3::hash(
+                format!("journal-durable-provider:{}:{}", self.provider, self.path.display())
+                    .as_bytes(),
+            )
+            .as_bytes()
+        }
+
         fn cumulative_usage(
             &self,
             _operation_id: OperationId,
@@ -1687,6 +1699,10 @@ mod tests {
             "journal-test-provider"
         }
 
+        fn source_fingerprint(&self) -> [u8; 32] {
+            *blake3::hash(b"journal-test-provider").as_bytes()
+        }
+
         fn cumulative_usage(
             &self,
             _operation_id: OperationId,
@@ -1703,6 +1719,10 @@ mod tests {
     impl SwarmUsageSource for FailingSource {
         fn provider_identity(&self) -> &str {
             "journal-failing-provider"
+        }
+
+        fn source_fingerprint(&self) -> [u8; 32] {
+            *blake3::hash(b"journal-failing-provider").as_bytes()
         }
 
         fn cumulative_usage(
@@ -1998,6 +2018,13 @@ mod tests {
             dispatch_id.clone(),
         )
         .await?;
+        root
+            .bind_root_provider_identity(
+                &owner,
+                source.provider_identity(),
+                source.source_fingerprint(),
+            )
+            .await?;
         let mut concurrent =
             SwarmBudgetJournal::start_with_root_dispatch_recovering(
                 &client,
@@ -2064,6 +2091,13 @@ mod tests {
             dispatch_id,
         )
         .await?;
+        journal
+            .bind_root_provider_identity(
+                &owner,
+                source.provider_identity(),
+                source.source_fingerprint(),
+            )
+            .await?;
 
         journal
             .claim_root_model_step(&owner, operation_id, 0, [41; 32])

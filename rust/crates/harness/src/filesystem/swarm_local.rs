@@ -125,12 +125,29 @@ impl LocalSwarmUsageSource {
 
     #[cfg(feature = "filesystem-local")]
     pub fn durable(root: impl AsRef<Path>) -> Result<Self> {
+        use fs2::FileExt;
+
         let root = root.as_ref().to_path_buf();
         fs::create_dir_all(&root)
             .map_err(|error| Error::Storage(format!("local usage journal directory failed: {error}")))?;
         let canonical_root = fs::canonicalize(&root)
             .map_err(|error| Error::Storage(format!("local usage journal identity failed: {error}")))?;
-        let storage_identity = Self::load_or_create_storage_identity(&root)?;
+        // Serialize marker creation with the same lock used for snapshots. The
+        // marker is an immutable storage-instance capability, so a torn or
+        // concurrently-created value must fail closed rather than fork the
+        // source identity.
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(root.join("usage.lock"))
+            .map_err(|error| Error::Storage(format!("local usage journal lock failed: {error}")))?;
+        lock.lock_exclusive().map_err(|error| {
+            Error::Storage(format!("local usage journal exclusive lock failed: {error}"))
+        })?;
+        let storage_identity = Self::load_or_create_storage_identity(&root);
+        let _ = lock.unlock();
+        let storage_identity = storage_identity?;
         let fingerprint = *blake3::hash(
             format!(
                 "local.runtime.meter:{}:{}",
@@ -151,54 +168,48 @@ impl LocalSwarmUsageSource {
     }
 
     #[cfg(feature = "filesystem-local")]
+    fn parse_storage_identity(identity: &str) -> Result<String> {
+        let identity = identity.trim();
+        let parsed = OperationId::parse(identity)
+            .map_err(|_| Error::Storage("local usage storage identity is corrupt".into()))?;
+        let canonical = parsed.to_string();
+        if identity != canonical || identity.len() > 64 {
+            return Err(Error::Storage(
+                "local usage storage identity is not canonical".into(),
+            ));
+        }
+        Ok(canonical)
+    }
+
+    #[cfg(feature = "filesystem-local")]
     fn load_or_create_storage_identity(root: &Path) -> Result<String> {
         let path = root.join(LOCAL_USAGE_IDENTITY_FILE);
+        let temp = root.join("usage.identity.tmp");
         match fs::read_to_string(&path) {
-            Ok(identity) => {
-                let identity = identity.trim().to_owned();
-                if identity.is_empty() || identity.chars().any(char::is_control) {
+            Ok(identity) => Self::parse_storage_identity(&identity),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if temp.exists() {
                     return Err(Error::Storage(
-                        "local usage storage identity is corrupt".into(),
+                        "local usage storage identity publication is uncertain; operator resolution required".into(),
                     ));
                 }
-                Ok(identity)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 let identity = OperationId::new().to_string();
-                let result = OpenOptions::new()
+                let mut file = OpenOptions::new()
                     .create_new(true)
                     .write(true)
-                    .open(&path);
-                let mut file = match result {
-                    Ok(file) => file,
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                        let identity = fs::read_to_string(&path).map_err(|error| {
-                            Error::Storage(format!(
-                                "local usage storage identity race recovery failed: {error}"
-                            ))
-                        })?;
-                        let identity = identity.trim().to_owned();
-                        if identity.is_empty() || identity.chars().any(char::is_control) {
-                            return Err(Error::Storage(
-                                "local usage storage identity is corrupt".into(),
-                            ));
-                        }
-                        return Ok(identity);
-                    }
-                    Err(error) => {
-                        return Err(Error::Storage(format!(
-                            "local usage storage identity create failed: {error}"
-                        )));
-                    }
-                };
+                    .open(&temp)
+                    .map_err(|error| {
+                        Error::Storage(format!("local usage storage identity create failed: {error}"))
+                    })?;
                 file.write_all(identity.as_bytes())
                     .and_then(|_| file.sync_all())
                     .map_err(|error| {
-                        Error::Storage(format!(
-                            "local usage storage identity sync failed: {error}"
-                        ))
+                        Error::Storage(format!("local usage storage identity sync failed: {error}"))
                     })?;
-                Ok(identity)
+                fs::rename(&temp, &path).map_err(|error| {
+                    Error::Storage(format!("local usage storage identity publish failed: {error}"))
+                })?;
+                Self::parse_storage_identity(&identity)
             }
             Err(error) => Err(Error::Storage(format!(
                 "local usage storage identity read failed: {error}"
@@ -5984,6 +5995,31 @@ mod tests {
         );
         reopened.record_runtime_usage(operation, &dispatch, second)?;
         assert_eq!(reopened.cumulative_usage(operation, &dispatch)?, second);
+        Ok(())
+    }
+
+    #[cfg(feature = "filesystem-local")]
+    #[test]
+    fn local_usage_source_rejects_uncertain_or_noncanonical_storage_identity() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let source = LocalSwarmUsageSource::durable(root.path())?;
+        drop(source);
+        fs::remove_file(root.path().join(LOCAL_USAGE_IDENTITY_FILE))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        fs::write(root.path().join("usage.identity.tmp"), b"partial")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Storage(message)) if message.contains("operator resolution")
+        ));
+        fs::remove_file(root.path().join("usage.identity.tmp"))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        fs::write(root.path().join(LOCAL_USAGE_IDENTITY_FILE), b"partial")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            LocalSwarmUsageSource::durable(root.path()),
+            Err(Error::Storage(message)) if message.contains("corrupt")
+        ));
         Ok(())
     }
 
