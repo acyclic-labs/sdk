@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -34,6 +34,12 @@ test("installed mock stage binds package and driver source artifacts", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("production entrypoint requires an explicit bridge working directory", () => {
+  const source = readFileSync(new URL("./graphcoder-production-entrypoint.mjs", import.meta.url), "utf8");
+  assert.match(source, /requiredEnvironment\("GRAPHCODER_BRIDGE_CWD"\)/u);
+  assert.doesNotMatch(source, /GRAPHCODER_BRIDGE_CWD\s*\?\?\s*process\.cwd\(\)/u);
 });
 
 test("installed mock stage rejects unsupported fixtures and fixture flags", () => {
