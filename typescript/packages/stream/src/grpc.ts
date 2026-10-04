@@ -2,7 +2,7 @@ import { rootCertificates } from "node:tls";
 import { createClient, ConnectError, Code, type Interceptor } from "@connectrpc/connect";
 import { fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/stream/v2/stream_pb.js";
-import { projectGrpcReadResponse, projectMemoryResponse, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
+import { is_stream_error_code, projectGrpcReadResponse, projectMemoryResponse, validateGrpcResponseIdentity } from "../generated/wasm/acyclic_stream_wasm.js";
 import { validateAppend } from "./client.js";
 import { normalizeWireCommitBytes, validateWireRequest, wireAppendRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
 import { StreamError } from "./types.js";
@@ -135,14 +135,14 @@ function providerError(error: unknown, operation: string): Error {
   if (!(error instanceof ConnectError)) return error instanceof Error ? error : new StreamError("unavailable", String(error));
   let code = "unavailable";
   switch (error.code) {
-    case Code.InvalidArgument: code = ["invalid_path", "limit_exceeded"].includes(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
+    case Code.InvalidArgument: code = is_stream_error_code(error.rawMessage) ? error.rawMessage : "invalid_argument"; break;
     case Code.NotFound: code = operation === "read_commit" ? "commit_not_found" : "stream_not_found"; break;
     case Code.AlreadyExists: code = "destination_exists"; break;
     case Code.OutOfRange: code = "out_of_range"; break;
     case Code.PermissionDenied: case Code.Unauthenticated: code = "access_denied"; break;
     case Code.ResourceExhausted: code = "capacity_exhausted"; break;
     case Code.FailedPrecondition:
-      if (["hierarchy_changed", "idempotency_mismatch", "prefix_not_retained", "deadline_elapsed"].includes(error.rawMessage)) code = error.rawMessage;
+      if (is_stream_error_code(error.rawMessage)) code = error.rawMessage;
       break;
     case Code.Unimplemented: if (error.rawMessage === "unsupported_capability") code = "unsupported"; break;
   }

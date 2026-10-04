@@ -464,6 +464,30 @@ pub fn validate_idempotency_key(input: &[u8]) -> String {
         .map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
 }
 
+/// Validate the opaque commit identity used by Stream responses and requests.
+/// The empty string means success; malformed identities use the canonical
+/// invalid-argument boundary consumed by generated facades.
+#[wasm_bindgen]
+pub fn validate_commit_id(input: &[u8]) -> String {
+    if input.len() == 32 {
+        String::new()
+    } else {
+        error_code_str(&StreamError::InvalidArgument).to_owned()
+    }
+}
+
+/// Validates the bearer credential shared by the native and browser Stream
+/// clients. The empty string means success; failures use a stable Rust-owned
+/// invalid-argument boundary consumed by generated facades.
+#[wasm_bindgen(js_name = validateBearerToken)]
+pub fn validate_bearer_token(token: &str) -> String {
+    if token.trim().is_empty() || token.contains(['\r', '\n', '\0']) {
+        error_code_str(&StreamError::InvalidArgument).to_owned()
+    } else {
+        String::new()
+    }
+}
+
 /// Validate one canonical Stream path using the same parser used by every
 /// provider and wire decoder.
 ///
