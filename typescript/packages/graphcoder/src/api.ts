@@ -86,7 +86,8 @@ export interface FileBody {
 export interface SessionSnapshot {
   readonly summary: SessionSummary;
   readonly agents: readonly AgentSummary[];
-  readonly workspaceGeneration: bigint;
+  /** Undefined means the host has not materialized a workspace generation. */
+  readonly workspaceGeneration: bigint | undefined;
 }
 
 export interface PageQuery {
@@ -427,6 +428,7 @@ export class GraphCoderUi {
       case "read_file": {
         const session = this.#requireSelected();
         const generation = command.generation ?? this.#state.changesGeneration ?? session.workspaceGeneration;
+        if (generation === undefined) throw new GraphCoderError("invalid_input", "load changes or provide a workspace generation before reading a file");
         const fileBody = await this.transport.readFile(session.summary.id, checkedPath(command.path), generation);
         if (epoch !== this.#commandEpoch) return;
         this.#state = { ...this.#state, fileBody };

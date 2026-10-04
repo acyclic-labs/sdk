@@ -85,7 +85,13 @@ export function wireSessionSummary(value: SessionSummary): unknown {
 }
 
 export function wireSnapshot(value: SessionSnapshot): unknown {
-  return { summary: wireSessionSummary(value.summary), agents: value.agents.map(wireAgent), workspace_generation: encodeGeneration(value.workspaceGeneration, "workspace generation", "transport") };
+  return {
+    summary: wireSessionSummary(value.summary),
+    agents: value.agents.map(wireAgent),
+    workspace_generation: value.workspaceGeneration === undefined
+      ? null
+      : encodeGeneration(value.workspaceGeneration, "workspace generation", "transport"),
+  };
 }
 
 export function wireAgent(value: AgentSummary): unknown {
@@ -129,7 +135,13 @@ export function decodeAgent(value: unknown): AgentSummary {
 
 export function decodeSnapshot(value: unknown): SessionSnapshot {
   const raw = record(value, "session snapshot");
-  return { summary: decodeSessionSummary(raw.summary), agents: array(raw.agents, "session agents").map(decodeAgent), workspaceGeneration: decodeGeneration(raw.workspace_generation, "workspace generation") };
+  return {
+    summary: decodeSessionSummary(raw.summary),
+    agents: array(raw.agents, "session agents").map(decodeAgent),
+    workspaceGeneration: raw.workspace_generation === null
+      ? undefined
+      : decodeGeneration(raw.workspace_generation, "workspace generation"),
+  };
 }
 
 export function decodeActivity(value: unknown): ActivityEvent {

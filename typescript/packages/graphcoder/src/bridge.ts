@@ -138,7 +138,7 @@ export type GraphCoderWireApproval = Omit<ApprovalRequest, "id" | "sessionId" | 
 export type GraphCoderWireChangeSummary = Omit<ChangeSummary, "oldPath"> & { readonly old_path?: string };
 export type GraphCoderWireChangeBody = Omit<ChangeBody, "generation" | "unifiedDiff"> & { readonly session_id: string; readonly generation: string; readonly unified_diff: string };
 export type GraphCoderWireFileBody = Omit<FileBody, "generation" | "bytes" | "mediaType"> & { readonly session_id: string; readonly generation: string; readonly media_type: string; readonly bytes: readonly number[] };
-export type GraphCoderWireSnapshot = Omit<SessionSnapshot, "summary" | "agents" | "workspaceGeneration"> & { readonly summary: GraphCoderWireSessionSummary; readonly agents: readonly GraphCoderWireAgentSummary[]; readonly workspace_generation: string };
+export type GraphCoderWireSnapshot = Omit<SessionSnapshot, "summary" | "agents" | "workspaceGeneration"> & { readonly summary: GraphCoderWireSessionSummary; readonly agents: readonly GraphCoderWireAgentSummary[]; readonly workspace_generation: string | null };
 
 export interface GraphCoderWireResultByMethod {
   readonly list_sessions: { readonly items: readonly GraphCoderWireSessionSummary[]; readonly next?: string };

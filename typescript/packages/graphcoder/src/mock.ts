@@ -35,7 +35,7 @@ export interface MockCall {
 
 interface MockSession {
   summary: SessionSummary;
-  snapshot: SessionSnapshot;
+  snapshot: SessionSnapshot & { readonly workspaceGeneration: bigint };
   activity: ActivityEvent[];
   messages: GraphMessage[];
   approvals: ApprovalRequest[];

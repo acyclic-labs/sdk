@@ -702,8 +702,7 @@ impl Runtime {
                 .map_err(DispatchError::from_harness)?
                 .workspace_generation
                 .as_ref()
-                .map(generation_token)
-                .unwrap_or_else(|| "0".to_owned()),
+                .map(generation_token),
         }))
     }
 }

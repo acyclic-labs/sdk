@@ -52,14 +52,34 @@ describe("GraphCoder UI transport boundary", () => {
           result: {
             summary: { id: "session-1", title: "inspect", state: "completed", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" },
             agents: [],
-            workspace_generation: "0",
+            workspace_generation: null,
           },
         });
       },
     };
     const transport = new BridgeGraphCoderTransport(bridge);
-    await transport.startSession({ prompt: "inspect", operationId: "op-stable-1", modelFixture: "stage" });
+    const snapshot = await transport.startSession({ prompt: "inspect", operationId: "op-stable-1", modelFixture: "stage" });
+    expect(snapshot.workspaceGeneration).toBeUndefined();
     expect(requests[0]?.params).toEqual({ prompt: "inspect", operation_id: "op-stable-1", model_fixture: "stage" });
+  });
+
+  test("does not treat absent workspace generation as generation zero", async () => {
+    let reads = 0;
+    const transport = {
+      startSession: async () => ({
+        summary: { id: sessionId("session-1"), title: "inspect", state: "running", updatedAt: "2026-01-01T00:00:00.000Z", rootAgentId: agentId("agent-1") },
+        agents: [],
+        workspaceGeneration: undefined,
+      }),
+      readFile: async () => {
+        reads += 1;
+        throw new Error("read_file should not be dispatched without a generation");
+      },
+    } as unknown as import("../src/api.js").GraphCoderTransport;
+    const ui = new GraphCoderUi(transport);
+    await ui.dispatch({ kind: "start_session", operationId: "op-no-generation", prompt: "inspect" });
+    await expect(ui.dispatch({ kind: "read_file", path: "README.md" })).rejects.toMatchObject({ code: "invalid_input" });
+    expect(reads).toBe(0);
   });
 
   test("public prompt, message, and operation inputs enforce UTF-8 byte ceilings", async () => {
