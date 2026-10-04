@@ -3,7 +3,7 @@
 //! Reads and listings may lag mutations. Single-object publication and its conditions are
 //! atomic. Service-owned retained bytes are a private service contract, not public history.
 pub mod conformance;
-#[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+#[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "json")]
 pub mod json;
@@ -12,7 +12,7 @@ pub mod local;
 mod memory;
 pub mod request;
 pub mod response;
-#[cfg(any(feature = "grpc", all(feature = "http", not(target_arch = "wasm32"))))]
+#[cfg(any(feature = "grpc", feature = "http"))]
 mod upload;
 
 /// Canonical HTTP route, input message, and output message inventory, relative to `/v2/objects/`.
@@ -80,7 +80,7 @@ pub trait NativeBatchObjects: ObjectsProvider {
         requests: Vec<(wire::GetObjectRequest, u64)>,
     ) -> Vec<Result<Object, Error>>;
 }
-#[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(all(test, feature = "grpc"))]
 mod grpc_tests;

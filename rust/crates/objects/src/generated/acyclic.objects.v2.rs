@@ -636,5 +636,6 @@ impl ErrorCode {
     }
 }
 #[cfg(feature = "grpc")]
+#[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 include!("acyclic.objects.v2.tonic.rs");
 // @@protoc_insertion_point(module)

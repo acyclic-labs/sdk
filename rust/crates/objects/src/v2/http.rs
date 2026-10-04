@@ -6,6 +6,7 @@ use super::{
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
 use reqwest::{
     Body, Client, Response, Url,
     header::{AUTHORIZATION, HeaderValue},
@@ -155,15 +156,25 @@ impl HttpObjects {
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {token}")).map_err(|_| invalid())?;
         authorization.set_sensitive(true);
-        let mut transport = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(std::time::Duration::from_secs(30));
-        if let Some(ca) = ca {
-            if ca.is_empty() || ca.len() > 65536 {
-                return Err(invalid());
-            }
+        let mut transport = Client::builder();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
             transport = transport
-                .add_root_certificate(reqwest::Certificate::from_pem(ca).map_err(|_| invalid())?);
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(std::time::Duration::from_secs(30));
+        }
+        if let Some(ca) = ca {
+            #[cfg(target_arch = "wasm32")]
+            let _ = ca;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                if ca.is_empty() || ca.len() > 65536 {
+                    return Err(invalid());
+                }
+                transport = transport.add_root_certificate(
+                    reqwest::Certificate::from_pem(ca).map_err(|_| invalid())?,
+                );
+            }
         }
         Ok(Self {
             transport: transport.build().map_err(|_| invalid())?,
@@ -171,6 +182,60 @@ impl HttpObjects {
             authorization,
             maximum: maximum_response_bytes,
         })
+    }
+
+    /// Verify the authenticated Rust-owned Objects identity using the HTTP control route.
+    pub async fn verify_handshake(&self) -> Result<bool, Error> {
+        use acyclic_sdk_contract_wire::{BindingFamily, transport_control as control};
+        let family = BindingFamily::Objects;
+        let version = control::control_protocol_version(family);
+        let route = control::handshake_http_route(family.name())
+            .ok_or_else(|| Error::from(wire::ErrorCode::InvalidArgument))?;
+        let url = self
+            .endpoint
+            .join(route.trim_start_matches('/'))
+            .map_err(|_| Error::from(wire::ErrorCode::InvalidArgument))?;
+        let response = self
+            .transport
+            .get(url.clone())
+            .header(AUTHORIZATION, self.authorization.clone())
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(|_| response::invalid())?;
+        if response.url() != &url {
+            return Err(response::invalid());
+        }
+        let status = response.status();
+        if matches!(status.as_u16(), 404 | 405) {
+            return Ok(false);
+        }
+        if !status.is_success() {
+            return Err(self.failure(response).await);
+        }
+        media_type(&response, "application/json")?;
+        let bytes = self.bytes(response).await?;
+        let pool = DescriptorPool::decode(control::control_descriptor().as_slice())
+            .map_err(|_| response::invalid())?;
+        let descriptor = pool
+            .get_message_by_name("acyclic.protocol.v1.HandshakeResponse")
+            .ok_or_else(response::invalid)?;
+        let mut json = serde_json::Deserializer::from_slice(&bytes);
+        let decoded =
+            DynamicMessage::deserialize(descriptor, &mut json).map_err(|_| response::invalid())?;
+        json.end().map_err(|_| response::invalid())?;
+        control::validate_handshake_response(
+            family,
+            version,
+            &[control::RequiredCapability {
+                name: family.name(),
+                version,
+            }],
+            &decoded.encode_to_vec(),
+            control::MAXIMUM_HANDSHAKE_RESPONSE_BYTES.min(self.maximum),
+        )
+        .map_err(|_| response::invalid())?;
+        Ok(true)
     }
     async fn post(&self, route: &str, content_type: &str, body: Body) -> Result<Response, Error> {
         let url = self
