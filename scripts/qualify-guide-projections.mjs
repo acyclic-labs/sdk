@@ -238,6 +238,12 @@ if (manifestCommand.exitCode !== 0) {
 }
 const parsedProjections = JSON.parse(manifestCommand.stdout);
 const projections = Array.isArray(parsedProjections) ? parsedProjections : [parsedProjections];
+const revisionCommand = command("git", ["rev-parse", "HEAD"]);
+const sourceRevision = revisionCommand.exitCode === 0
+  ? revisionCommand.stdout.trim()
+  : "working-tree";
+const sourceDigests = [...new Set(projections.map((projection) => projection.source_sha256).filter(Boolean))];
+const sourceSha256 = sourceDigests.length === 1 ? sourceDigests[0] : null;
 const receipts = [];
 const fixture = args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS ? await startFixture() : null;
 if (args.has("--execute") && !process.env.FIXTURE_GRPC_ADDRESS && !fixture) {
@@ -260,6 +266,8 @@ for (const projection of projections) {
     language: projection.language,
     mode: projection.mode,
     source: projection.source,
+    source_revision: sourceRevision,
+    source_sha256: projection.source_sha256 ?? null,
     package_manager: projection.package_manager,
     package_name: projection.package_name,
     artifact_path: projection.artifact_path,
@@ -296,6 +304,8 @@ for (const projection of projections) {
 
 const summary = {
   schema: "acyclic.sdk.guide-projection-qualification.v1",
+  source_revision: sourceRevision,
+  source_sha256: sourceSha256,
   source: "rust/crates/sdk-examples/src/guide_projections.rs",
   projection_count: receipts.length,
   compiled: receipts.filter((receipt) => receipt.status === "compiled" || receipt.status === "executed").length,
@@ -308,4 +318,4 @@ const summary = {
 };
 writeFileSync(join(output, "qualification.json"), `${JSON.stringify(summary, null, 2)}\n`);
 console.log(JSON.stringify({ ...summary, receipts: undefined }, null, 2));
-if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54)) process.exit(1);
+if (args.has("--strict") && (summary.artifact_missing > 0 || summary.failed > 0 || summary.projection_count !== 54 || sourceRevision === "working-tree" || !sourceSha256 || projections.some((projection) => projection.source_sha256 !== sourceSha256))) process.exit(1);
