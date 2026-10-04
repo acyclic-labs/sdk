@@ -1163,6 +1163,27 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
         })
     }
 
+    fn read_message_body<'a>(
+        &'a self,
+        task_id: TaskId,
+        message_id: OperationId,
+        payload: &'a FileRef,
+    ) -> BoxFuture<'a, Result<Vec<u8>>> {
+        Box::pin(async move {
+            let item = self
+                .inbox(task_id, 0, 1_024)
+                .await?
+                .into_iter()
+                .find(|item| item.message_id == message_id.to_string() && item.payload == *payload)
+                .ok_or_else(|| {
+                    Error::Unauthorized(
+                        "message body reference is not retained by the recipient inbox".into(),
+                    )
+                })?;
+            self.reader.read(&item.payload).await
+        })
+    }
+
     fn wait_until<'a>(
         &'a self,
         task_id: TaskId,

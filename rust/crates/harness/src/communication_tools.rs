@@ -264,6 +264,8 @@ pub struct WaitMessageOutput {
     pub delivered_at_epoch_ms: u64,
     /// Version-pinned message content.
     pub payload: FileRef,
+    /// Exact retained body hydrated by the authenticated message host.
+    pub body: Vec<u8>,
 }
 
 /// Typed result of a wait operation.  Cancellation and timeout are terminal
@@ -445,8 +447,9 @@ impl CommunicationExecutor {
                     .as_ref()
                     .and_then(|source| source.receiver(waiter));
                 let completion = communication.wait(request, cancellation).await?;
+                let value = wait_output(&*self.host, waiter, completion).await?;
                 Ok(ToolResult {
-                    value: serde_json::to_value(wait_output(completion))
+                    value: serde_json::to_value(value)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 })
             }
@@ -587,9 +590,13 @@ fn wait_timeout(input: &WaitToolInput) -> Option<u64> {
     }
 }
 
-fn wait_output(completion: WaitCompletion) -> WaitToolOutput {
+async fn wait_output(
+    host: &dyn crate::runtime::DurableTaskHost,
+    waiter: TaskId,
+    completion: WaitCompletion,
+) -> Result<WaitToolOutput> {
     match completion {
-        WaitCompletion::Tasks { outcomes } => WaitToolOutput::Tasks {
+        WaitCompletion::Tasks { outcomes } => Ok(WaitToolOutput::Tasks {
             outcomes: outcomes
                 .into_iter()
                 .map(|(task_id, outcome)| {
@@ -618,22 +625,29 @@ fn wait_output(completion: WaitCompletion) -> WaitToolOutput {
                     output
                 })
                 .collect(),
-        },
-        WaitCompletion::Messages { items } => WaitToolOutput::Messages {
-            items: items
-                .into_iter()
-                .map(|item| WaitMessageOutput {
+        }),
+        WaitCompletion::Messages { items } => {
+            let mut output = Vec::with_capacity(items.len());
+            for item in items {
+                let message_id = crate::OperationId::parse(&item.message_id)
+                    .map_err(|error| Error::Invalid(error.to_string()))?;
+                let body = host
+                    .read_message_body(waiter, message_id, &item.payload)
+                    .await?;
+                output.push(WaitMessageOutput {
                     sequence: item.sequence,
-                    message_id: item.message_id,
+                    message_id: message_id.to_string(),
                     sender: item.sender,
                     delivered_at_epoch_ms: item.delivered_at_epoch_ms,
                     payload: item.payload,
-                })
-                .collect(),
-        },
-        WaitCompletion::Deadline => WaitToolOutput::Deadline,
-        WaitCompletion::Cancelled => WaitToolOutput::Cancelled,
-        WaitCompletion::TimedOut => WaitToolOutput::TimedOut,
+                    body,
+                });
+            }
+            Ok(WaitToolOutput::Messages { items: output })
+        }
+        WaitCompletion::Deadline => Ok(WaitToolOutput::Deadline),
+        WaitCompletion::Cancelled => Ok(WaitToolOutput::Cancelled),
+        WaitCompletion::TimedOut => Ok(WaitToolOutput::TimedOut),
     }
 }
 
@@ -686,7 +700,7 @@ fn wait_input_schema() -> Value {
 fn wait_output_schema() -> Value {
     json!({"oneOf":[
         {"type":"object","additionalProperties":false,"required":["kind","outcomes"],"properties":{"kind":{"const":"tasks"},"outcomes":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["task_id","status"],"properties":{"task_id":{"type":"string"},"status":{"type":"string","enum":["succeeded","failed","cancelled","indeterminate"]},"value":{},"message":{"type":"string"},"operation_id":{"type":"string"}}}}}},
-        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","sender","delivered_at_epoch_ms","payload"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"sender":{"type":"string"},"delivered_at_epoch_ms":{"type":"integer","minimum":1},"payload":file_ref_schema()}}}}},
+        {"type":"object","additionalProperties":false,"required":["kind","items"],"properties":{"kind":{"const":"messages"},"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["sequence","message_id","sender","delivered_at_epoch_ms","payload","body"],"properties":{"sequence":{"type":"integer","minimum":1},"message_id":{"type":"string"},"sender":{"type":"string"},"delivered_at_epoch_ms":{"type":"integer","minimum":1},"payload":file_ref_schema(),"body":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}}}}}}},
         {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"enum":["deadline","cancelled","timed_out"]}}}
     ]})
 }
@@ -738,17 +752,12 @@ mod tests {
 
     #[test]
     fn wait_outputs_preserve_order_and_terminal_states() -> Result<()> {
-        let output = wait_output(WaitCompletion::Tasks {
+        let output = WaitToolOutput::Tasks {
             outcomes: vec![
-                (task(2), Outcome::Succeeded(json!({"ok": true}))),
-                (
-                    task(3),
-                    Outcome::Indeterminate {
-                        operation_id: operation(7),
-                    },
-                ),
+                WaitTaskOutput { task_id: task(2).to_string(), status: WaitTaskStatus::Succeeded, value: Some(json!({"ok": true})), message: None, operation_id: None },
+                WaitTaskOutput { task_id: task(3).to_string(), status: WaitTaskStatus::Indeterminate, value: None, message: None, operation_id: Some(operation(7).to_string()) },
             ],
-        });
+        };
         let value =
             serde_json::to_value(output).map_err(|error| Error::Invalid(error.to_string()))?;
         assert_eq!(value["kind"], "tasks");

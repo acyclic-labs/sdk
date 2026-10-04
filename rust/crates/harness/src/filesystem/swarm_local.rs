@@ -3055,11 +3055,16 @@ impl PersistentLocalSwarm {
         // widening a child grant to another agent's private volume.
         let root_task = self.root_task().await?;
         let harness = self.open_session(root_task).await?;
+        let endpoint_operation = crate::communication::message_endpoint_operation(
+            sender,
+            recipient,
+            message_id,
+        );
         let payload = harness
             .storage()
             .stage(
-                message_id,
-                &format!("messages/{message_id}.txt"),
+                endpoint_operation,
+                &format!("messages/{endpoint_operation}.txt"),
                 body,
                 "text/plain",
                 "message.txt",
@@ -5438,6 +5443,16 @@ mod tests {
         let receipt = swarm
             .send_message(root_task, child, message_id, b"pinned-mail")
             .await?;
+        let sibling_receipt = swarm
+            .send_message(root_task, sibling, message_id, b"sibling-route")
+            .await?;
+        assert_ne!(receipt.payload, sibling_receipt.payload);
+        assert_eq!(
+            swarm
+                .read_message_body(sibling, sibling_receipt.message_id, &sibling_receipt.payload)
+                .await?,
+            b"sibling-route"
+        );
         swarm
             .send_message(root_task, child, message_id, b"pinned-mail")
             .await?;
@@ -5484,7 +5499,14 @@ mod tests {
             .storage()
             .stage(
                 OperationId::from_bytes([0x94; 16]),
-                &format!("messages/{message_id}.txt"),
+                &format!(
+                    "messages/{}.txt",
+                    crate::communication::message_endpoint_operation(
+                        root_task,
+                        child,
+                        message_id,
+                    )
+                ),
                 b"rewritten-mail",
                 "text/plain",
                 "message.txt",
