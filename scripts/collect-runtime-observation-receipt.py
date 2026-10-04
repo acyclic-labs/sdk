@@ -51,6 +51,7 @@ def main() -> int:
         item = {
             "request_file": request.name,
             "request_base64": base64.b64encode(request.read_bytes()).decode("ascii"),
+            "request_frames_base64": [base64.b64encode(request.read_bytes()).decode("ascii")],
             "request_sha256": digest(request),
             "response_files": [response.name for response in responses],
             "response_frame_base64": [base64.b64encode(response.read_bytes()).decode("ascii") for response in responses],
