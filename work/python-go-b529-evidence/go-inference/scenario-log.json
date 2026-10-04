@@ -8,72 +8,72 @@
   "scenarios": [
     {
       "output_path": "qualification/consumers/go-inference-01.json",
-      "output_sha256": "sha256:c3ec0d1c5e6a4bbfb7c75e4b44e7f5a83f5b4a949ca697fefea270b51b79a88a",
+      "output_sha256": "sha256:7d03d69f49e03e10e4a9b49ded102a454b11e08aa05883b7e5ff082cc3c05e1b",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-02.json",
-      "output_sha256": "sha256:b8ca4dca4fc46c6bc98d63f545a5d17c07804e49b3b01c4b03a17e3df6f0b826",
+      "output_sha256": "sha256:56b1f6f98af50962a7267c6f455d97132cb4d50b6d5368c31b732173ab174d77",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-03.json",
-      "output_sha256": "sha256:9ab61016fcdc9e78d1e115029bfc8c5a9d0adcb51fea89e618375bdc355621d6",
+      "output_sha256": "sha256:a4a23ae99fe9acd778bfa16a0f155c9b4bb6ad1227f846d6404c66d764937170",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-04.json",
-      "output_sha256": "sha256:ca93bb5daa723b1b3e1828a4db726632c320f01eea33ac66db0b668e5c0e5658",
+      "output_sha256": "sha256:3516698d9131030403068fece8ec5b7843b0142397663873746e9f315c43b4bd",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-05.json",
-      "output_sha256": "sha256:3c26e59b783d58f772f945076c6be4157b6eb4464c2a5db1310404205eb910e0",
+      "output_sha256": "sha256:42e1eead89d49de2cf2dc157501c3478b746f19bda2cff45ae88405e9d0e13f1",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-06.json",
-      "output_sha256": "sha256:79e44bf8be02c380ef951fa772c36d1191527cb5b1ca3af26db2880fe35e7ef5",
+      "output_sha256": "sha256:22a145ff624a1d35c60eb04bf1c47e57b354e218d66df8e2e1fc90e7db5d976d",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-07.json",
-      "output_sha256": "sha256:ecbfe3945e7e2c9e96793c2cb2baf326ecb6aff59e4fbf11b40dc3e92f6974d0",
+      "output_sha256": "sha256:7136d163e2f273559ac8ddd4546de1ebf08fbb26bc3f38e199a4c3691b9e291e",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-08.json",
-      "output_sha256": "sha256:650b5f2d603bc048f099966241d6be8687eee304dd9ec0466b183392fb0eb310",
+      "output_sha256": "sha256:6330360635b93f6302ed03b8cd85008e86c27aad402f74e15d9f711c5251fb7f",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-09.json",
-      "output_sha256": "sha256:9669c1c686c32ed1758c10cbe95fb90793ed7c4827d33e2fcefe43c6c909b32a",
+      "output_sha256": "sha256:80a2cfde1662fc446fc3a276d9d04778f3bb29879a9c6ee39285f1755d08de23",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-10.json",
-      "output_sha256": "sha256:d91a158a77a07824a12850e1ca1c3bcd021b7f2a50b172ac7322a0d8ea934a22",
+      "output_sha256": "sha256:8e6500ced85a370a87358e2c3261822eb83ac7a690f2105d708d5b7dcf43e01c",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-11.json",
-      "output_sha256": "sha256:5549907905a348c6d176229a3b4c28d130a3f20c66ff0768649dbcc279dbb6e2",
+      "output_sha256": "sha256:1ddae033df3c2a0cd880deda5012dc4cc9b3c361c4aab837d4448a4069cf70b8",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-12.json",
-      "output_sha256": "sha256:63cc5791ca42a15a112b560d607210f9f57617075187a0814fba06582f874216",
+      "output_sha256": "sha256:c26255cdb925a75c63d92530bc8dea7cad4821eac4c2321af6ae35c92c95ecb7",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-13.json",
-      "output_sha256": "sha256:963a0f43e697455cf72fd7c0595abc208dd4109282f08a8c30cc9d4f2e32dead",
+      "output_sha256": "sha256:21c621d54ce46b46da224d87dc16d056ce5bc7db0f2f77be280f680320da2eb3",
       "execution_mode": "remote"
     },
     {
       "output_path": "qualification/consumers/go-inference-14.json",
-      "output_sha256": "sha256:44525188f83a8700a9a6f86217aff42e17b43fdff6b1c83ce72930d591974b86",
+      "output_sha256": "sha256:c5e5f1fd3f67c214fe927d26414d03168e0953445ec0226d523863d4c1f56ff1",
       "execution_mode": "remote"
     }
   ],
