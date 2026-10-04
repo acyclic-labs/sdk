@@ -11,6 +11,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 - Git transition routing at `275fe2da5` passes its public abort regression. See [Git transition evidence](checkpoint-git-transition-routing-2026-10-04.json). This does not qualify approved root writeback.
 - The most recent source-bound production coordinator run, at `ee7cb5f40`, passes 0/1 recursive model swarm cases and 1/5 recovery fault cases. See [production evidence](checkpoint-current-production-swarm-2026-10-04.json). Later context changes require a fresh production run after their focused failures are repaired.
 
+At source 7d951663e, the native recursive boundary suite passes 3/3, including exact prefix checks on every captured child request and an explicit rejection follow-up. The executable and log are archived in checkpoint-native-recursive-prefix-pass-2026-10-04.json. This closes the focused private-prefix fixture failures; production coordinator capture/publication and recovery qualification remain open.
+
 ## Required integration and qualification gates
 
 1. Preserve exact recursive prefixes and rejection evidence across child follow-up, parallel batches, deeper forks, and restart. Preserve the dedicated native fixture stack and resolve the production capture/publication revision mismatch.
