@@ -22,9 +22,9 @@ wire one public SDK command to the Rust CLI and keep the operation mapping
 explicit:
 
 ```text
-generate:sdk  -> sdk-generation generate --source-root . --output <output>
-check:sdk     -> sdk-generation check   --source-root . --output <output>
-drift:sdk     -> sdk-generation drift   --source-root . --output <output>
+generate:sdk  -> node scripts/rust-sdk-generation.mjs generate --source-root . --output <output>
+check:sdk     -> node scripts/rust-sdk-generation.mjs check   --source-root . --output <output>
+drift:sdk     -> node scripts/rust-sdk-generation.mjs drift   --source-root . --output <output>
 ```
 
 The wrapper may select the pinned Cargo executable and output directory, but
