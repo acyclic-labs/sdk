@@ -1,0 +1,90 @@
+{
+  "limitations": [
+    "Focused metadata and tooling coverage only",
+    "Not installed package or recursive swarm qualification",
+    "Mock fixtures do not prove model coding quality"
+  ],
+  "source_clean_after": true,
+  "recorded_at": "2026-10-04T20:31:13.8888958Z",
+  "files": [
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\qualification-tooling-40e2f854d.log",
+      "source_path": "C:\\graphcoder-builds\\qualification-tooling-40e2f854d.log",
+      "sha256": "945c5fd84920e7afc8407a1e5b9c71b0eb345988c75daf4635bc65a555adbd24"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\cli-metadata-40e2f854d.log",
+      "source_path": "C:\\graphcoder-builds\\cli-metadata-40e2f854d.log",
+      "sha256": "61750f70883a45a45f615685a6e9e63446a6ee31dfc1fe7f7bdf1a8b986f36dd"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\ts-metadata-40e2f854d.log",
+      "source_path": "C:\\graphcoder-builds\\ts-metadata-40e2f854d.log",
+      "sha256": "312a99d2daba00bcf1d6cb0c9b1a8cda7561d49c3cbdec8eb9e4cdb3b1b3a9ea"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\graphcoder_runtime-b0aba228ca422570.exe",
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\graphcoder_runtime-b0aba228ca422570.exe",
+      "sha256": "47fbbc8942424c0f01aae2ff9ecc8aad2dc7a6e9b3b9ea4bce837a6a9987739c"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\graphcoder-platform-gates.mjs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-platform-gates.mjs",
+      "sha256": "bc655a9d3bcb98d2d9dc742f0a5ff79acf7bfe3aadb88e5ad602766070a5492c"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\graphcoder-platform-gates.provenance.test.mjs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-platform-gates.provenance.test.mjs",
+      "sha256": "1c7d2f897c46f50bad0d352fb3258c6d4421568689e7684ab9420e99e1edd7f6"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\graphcoder-qualification-suite.mjs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\scripts\\graphcoder-qualification-suite.mjs",
+      "sha256": "17141fb6d8cd5a30db4ad81af5efe7e3aaa65f2a89bc3bb48e8495279b431c63"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\main.rs",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\graphcoder-cli\\src\\main.rs",
+      "sha256": "8b1b20ce7a3669163f13a09607abc0ddde15e7c9d572c9719ea0a55cc819581e"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\graphcoder.test.ts",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\typescript\\packages\\graphcoder\\test\\graphcoder.test.ts",
+      "sha256": "bc423f90ed0847ed148b6ae3a1d4c07a8fa8e029ff04fd3243c2aae380f45f9f"
+    },
+    {
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\40e2f854d\\metadata-tooling\\dispatcher.test.ts",
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\typescript\\packages\\graphcoder\\test\\dispatcher.test.ts",
+      "sha256": "b1347717ac7db25977de6b27fbdf8efcadfca59662723168f0936bf62aae6907"
+    }
+  ],
+  "typecheck": {
+    "exit_code": 0,
+    "command": "bun run check"
+  },
+  "suites": [
+    {
+      "failed": 0,
+      "command": "node --test scripts/graphcoder-platform-gates.provenance.test.mjs",
+      "passed": 8,
+      "skipped": 0
+    },
+    {
+      "failed": 0,
+      "command": "cargo test -p acyclic-graphcoder-cli -- --nocapture",
+      "passed": 7,
+      "ignored": 0
+    },
+    {
+      "failed": 0,
+      "assertions": 139,
+      "command": "bun test test/graphcoder.test.ts test/dispatcher.test.ts",
+      "passed": 42
+    }
+  ],
+  "platform": "windows",
+  "source_tree": "c5fd5fe607500be1229ad8e099baaf5e9d238b89",
+  "source_commit": "40e2f854de7314acbee23080245f9a30e295e471",
+  "source_clean_before": true,
+  "kind": "focused-native-and-tooling-checkpoint"
+}

@@ -4,6 +4,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At clean source `40e2f854d`, the Windows native GraphCoder CLI suite passes 7/7, the TypeScript dispatcher and UI boundary suites pass 42/42 (139 assertions), and GraphCoder type checking passes. Metadata-only snapshots retain an unknown workspace generation; generation-bearing reads explicitly obtain the pinned Filesystem generation. Unknown activity and approval metadata remains null rather than fabricated values. The qualification provenance suite passes 8/8, including a real receipt producer/consumer flow and altered-source, artifact, environment and missing-evidence rejection. These are focused checks, not installed recursive-runtime qualification. Logs, suite sources and the native test executable are archived with verified SHA-256 digests on D: in [metadata and tooling evidence](checkpoint-metadata-tooling-native-2026-10-04.json). The initial C: archive attempt failed due to disk exhaustion and does not count as evidence.
+
 At clean source `b3dff5345`, the 12 Windows native exact-input tests pass after pinning the explicit stage-file v2 definitions, schema digests and model binding digest. The manifest assertions independently include the declared immutable tool-result reference. Executables, suite sources and the complete log are archived in [stage-file v2 evidence](checkpoint-exact-input-stage-v2-native-2026-10-04.json). The initial v1 golden failures and the subsequent run invalidated by concurrent manifest edits do not qualify this source. Full recursive swarm, WASM and installed execution remain separate gates.
 
 At source `ba66f9a12`, the production recursive `local_model_swarm` run fails with Windows `STATUS_STACK_OVERFLOW` (`0xc00000fd`) after the schema-declared inherited-file grant repair. The test runs with normal stack settings; this is a required runtime failure, not a qualified swarm. Runtime diagnosis must preserve recursive depth and real effects rather than increase fixture stack size or narrow the scenario.
@@ -32,7 +34,7 @@ Earlier passing and failing checkpoints are retained in [EVIDENCE.md](EVIDENCE.m
 
 ## Remaining integration and qualification
 
-1. Repair exact reference inheritance in the production recursive swarm, without granting mutable parent-private access. Repair duplicated dispatch/output in fault recovery.
+1. Repair the production recursive swarm's Windows stack overflow without enlarging the fixture stack or narrowing recursion. Exact schema-declared reference inheritance is integrated; durable duplicate-activation fencing and full fault-recovery qualification remain open.
 2. Integrate and qualify scoped communication admission, durable resource budgeting, lazy metadata projection, pinned operator authority and approved root-writeback recovery. Worker commits remain candidates until integrated and tested.
 3. Complete recoverable process ownership, including launch-initialization failures, cancellation, overflow, descendant cleanup and installed native transport. Uncertain effects must remain uncertain.
 4. Complete the thin terminal routes and verify public inspection, exact approvals, concurrent user edits/deletions, conflicts, continuation, abort and cold recovery through installed artifacts.
