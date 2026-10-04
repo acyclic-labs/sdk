@@ -403,7 +403,7 @@ impl ForkAtBatch {
             issuer.clone(), parent, &unallocated,
         ).await.err().ok_or_else(|| Error::Storage("unallocated fork was accepted".into()))?;
         assert!(
-            matches!(&unallocated_error, Error::Conflict(message) if message.contains("another preparation")),
+            matches!(&unallocated_error, Error::Unauthorized(message) if message.contains("published parent fork")),
             "unexpected unallocated fork error: {unallocated_error:?}"
         );
         self.assert_child_unbound(&seed, issuer).await?;
@@ -422,7 +422,7 @@ impl ForkAtBatch {
         assert!(matches!(HarnessStorage::from_published_fork(
             self.limits.file_bytes, self.host.clone(), self.stream.clone(),
             issuer.clone(), parent, &changed_project,
-        ).await, Err(Error::Conflict(message)) if message.contains("allocated publication")));
+        ).await, Err(Error::Unauthorized(message)) if message.contains("published parent fork")));
         self.assert_child_unbound(&seed, issuer).await?;
         Ok(())
     }
