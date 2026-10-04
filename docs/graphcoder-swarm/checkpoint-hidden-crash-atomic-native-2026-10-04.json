@@ -1,0 +1,29 @@
+{
+  "source_commit": "1953894ae4b80dbbaeeac20e9cca9cf442dfe294",
+  "filesystem_tree": "18435aee9b5aeccdb94863a5f805e9005bf2cf05",
+  "native_runtime_tree": "7d696f50848c295e091f181c0c5fa05446d7ffcc",
+  "platform": "Windows native",
+  "command": "cargo test --locked -p acyclic-fs --lib core_commits_are_crash_atomic -- --nocapture",
+  "result": {
+    "test_seconds": 14.99,
+    "ignored": 0,
+    "failed": 0,
+    "filtered_out": 1146,
+    "passed": 2
+  },
+  "cases": [
+    "core_state::tests::owned_core_commits_are_crash_atomic",
+    "core_state::tests::shared_core_commits_are_crash_atomic"
+  ],
+  "artifacts": [
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\1953894ae\\crash-atomic.txt",
+      "sha256": "4EF0DC16F7CFBA74BF1D09CA96162C5A7431192B4E825D6DF7E34F357C9713BD"
+    },
+    {
+      "path": "C:\\graphcoder-builds\\root-qualification-artifacts\\1953894ae\\acyclic_fs-e6ab0acd92b5bad3.exe",
+      "sha256": "3E0CC42FA86653DEF71F4769863A1C4364FB7BBE50DB535ED8B2F58BBBD20831"
+    }
+  ],
+  "scope": "Focused crash-atomic regression after hidden Windows subprocess and intentional termination changes. Does not qualify Harness production swarm, installed artifacts, PTY or full matrix. Unrelated Harness/TypeScript binding files were modified during this run; Filesystem and dependency sources remained unchanged."
+}

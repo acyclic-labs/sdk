@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Hidden Windows crash recovery](checkpoint-hidden-crash-atomic-native-2026-10-04.json) records 2/2 owned/shared crash-atomic tests at `1953894ae`, with no ignored cases and 14.99 seconds of test execution. The source trees, log and native executable digests are recorded. This focused regression checks recovery after hidden subprocess launch and direct intentional crash termination; it does not qualify Harness orchestration, installed artifacts, PTY or the full requirements matrix.
+
 [Cancellation persistence fence](checkpoint-cancellation-persistence-fence-2026-10-04.json) records the integrated minimal repair at `f97519f57`: the production cancellation-persistence fault and cold-restart no-redispatch case passes, as does the existing late-success cancellation race. The full Windows host suite passes 25/26; the held-descendant-pipe marker failure remains an unmet cleanup gate. Logs and executable digests are archived. This does not qualify installed process cleanup.
 
 [Integrated Git transition routing](checkpoint-git-transition-routing-2026-10-04.json) records 1/1 actual Windows public-dispatch abort regression at `275fe2da5`. An ordinary local Git merge abort now falls through to its workspace facade unless a parent publication conflict exists. Root writeback approval, child continuation, rebase, and installed packaging remain separate required gates.
