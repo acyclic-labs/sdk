@@ -907,6 +907,31 @@ mod tests {
             assert!(record["state"].is_object());
         }
 
+        let export = records
+            .iter()
+            .find(|record| record["family"] == "filesystem" && record["operation"] == "Export")
+            .expect("filesystem export evidence");
+        let chunks = export["response"]["chunks"]
+            .as_array()
+            .expect("export chunks");
+        assert!(!chunks.is_empty());
+        assert!(chunks.iter().any(|chunk| chunk["terminal"] == true));
+        for chunk in chunks {
+            assert!(!chunk["bytes_base64"].as_str().unwrap_or_default().is_empty());
+            assert!(chunk["sha256"].as_str().unwrap_or_default().starts_with("sha256:"));
+        }
+
+        let import = records
+            .iter()
+            .find(|record| record["family"] == "filesystem" && record["operation"] == "Import")
+            .expect("filesystem import evidence");
+        assert!(import["response"]["bytes_base64"]
+            .as_str()
+            .is_some_and(|bytes| !bytes.is_empty()));
+        assert!(import["response"]["sha256"]
+            .as_str()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+
         let harness_cancel = records
             .iter()
             .rev()
