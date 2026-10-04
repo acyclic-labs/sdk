@@ -82,6 +82,8 @@ describe("GraphCoder UI transport boundary", () => {
     await expect(malformedPage.listSessions()).rejects.toMatchObject({ code: "transport" });
     const missingModel = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1" }] } }) });
     await expect(missingModel.listSessions()).rejects.toMatchObject({ code: "transport" });
+    const registeredOptions = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: "session-1", title: "inspect", state: "running", updated_at: "2026-01-01T00:00:00.000Z", root_agent_id: "agent-1", model: { provider: "fixture-provider", name: "fixture-model", revision: "1", options: { max_tokens: 4096, max_output_tokens: 2048, tokenizer: "cl100k", mode: "strict" } } }] } }) });
+    await expect((await registeredOptions.listSessions()).items[0]?.model.options).toEqual({ max_tokens: 4096, max_output_tokens: 2048, tokenizer: "cl100k", mode: "strict" });
     await expect(malformedPage.listSessions({ limit: 0 })).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), "README.md", -1n)).rejects.toMatchObject({ code: "invalid_input" });
     await expect(malformedPage.readFile(sessionId("session-1"), 7 as unknown as string, 1n)).rejects.toMatchObject({ code: "invalid_input" });

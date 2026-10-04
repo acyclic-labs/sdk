@@ -15,7 +15,8 @@ pub struct Model {
     pub name: String,
     /// Immutable model revision or digest.
     pub revision: String,
-    /// Provider-specific options retained as typed JSON.
+    /// Provider-registered, model-visible options retained as typed JSON.
+    /// Credential material belongs to the host provider binding instead.
     pub options: Value,
 }
 
@@ -33,17 +34,41 @@ impl Model {
             revision: revision.into(),
             options,
         };
-        if value.provider.trim().is_empty()
-            || value.name.trim().is_empty()
-            || value.revision.trim().is_empty()
+        value.validate()?;
+        Ok(value)
+    }
+
+    /// Validates the model identity fields. The provider's registered
+    /// [`ModelOptionPolicy`] validates its model-visible options.
+    pub fn validate(&self) -> Result<()> {
+        if self.provider.trim().is_empty()
+            || self.name.trim().is_empty()
+            || self.revision.trim().is_empty()
         {
             return Err(Error::Invalid(
                 "model provider, name, and revision must be non-empty".into(),
             ));
         }
-        Ok(value)
+        Ok(())
     }
 }
+
+/// Provider registration contract for model-visible options. Host credentials
+/// stay in the provider binding and are never represented by this value.
+pub trait ModelOptionPolicy: Send + Sync {
+    /// Validates the options that may appear in a model identity or request.
+    fn validate(&self, options: &Value) -> Result<()>;
+}
+
+struct AllowAnyModelOptionPolicy;
+
+impl ModelOptionPolicy for AllowAnyModelOptionPolicy {
+    fn validate(&self, _options: &Value) -> Result<()> {
+        Ok(())
+    }
+}
+
+static ALLOW_ANY_MODEL_OPTION_POLICY: AllowAnyModelOptionPolicy = AllowAnyModelOptionPolicy;
 
 /// One provider-neutral prompt item.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -318,10 +343,15 @@ pub struct ModelAttempt {
 
 /// Replaceable streaming model provider.
 pub trait ModelProvider: Send + Sync {
+    /// Returns the provider-registered public option policy.
+    fn model_option_policy(&self) -> &dyn ModelOptionPolicy {
+        &ALLOW_ANY_MODEL_OPTION_POLICY
+    }
+
     /// Validates immutable input before a new dispatch or recovered attempt.
     /// This hook must not perform I/O or mutate the request.
-    fn admit(&self, _request: &ModelRequest) -> Result<()> {
-        Ok(())
+    fn admit(&self, request: &ModelRequest) -> Result<()> {
+        self.model_option_policy().validate(&request.model.options)
     }
 
     /// Starts one request and yields ordered model events.
@@ -386,6 +416,22 @@ mod wire_contract_tests {
                 "{layer}"
             );
         }
+    }
+
+    #[test]
+    fn model_identity_allows_provider_registered_options() {
+        assert!(Model::new(
+            "mock",
+            "local",
+            "1",
+            json!({
+                "max_tokens": 4096,
+                "max_output_tokens": 2048,
+                "tokenizer": "cl100k",
+                "mode": "strict"
+            })
+        )
+        .is_ok());
     }
 
     #[test]

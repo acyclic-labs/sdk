@@ -21,7 +21,7 @@ export interface ModelIdentity {
   readonly provider: string;
   readonly name: string;
   readonly revision: string;
-  /** Provider-owned options, including an explicit mock fixture when used. */
+  /** Provider-registered model-visible options, including an explicit mock fixture when used. */
   readonly options: unknown;
 }
 

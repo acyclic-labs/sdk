@@ -1436,6 +1436,7 @@ impl LocalSwarmConfig {
 
     /// Validates application bounds before opening any provider.
     pub fn validate(&self) -> Result<()> {
+        self.model.validate()?;
         self.limits.validate()?;
         self.run_limits.validate()?;
         if self.maximum_children == 0 || self.maximum_depth == 0 {
@@ -1856,6 +1857,9 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
+        provider
+            .model_option_policy()
+            .validate(&config.model.options)?;
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
                 Error::Invalid(
@@ -1935,6 +1939,12 @@ impl PersistentLocalSwarm {
             .values()
             .find(|session| session.parent.is_none())
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        for session in sessions.values() {
+            session.model.validate()?;
+            provider
+                .model_option_policy()
+                .validate(&session.model.options)?;
+        }
         if persisted_root.model != config.model {
             return Err(Error::Conflict(
                 "local swarm model identity differs from the persisted session".into(),

@@ -54,6 +54,7 @@ impl PreparedModelInput {
     /// Validates explicit input and freezes its canonical encoding.
     pub fn prepare(request: ModelRequest, limits: Limits) -> Result<Self> {
         limits.validate()?;
+        request.model.validate()?;
         if request.messages.is_empty() || request.messages.len() > limits.context_messages {
             return Err(Error::Invalid("model context count is invalid".into()));
         }
@@ -736,6 +737,58 @@ mod tests {
                 Err(Error::Invalid(_))
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn prepared_model_input_bytes_capture_registered_options_without_host_credentials() -> Result<()> {
+        use crate::model::{ModelAttempt, ModelEvent, ModelProvider};
+        use futures::{future::BoxFuture, stream::BoxStream};
+        use std::sync::{Arc, Mutex};
+
+        struct Capture(Arc<Mutex<Vec<u8>>>);
+        impl ModelProvider for Capture {
+            fn generate<'a>(&'a self, request: ModelRequest) -> BoxStream<'a, Result<ModelEvent>> {
+                let bytes = crate::contract::canonical_json_bytes(&request)
+                    .expect("provider request is canonicalizable");
+                *self.0.lock().expect("capture lock") = bytes;
+                Box::pin(futures::stream::empty())
+            }
+            fn reconcile<'a>(
+                &'a self,
+                _: ModelAttempt,
+            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+                Box::pin(async { Ok(None) })
+            }
+        }
+
+        let host_credential = "runtime-credential-value";
+        let mut input = request()?;
+        input.model = Model {
+            provider: "mock".into(),
+            name: "swarm".into(),
+            revision: "1".into(),
+            options: json!({
+                "max_tokens": 4096,
+                "max_output_tokens": 2048,
+                "tokenizer": "cl100k",
+                "mode": "strict"
+            }),
+        };
+        let prepared = PreparedModelInput::prepare(input, Limits::default())?;
+        let prepared_bytes = prepared.bytes().to_vec();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let provider = Capture(captured.clone());
+        let _stream = provider.generate(prepared.into_request());
+        let bytes = captured.lock().expect("capture lock").clone();
+        assert_eq!(bytes, prepared_bytes);
+        let bytes = std::str::from_utf8(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert!(bytes.contains("\"max_tokens\":4096"));
+        assert!(bytes.contains("\"max_output_tokens\":2048"));
+        assert!(bytes.contains("\"tokenizer\":\"cl100k\""));
+        assert!(bytes.contains("\"mode\":\"strict\""));
+        assert!(!bytes.contains(host_credential));
         Ok(())
     }
 
