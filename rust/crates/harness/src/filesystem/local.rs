@@ -5,7 +5,7 @@ use crate::{
     conversation::{
         ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
     },
-    core::{AggregateKind, Authority, AuthorityIssuer, Scope},
+    core::{AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, Scope},
     effects::EffectRegistry,
     executor::TurnOutput,
     fork::{CompositeForkVerifier, ForkSeed, ForkSeedVerifier, StreamHistoryForkVerifier},
@@ -45,6 +45,15 @@ enum ExecutionReceiptEvent {
     },
     CancellationRequested {
         key: ExecutionReceiptKey,
+    },
+    /// Records that dispatch could not prove the external process outcome.
+    /// The pending claim remains the no-replay fence until an authenticated
+    /// operator publishes a terminal resolution.
+    Uncertainty {
+        key: ExecutionReceiptKey,
+        owner_token: [u8; 32],
+        generation: u64,
+        reason: String,
     },
     Completed {
         key: ExecutionReceiptKey,
@@ -153,6 +162,7 @@ where
     async fn validate_events(&self, events: &[ExecutionReceiptEvent]) -> Result<()> {
         let mut pending = Vec::<(ExecutionReceiptKey, [u8; 32], u64)>::new();
         let mut cancellation_requested = Vec::<ExecutionReceiptKey>::new();
+        let mut uncertainty = Vec::<ExecutionReceiptKey>::new();
         let mut finalized = Vec::<ExecutionReceiptKey>::new();
         for event in events {
             match event {
@@ -186,6 +196,43 @@ where
                     }
                     cancellation_requested.push(key.clone());
                 }
+                ExecutionReceiptEvent::Uncertainty {
+                    key,
+                    owner_token,
+                    generation,
+                    reason,
+                } => {
+                    self.validate_key(key)?;
+                    if reason.is_empty() || reason.len() > 4096 {
+                        return Err(Error::Storage(
+                            "execution receipt uncertainty reason is invalid".into(),
+                        ));
+                    }
+                    ExecutionReceipt::Unknown {
+                        reason: reason.clone(),
+                    }
+                    .validate()?;
+                    if finalized.iter().any(|candidate| candidate == key)
+                        || uncertainty.iter().any(|candidate| candidate == key)
+                    {
+                        return Err(Error::Storage(
+                            "execution receipt journal contains duplicate uncertainty".into(),
+                        ));
+                    }
+                    let Some((_, pending_token, pending_generation)) =
+                        pending.iter().find(|(candidate, _, _)| candidate == key)
+                    else {
+                        return Err(Error::Storage(
+                            "execution receipt uncertainty has no durable claim".into(),
+                        ));
+                    };
+                    if pending_token != owner_token || pending_generation != generation {
+                        return Err(Error::Conflict(
+                            "execution receipt uncertainty owner does not match its claim".into(),
+                        ));
+                    }
+                    uncertainty.push(key.clone());
+                }
                 ExecutionReceiptEvent::Completed {
                     key,
                     result,
@@ -215,7 +262,10 @@ where
                     if cancellation_requested
                         .iter()
                         .any(|candidate| candidate == key)
-                        && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                        && !matches!(
+                            receipt,
+                            ExecutionReceipt::Cancelled { .. } | ExecutionReceipt::Unknown { .. }
+                        )
                     {
                         return Err(Error::Conflict(
                             "execution receipt completed after cancellation was requested".into(),
@@ -228,6 +278,23 @@ where
                     {
                         return Err(Error::Conflict(
                             "execution receipt operator marker does not match its typed outcome"
+                                .into(),
+                        ));
+                    }
+                    let is_unknown = matches!(receipt, ExecutionReceipt::Unknown { .. });
+                    if is_unknown
+                        && !uncertainty.iter().any(|candidate| candidate == key)
+                    {
+                        return Err(Error::Storage(
+                            "execution receipt unknown outcome has no durable uncertainty"
+                                .into(),
+                        ));
+                    }
+                    if !is_unknown
+                        && uncertainty.iter().any(|candidate| candidate == key)
+                    {
+                        return Err(Error::Conflict(
+                            "durably uncertain execution requires operator unknown resolution"
                                 .into(),
                         ));
                     }
@@ -250,6 +317,7 @@ where
                     }
                     pending.retain(|(candidate, _, _)| candidate != key);
                     cancellation_requested.retain(|candidate| candidate != key);
+                    uncertainty.retain(|candidate| candidate != key);
                     finalized.push(key.clone());
                 }
             }
@@ -274,6 +342,16 @@ where
 
     fn same_operation(left: &ExecutionReceiptKey, right: &ExecutionReceiptKey) -> bool {
         left.operation_id == right.operation_id && left.effect_id == right.effect_id
+    }
+
+    /// A retry may advance the attempt identity, but all other dispatch
+    /// fields remain part of the durable no-replay fence.
+    fn same_fence(left: &ExecutionReceiptKey, right: &ExecutionReceiptKey) -> bool {
+        Self::same_operation(left, right)
+            && left.provider == right.provider
+            && left.effect_kind == right.effect_kind
+            && left.guarantee == right.guarantee
+            && left.request_digest == right.request_digest
     }
 
     async fn append_at_tail(&self, tail: u64, event: &ExecutionReceiptEvent) -> Result<bool> {
@@ -324,9 +402,34 @@ where
                     pending.retain(|(candidate, _)| *candidate != key);
                 }
                 ExecutionReceiptEvent::CancellationRequested { .. } => {}
+                ExecutionReceiptEvent::Uncertainty { .. } => {}
             }
         }
         Ok(pending)
+    }
+
+    /// Returns the durable uncertainty marker for one still-pending attempt.
+    /// This is test and recovery inspection only; terminal artifacts remain
+    /// the authoritative public receipt once an operator resolves the claim.
+    pub(crate) async fn pending_unknown_reason(
+        &self,
+        key: &ExecutionReceiptKey,
+    ) -> Result<Option<String>> {
+        let (_, events) = self.events().await?;
+        if self.terminal_for(&events, key).await?.is_some() {
+            return Ok(None);
+        }
+        Ok(events.into_iter().find_map(|event| {
+            let ExecutionReceiptEvent::Uncertainty {
+                key: candidate,
+                reason,
+                ..
+            } = event
+            else {
+                return None;
+            };
+            (candidate == *key).then_some(reason)
+        }))
     }
 
     /// Returns one pending claim for an externally authenticated operator.
@@ -348,9 +451,7 @@ where
         }
         resolver.require(&self.volume, VolumeOperation::Write)?;
         let (_, events) = self.events().await?;
-        if events.iter().any(|event| {
-            matches!(event, ExecutionReceiptEvent::Completed { key: candidate, .. } if candidate == key)
-        }) {
+        if self.terminal_for(&events, key).await?.is_some() {
             return Err(Error::Conflict(
                 "execution attempt already has a terminal receipt".into(),
             ));
@@ -370,11 +471,30 @@ where
                 "execution attempt is not pending operator resolution".into(),
             ));
         };
+        let has_uncertainty = events.iter().any(|event| {
+            matches!(
+                event,
+                ExecutionReceiptEvent::Uncertainty {
+                    key: candidate,
+                    owner_token: candidate_token,
+                    generation: candidate_generation,
+                    ..
+                } if candidate == key
+                    && candidate_token == &owner_token
+                    && candidate_generation == &generation
+            )
+        });
+        if !has_uncertainty && !resolution.is_recovery() {
+            return Err(Error::Conflict(
+                "execution claim has no durable uncertainty to resolve".into(),
+            ));
+        }
         ExecutionClaimHandle::from_operator_parts(
             key.clone(),
             owner_token,
             generation,
             resolution.principal().to_owned(),
+            resolution.is_recovery(),
         )
     }
 
@@ -405,11 +525,21 @@ where
                 "operator handle is bound to a different authenticated principal".into(),
             ));
         }
+        let requested_reason = reason.into();
+        let durable_reason = match self.pending_unknown_reason(key).await? {
+            Some(reason) => reason,
+            None if handle.operator_recovery() => {
+                self.record_unknown_reason(key, handle, &requested_reason)
+                    .await?;
+                requested_reason
+            }
+            None => requested_reason,
+        };
         self.publish(
             key,
             handle,
             &ExecutionReceipt::Unknown {
-                reason: reason.into(),
+                reason: durable_reason,
             },
         )
         .await
@@ -435,11 +565,22 @@ where
                 "owner recovery requires the internal owner resolution handle".into(),
             ));
         }
+        let requested_reason = reason.into();
+        // This test-only owner helper models the provider's durable unknown
+        // transition before it publishes the operator terminal record.
+        let durable_reason = match self.pending_unknown_reason(key).await? {
+            Some(reason) => reason,
+            None => {
+                self.record_unknown_reason(key, handle, &requested_reason)
+                    .await?;
+                requested_reason
+            }
+        };
         self.publish(
             key,
             handle,
             &ExecutionReceipt::Unknown {
-                reason: reason.into(),
+                reason: durable_reason,
             },
         )
         .await
@@ -533,6 +674,7 @@ where
                     .filter_map(|event| match event {
                         ExecutionReceiptEvent::Pending { key: candidate, .. }
                         | ExecutionReceiptEvent::CancellationRequested { key: candidate }
+                        | ExecutionReceiptEvent::Uncertainty { key: candidate, .. }
                             if Self::same_operation(candidate, key) =>
                         {
                             Some(candidate.clone())
@@ -547,6 +689,12 @@ where
                     .collect();
                 for candidate in fenced_keys {
                     if let Some(record) = self.terminal_for(&events, &candidate).await? {
+                        if !Self::same_fence(&candidate, key) {
+                            return Err(Error::Conflict(
+                                "execution receipt fence does not match the requested dispatch"
+                                    .into(),
+                            ));
+                        }
                         return Ok(if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
                             ExecutionClaim::Completed(record)
                         } else {
@@ -558,8 +706,14 @@ where
                             event,
                             ExecutionReceiptEvent::Pending { key: pending, .. }
                                 if pending == &candidate
-                        )
+                            )
                     }) {
+                        if !Self::same_fence(&candidate, key) {
+                            return Err(Error::Conflict(
+                                "execution receipt fence does not match the requested dispatch"
+                                    .into(),
+                            ));
+                        }
                         return Ok(ExecutionClaim::Pending);
                     }
                 }
@@ -623,6 +777,28 @@ where
         })
     }
 
+    fn read_authoritative_artifact<'a>(
+        &'a self,
+        record: &'a ExecutionReceiptRecord,
+    ) -> BoxFuture<'a, Result<Option<Vec<u8>>>> {
+        Box::pin(async move {
+            self.validate_key(&record.key)?;
+            self.validate_result_ref(&record.key, &record.result)?;
+            let bytes = self
+                .host
+                .read_internal_content(
+                    &record.result,
+                    &self.volume,
+                    &self.read,
+                    super::InternalContentClass::Execution,
+                    self.maximum_bytes,
+                )
+                .await?
+                .to_vec();
+            Ok(Some(bytes))
+        })
+    }
+
     fn request_cancel<'a>(&'a self, key: &'a ExecutionReceiptKey) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
             self.validate_key(key)?;
@@ -647,6 +823,106 @@ where
                     .append_at_tail(
                         tail,
                         &ExecutionReceiptEvent::CancellationRequested { key: key.clone() },
+                    )
+                    .await?
+                {
+                    return Ok(());
+                }
+            }
+        })
+    }
+
+    fn record_unknown_reason<'a>(
+        &'a self,
+        key: &'a ExecutionReceiptKey,
+        handle: &'a ExecutionClaimHandle,
+        reason: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.validate_key(key)?;
+            if reason.is_empty() || reason.len() > 4096 {
+                return Err(Error::Invalid(
+                    "execution uncertainty reason is empty or too large".into(),
+                ));
+            }
+            ExecutionReceipt::Unknown {
+                reason: reason.to_owned(),
+            }
+            .validate()?;
+            if (handle.is_operator()
+                && handle.operator_authenticated()
+                && !handle.operator_recovery())
+                || !handle.matches(key)
+            {
+                return Err(Error::Unauthorized(
+                    "execution uncertainty requires the owning dispatch handle".into(),
+                ));
+            }
+            loop {
+                let (tail, events) = self.events().await?;
+                if let Some(existing) = events.iter().find_map(|event| {
+                    let ExecutionReceiptEvent::Uncertainty {
+                        key: candidate,
+                        owner_token,
+                        generation,
+                        reason,
+                    } = event
+                    else {
+                        return None;
+                    };
+                    (candidate == key).then_some((*owner_token, *generation, reason.as_str()))
+                }) {
+                    if existing.0 == *handle.token()
+                        && existing.1 == handle.generation()
+                        && existing.2 == reason
+                    {
+                        return Ok(());
+                    }
+                    if self.terminal_for(&events, key).await?.is_some() {
+                        return Err(Error::Conflict(
+                            "execution uncertainty was recorded after terminal publication"
+                                .into(),
+                        ));
+                    }
+                    return Err(Error::Conflict(
+                        "execution uncertainty is already recorded for another dispatch".into(),
+                    ));
+                }
+                if self.terminal_for(&events, key).await?.is_some() {
+                    return Err(Error::Conflict(
+                        "execution uncertainty was recorded after terminal publication".into(),
+                    ));
+                }
+                let Some((owner_token, generation)) = events.iter().find_map(|event| {
+                    let ExecutionReceiptEvent::Pending {
+                        key: candidate,
+                        owner_token,
+                        generation,
+                    } = event
+                    else {
+                        return None;
+                    };
+                    (candidate == key).then_some((*owner_token, *generation))
+                }) else {
+                    return Err(Error::Conflict(
+                        "execution uncertainty has no durable pending claim".into(),
+                    ));
+                };
+                if owner_token != *handle.token() || generation != handle.generation() {
+                    return Err(Error::Conflict(
+                        "execution uncertainty handle is stale or owned by another dispatcher"
+                            .into(),
+                    ));
+                }
+                if self
+                    .append_at_tail(
+                        tail,
+                        &ExecutionReceiptEvent::Uncertainty {
+                            key: key.clone(),
+                            owner_token,
+                            generation,
+                            reason: reason.to_owned(),
+                        },
                     )
                     .await?
                 {
@@ -695,14 +971,6 @@ where
             }
             loop {
                 let (tail, events) = self.events().await?;
-                if let Some(record) = self.terminal_for(&events, key).await? {
-                    if record.receipt == *receipt {
-                        return Ok(record.result);
-                    }
-                    return Err(Error::Conflict(
-                        "execution receipt claim was already finalized".into(),
-                    ));
-                }
                 let Some((owner_token, generation)) = events.iter().find_map(|event| {
                     let ExecutionReceiptEvent::Pending {
                         key: candidate,
@@ -723,13 +991,56 @@ where
                         "execution receipt handle is stale or owned by another dispatcher".into(),
                     ));
                 }
+                if let Some(record) = self.terminal_for(&events, key).await? {
+                    if record.receipt == *receipt {
+                        return Ok(record.result);
+                    }
+                    return Err(Error::Conflict(
+                        "execution receipt claim was already finalized".into(),
+                    ));
+                }
+                if handle.is_operator()
+                    && !handle.operator_recovery()
+                    && !events.iter().any(|event| {
+                        matches!(
+                            event,
+                            ExecutionReceiptEvent::Uncertainty {
+                                key: candidate,
+                                owner_token: candidate_token,
+                                generation: candidate_generation,
+                                ..
+                            } if candidate == key
+                                && candidate_token == &owner_token
+                                && candidate_generation == &generation
+                        )
+                    })
+                {
+                    return Err(Error::Conflict(
+                        "execution claim has no durable uncertainty to resolve".into(),
+                    ));
+                }
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        ExecutionReceiptEvent::Uncertainty { key: candidate, .. }
+                            if candidate == key
+                    )
+                }) && !matches!(receipt, ExecutionReceipt::Unknown { .. })
+                {
+                    return Err(Error::Conflict(
+                        "execution claim is durably uncertain and requires authenticated operator resolution".into(),
+                    ));
+                }
                 if events.iter().any(|event| {
                     matches!(
                         event,
                         ExecutionReceiptEvent::CancellationRequested { key: candidate }
                             if candidate == key
                     )
-                }) && !matches!(receipt, ExecutionReceipt::Cancelled { .. })
+                }) && !matches!(
+                    receipt,
+                    ExecutionReceipt::Cancelled { .. } | ExecutionReceipt::Unknown { .. }
+                )
                 {
                     return Err(Error::Conflict(
                         "execution receipt publication lost a cancellation race".into(),
@@ -809,6 +1120,10 @@ struct SessionDescriptor {
     /// switch the source workspace.
     #[serde(default)]
     project: Option<VolumeRef>,
+    /// Stable identity of an externally configured host authority.  A
+    /// configured session cannot silently reopen under a different issuer.
+    #[serde(default)]
+    authority_identity: Option<[u8; 32]>,
 }
 
 impl SessionDescriptor {
@@ -850,6 +1165,7 @@ impl SessionDescriptor {
             model,
             limits,
             project,
+            authority_identity: None,
         };
         Ok(descriptor)
     }
@@ -902,6 +1218,7 @@ fn validate_descriptor(
 pub struct PersistentLocalHarness {
     storage: DurableHarnessStorage,
     bundle: crate::Harness,
+    execution_authority: AuthorityVerifier,
 }
 
 /// Optional owner supplied tools shared by every session in one local swarm.
@@ -1079,6 +1396,7 @@ impl PersistentLocalHarness {
     ) -> Result<Self> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
+        let execution_authority = issuer.verifier();
         let project_capabilities = match project {
             Some(project) => {
                 if project.class() != VolumeClass::Project || project.provider() != &host.provider {
@@ -1106,7 +1424,11 @@ impl PersistentLocalHarness {
         .await?
         .with_fork_verifier(local_fork_verifier(host.clone(), limits.file_bytes)?);
         let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
-        Ok(Self { storage, bundle })
+        Ok(Self {
+            storage,
+            bundle,
+            execution_authority,
+        })
     }
 
     /// Composes a child harness from an already published typed fork. The
@@ -1183,9 +1505,44 @@ impl PersistentLocalHarness {
         extension: LocalHarnessTools,
         stream_provider: ProviderRef,
     ) -> Result<Self> {
+        Self::from_published_fork_with_tools_and_stream_provider_and_authority(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+            extension,
+            stream_provider,
+            None,
+        )
+        .await
+    }
+
+    /// Composes a published child with the swarm's pinned external operator
+    /// authority. The child still receives its own internal conversation
+    /// issuer; the external verifier is only used for host operator routes.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn from_published_fork_with_tools_and_stream_provider_and_authority(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+        extension: LocalHarnessTools,
+        stream_provider: ProviderRef,
+        authority: Option<AuthorityVerifier>,
+    ) -> Result<Self> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
-        let storage = DurableHarnessStorage::from_published_fork(
+        let execution_authority = issuer.verifier();
+        let interaction_issuer = issuer.clone();
+        let mut storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
             host.clone(),
             stream,
@@ -1199,8 +1556,18 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
+        let execution_authority = if let Some(authority) = authority {
+            storage = storage.with_operator_authority(authority.clone(), interaction_issuer)?;
+            authority
+        } else {
+            execution_authority
+        };
         let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
-        Ok(Self { storage, bundle })
+        Ok(Self {
+            storage,
+            bundle,
+            execution_authority,
+        })
     }
 
     /// Opens an exclusive session root, preserving stable identities and configuration.
@@ -1263,6 +1630,56 @@ impl PersistentLocalHarness {
         project: Option<VolumeRef>,
         filesystem_provider: ProviderRef,
     ) -> Result<Self> {
+        Self::open_with_tools_and_project_for_provider_with_authority(
+            root,
+            model,
+            provider,
+            limits,
+            extension,
+            project,
+            filesystem_provider,
+            None,
+        )
+        .await
+    }
+
+    /// Opens a durable local session bound to a host-configured authority.
+    /// The authority identity is pinned in the session descriptor on first
+    /// creation and must be supplied again on every cold reopen.
+    pub async fn open_with_authority(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        authority: AuthorityVerifier,
+    ) -> Result<Self> {
+        Self::open_with_tools_and_project_for_provider_with_authority(
+            root,
+            model,
+            provider,
+            limits,
+            LocalHarnessTools::new(),
+            None,
+            ProviderRef::new("local", "filesystem", "2")?,
+            Some(authority),
+        )
+        .await
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "provider and authority boundaries remain explicit"
+    )]
+    async fn open_with_tools_and_project_for_provider_with_authority(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        filesystem_provider: ProviderRef,
+        authority: Option<AuthorityVerifier>,
+    ) -> Result<Self> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref();
@@ -1285,12 +1702,19 @@ impl PersistentLocalHarness {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if missing {
-            let descriptor = SessionDescriptor::fresh_with_provider(
+            let mut descriptor = SessionDescriptor::fresh_with_provider(
                 model.clone(),
                 limits,
                 project.clone(),
                 filesystem_provider,
             )?;
+            if let Some(authority) = &authority {
+                // The host verifier's audience is the durable conversation
+                // authority. Pin it before first publication so a caller can
+                // issue scopes before the process is reopened.
+                descriptor.conversation = authority.audience().clone();
+                descriptor.authority_identity = Some(authority.identity_digest()?);
+            }
             match metadata
                 .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
                 .await
@@ -1333,6 +1757,29 @@ impl PersistentLocalHarness {
             descriptor.signing_key,
             descriptor.conversation.clone(),
         );
+        let execution_authority = match authority {
+            Some(authority) => {
+                let expected = descriptor.authority_identity.ok_or_else(|| {
+                    Error::Conflict(
+                        "local session was not created with a configured host authority".into(),
+                    )
+                })?;
+                if expected != authority.identity_digest()? {
+                    return Err(Error::Unauthorized(
+                        "configured host authority identity differs from the pinned session authority".into(),
+                    ));
+                }
+                authority
+            }
+            None => {
+                if descriptor.authority_identity.is_some() {
+                    return Err(Error::Unauthorized(
+                        "local session requires its configured host authority".into(),
+                    ));
+                }
+                issuer.verifier()
+            }
+        };
         let project_capabilities = match descriptor.project.as_ref() {
             Some(project) => Capabilities::new([
                 project.capability(VolumeOperation::Read)?,
@@ -1340,7 +1787,9 @@ impl PersistentLocalHarness {
             ]),
             None => Capabilities::new(std::iter::empty::<String>()),
         };
-        let storage = DurableHarnessStorage::from_providers_with_session_and_reads(
+        let interaction_issuer = issuer.clone();
+        let configured_operator = descriptor.authority_identity.is_some();
+        let mut storage = DurableHarnessStorage::from_providers_with_session_and_reads(
             descriptor.agent,
             limits.file_bytes,
             host.clone(),
@@ -1353,8 +1802,15 @@ impl PersistentLocalHarness {
         )
         .await?
         .with_fork_verifier(local_fork_verifier(host, limits.file_bytes)?);
+        if configured_operator {
+            storage = storage.with_operator_authority(execution_authority.clone(), interaction_issuer)?;
+        }
         let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
-        Ok(Self { storage, bundle })
+        Ok(Self {
+            storage,
+            bundle,
+            execution_authority,
+        })
     }
 
     /// Opens a durable session using providers owned by a surrounding
@@ -1376,6 +1832,65 @@ impl PersistentLocalHarness {
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
         stream: StreamClient<LocalStream>,
         stream_provider: ProviderRef,
+    ) -> Result<Self> {
+        Self::open_with_tools_and_project_on_providers_with_optional_authority(
+            root,
+            model,
+            provider,
+            limits,
+            extension,
+            project,
+            host,
+            stream,
+            stream_provider,
+            None,
+        )
+        .await
+    }
+
+    /// Opens a shared-provider local session with a pinned external operator
+    /// authority. The descriptor audience and identity are checked before any
+    /// provider-backed session is activated.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn open_with_tools_and_project_on_providers_with_authority(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        stream_provider: ProviderRef,
+        authority: AuthorityVerifier,
+    ) -> Result<Self> {
+        Self::open_with_tools_and_project_on_providers_with_optional_authority(
+            root,
+            model,
+            provider,
+            limits,
+            extension,
+            project,
+            host,
+            stream,
+            stream_provider,
+            Some(authority),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn open_with_tools_and_project_on_providers_with_optional_authority(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        stream_provider: ProviderRef,
+        authority: Option<AuthorityVerifier>,
     ) -> Result<Self> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
@@ -1406,12 +1921,16 @@ impl PersistentLocalHarness {
             Err(error) => return Err(Error::Storage(error.to_string())),
         };
         if missing {
-            let descriptor = SessionDescriptor::fresh_with_provider(
+            let mut descriptor = SessionDescriptor::fresh_with_provider(
                 model.clone(),
                 limits,
                 project.clone(),
                 host.provider.clone(),
             )?;
+            if let Some(authority) = &authority {
+                descriptor.conversation = authority.audience().clone();
+                descriptor.authority_identity = Some(authority.identity_digest()?);
+            }
             match descriptor_stream
                 .append_at(crate::contract::canonical_json_bytes(&descriptor)?, 0)
                 .await
@@ -1457,6 +1976,29 @@ impl PersistentLocalHarness {
             descriptor.signing_key,
             descriptor.conversation.clone(),
         );
+        let execution_authority = match authority {
+            Some(authority) => {
+                let expected = descriptor.authority_identity.ok_or_else(|| {
+                    Error::Conflict(
+                        "local session was not created with a configured host authority".into(),
+                    )
+                })?;
+                if expected != authority.identity_digest()? {
+                    return Err(Error::Unauthorized(
+                        "configured host authority identity differs from the pinned session authority".into(),
+                    ));
+                }
+                authority
+            }
+            None => {
+                if descriptor.authority_identity.is_some() {
+                    return Err(Error::Unauthorized(
+                        "local session requires its configured host authority".into(),
+                    ));
+                }
+                issuer.verifier()
+            }
+        };
         let project_capabilities = match descriptor.project.as_ref() {
             Some(project) => Capabilities::new([
                 project.capability(VolumeOperation::Read)?,
@@ -1464,7 +2006,9 @@ impl PersistentLocalHarness {
             ]),
             None => Capabilities::new(std::iter::empty::<String>()),
         };
-        let storage = DurableHarnessStorage::from_providers_with_session_and_reads(
+        let interaction_issuer = issuer.clone();
+        let configured_operator = descriptor.authority_identity.is_some();
+        let mut storage = DurableHarnessStorage::from_providers_with_session_and_reads(
             descriptor.agent,
             limits.file_bytes,
             host.clone(),
@@ -1481,8 +2025,15 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
+        if configured_operator {
+            storage = storage.with_operator_authority(execution_authority.clone(), interaction_issuer)?;
+        }
         let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
-        Ok(Self { storage, bundle })
+        Ok(Self {
+            storage,
+            bundle,
+            execution_authority,
+        })
     }
     /// Runs or recovers an exact prompt with a caller-retained operation identity.
     pub async fn run(&self, operation: OperationId, prompt: &str) -> Result<TurnOutput> {
@@ -1587,6 +2138,10 @@ impl PersistentLocalHarness {
             .resolve_interaction_with_scope(id, response, responder)
             .await
     }
+
+    /// Resolves an interaction using the externally configured host authority
+    /// pinned for this session. Owner-scoped private content remains bound to
+    /// the local storage issuer.
     /// Runtime shared with other local host compositions.
     #[must_use]
     pub fn bundle(&self) -> &crate::Harness {
@@ -1615,7 +2170,8 @@ impl PersistentLocalHarness {
 
     /// Returns the host-only signer used after an explicit operator approval
     /// to authorize one exact pending execution resolution.
-    pub fn execution_operator_authorizer(
+    #[cfg(test)]
+    pub(crate) fn execution_operator_authorizer(
         &self,
     ) -> crate::host_execution::ExecutionOperatorAuthorizer {
         self.storage.execution_operator_authorizer()
@@ -1702,7 +2258,7 @@ impl PersistentLocalHarness {
         operation_id: OperationId,
     ) -> Result<ExecutionResolutionCapability> {
         ExecutionResolutionCapability::authenticate(
-            &self.storage.verifier(),
+            &self.execution_authority,
             operator,
             self.storage.session_id(),
             self.storage.volume(),
@@ -2277,7 +2833,7 @@ mod tests {
         let model = Model::new("mock", "durable", "1", serde_json::json!({}))?;
         let key = ExecutionReceiptKey {
             operation_id: OperationId::from_bytes([71; 16]),
-            effect_id: EffectId::from_bytes([72; 16]),
+            effect_id: EffectId::from_bytes([71; 16]),
             attempt_id: EffectAttemptId::from_bytes([73; 16]),
             provider: "harness.native-execution.v1".into(),
             effect_kind: "host.process".into(),
@@ -2308,6 +2864,14 @@ mod tests {
             // terminal event is durable. Retrying the exact protected
             // receipt is an idempotent replay and returns the retained ref.
             assert_eq!(store.publish(&key, &handle, &receipt).await?, result);
+            // Idempotence is still fenced by the original owner token. A
+            // stale handle cannot receive the same terminal reference merely
+            // because its receipt bytes happen to match.
+            let stale = ExecutionClaimHandle::issue(key.clone(), handle.generation());
+            assert!(matches!(
+                store.publish(&key, &stale, &receipt).await,
+                Err(Error::Conflict(message)) if message.contains("stale")
+            ));
             result
         };
         let session = PersistentLocalHarness::open(

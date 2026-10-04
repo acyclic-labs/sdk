@@ -16,7 +16,10 @@ use crate::{
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
-    core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    core::{
+        AggregateKind, Authority, AuthorityIssuer, AuthorityVerifier, EffectGuarantee,
+        SchemaRegistry, Scope,
+    },
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -156,6 +159,10 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    /// One host authority for operator approvals and native effect recovery.
+    /// Its identity and audience are pinned in the swarm registry before any
+    /// session is opened; callers cannot replace the trust root per request.
+    pub operator_authority: Option<AuthorityVerifier>,
 }
 
 impl LocalSwarmBindings {
@@ -173,6 +180,7 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            operator_authority: None,
         }
     }
 
@@ -201,6 +209,14 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    /// Installs the externally authenticated operator authority shared by all
+    /// root and recursive child sessions.
+    #[must_use]
+    pub fn with_operator_authority(mut self, authority: AuthorityVerifier) -> Self {
+        self.operator_authority = Some(authority);
         self
     }
 
@@ -1888,6 +1904,13 @@ struct StoredRecord {
 #[serde(rename_all = "snake_case", tag = "kind", deny_unknown_fields)]
 enum StoredEvent {
     Session(StoredSession),
+    /// Immutable swarm-level operator trust binding. The verifier key is
+    /// never persisted; only its identity fingerprint and exact audience are
+    /// retained so cold reopen cannot silently switch authority.
+    AuthorityBinding {
+        identity: [u8; 32],
+        audience: Authority,
+    },
     /// Atomically records the selected child and host issuer binding.
     ForkIntentSelected {
         intent: LocalForkIntent,
@@ -2037,6 +2060,8 @@ pub struct PersistentLocalSwarm {
     config: LocalSwarmConfig,
     provider: Arc<dyn ModelProvider>,
     bindings: LocalSwarmBindings,
+    /// Pinned once at composition open and reused for every task reopen.
+    operator_authority: Option<AuthorityVerifier>,
     model_fork_publisher: Option<Arc<LocalModelForkPublisher>>,
     registry: StreamClient<LocalStream>,
     /// Shared provider bindings used by the root and lazily reopened task
@@ -2064,6 +2089,50 @@ pub struct PersistentLocalSwarm {
 }
 
 impl PersistentLocalSwarm {
+    #[allow(clippy::too_many_arguments)]
+    async fn open_task_harness(
+        root: PathBuf,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        extension: LocalHarnessTools,
+        project: Option<VolumeRef>,
+        host: Arc<LocalFilesystemHost>,
+        stream: StreamClient<LocalStream>,
+        stream_provider: ProviderRef,
+        authority: Option<AuthorityVerifier>,
+    ) -> Result<PersistentLocalHarness> {
+        match authority {
+            Some(authority) => {
+                PersistentLocalHarness::open_with_tools_and_project_on_providers_with_authority(
+                    root,
+                    model,
+                    provider,
+                    limits,
+                    extension,
+                    project,
+                    host,
+                    stream,
+                    stream_provider,
+                    authority,
+                )
+                .await
+            }
+            None => PersistentLocalHarness::open_with_tools_and_project_on_providers(
+                root,
+                model,
+                provider,
+                limits,
+                extension,
+                project,
+                host,
+                stream,
+                stream_provider,
+            )
+            .await,
+        }
+    }
+
     /// Opens or recovers a local swarm. Child sessions remain lazy until a
     /// caller explicitly activates or resumes one.
     pub async fn open(
@@ -2138,6 +2207,35 @@ impl PersistentLocalSwarm {
             plans.bind_journal(registry.clone()).await?;
         }
         let records = load_records(&stream).await?;
+        let persisted_authority = persisted_operator_authority(&records)?;
+        let supplied_authority = bindings.operator_authority.clone();
+        match (&persisted_authority, &supplied_authority) {
+            (Some((identity, audience)), Some(authority)) => {
+                if identity != &authority.identity_digest()? || audience != authority.audience() {
+                    return Err(Error::Unauthorized(
+                        "configured swarm operator authority differs from its pinned registry binding".into(),
+                    ));
+                }
+            }
+            (Some(_), None) => {
+                return Err(Error::Unauthorized(
+                    "swarm requires its configured operator authority on reopen".into(),
+                ));
+            }
+            (None, Some(authority)) => {
+                if records.iter().any(|record| matches!(record.event, StoredEvent::Session(_))) {
+                    return Err(Error::Conflict(
+                        "existing swarm has no pinned operator authority binding".into(),
+                    ));
+                }
+                if authority.audience().kind != AggregateKind::Conversation {
+                    return Err(Error::Invalid(
+                        "swarm operator authority must target a conversation audience".into(),
+                    ));
+                }
+            }
+            (None, None) => {}
+        }
         let mut sessions = BTreeMap::new();
         let mut requests = BTreeMap::new();
         let mut seeds = BTreeMap::new();
@@ -2160,6 +2258,16 @@ impl PersistentLocalSwarm {
             )?;
         }
         if sessions.is_empty() {
+            if let Some(authority) = supplied_authority.as_ref() {
+                append_record(
+                    &stream,
+                    StoredEvent::AuthorityBinding {
+                        identity: authority.identity_digest()?,
+                        audience: authority.audience().clone(),
+                    },
+                )
+                .await?;
+            }
             let root_task = TaskId::new();
             let root_session = LocalSwarmSession {
                 task: root_task,
@@ -2179,7 +2287,7 @@ impl PersistentLocalSwarm {
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
-            PersistentLocalHarness::open_with_tools_and_project_on_providers(
+            Self::open_task_harness(
                 root_session,
                 config.model.clone(),
                 provider.clone(),
@@ -2189,6 +2297,7 @@ impl PersistentLocalSwarm {
                 filesystem_host.clone(),
                 conversation_stream.clone(),
                 stream_provider.clone(),
+                supplied_authority.clone(),
             )
             .await?,
         );
@@ -2199,6 +2308,7 @@ impl PersistentLocalSwarm {
             config,
             provider,
             bindings,
+            operator_authority: supplied_authority,
             model_fork_publisher,
             registry,
             filesystem_host,
@@ -2421,6 +2531,11 @@ impl PersistentLocalSwarm {
         id: InteractionId,
         approved: bool,
     ) -> Result<InteractionOutcome> {
+        if self.operator_authority.is_some() {
+            return Err(Error::Unauthorized(
+                "configured swarm requires an externally authenticated operator scope".into(),
+            ));
+        }
         let approval = self
             .list_approvals(task)
             .await?
@@ -3273,7 +3388,7 @@ impl PersistentLocalSwarm {
                 .await?;
             }
         }
-        let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
+        let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider_and_authority(
             self.config.model.clone(),
             self.provider.clone(),
             self.config.limits,
@@ -3284,6 +3399,7 @@ impl PersistentLocalSwarm {
             seed,
             self.bindings.tools_for(child)?,
             self.stream_provider.clone(),
+            self.operator_authority.clone(),
         )
         .await
         {
@@ -3991,7 +4107,7 @@ impl PersistentLocalSwarm {
             return Ok(existing);
         }
         let harness = Arc::new(
-            PersistentLocalHarness::open_with_tools_and_project_on_providers(
+            Self::open_task_harness(
                 open_session_path(&self.root, task),
                 self.config.model.clone(),
                 self.provider.clone(),
@@ -4001,6 +4117,7 @@ impl PersistentLocalSwarm {
                 self.filesystem_host.clone(),
                 self.conversation_stream.clone(),
                 self.stream_provider.clone(),
+                self.operator_authority.clone(),
             )
             .await?,
         );
@@ -4265,6 +4382,33 @@ async fn load_records_at(
     Ok(decoded)
 }
 
+fn persisted_operator_authority(
+    records: &[StoredRecord],
+) -> Result<Option<([u8; 32], Authority)>> {
+    let mut binding = None;
+    for record in records {
+        let StoredEvent::AuthorityBinding { identity, audience } = &record.event else {
+            continue;
+        };
+        if identity == &[0; 32] {
+            return Err(Error::Conflict(
+                "persisted swarm operator authority identity is empty".into(),
+            ));
+        }
+        let next = (*identity, audience.clone());
+        if let Some(existing) = &binding {
+            if existing != &next {
+                return Err(Error::Conflict(
+                    "swarm operator authority binding changed in its registry".into(),
+                ));
+            }
+        } else {
+            binding = Some(next);
+        }
+    }
+    Ok(binding)
+}
+
 async fn append_record(
     stream: &acyclic_stream::Stream<LocalStream>,
     event: StoredEvent,
@@ -4337,6 +4481,13 @@ fn apply_record(
                 }
             }
             sessions.insert(next.task, next);
+        }
+        StoredEvent::AuthorityBinding { identity, audience } => {
+            if identity == [0; 32] || audience.id.is_empty() {
+                return Err(Error::Conflict(
+                    "invalid persisted swarm operator authority binding".into(),
+                ));
+            }
         }
         StoredEvent::ForkIntent { intent } => {
             intent.validate()?;
@@ -4987,6 +5138,172 @@ mod tests {
                 .await?,
             InteractionOutcome::Declined
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configured_swarm_authority_pins_cold_reopen_and_operator_routes() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let second_root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "local-swarm", "1", json!({}))?;
+        let audience = Authority {
+            kind: AggregateKind::Conversation,
+            id: "operator-swarm-authority".into(),
+        };
+        let issuer = AuthorityIssuer::new("external-operator", [0x41; 32], audience.clone());
+        let bindings = LocalSwarmBindings::default().with_operator_authority(issuer.verifier());
+        let swarm = PersistentLocalSwarm::open_shared_with_bindings(
+            root.path(),
+            LocalSwarmConfig::new(model.clone(), Limits::default())?,
+            provider.clone(),
+            bindings,
+        )
+        .await?;
+        let task = swarm.root_task().await?;
+        let interaction = InteractionId::new();
+        let operation = OperationId::new();
+        let action_digest = [0x51; 32];
+        swarm
+            .open_session(task)
+            .await?
+            .storage()
+            .open_interaction(
+                interaction,
+                Interaction::approval("approve exact action", operation, action_digest)?,
+            )
+            .await?;
+        let internal = swarm.interaction_operator_authorizer(task).await?;
+        let internal_scope = internal
+            .issue_scope(&InteractionApprovalAuthorization {
+                interaction_id: interaction,
+                operation_id: operation,
+                action_digest,
+                approved: true,
+            })
+            .await?;
+        let exact = issuer.root(
+            "external-exact",
+            internal_scope.capabilities().clone(),
+        );
+        let wrong_issuer = AuthorityIssuer::new("wrong-operator", [0x42; 32], audience.clone())
+            .root("wrong-issuer", internal_scope.capabilities().clone());
+        assert!(matches!(
+            swarm
+                .resolve_approval(
+                    task,
+                    interaction,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                    &wrong_issuer,
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let wrong_action = issuer.root(
+            "wrong-action",
+            Capabilities::new(["interaction:resolve".to_owned()]),
+        );
+        assert!(matches!(
+            swarm
+                .resolve_approval(
+                    task,
+                    interaction,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                    &wrong_action,
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+
+        let second_issuer = AuthorityIssuer::new(
+            "external-operator",
+            [0x41; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "second-session-authority".into(),
+            },
+        );
+        let second = PersistentLocalSwarm::open_shared_with_bindings(
+            second_root.path(),
+            LocalSwarmConfig::new(model.clone(), Limits::default())?,
+            provider.clone(),
+            LocalSwarmBindings::default().with_operator_authority(second_issuer.verifier()),
+        )
+        .await?;
+        let second_task = second.root_task().await?;
+        second
+            .open_session(second_task)
+            .await?
+            .storage()
+            .open_interaction(
+                interaction,
+                Interaction::approval("approve exact action", operation, action_digest)?,
+            )
+            .await?;
+        assert!(matches!(
+            second
+                .resolve_approval(
+                    second_task,
+                    interaction,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                    &exact,
+                )
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
+        assert!(matches!(
+            swarm
+                .resolve_approval(
+                    task,
+                    interaction,
+                    InteractionResponse::Approval {
+                        approved: true,
+                        reason: None,
+                    },
+                    &exact,
+                )
+                .await?,
+            InteractionOutcome::Approved
+        ));
+        drop(swarm);
+        let wrong_audience = AuthorityIssuer::new(
+            "external-operator",
+            [0x41; 32],
+            Authority {
+                kind: AggregateKind::Conversation,
+                id: "another-swarm".into(),
+            },
+        );
+        assert!(matches!(
+            PersistentLocalSwarm::open_shared_with_bindings(
+                root.path(),
+                LocalSwarmConfig::new(model.clone(), Limits::default())?,
+                provider.clone(),
+                LocalSwarmBindings::default().with_operator_authority(wrong_audience.verifier()),
+            )
+            .await,
+            Err(Error::Unauthorized(_))
+        ));
+        let reopened = PersistentLocalSwarm::open_shared_with_bindings(
+            root.path(),
+            LocalSwarmConfig::new(model, Limits::default())?,
+            provider,
+            LocalSwarmBindings::default().with_operator_authority(issuer.verifier()),
+        )
+        .await?;
+        assert_eq!(reopened.root_task().await?, task);
         Ok(())
     }
 }
