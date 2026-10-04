@@ -1915,6 +1915,13 @@ mod tests {
                 IdempotencyKey::new("root-cas")?,
             )
             .await?;
+        root
+            .bind_root_provider_identity(
+                &owner,
+                "journal-test-provider",
+                *blake3::hash(b"journal-test-provider").as_bytes(),
+            )
+            .await?;
         child_handle
             .reserve_child(SwarmForkRequest {
                 operation_id: OperationId::new(),
@@ -2024,16 +2031,17 @@ mod tests {
             .await?;
         let mut issuer = root.root_usage_receipt_issuer(source.clone())?;
         let receipt = issuer.issue()?;
+        let child_operation = OperationId::new();
         concurrent
             .reserve_child(SwarmForkRequest {
-                operation_id: OperationId::new(),
+                operation_id: child_operation,
                 idempotency_key: IdempotencyKey::new("usage-child")?,
                 parent_operation_id: None,
                 depth: 1,
                 resources: SwarmResourceRequest {
                     model_steps: 1,
-                    output_bytes: 10,
-                    execution_time_ms: 5,
+                    output_bytes: 120,
+                    execution_time_ms: 196,
                 },
                 admission_digest: None,
             })
@@ -2043,13 +2051,14 @@ mod tests {
             .await
             .expect_err("stale root usage must not overrun a child reservation");
         assert!(matches!(error, Error::Conflict(_)));
+        concurrent.cancel(child_operation, &owner).await?;
         root.refresh().await?;
         let mut issuer = root.root_usage_receipt_issuer(source)?;
         root.report_root_usage_with_receipt(&owner, issuer.issue()?)
             .await?;
         let remaining = root.root_resource_limits()?;
         assert_eq!(remaining.model_steps, 1);
-        assert_eq!(remaining.output_bytes, 118);
+        assert_eq!(remaining.output_bytes, 112);
         assert_eq!(remaining.execution_time_ms, 195);
         Ok(())
     }
