@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 const VECTOR: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../../conformance/vectors/harness/model-input-v3.json"
+    "/conformance/model-input-v3.json"
 ));
 
 #[derive(Debug, Deserialize)]
