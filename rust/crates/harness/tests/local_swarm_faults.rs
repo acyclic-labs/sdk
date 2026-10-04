@@ -128,12 +128,20 @@ struct ForkFaultProvider {
     child_a_failed: AtomicBool,
     reconcile_completed: AtomicBool,
     child_a_blocked: AtomicBool,
-    release_child_a: Arc<AtomicBool>,
+    child_stream_dropped: Arc<AtomicBool>,
     child_a_started: AtomicBool,
     child_a_dispatched: Arc<tokio::sync::Notify>,
     dispatches: AtomicUsize,
     child_a: OperationId,
     child_b: OperationId,
+}
+
+struct BlockedChildStreamGuard(Arc<AtomicBool>);
+
+impl Drop for BlockedChildStreamGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 impl ForkFaultProvider {
@@ -148,7 +156,7 @@ impl ForkFaultProvider {
             child_a_failed: AtomicBool::new(false),
             reconcile_completed: AtomicBool::new(false),
             child_a_blocked: AtomicBool::new(false),
-            release_child_a: Arc::new(AtomicBool::new(false)),
+            child_stream_dropped: Arc::new(AtomicBool::new(false)),
             child_a_started: AtomicBool::new(false),
             child_a_dispatched: Arc::new(tokio::sync::Notify::new()),
             dispatches: AtomicUsize::new(0),
@@ -279,10 +287,6 @@ impl ForkFaultProvider {
         );
     }
 
-    fn release_child(&self) {
-        self.release_child_a.store(true, Ordering::SeqCst);
-    }
-
     fn fork_events(&self) -> Vec<ModelEvent> {
         vec![
             ModelEvent::Content {
@@ -380,14 +384,10 @@ impl ModelProvider for ForkFaultProvider {
             self.child_a_started.store(true, Ordering::SeqCst);
             self.child_a_dispatched.notify_waiters();
             if self.child_a_blocked.load(Ordering::SeqCst) {
-                let release = self.release_child_a.clone();
+                let guard = BlockedChildStreamGuard(self.child_stream_dropped.clone());
                 let first = stream::once(async move {
-                    while !release.load(Ordering::SeqCst) {
-                        tokio::task::yield_now().await;
-                    }
-                    Ok::<ModelEvent, Error>(ModelEvent::Content {
-                        delta: "child-a completion".into(),
-                    })
+                    let _guard = guard;
+                    futures::future::pending::<Result<ModelEvent>>().await
                 });
                 return Box::pin(first.chain(stream::once(async {
                     Ok(ModelEvent::Completed {
@@ -799,12 +799,13 @@ async fn cancelled_child_after_publication_cannot_be_reactivated() -> Result<()>
     });
     wait_for_child_dispatch(&provider).await;
     second.cancel(task(child_a)).await?;
-    provider.release_child();
     let result = timeout(Duration::from_secs(2), running)
         .await
         .expect("cancelled publication did not finish")
         .expect("publication task panicked");
     assert!(result.is_err());
+    assert!(provider.child_stream_dropped.load(Ordering::SeqCst),
+        "cancellation returned while the child model stream was still live");
     drop(second);
 
     drop(host);
