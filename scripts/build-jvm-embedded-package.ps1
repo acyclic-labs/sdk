@@ -35,6 +35,15 @@ if (-not (Test-Path -LiteralPath $nativeRoot -PathType Container)) {
 }
 $nativeResources = Join-Path (Split-Path $authority -Parent) "jvm-native-resources-$PID"
 New-Item -ItemType Directory -Force -Path $nativeResources | Out-Null
+$runRoot = Join-Path (Split-Path $authority -Parent) ("jvm-maven-run-" + [guid]::NewGuid().ToString('N'))
+$mavenRepository = Join-Path $runRoot "repository"
+$mavenTarget = Join-Path $runRoot "target"
+$mavenProtoc = Join-Path $runRoot "protoc-dependencies"
+New-Item -ItemType Directory -Force -Path $runRoot,$mavenRepository,$mavenTarget,$mavenProtoc | Out-Null
+$settings = Join-Path $runRoot "settings.xml"
+$escapedRepository = [System.Security.SecurityElement]::Escape($mavenRepository)
+$settingsXml = '<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"><localRepository>' + $escapedRepository + '</localRepository></settings>'
+[IO.File]::WriteAllText($settings, $settingsXml, [Text.UTF8Encoding]::new($false))
 $nativeMap = [ordered]@{
   "win-x64" = "win-x86_64"
   "win-arm64" = "win-aarch64"
@@ -68,7 +77,11 @@ if (-not (Test-Path -LiteralPath $pom -PathType Leaf)) { throw "Embedded JVM POM
 $args = @(
   "--batch-mode", "--no-transfer-progress", "-f", $pom,
   "-Dsdk.contract.root=$authority",
-  "-Dembedded.native.root=$nativeResources"
+  "-Dembedded.native.root=$nativeResources",
+  "-Dsdk.package.build.directory=$mavenTarget",
+  "-Dprotobuf.temporaryProtoFileDirectory=$mavenProtoc",
+  "-Dmaven.repo.local=$mavenRepository",
+  "-s", $settings
 )
 if ($SkipTests) { $args += "-DskipTests" }
 $args += "package"
@@ -76,7 +89,8 @@ $args += "package"
 if ($LASTEXITCODE -ne 0) { throw "Embedded JVM package failed with exit code $LASTEXITCODE" }
 
 $sourceRevision = (& git -C $repo rev-parse HEAD).Trim()
-$package = Join-Path $repo "jvm/embedded/target/acyclic-embedded-jna-0.1.0.jar"
+$package = Join-Path $mavenTarget "acyclic-embedded-jna-0.1.0.jar"
+if (-not (Test-Path -LiteralPath $package -PathType Leaf)) { throw "Maven did not produce the embedded JVM package: $package" }
 $record = [ordered]@{
   schema = "acyclic.sdk.jvm.embedded.producer-output.v1"
   source_revision = $sourceRevision
