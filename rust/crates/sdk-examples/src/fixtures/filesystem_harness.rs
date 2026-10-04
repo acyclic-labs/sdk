@@ -69,7 +69,7 @@ pub const FILESYSTEM_SCENARIOS: &[FixtureScenario] = &[
     scenario("seal_source", "workspace=fixture;source=fixture", "source response"),
     scenario("observe", "operation=fixture-op", "operation status response"),
     scenario("cancel", "operation=fixture-op", "cancel response"),
-    scenario("issue_credential", "workspace=fixture", "credential response"),
+    scenario("handshake", "protocol=current", "negotiated protocol and capabilities"),
 ];
 
 /// The five Harness operations and their state-machine expectations.
