@@ -6,8 +6,8 @@
 // for those contracts.
 
 import { createRequire } from "node:module";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { lstatSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 function fail(message) { throw new Error(`graphcoder-installed-swarm-e2e: ${message}`); }
@@ -25,12 +25,6 @@ function responseValue(response, requestId, label) {
   if (response.ok !== true) fail(`${label} failed: ${JSON.stringify(response.error ?? response)}`);
   return response.result;
 }
-function responseError(response, requestId, label, code) {
-  if (!response || response.request_id !== requestId || response.ok !== false || response.error?.code !== code) {
-    fail(`${label} did not fail with ${code}: ${JSON.stringify(response)}`);
-  }
-  return response.error;
-}
 function parseJsonEnvironment(name, fallback) {
   let value;
   try { value = JSON.parse(process.env[name] ?? fallback); }
@@ -42,21 +36,28 @@ const packageRoot = resolve(required("GRAPHCODER_PACKAGE_ROOT"));
 const bridgeExecutable = required("GRAPHCODER_BRIDGE_EXECUTABLE");
 const bridgeArgs = parseJsonEnvironment("GRAPHCODER_BRIDGE_ARGS_JSON", "[]");
 const bridgeEnvironment = parseJsonEnvironment("GRAPHCODER_BRIDGE_ENV_JSON", "{}");
-const bridgeCwd = resolve(process.env.GRAPHCODER_BRIDGE_CWD ?? process.cwd());
+const bridgeCwd = resolve(required("GRAPHCODER_BRIDGE_CWD"));
 const evidencePath = resolve(process.env.GRAPHCODER_SWARM_EVIDENCE_PATH ?? resolve("target/graphcoder-installed-swarm-evidence.json"));
+const allowedBridgeEnvironment = new Set(["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "GRAPHCODER_MOCK_FIXTURE", "GRAPHCODER_OPERATOR_TOKEN", "GRAPHCODER_LAZY_OBSERVATION_PATH", "GRAPHCODER_REQUIRE_LAZY_COUNTERS"]);
 if (!Array.isArray(bridgeArgs) || bridgeArgs.some(value => typeof value !== "string")) fail("GRAPHCODER_BRIDGE_ARGS_JSON must be a string array");
 if (!bridgeEnvironment || typeof bridgeEnvironment !== "object" || Array.isArray(bridgeEnvironment)) fail("GRAPHCODER_BRIDGE_ENV_JSON must be an object");
-if (Object.keys(bridgeEnvironment).some(key => /(?:TOKEN|PASSWORD|SECRET|CREDENTIAL|PRIVATE_KEY|ACCESS_KEY|API_KEY)/iu.test(key))) fail("bridge environment contains a credential key");
+if (Object.keys(bridgeEnvironment).some(key => !allowedBridgeEnvironment.has(key))) fail("bridge environment contains an undeclared key");
+if (typeof bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN !== "string" || bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN.trim() === "") fail("bridge environment must contain the explicit operator approval token");
+if (!lstatSync(packageRoot, { throwIfNoEntry: false })?.isDirectory()) fail("GRAPHCODER_PACKAGE_ROOT must be a directory");
+const packageArtifact = required("GRAPHCODER_PACKAGE_ARTIFACT");
+if (!lstatSync(packageArtifact, { throwIfNoEntry: false })?.isFile()) fail("GRAPHCODER_PACKAGE_ARTIFACT must be a regular file");
 
 const packageJsonPath = resolve(packageRoot, "package.json");
 const resolveExport = createRequire(packageJsonPath);
 let bridgePath;
 try { bridgePath = resolveExport.resolve("@acyclic-labs/graphcoder/bridge"); }
 catch (error) { fail(`installed bridge export cannot be resolved: ${error instanceof Error ? error.message : String(error)}`); }
+if (relative(packageRoot, bridgePath).startsWith("..") || resolve(packageRoot, bridgePath) === packageRoot) fail("installed bridge export resolved outside the package artifact root");
 const { JsonLineGraphCoderBridge } = await import(pathToFileURL(bridgePath).href);
 const bridge = new JsonLineGraphCoderBridge({ executable: bridgeExecutable, args: bridgeArgs, cwd: bridgeCwd, env: bridgeEnvironment });
 const observations = [];
 let requestNumber = 0;
+let evidence;
 async function request(method, params) {
   const requestId = `installed-swarm-${++requestNumber}`;
   const response = await bridge.request({ request_id: requestId, method, params });
@@ -77,11 +78,12 @@ try {
   const rootId = snapshot.summary?.id ?? snapshot.summary?.task_id;
   if (typeof rootId !== "string") fail("start_session omitted root identity");
   const agents = Array.isArray(snapshot.agents) ? snapshot.agents : [];
-  const root = agents.find(agent => agent.id === rootId || agent.parent_id === null);
-  if (!root) fail("recursive start omitted root agent tree entry");
-  const children = agents.filter(agent => agent.parent_id === rootId);
-  if (children.length < 2) fail(`recursive start exposed ${children.length} direct children; two are required`);
-  if (!agents.some(agent => children.some(child => agent.parent_id === child.id))) fail("recursive start omitted a grandchild");
+  const root = agents.find(agent => agent.id === rootId && agent.parent_id === null);
+  if (!root) fail("recursive start omitted the root agent tree entry");
+  const childA = agents.find(agent => agent.task === "child-a" && agent.parent_id === rootId);
+  const childB = agents.find(agent => agent.task === "child-b" && agent.parent_id === rootId);
+  const grandchild = agents.find(agent => agent.task === "grandchild" && agent.parent_id === childA?.id);
+  if (!childA || !childB || !grandchild) fail("recursive tree is not exactly root -> child-a/child-b -> grandchild");
 
   const activity = await request("read_activity", { session_id: rootId, limit: 256 });
   responseValue(activity.response, activity.requestId, "read_activity");
@@ -89,11 +91,18 @@ try {
   responseValue(messages.response, messages.requestId, "read_messages");
   const approvals = await request("list_approvals", { session_id: rootId, limit: 256 });
   const approvalPage = object(responseValue(approvals.response, approvals.requestId, "list_approvals"), "approval page");
-  const pending = (approvalPage.items ?? []).find(item => item?.state === "pending");
-  if (!pending) fail("recursive swarm did not publish a pending native/writeback approval");
+  const pending = (approvalPage.items ?? []).find(item => item?.state === "pending" && /execute|command|writeback/iu.test(item.description ?? ""));
+  if (!pending) fail("recursive swarm did not publish a typed pending command or writeback approval");
+  if (typeof pending.operation_id !== "string" || pending.operation_id.trim() === "" || typeof pending.action_digest !== "string" || !/^[0-9a-f]+$/u.test(pending.action_digest)) fail("approval is missing exact operation/action binding");
+
+  const operator = await request("operator_approve", { session_id: rootId, approval_id: pending.id, approved: true, operator_token: bridgeEnvironment.GRAPHCODER_OPERATOR_TOKEN });
+  responseValue(operator.response, operator.requestId, "operator_approve");
+  const resolved = await request("resolve_approval", { session_id: rootId, approval_id: pending.id, approved: true });
+  const resolvedApproval = object(responseValue(resolved.response, resolved.requestId, "resolve_approval"), "resolved approval");
+  if (resolvedApproval.state !== "approved" || resolvedApproval.operation_id !== pending.operation_id) fail("public approval resolution is not bound to the host approval");
 
   const changes = await request("list_changes", { session_id: rootId });
-  if (changes.response?.ok !== true) responseError(changes.response, changes.requestId, "list_changes", "unsupported");
+  if (changes.response?.ok !== true) fail(`list_changes is not available for installed swarm qualification: ${JSON.stringify(changes.response?.error ?? changes.response)}`);
   const changePage = object(responseValue(changes.response, changes.requestId, "list_changes"), "change page");
   const generation = changePage.generation;
   const change = await request("read_change", { session_id: rootId, path: "README.md", generation });
@@ -105,14 +114,14 @@ try {
     approved: true,
   });
   responseValue(approved.response, approved.requestId, "approve_writeback");
-  if (!approved.response.result?.applied) fail("writeback approval did not return applied=true");
+  if (!approved.response.result?.applied || approved.response.result.operation_id !== pending.operation_id || approved.response.result.generation !== generation || approved.response.result.concurrent_user_edit_preserved !== true) fail("writeback did not return exact operation/generation and concurrent-user reconciliation evidence");
 
-  const evidence = { protocol: "acyclic.graphcoder.installed-swarm-evidence.v1", root_id: rootId, agents, observations, recursive: true, native_approval: true, writeback: true };
-  mkdirSync(dirname(evidencePath), { recursive: true });
-  writeFileSync(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx" });
-  process.stdout.write(`${JSON.stringify(evidence)}\n`);
+  evidence = { protocol: "acyclic.graphcoder.installed-swarm-evidence.v1", root_id: rootId, agents, observations, recursive: true, native_approval: true, writeback: true };
 } finally {
   bridge.close("installed recursive swarm qualification finished");
   const exit = await bridge.waitForExit(5_000);
   if (exit.kind !== "closed") fail(`bridge cleanup was not verified: ${JSON.stringify(exit)}`);
 }
+mkdirSync(dirname(evidencePath), { recursive: true });
+writeFileSync(evidencePath, `${JSON.stringify({ ...evidence, cleanup_verified: true }, null, 2)}\n`, { flag: "wx" });
+process.stdout.write(`${JSON.stringify({ ...evidence, cleanup_verified: true })}\n`);
