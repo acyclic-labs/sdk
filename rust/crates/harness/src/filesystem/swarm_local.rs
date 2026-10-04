@@ -3021,6 +3021,21 @@ impl PersistentLocalSwarm {
             .await
     }
 
+    /// Reads the authenticated bodies for one inbox page through the owner
+    /// communication host. The host performs descriptor validation and the
+    /// effective admitted byte bound before any body is opened.
+    pub async fn read_message_bodies(
+        &self,
+        task: TaskId,
+        items: &[crate::scheduler::InboxItem],
+    ) -> Result<Vec<Vec<u8>>> {
+        self.session(task).await?;
+        let host = self.bindings.communication_host.clone().ok_or_else(|| {
+            Error::Unsupported("durable communication host is not bound".into())
+        })?;
+        host.read_message_bodies(task, items).await
+    }
+
     /// Durably cancels one task and propagates the owner cancellation signal
     /// when a live source is available. The journal append is authoritative;
     /// an observation-only live bridge does not undo the persisted decision.

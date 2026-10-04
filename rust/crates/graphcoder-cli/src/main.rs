@@ -475,37 +475,17 @@ impl Runtime {
         let after_sequence = parse_cursor(after, "message cursor")?;
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_inbox(task, after_sequence, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
+        let bodies = self
             .swarm
-            .list_files(task, "", None, None, 1)
+            .read_message_bodies(task, &messages)
             .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
+            .map_err(DispatchError::from_harness)?;
         let mut items = Vec::with_capacity(messages.len());
-        for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes).map_err(|_| DispatchError {
-                        code: "transport",
-                        message: "message content is not UTF-8".into(),
-                    })
-                })?;
-            items.push(json!({
-                "id": message.id.to_string(),
-                "sequence": message.sequence.to_string(),
-                "session_id": task.to_string(),
-                "sender_id": task.to_string(),
-                "recipient_id": task.to_string(),
-                "body": body,
-                "delivered_at": Value::Null,
-            }));
+        for (message, body) in messages.iter().zip(bodies.iter()) {
+            items.push(inbox_message_value(message, body)?);
         }
         let next = (items.len() == limit)
             .then(|| messages_last_sequence(&items))
