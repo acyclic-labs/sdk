@@ -61,7 +61,9 @@ foreach ($schemaRoots as $candidate) {
         }
     }
 }
-$schemaNames = array_values(array_unique([...$schemaNames, ...$dependencyNames]));
+$schemaNames = $manifestPath === null
+    ? array_values(array_unique([...$schemaNames, ...$dependencyNames]))
+    : array_values(array_unique($schemaNames));
 $expectedSchemaHashes = [];
 $expectedDescriptorHashes = [];
 foreach ($families as $family) {
@@ -174,6 +176,39 @@ $arguments = [
 chdir($root);
 runCommand($arguments);
 
+$rustFamilyGoldens = null;
+if ($manifestPath !== null) {
+    $fixtureSource = $schemaRoots[0] . DIRECTORY_SEPARATOR . 'rust-family-goldens.json';
+    if (!is_file($fixtureSource)) {
+        throw new RuntimeException('Rust-owned fixture missing: ' . $fixtureSource);
+    }
+    $fixtureBytes = file_get_contents($fixtureSource);
+    if ($fixtureBytes === false) {
+        throw new RuntimeException('unable to read Rust-owned fixture: ' . $fixtureSource);
+    }
+    $fixture = json_decode($fixtureBytes, true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($fixture) || count($fixture) !== 9) {
+        throw new RuntimeException('Rust-owned fixture must contain nine family goldens');
+    }
+    $manifestHash = sha256File($manifestPath);
+    foreach ($fixture as $entry) {
+        if (!is_array($entry) || ($entry['authority_manifest_sha256'] ?? null) !== $manifestHash) {
+            throw new RuntimeException('Rust-owned fixture is bound to a different authority manifest');
+        }
+    }
+    $fixtureDestination = $root . '/tests/fixtures/rust-family-goldens.json';
+    if (!is_dir(dirname($fixtureDestination)) && !mkdir(dirname($fixtureDestination), 0777, true) && !is_dir(dirname($fixtureDestination))) {
+        throw new RuntimeException('unable to create fixture directory');
+    }
+    if (file_put_contents($fixtureDestination, $fixtureBytes) === false) {
+        throw new RuntimeException('unable to write generated Rust-owned fixture');
+    }
+    $rustFamilyGoldens = [
+        'path' => 'tests/fixtures/rust-family-goldens.json',
+        'sha256' => hash('sha256', $fixtureBytes),
+    ];
+}
+
 $generated = [];
 $iterator = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($output, FilesystemIterator::SKIP_DOTS));
 foreach ($iterator as $path) {
@@ -202,6 +237,7 @@ $provenance = [
     'authority_manifest_schema' => $authority['schema'] ?? null,
     'authority_source_revision' => $authority['source_revision'] ?? null,
     'authority_exporter' => $authority['exporter'] ?? null,
+    'rust_family_goldens' => $rustFamilyGoldens,
     'generated_files' => $generated,
 ];
 file_put_contents($output . '/provenance.json', json_encode($provenance, JSON_PRETTY_PRINT | JSON_THROW_ON_ERROR) . PHP_EOL);

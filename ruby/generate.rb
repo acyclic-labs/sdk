@@ -57,7 +57,11 @@ dependency_names = schema_roots.flat_map do |candidate|
     path.delete_prefix("#{candidate}#{File::SEPARATOR}").tr("\\", "/")
   end
 end
-schema_names = (schema_names + dependency_names).uniq
+schema_names = if manifest_path
+  (schema_names + ["validation/v1/options.proto"]).uniq
+else
+  (schema_names + dependency_names).uniq
+end
 expected_schema_hashes = families.each_with_object({}) do |family, hashes|
   hashes[family["source"]] = family["source_sha256"] if family.is_a?(Hash) && family["source"] && family["source_sha256"]
 end
