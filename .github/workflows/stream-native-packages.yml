@@ -1,0 +1,141 @@
+name: Stream native package qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stream-native-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.package_target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package_target: linux-x64-gnu
+            rust_target: x86_64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404
+            musl: false
+            llvm: false
+          - package_target: linux-x64-musl
+            rust_target: x86_64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404
+            musl: true
+            llvm: false
+          - package_target: linux-arm64-gnu
+            rust_target: aarch64-unknown-linux-gnu
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            musl: false
+            llvm: false
+          - package_target: linux-arm64-musl
+            rust_target: aarch64-unknown-linux-musl
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            musl: true
+            llvm: false
+          - package_target: darwin-x64
+            rust_target: x86_64-apple-darwin
+            runner: blacksmith-6vcpu-macos-15
+            musl: false
+            llvm: false
+          - package_target: darwin-arm64
+            rust_target: aarch64-apple-darwin
+            runner: blacksmith-6vcpu-macos-15
+            musl: false
+            llvm: false
+          - package_target: win32-x64
+            rust_target: x86_64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            musl: false
+            llvm: false
+          - package_target: win32-arm64
+            rust_target: aarch64-pc-windows-msvc
+            runner: blacksmith-4vcpu-windows-2025
+            musl: false
+            llvm: true
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install pinned Rust and target
+        uses: ./.github/actions/rust-toolchain
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Provision the pinned musl linker
+        if: matrix.musl
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+          command -v musl-gcc
+          musl-gcc --version
+
+      - name: Provision the Windows ARM linker
+        if: matrix.llvm
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f8 # v2.0.9
+        with:
+          version: 20.1.8
+
+      - name: Record compiler identity
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: "\"RUSTC_VERSION=$((rustc -V) -join ' ')\" >> $env:GITHUB_ENV"
+
+      - name: Record compiler identity
+        if: runner.os != 'Windows'
+        shell: bash
+        run: echo "RUSTC_VERSION=$(rustc -V)" >> "$GITHUB_ENV"
+
+      - name: Build and package the Rust native bridge
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/stream-native-target
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+        run: |
+          set -euo pipefail
+          verify_install=''
+          if [[ "${{ matrix.package_target }}" == 'win32-x64' ]]; then
+            verify_install='--verify-install'
+          fi
+          node scripts/build-stream-native-package.mjs \
+            --target "${{ matrix.package_target }}" \
+            --target-dir "$CARGO_TARGET_DIR" \
+            --output "$STREAM_NATIVE_OUTPUT" \
+            $verify_install
+
+      - name: Pack the installable companion archive
+        shell: bash
+        env:
+          STREAM_NATIVE_OUTPUT: ${{ runner.temp }}/stream-native-packages
+          NPM_CACHE: ${{ runner.temp }}/stream-native-npm-cache
+        run: |
+          set -euo pipefail
+          mkdir -p "$NPM_CACHE"
+          cd "$STREAM_NATIVE_OUTPUT/${{ matrix.package_target }}"
+          npm pack --ignore-scripts --offline --cache "$NPM_CACHE" --pack-destination "$STREAM_NATIVE_OUTPUT"
+
+      - name: Upload installable package artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: stream-native-${{ matrix.package_target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stream-native-packages
+          if-no-files-found: error
+          retention-days: 90
