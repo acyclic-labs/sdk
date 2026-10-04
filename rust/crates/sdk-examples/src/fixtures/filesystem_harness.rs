@@ -456,12 +456,9 @@ fn seeded_memory_fs() -> Result<MemoryFs, Status> {
                     consistency: ConsistencyMode::TrackingSafe,
                     mutations: MutationMode::PrivateOverlay,
                 },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
             )
             .await
-            .map_err(|error| Status::internal(format!("fixture checkout: {}", error.error)))?
-            .value;
+            .map_err(|error| Status::internal(format!("fixture checkout: {error}")))?;
         checkout
             .create_file(
                 fixture_path("hello")?,
@@ -537,6 +534,20 @@ impl HarnessFixtureBackend {
             cancellation_requested,
             revision,
         }
+    }
+}
+
+fn wire_authority(owner: &acyclic_harness::core::Authority) -> wire::Authority {
+    let kind = match owner.kind {
+        acyclic_harness::core::AggregateKind::Agent => wire::AggregateKind::Agent,
+        acyclic_harness::core::AggregateKind::Conversation => wire::AggregateKind::Conversation,
+        acyclic_harness::core::AggregateKind::Session => wire::AggregateKind::Session,
+        acyclic_harness::core::AggregateKind::Turn => wire::AggregateKind::Turn,
+        acyclic_harness::core::AggregateKind::Task => wire::AggregateKind::Task,
+    };
+    wire::Authority {
+        kind: kind as i32,
+        id: owner.id.clone(),
     }
 }
 
@@ -676,7 +687,7 @@ impl HarnessWireApi for HarnessFixtureBackend {
         request: &'a OperationControlRequest,
     ) -> futures::future::BoxFuture<'a, HarnessResult<()>> {
         let operation_id = request.operation_id.to_string();
-        let owner = request.owner.clone();
+        let owner = wire_authority(&request.owner);
         async move {
             let operations = self.operations.lock().await;
             let record = operations.get(&operation_id).ok_or_else(|| {
