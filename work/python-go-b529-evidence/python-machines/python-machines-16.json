@@ -1,0 +1,22 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "b5293335694f19d0132be13542f6925111712433",
+  "source_revision_kind": "git-oid",
+  "rust_model_source_revision": "6bfa6cd366ebba884a4ad3eba8931dc19140e145aeeb145f9effe1b37bdf4b9a",
+  "status": "passed",
+  "invoked": true,
+  "execution_mode": "remote",
+  "exit_code": 0,
+  "family": "machines",
+  "rpc": "acyclic.machines.v1.MachinesService/Usage",
+  "shape": "unary",
+  "transport": "grpc+mtls",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization",
+    "tls-hostname-verification"
+  ],
+  "response_bytes": 65,
+  "response_sha256": "sha256:c546d2a8d899d9e6afd74d9bbd895b53badf0c90c726c2488e7b48f0d749ed6a"
+}

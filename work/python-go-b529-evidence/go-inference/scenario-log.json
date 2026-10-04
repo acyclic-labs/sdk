@@ -1,0 +1,88 @@
+{
+  "consumer": {
+    "artifact_path": "Q:\\sdk\\work\\go-b529-package.zip",
+    "artifact_sha256": "36E31F9F8BB8421CDF96D1378928EF2309FFDF9EAEA764A07566372E3B9867D6",
+    "name": "acyclic-go-installed-inference-consumer",
+    "version": "v0.0.1"
+  },
+  "scenarios": [
+    {
+      "output_path": "qualification/consumers/go-inference-01.json",
+      "output_sha256": "sha256:c3ec0d1c5e6a4bbfb7c75e4b44e7f5a83f5b4a949ca697fefea270b51b79a88a",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-02.json",
+      "output_sha256": "sha256:b8ca4dca4fc46c6bc98d63f545a5d17c07804e49b3b01c4b03a17e3df6f0b826",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-03.json",
+      "output_sha256": "sha256:9ab61016fcdc9e78d1e115029bfc8c5a9d0adcb51fea89e618375bdc355621d6",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-04.json",
+      "output_sha256": "sha256:ca93bb5daa723b1b3e1828a4db726632c320f01eea33ac66db0b668e5c0e5658",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-05.json",
+      "output_sha256": "sha256:3c26e59b783d58f772f945076c6be4157b6eb4464c2a5db1310404205eb910e0",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-06.json",
+      "output_sha256": "sha256:79e44bf8be02c380ef951fa772c36d1191527cb5b1ca3af26db2880fe35e7ef5",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-07.json",
+      "output_sha256": "sha256:ecbfe3945e7e2c9e96793c2cb2baf326ecb6aff59e4fbf11b40dc3e92f6974d0",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-08.json",
+      "output_sha256": "sha256:650b5f2d603bc048f099966241d6be8687eee304dd9ec0466b183392fb0eb310",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-09.json",
+      "output_sha256": "sha256:9669c1c686c32ed1758c10cbe95fb90793ed7c4827d33e2fcefe43c6c909b32a",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-10.json",
+      "output_sha256": "sha256:d91a158a77a07824a12850e1ca1c3bcd021b7f2a50b172ac7322a0d8ea934a22",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-11.json",
+      "output_sha256": "sha256:5549907905a348c6d176229a3b4c28d130a3f20c66ff0768649dbcc279dbb6e2",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-12.json",
+      "output_sha256": "sha256:63cc5791ca42a15a112b560d607210f9f57617075187a0814fba06582f874216",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-13.json",
+      "output_sha256": "sha256:963a0f43e697455cf72fd7c0595abc208dd4109282f08a8c30cc9d4f2e32dead",
+      "execution_mode": "remote"
+    },
+    {
+      "output_path": "qualification/consumers/go-inference-14.json",
+      "output_sha256": "sha256:44525188f83a8700a9a6f86217aff42e17b43fdff6b1c83ce72930d591974b86",
+      "execution_mode": "remote"
+    }
+  ],
+  "schema": "acyclic.sdk.rpc-scenario-log.v1",
+  "source_revision": "b5293335694f19d0132be13542f6925111712433",
+  "execution_mode": "remote",
+  "source_revision_kind": "git-oid",
+  "rust_model_source_revision": "6bfa6cd366ebba884a4ad3eba8931dc19140e145aeeb145f9effe1b37bdf4b9a",
+  "package_archive_sha256": "36E31F9F8BB8421CDF96D1378928EF2309FFDF9EAEA764A07566372E3B9867D6",
+  "passed": 14,
+  "failed": 0
+}
