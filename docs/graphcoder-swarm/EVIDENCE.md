@@ -1,5 +1,7 @@
 # Qualification evidence index
 
+[Fork rebind concurrency review](checkpoint-fork-rebind-review-2026-10-04.json) holds isolated checkpoint `f5dd2a108`: seed validation and replacement do not use the same pinned generation, and the publication lookup discards errors. This is source-review evidence, not a test result. Deterministic concurrent-owner and corrupt-publication tests are required before integration.
+
 Fork failure diagnosis at `2e0ed9bd9`: the prior native suite's attestation error came from its forged-request path expecting preparation success. Its missing-child assertion failed before preparation because Filesystem flattened Missing to Storage. These observations do not prove valid-fork rejection or premature allocation. The early-denial fixture and typed error mapping are repaired; fresh qualification remains pending. The C-drive attempt (29742) executed zero tests due to archive disk exhaustion; its source-bound failed log is retained at `D:/graphcoder-builds/root-fork-20261004/checkpoints/2e0ed9bd9/attempt-fork-authorization.json`.
 
 [Manifest restoration checkpoint](checkpoint-fork-policy-restoration-2026-10-04.json): current Windows request regressions 21/21; native fork-boundary suite 1/3 with both failures retained. This does not qualify full recursive forks.
