@@ -106,6 +106,10 @@ pub struct HarnessStorage<P, A, O> {
     session_id: SessionId,
     maximum_file_bytes: u64,
     memory_store: Arc<std::sync::Mutex<crate::memory_store::MemoryStore>>,
+    // Disposable read projection, configured through the same path as fresh
+    // conversation reads. Changing limits rebuilds it rather than reusing
+    // admission settings from an earlier caller.
+    conversation_projection: tokio::sync::Mutex<Option<(Limits, StreamAggregate<P>)>>,
 }
 
 /// Ready-to-run local Harness with an isolated conversation and private volume.
@@ -1100,6 +1104,7 @@ where
             session_id,
             maximum_file_bytes,
             memory_store,
+            conversation_projection: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -1107,6 +1112,7 @@ where
     #[must_use]
     pub fn with_fork_verifier(mut self, verifier: Arc<crate::fork::CompositeForkVerifier>) -> Self {
         self.fork_verifier = Some(verifier);
+        *self.conversation_projection.get_mut() = None;
         self
     }
 
@@ -1785,7 +1791,15 @@ where
                 "conversation event page limit must be between 1 and 1024".into(),
             ));
         }
-        let aggregate = self.open_conversation(limits).await?;
+        limits.validate()?;
+        let mut cached = self.conversation_projection.lock().await;
+        if cached.as_ref().is_none_or(|(configured, _)| *configured != limits) {
+            *cached = Some((limits, self.open_conversation(limits).await?));
+        }
+        let (_, aggregate) = cached.as_mut().ok_or_else(|| {
+            Error::Storage("authenticated conversation projection is unavailable".into())
+        })?;
+        aggregate.refresh().await?;
         aggregate.reducer().events_after(after_revision, limit)
     }
 
@@ -2521,6 +2535,43 @@ mod tests {
                 .await,
             Err(Error::Invalid(_))
         ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn conversation_pages_refresh_external_writes_and_validate_every_call() -> Result<()> {
+        let storage = MemoryHarnessStorage::new(AgentId::new(), 4_096).await?;
+        let limits = Limits::default();
+        let invalid = Limits { model_steps: 0, ..limits };
+        assert!(matches!(storage.conversation_events(0, 1, invalid).await, Err(Error::Invalid(_))));
+        assert_eq!(storage.conversation_events(0, 1, limits).await?.len(), 1);
+
+        let content = storage.stage(OperationId::new(), "page.txt", b"new message", "text/plain", "page.txt").await?;
+        let mut writer = storage.conversation_aggregate(limits).await?;
+        storage.append_conversation(
+            &mut writer,
+            OperationId::new(),
+            "page-message",
+            Action::AppendConversationMessage {
+                message: Box::new(ConversationMessage {
+                    id: MessageId::new(),
+                    sequence: 1,
+                    kind: MessageKind::User,
+                    content,
+                    attachments: Vec::new(),
+                    reply_to: None,
+                    tool_call_id: None,
+                    extensions: BTreeMap::new(),
+                }),
+            },
+        ).await?;
+        let page = storage.conversation_events(1, 1, limits).await?;
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].revision, 2);
+        assert!(matches!(storage.conversation_events(0, 1, invalid).await, Err(Error::Invalid(_))));
+        let narrowed = Limits { model_steps: 1, ..limits };
+        assert_eq!(storage.conversation_events(1, 1, narrowed).await?.len(), 1);
+        assert!(storage.conversation_events(2, 1, narrowed).await?.is_empty());
         Ok(())
     }
 
