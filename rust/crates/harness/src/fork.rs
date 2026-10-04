@@ -1028,6 +1028,54 @@ pub struct CapturedResource {
     pub revision: ResourceRevision,
 }
 
+fn captured_history_revision<'a, I>(
+    parent: &Authority,
+    parent_revision: u64,
+    resources: I,
+    missing_message: &str,
+) -> Result<u64>
+where
+    I: IntoIterator<Item = &'a CapturedResource>,
+{
+    let parent_key = parent.stream_path()?.into_bytes();
+    let mut captured = None;
+    for resource in resources {
+        let ResourceRevision::History(reference) = &resource.source else {
+            continue;
+        };
+        let ResourceRevision::History(revision) = &resource.revision else {
+            return Err(Error::Invalid(
+                "fork history capture has a non-history child revision".into(),
+            ));
+        };
+        if reference != revision {
+            return Err(Error::Invalid(
+                "fork history capture source and child revision differ".into(),
+            ));
+        }
+        if reference.as_resource().key() != parent_key.as_slice() {
+            return Err(Error::Invalid(
+                "fork history capture belongs to a different parent".into(),
+            ));
+        }
+        let version = reference
+            .as_resource()
+            .version()
+            .and_then(|version| version.parse::<u64>().ok())
+            .filter(|version| *version > 0)
+            .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
+        if version > parent_revision {
+            return Err(Error::Invalid(
+                "fork history capture is newer than its publication boundary".into(),
+            ));
+        }
+        if captured.replace(version).is_some() {
+            return Err(Error::Invalid("fork history capture appears twice".into()));
+        }
+    }
+    captured.ok_or_else(|| Error::Invalid(missing_message.into()))
+}
+
 /// An optional resource that was not captured, with its exact reconciliation
 /// identity retained in the published child seed.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1363,45 +1411,15 @@ impl ForkReport {
     }
 
     pub(crate) fn captured_history_revision(&self) -> Result<u64> {
-        let parent_key = self.request.parent.stream_path()?.into_bytes();
-        let mut captured = None;
-        for capture in &self.captures {
-            let Capture::Captured(resource) = capture else {
-                continue;
-            };
-            if let ResourceRevision::History(reference) = &resource.source {
-                let ResourceRevision::History(revision) = &resource.revision else {
-                    return Err(Error::Invalid(
-                        "fork history capture has a non-history child revision".into(),
-                    ));
-                };
-                if reference != revision {
-                    return Err(Error::Invalid(
-                        "fork history capture source and child revision differ".into(),
-                    ));
-                }
-                if reference.as_resource().key() != parent_key.as_slice() {
-                    return Err(Error::Invalid(
-                        "fork history capture belongs to a different parent".into(),
-                    ));
-                }
-                let version = reference
-                    .as_resource()
-                    .version()
-                    .and_then(|version| version.parse::<u64>().ok())
-                    .filter(|version| *version > 0)
-                    .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
-                if version > self.request.parent_revision {
-                    return Err(Error::Invalid(
-                        "fork history capture is newer than its publication boundary".into(),
-                    ));
-                }
-                if captured.replace(version).is_some() {
-                    return Err(Error::Invalid("fork history capture appears twice".into()));
-                }
-            }
-        }
-        captured.ok_or_else(|| Error::Invalid("fork report has no history capture".into()))
+        captured_history_revision(
+            &self.request.parent,
+            self.request.parent_revision,
+            self.captures.iter().filter_map(|capture| match capture {
+                Capture::Captured(resource) => Some(resource),
+                _ => None,
+            }),
+            "fork report has no history capture",
+        )
     }
 
     fn validate_body(&self) -> Result<()> {
@@ -1606,42 +1624,12 @@ impl ForkSeed {
     /// for its parent publication slot; inherited bytes remain bound to this
     /// earlier history boundary.
     pub(crate) fn captured_history_revision(&self) -> Result<u64> {
-        let parent_key = self.parent.stream_path()?.into_bytes();
-        let mut captured = None;
-        for resource in &self.resources {
-            if let ResourceRevision::History(reference) = &resource.source {
-                let ResourceRevision::History(revision) = &resource.revision else {
-                    return Err(Error::Invalid(
-                        "fork history capture has a non-history child revision".into(),
-                    ));
-                };
-                if reference != revision {
-                    return Err(Error::Invalid(
-                        "fork history capture source and child revision differ".into(),
-                    ));
-                }
-                if reference.as_resource().key() != parent_key.as_slice() {
-                    return Err(Error::Invalid(
-                        "fork history capture belongs to a different parent".into(),
-                    ));
-                }
-                let version = reference
-                    .as_resource()
-                    .version()
-                    .and_then(|version| version.parse::<u64>().ok())
-                    .filter(|version| *version > 0)
-                    .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
-                if version > self.parent_revision {
-                    return Err(Error::Invalid(
-                        "fork history capture is newer than its publication boundary".into(),
-                    ));
-                }
-                if captured.replace(version).is_some() {
-                    return Err(Error::Invalid("fork history capture appears twice".into()));
-                }
-            }
-        }
-        captured.ok_or_else(|| Error::Invalid("fork seed has no history capture".into()))
+        captured_history_revision(
+            &self.parent,
+            self.parent_revision,
+            self.resources.iter(),
+            "fork seed has no history capture",
+        )
     }
 
     /// Prevents private-volume inheritance, duplicate singletons, and malformed refs.
