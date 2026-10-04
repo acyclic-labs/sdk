@@ -65,6 +65,8 @@ jobs:
         # Measured locally at 2.7 seconds; no downstream runtimes or packages.
         run: |
           node scripts/test-plan-qualification.mjs
+          node --test scripts/test-platform-qualification.mjs
+          node scripts/test-rust-sdk-generation-source-closure.mjs
 
   qualify:
     # Full source and downstream qualification runs on releases or explicit requests.
