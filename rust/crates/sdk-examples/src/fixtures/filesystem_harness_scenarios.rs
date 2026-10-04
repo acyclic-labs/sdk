@@ -321,7 +321,7 @@ where
     // status is evidence too, but the exporter remains fail-closed if the
     // fixture unexpectedly starts manufacturing a link.
     let read_link = fs_wire::ReadLinkRequest {
-        generation: Some(fixture_head),
+        generation: Some(fixture_head.clone()),
         path: "/link".into(),
         maximum_bytes: 1024,
     };
@@ -938,6 +938,21 @@ mod tests {
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
 
+        let delete = records
+            .iter()
+            .find(|record| record["operation"] == "DeleteWorkspace")
+            .expect("filesystem delete evidence");
+        for key in [
+            "created_workspace_id",
+            "fixture_workspace_id",
+            "fixture_generation_id",
+            "mutated_generation_id",
+        ] {
+            assert!(delete["state"][key]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
+        }
+
         for operation in ["ReadLink", "Observe", "Cancel"] {
             let error = records
                 .iter()
@@ -969,3 +984,4 @@ mod tests {
         assert_eq!(harness_cancel["state"]["cancelled_revision"], "2");
     }
 }
+

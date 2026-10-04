@@ -952,7 +952,7 @@ mod tests {
             .await
             .expect("cancel");
         assert_eq!(
-            cancelled.status.expect("status").state,
+            cancelled.status.as_ref().expect("status").state,
             wire::CompletionState::Cancelled as i32
         );
         assert_eq!(
@@ -971,7 +971,7 @@ mod tests {
             scenario_expectation(HARNESS_SCENARIOS[4]).output,
             "operation=fixture-op;state=cancelled;revision=2"
         );
-        assert_eq!(cancelled.status.expect("status").revision, 2);
+        assert_eq!(cancelled.status.as_ref().expect("status").revision, 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
