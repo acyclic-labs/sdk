@@ -751,6 +751,41 @@ async fn local_stream_budget_cas_orders_concurrent_child_reservations() -> Resul
 }
 
 #[tokio::test]
+async fn local_stream_budget_cas_serializes_all_root_resource_claims() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (_host, stream, _project) = local_project(directory.path()).await?;
+    let budget = limits(1, 1, 1);
+    let owner = acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-root-cas-owner", 0)?;
+    let session = operation(0xD4);
+    let root_dispatch = IdempotencyKey::new("root-budget-root-cas")?;
+    let _root = SwarmBudgetJournal::start_with_root_dispatch(
+        &stream,
+        session,
+        owner.clone(),
+        budget,
+        root_dispatch,
+    )
+    .await?;
+    let mut left = SwarmBudgetJournal::open(&stream, session).await?;
+    let mut right = SwarmBudgetJournal::open(&stream, session).await?;
+    let (left_result, right_result) = tokio::join!(
+        left.claim_root_model_step(&owner, session, 0, [0xD5; 32]),
+        right.claim_root_model_step(&owner, session, 1, [0xD6; 32])
+    );
+    assert!(left_result.is_ok() ^ right_result.is_ok());
+    let mut winner = if left_result.is_ok() { left } else { right };
+    winner.refresh().await?;
+    let usage = winner.usage()?;
+    assert_eq!(usage.reserved.model_steps, budget.max_model_steps);
+    assert_eq!(usage.reserved.output_bytes, budget.max_output_bytes);
+    assert_eq!(
+        usage.reserved.execution_time_ms,
+        budget.max_execution_time_ms
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_stream_budget_fences_stale_owner_claim_and_cancel() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (_host, stream, _project) = local_project(directory.path()).await?;
