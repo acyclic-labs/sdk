@@ -1,0 +1,23 @@
+{
+  "source_commit": "eeafbf7e8",
+  "platform": "Windows native",
+  "features": "no default features; local",
+  "suites": [
+    {
+      "path": "rust\\crates\\stream\\src\\conformance.rs",
+      "sha256": "7F2110D50E4E8C6171B17F265EC10BEB91338C3565AF571DB28740F7263F8A2C"
+    },
+    {
+      "path": "rust\\crates\\stream\\src\\local.rs",
+      "sha256": "3437259F82CEDDEFF8C02A8054DF7EBEE480AEE8236FECF1EAE76A4517476FBC"
+    }
+  ],
+  "artifact": "C:\\graphcoder-builds\\root-qualification-artifacts\\eeafbf7e8\\acyclic_stream-c1c316b7ea2f0afd.exe",
+  "artifact_sha256": "DCBC2EAB6B880DFA380AC2C60B3A48BF1846646A9759C9A192AB57DDEB67C2B0",
+  "log": "C:\\graphcoder-builds\\root-qualification-artifacts\\d9090b0ac\\stream-immutable-qualification.txt",
+  "log_sha256": "E4B85518C3C147BAE6F0B8574EB8FDE3A5976C44F4E8D18B5B6361C094DD97C9",
+  "passed": 2,
+  "failed": 0,
+  "ignored": 0,
+  "scope": "Public conformance rejects middle-record rewrite; complete Record equality survives real LocalStream cold reopen. Not Harness aggregate refresh or installed swarm qualification."
+}
