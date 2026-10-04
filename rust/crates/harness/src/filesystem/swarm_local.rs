@@ -2024,6 +2024,7 @@ impl PersistentLocalSwarm {
         mut bindings: LocalSwarmBindings,
     ) -> Result<Self> {
         config.validate()?;
+        crate::model::validate_model_options(&config.model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
         if let Some(resolver) = bindings.filesystem_fork_resolver.as_ref() {
             let resolver_project = resolver.source_project().ok_or_else(|| {
@@ -2252,6 +2253,8 @@ impl PersistentLocalSwarm {
         provider: Arc<dyn ModelProvider>,
         limits: Limits,
     ) -> Result<Arc<Self>> {
+        limits.validate()?;
+        crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
         let root = root.as_ref().to_path_buf();
         let filesystem_provider = ProviderRef::new("local", "filesystem", "2")?;
         let host = shared_local_filesystem(root.join("filesystem"), filesystem_provider.clone())
@@ -4580,6 +4583,42 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[tokio::test]
+    async fn denied_model_options_do_not_create_swarm_providers_or_volumes() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(MockModel {
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+        });
+        let model = Model::new("mock", "swarm", "1", json!({"api_key": "private-state"}))?;
+        let ordinary = root.path().join("ordinary");
+        assert!(matches!(
+            PersistentLocalSwarm::open_with_model(
+                &ordinary,
+                model.clone(),
+                provider.clone(),
+                Limits::default(),
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(!ordinary.exists(), "denied model created swarm providers");
+        let recursive = root.path().join("recursive");
+        assert!(matches!(
+            PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+                &recursive,
+                model,
+                provider.clone(),
+                Limits::default(),
+            )
+            .await,
+            Err(Error::Invalid(_))
+        ));
+        assert!(!recursive.exists(), "denied model created recursive volumes");
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+        Ok(())
     }
 
     #[tokio::test]
