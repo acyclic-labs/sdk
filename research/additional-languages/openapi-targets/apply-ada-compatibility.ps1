@@ -175,7 +175,8 @@ end $rootUnit.Streams;
             # serializer to call for that opaque body, so preserve the request
             # seam without inventing a second model implementation.
             $rootEscaped = [regex]::Escape($rootUnit)
-            $text = [regex]::Replace($text, "(?m)^\s*$rootEscaped\.Models\.Serialize \(Req\.Stream, \"\", P_Body\);\r?\n", "      null;`n")
+            $bodySerializePattern = '(?m)^\s*' + $rootEscaped + '\.Models\.Serialize \(Req\.Stream, "", P_Body\);\r?\n'
+            $text = [regex]::Replace($text, $bodySerializePattern, "      null;`n")
         }
         if ($text -notmatch [regex]::Escape("$rootUnit.Is_Null(")) {
             $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
