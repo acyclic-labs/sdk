@@ -196,6 +196,89 @@ impl ForkFaultProvider {
         }
     }
 
+    fn tool_result_child_operations(request: &ModelRequest) -> Vec<String> {
+        fn collect(content: &ModelContent, operations: &mut Vec<String>) {
+            let parts = match content {
+                ModelContent::Part(part) => std::slice::from_ref(part).to_vec(),
+                ModelContent::Parts(parts) => parts.clone(),
+                ModelContent::Text(_) => Vec::new(),
+            };
+            for part in parts {
+                if let ModelContentPart::ToolResult { value, .. } = part
+                    && let Some(operation) = value.get("child_operation").and_then(Value::as_str)
+                {
+                    operations.push(operation.to_owned());
+                }
+            }
+        }
+
+        let mut operations = Vec::new();
+        for message in &request.messages {
+            collect(&message.content, &mut operations);
+        }
+        operations
+    }
+
+    /// A completed recursive batch has one initial root request, one request
+    /// for each selected child, and one fresh root continuation. The latter
+    /// must carry both ordered tool results; counting prompt text alone would
+    /// incorrectly count inherited child prefixes as root requests.
+    fn assert_completed_dispatch_trace(&self, child_a: OperationId, child_b: OperationId) {
+        let requests = self.requests();
+        let digests = self
+            .request_digests
+            .lock()
+            .expect("request digest lock")
+            .clone();
+        assert_eq!(requests.len(), 4, "unexpected provider request trace");
+        assert_eq!(digests.len(), requests.len());
+
+        let root_indices = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, request)| {
+                !message_contains(request, "child task: child-a")
+                    && !message_contains(request, "child task: child-b")
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        assert_eq!(root_indices, vec![0, 3]);
+        assert_eq!(
+            digests
+                .iter()
+                .filter(|digest| **digest == digests[0])
+                .count(),
+            1,
+            "initial root request was dispatched more than once"
+        );
+        assert_ne!(
+            digests[0], digests[3],
+            "root continuation reused the initial request digest"
+        );
+        assert!(Self::tool_result_child_operations(&requests[0]).is_empty());
+        assert_eq!(
+            Self::tool_result_child_operations(&requests[3]),
+            vec![child_a.to_string(), child_b.to_string()]
+        );
+
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| message_contains(request, "child task: child-a"))
+                .count(),
+            1,
+            "child A request was dispatched more than once"
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| message_contains(request, "child task: child-b"))
+                .count(),
+            1,
+            "child B request was dispatched more than once"
+        );
+    }
+
     fn release_child(&self) {
         self.release_child_a.store(true, Ordering::SeqCst);
     }
@@ -488,18 +571,13 @@ async fn fork_intent_disconnect_replays_publication_after_cold_restart() -> Resu
         .run_root(root_operation, "start faulted recursive swarm")
         .await?;
     assert_eq!(output.text, "ordinary completion");
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
     assert_eq!(
         &provider.serialized()[..durable_prefix.len()],
         durable_prefix
     );
     provider.assert_request_digests();
-    assert_eq!(
-        provider
-            .requests_matching("start faulted recursive swarm")
-            .len(),
-        1
-    );
+    provider.assert_completed_dispatch_trace(child_a, child_b);
 
     for child in [child_a, child_b] {
         let task = task(child);
@@ -561,14 +639,13 @@ async fn prepared_batch_failure_retries_without_duplicate_child_dispatch() -> Re
         .run_root(root_operation, "publish a faulted child batch")
         .await?;
     assert_eq!(output.text, "ordinary completion");
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
     assert_eq!(
         &provider.serialized()[..durable_prefix.len()],
         durable_prefix
     );
     provider.assert_request_digests();
-    assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
-    assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
+    provider.assert_completed_dispatch_trace(child_a, child_b);
     for child in [child_a, child_b] {
         assert_eq!(
             reopened.session(task(child)).await?.phase,
@@ -676,10 +753,9 @@ async fn precompletion_disconnect_replays_child_result_without_duplicate_dispatc
         &provider.serialized()[..durable_prefix.len()],
         durable_prefix
     );
-    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 3);
+    assert_eq!(provider.dispatches.load(Ordering::SeqCst), 4);
     provider.assert_request_digests();
-    assert_eq!(provider.requests_matching("child task: child-a").len(), 1);
-    assert_eq!(provider.requests_matching("child task: child-b").len(), 1);
+    provider.assert_completed_dispatch_trace(child_a, child_b);
     assert_eq!(
         reopened.outcome(task(child_a)).await?.text,
         "child-a prefix"

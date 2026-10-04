@@ -17,7 +17,7 @@ use crate::{
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
-    executor::TurnOutput,
+    executor::{ExecutionEvent, TurnOutput},
     fork::{
         Capture, ForkPreparation, ForkRebindProof, ForkReport, ForkRequest, ForkSeed, ForkSelection,
         ResourceRevision,
@@ -3951,59 +3951,26 @@ impl PersistentLocalSwarm {
         child: TaskId,
         operation: OperationId,
     ) -> Result<bool> {
-        for _ in 0..4 {
-            let records = load_records(stream).await?;
-            let mut claimed = None;
-            for record in records {
-                match record.event {
-                    StoredEvent::ForkActivationClaimed {
-                        child: recorded_child,
-                        operation: recorded_operation,
-                    } if recorded_child == child => {
-                        claimed = Some(recorded_operation);
-                    }
-                    StoredEvent::ForkCompleted {
-                        child: recorded_child,
-                        ..
-                    }
-                    | StoredEvent::ForkFailed {
-                        child: recorded_child,
-                        ..
-                    }
-                    | StoredEvent::ForkCancelled {
-                        child: recorded_child,
-                    } if recorded_child == child => {
-                        claimed = None;
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(existing) = claimed {
-                if existing != operation {
-                    return Err(Error::Conflict(
-                        "child activation is already bound to another operation".into(),
-                    ));
-                }
-                return Ok(false);
-            }
-            let observed_tail = match stream.tail().await {
-                Ok(tail) => tail,
-                Err(StreamError::NotFound) => 0,
-                Err(error) => return Err(Error::Storage(error.to_string())),
-            };
-            match append_record_at(
-                stream,
-                StoredEvent::ForkActivationClaimed { child, operation },
-                observed_tail,
-            )
-            .await
-            {
-                Ok(()) => return Ok(true),
-                Err(Error::Conflict(_)) => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(Error::Indeterminate(operation))
+        claim_child_activation_on_stream(stream, child, operation).await
+    }
+
+    /// A retained activation claim may be retried only after the execution
+    /// journal proves that model dispatch was admitted. In that case the
+    /// shared executor enters provider reconciliation and cannot issue a
+    /// second model request. A claim without `ModelStarted` is still owned by
+    /// an in-flight or unknown activation and remains indeterminate.
+    async fn child_model_started(
+        &self,
+        harness: &PersistentLocalHarness,
+        operation: OperationId,
+    ) -> Result<bool> {
+        Ok(harness
+            .storage()
+            .journal()
+            .replay(operation)
+            .await?
+            .iter()
+            .any(|record| matches!(record.event, ExecutionEvent::ModelStarted { .. })))
     }
 
     async fn activate_child_with_harness(
@@ -4059,7 +4026,16 @@ impl PersistentLocalSwarm {
                     output,
                 });
             }
-            return Err(Error::Indeterminate(request.child_operation));
+            // Only a journaled model admission makes retrying an existing
+            // claim safe: run_child_turn will reconcile that admission. If
+            // no admission exists, the other owner may still be before
+            // dispatch, so do not clear its claim or start another turn.
+            if !self
+                .child_model_started(&harness, request.child_operation)
+                .await?
+            {
+                return Err(Error::Indeterminate(request.child_operation));
+            }
         }
         let suffix = declared_suffix.unwrap_or_else(|| {
             vec![ModelMessage {
@@ -4094,7 +4070,18 @@ impl PersistentLocalSwarm {
         let output = match self.run_child_turn(child, &harness, &bundle, &request).await {
             Ok(output) => output,
             Err(error) => {
-                self.mark_failed(child, error.to_string()).await?;
+                // ForkFailed clears the activation fence and permits a new
+                // provider dispatch. It is therefore valid only when the
+                // execution journal proves that no model admission occurred.
+                // Provider/storage uncertainty retains the claim until the
+                // shared executor authenticates an admitted outcome.
+                if !matches!(error, Error::Indeterminate(_))
+                    && !self
+                        .child_model_started(&harness, request.child_operation)
+                        .await?
+                {
+                    self.mark_failed(child, error.to_string()).await?;
+                }
                 return Err(error);
             }
         };
@@ -4140,6 +4127,21 @@ impl PersistentLocalSwarm {
         let mut published = false;
         for _ in 0..4 {
             let observed_tail = self.refresh_registry_state_with_tail().await?;
+            // Validate terminal state on the same registry snapshot used for
+            // this CAS. A cancellation appended after this tail is ordered
+            // after a successful completion; a cancellation already present
+            // must prevent the completion append.
+            if self
+                .records
+                .lock()
+                .await
+                .get(&child)
+                .is_some_and(|session| session.phase == LocalSessionPhase::Cancelled)
+            {
+                return Err(Error::Conflict(
+                    "child operation was cancelled before completion acknowledgement".into(),
+                ));
+            }
             match append_record_at(&stream, completion.clone(), observed_tail).await {
                 Ok(()) => {
                     published = true;
@@ -4670,6 +4672,73 @@ impl PersistentLocalSwarm {
             }
         }
     }
+}
+
+/// Acquires the durable single-winner fence for a child model turn.
+///
+/// This is kept separate from the swarm projection so the stream CAS remains
+/// the authority even when two independently opened swarm handles race. The
+/// snapshot tail is sampled before reading records and reused for the append;
+/// a tail conflict forces a fresh snapshot instead of permitting a second
+/// activation claim.
+async fn claim_child_activation_on_stream(
+    stream: &acyclic_stream::Stream<LocalStream>,
+    child: TaskId,
+    operation: OperationId,
+) -> Result<bool> {
+    for _ in 0..4 {
+        let observed_tail = match stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) => 0,
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        let records = load_records_at(stream, observed_tail).await?;
+        let mut claimed = None;
+        for record in records {
+            match record.event {
+                StoredEvent::ForkActivationClaimed {
+                    child: recorded_child,
+                    operation: recorded_operation,
+                } if recorded_child == child => {
+                    claimed = Some(recorded_operation);
+                }
+                StoredEvent::ForkCompleted {
+                    child: recorded_child,
+                    ..
+                }
+                | StoredEvent::ForkFailed {
+                    child: recorded_child,
+                    ..
+                }
+                | StoredEvent::ForkCancelled {
+                    child: recorded_child,
+                } if recorded_child == child => {
+                    claimed = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(existing) = claimed {
+            if existing != operation {
+                return Err(Error::Conflict(
+                    "child activation is already bound to another operation".into(),
+                ));
+            }
+            return Ok(false);
+        }
+        match append_record_at(
+            stream,
+            StoredEvent::ForkActivationClaimed { child, operation },
+            observed_tail,
+        )
+        .await
+        {
+            Ok(()) => return Ok(true),
+            Err(Error::Conflict(_)) => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(Error::Indeterminate(operation))
 }
 
 fn open_session_path(root: &Path, task: TaskId) -> PathBuf {
@@ -5313,6 +5382,47 @@ mod tests {
         ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async { Ok(None) })
         }
+    }
+
+    #[tokio::test]
+    async fn concurrent_activation_claims_have_one_durable_winner() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let provider = Arc::new(
+            LocalStream::open(root.path(), LocalStreamLimits::default())
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+        );
+        let client = StreamClient::new(provider);
+        let first = client
+            .stream("swarm/records")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let second = client
+            .stream("swarm/records")
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let child = TaskId::from_bytes([0xC1; 16]);
+        let operation = OperationId::from_bytes([0xD1; 16]);
+        let (left, right) = tokio::join!(
+            claim_child_activation_on_stream(&first, child, operation),
+            claim_child_activation_on_stream(&second, child, operation),
+        );
+        let results = [left?, right?];
+        assert_eq!(results.iter().filter(|claimed| **claimed).count(), 1);
+        assert_eq!(results.iter().filter(|claimed| !**claimed).count(), 1);
+
+        let records = load_records(&first).await?;
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(
+                    record.event,
+                    StoredEvent::ForkActivationClaimed { child: recorded, operation: recorded_operation }
+                        if recorded == child && recorded_operation == operation
+                ))
+                .count(),
+            1,
+            "concurrent handles must persist one activation claim"
+        );
+        Ok(())
     }
 
     #[tokio::test]
