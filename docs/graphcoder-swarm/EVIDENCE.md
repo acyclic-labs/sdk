@@ -356,3 +356,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 - Genuine cold recursive reopen: [3/3 native boundary cases](checkpoint-cold-prefix-native-pass-2026-10-04.json), source9dfc54cb5 and archived executable. Every cold request preserves prefix/serialized bytes and binding; observed full manifests equal durable records. Prior failures remain retained. Production coordinator and installed qualification remain open.
 
 - Full integrated Harness library: [349/349 native tests](checkpoint-full-harness-native-2026-10-04.json) at source131b2e2b9, with no ignored tests and archived executable. Integration binaries, coordinator/fault scenarios and installed qualification remain separate.
+
+- Current fork rebind port: [compile failure at7b495b775](checkpoint-fork-port-compile-failure-2026-10-04.json). No tests executed. Missing foundational APIs/fields must be ported before rerunning library/coordinator/fault tests. Prior wrong test-target invocation is also retained.

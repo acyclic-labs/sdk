@@ -1,0 +1,20 @@
+{
+  "gate": "fork rebind production qualification",
+  "source_commit": "7b495b7756193c2de6e94625e1cf898b5f0d74af",
+  "source_tree": "19af7faf57b52ce665564bb3010c703c6dd2db24",
+  "platform": "Windows native",
+  "exit_code": 101,
+  "tests_executed": 0,
+  "failure": "Incomplete dependency port: rebind proof paths reference absent capture/rebind APIs and fields; compilation failed before any library/coordinator/fault tests ran.",
+  "command": "cargo test --locked -p acyclic-harness --features filesystem-local --lib --test local_model_swarm --test local_swarm_faults",
+  "log_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\7b495b775\\fork-production-corrected-target.txt",
+  "log_sha256": "143F0D57690123684EF150E4DF272DF9E0DD58D4128A779C37276F10AFF90DEF",
+  "prior_invocation": {
+    "log_sha256": "CA58F6D33538E6DD32B498EAED814819252DCB093AA7866677DED32F01E729EE",
+    "log_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\7b495b775\\fork-production.txt",
+    "exit_code": 101,
+    "failure": "Incorrect test target local_model_swarm_faults; no compilation or tests"
+  },
+  "requirements_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF",
+  "scope": "No passing qualification at this source. Earlier 349/349 library and 3/3 cold-boundary receipts apply only to their earlier source. Complete foundational dependency port and rerun required."
+}
