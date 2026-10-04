@@ -27,6 +27,13 @@ export type GraphCoderProcessDiagnostic =
   | { readonly kind: "cancel_control_failed"; readonly requestId: string; readonly message: string }
   | { readonly kind: "exit"; readonly code: number | null; readonly signal: NodeJS.Signals | null };
 
+/** The terminal state observed from the owned child process. */
+export interface GraphCoderProcessExit {
+  readonly kind: "closed";
+  readonly code: number | null;
+  readonly signal: NodeJS.Signals | null;
+}
+
 interface PendingRequest {
   readonly resolve: (response: GraphCoderWireResponse) => void;
   readonly reject: (error: GraphCoderError) => void;
@@ -51,8 +58,10 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   readonly #operatorToken: string;
   readonly #cancelled = new Set<string>();
   readonly #cancelControls = new Map<string, string>();
+  readonly #exitWaiters = new Set<(exit: GraphCoderProcessExit) => void>();
   #stdoutBuffer = Buffer.alloc(0);
   #closed = false;
+  #exit: GraphCoderProcessExit | undefined;
 
   constructor(options: GraphCoderProcessBridgeOptions) {
     this.#maximumLineBytes = options.maximumLineBytes ?? DEFAULT_MAXIMUM_PROCESS_LINE_BYTES;
@@ -77,11 +86,44 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (child.stdin === null || child.stdout === null || child.stderr === null) throw new GraphCoderError("transport", "bridge process did not expose piped stdio");
     this.#child = child as ChildProcessWithoutNullStreams;
     this.#child.stdout.on("data", chunk => this.#consumeStdout(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
-    this.#child.stderr.on("data", chunk => this.#onDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
+    this.#child.stderr.on("data", chunk => this.#emitDiagnostic({ kind: "stderr", text: Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk) }));
     this.#child.on("error", error => this.#finish(new GraphCoderError("transport", `bridge process error: ${error.message}`)));
     this.#child.on("close", (code, signal) => {
-      this.#onDiagnostic({ kind: "exit", code, signal });
+      this.#emitDiagnostic({ kind: "exit", code, signal });
+      this.#recordExit({ kind: "closed", code, signal });
       this.#finish(new GraphCoderError("transport", code === 0 ? "bridge process closed before replying" : `bridge process exited with code ${code ?? "unknown"}`));
+    });
+  }
+
+  /**
+   * Waits until the child has emitted its final close event. Calling close()
+   * requests termination; this method observes completion of that request so
+   * hosts can release their fixture or session resources deterministically.
+   */
+  waitForExit(timeoutMs?: number): Promise<GraphCoderProcessExit> {
+    if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0)) {
+      return Promise.reject(new GraphCoderError("invalid_input", "exit wait timeout must be a nonnegative safe integer"));
+    }
+    if (this.#exit !== undefined) return Promise.resolve(this.#exit);
+    return new Promise<GraphCoderProcessExit>((resolve, reject) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const resolveExit = (exit: GraphCoderProcessExit): void => {
+        if (settled) return;
+        settled = true;
+        if (timer !== undefined) clearTimeout(timer);
+        this.#exitWaiters.delete(resolveExit);
+        resolve(exit);
+      };
+      this.#exitWaiters.add(resolveExit);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          this.#exitWaiters.delete(resolveExit);
+          reject(new GraphCoderError("transport", "timed out waiting for bridge process exit"));
+        }, timeoutMs);
+      }
     });
   }
 
@@ -146,7 +188,7 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       const control = this.#cancelMessage?.(requestId);
       if (control !== undefined) this.#writeCancelControl(requestId, control);
     } catch (error) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
     }
     pending.reject(new GraphCoderError("transport", reason));
     return true;
@@ -157,14 +199,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#closed) return;
     this.#closed = true;
     this.#rejectPending(new GraphCoderError("transport", reason));
-    this.#child.kill();
+    this.#requestTermination();
   }
 
   #consumeStdout(chunk: Buffer): void {
     if (this.#closed) return;
     this.#stdoutBuffer = Buffer.concat([this.#stdoutBuffer, chunk]);
     if (this.#stdoutBuffer.length > this.#maximumLineBytes && this.#stdoutBuffer.indexOf(0x0a) < 0) {
-      this.#onDiagnostic({ kind: "malformed_line", text: "bridge response line exceeds the configured size" });
+      this.#emitDiagnostic({ kind: "malformed_line", text: "bridge response line exceeds the configured size" });
       this.#finish(new GraphCoderError("transport", "bridge response line exceeds the configured size"));
       return;
     }
@@ -174,14 +216,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
       const line = this.#stdoutBuffer.subarray(0, newline);
       this.#stdoutBuffer = this.#stdoutBuffer.subarray(newline + 1);
       if (line.length > this.#maximumLineBytes) {
-        this.#onDiagnostic({ kind: "malformed_line", text: "bridge response line exceeds the configured size" });
+        this.#emitDiagnostic({ kind: "malformed_line", text: "bridge response line exceeds the configured size" });
         this.#finish(new GraphCoderError("transport", "bridge response line exceeds the configured size"));
         return;
       }
       let text: string;
       try { text = new TextDecoder("utf-8", { fatal: true }).decode(line); }
       catch {
-        this.#onDiagnostic({ kind: "malformed_line", text: "<invalid utf-8>" });
+        this.#emitDiagnostic({ kind: "malformed_line", text: "<invalid utf-8>" });
         this.#finish(new GraphCoderError("transport", "bridge emitted invalid UTF-8"));
         return;
       }
@@ -196,19 +238,19 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     let value: unknown;
     try { value = JSON.parse(line); }
     catch {
-      this.#onDiagnostic({ kind: "malformed_line", text: line });
+      this.#emitDiagnostic({ kind: "malformed_line", text: line });
       this.#finish(new GraphCoderError("transport", "bridge emitted malformed JSON"));
       return;
     }
     if (typeof value !== "object" || value === null || Array.isArray(value) || typeof (value as { request_id?: unknown }).request_id !== "string") {
-      this.#onDiagnostic({ kind: "malformed_line", text: line });
+      this.#emitDiagnostic({ kind: "malformed_line", text: line });
       this.#finish(new GraphCoderError("transport", "bridge emitted an invalid response envelope"));
       return;
     }
     let requestId: string;
     try { requestId = checkedRequestId((value as { request_id: unknown }).request_id, "bridge response id"); }
     catch (error) {
-      this.#onDiagnostic({ kind: "malformed_line", text: line });
+      this.#emitDiagnostic({ kind: "malformed_line", text: line });
       this.#finish(new GraphCoderError("transport", error instanceof Error ? error.message : String(error)));
       return;
     }
@@ -216,14 +258,14 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (pending === undefined) {
       const cancelledRequestId = this.#cancelControls.get(requestId);
       if (cancelledRequestId !== undefined) {
-        this.#onDiagnostic({ kind: "cancelled_response", requestId: cancelledRequestId });
+        this.#emitDiagnostic({ kind: "cancelled_response", requestId: cancelledRequestId });
         return;
       }
       if (this.#cancelled.delete(requestId)) {
-        this.#onDiagnostic({ kind: "cancelled_response", requestId });
+        this.#emitDiagnostic({ kind: "cancelled_response", requestId });
         return;
       }
-      this.#onDiagnostic({ kind: "unmatched_response", requestId });
+      this.#emitDiagnostic({ kind: "unmatched_response", requestId });
       this.#finish(new GraphCoderError("transport", `bridge emitted an unmatched response id ${requestId}`));
       return;
     }
@@ -235,7 +277,25 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#closed) return;
     this.#closed = true;
     this.#rejectPending(error);
-    this.#child.kill();
+    this.#requestTermination();
+  }
+
+  #requestTermination(): void {
+    if (this.#exit !== undefined || this.#child.exitCode !== null || this.#child.signalCode !== null) return;
+    try { this.#child.kill(); }
+    catch { /* The close event remains the authoritative termination signal. */ }
+  }
+
+  #recordExit(exit: GraphCoderProcessExit): void {
+    if (this.#exit !== undefined) return;
+    this.#exit = exit;
+    for (const resolve of this.#exitWaiters) resolve(exit);
+    this.#exitWaiters.clear();
+  }
+
+  #emitDiagnostic(event: GraphCoderProcessDiagnostic): void {
+    try { this.#onDiagnostic(event); }
+    catch { /* Diagnostics must never prevent request rejection or exit cleanup. */ }
   }
 
   #rejectPending(error: GraphCoderError): void {
@@ -246,30 +306,30 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
   #writeCancelControl(requestId: string, request: GraphCoderWireRequest): void {
     try { checkedRequestId(request.request_id); }
     catch (error) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
       return;
     }
     if (request.request_id === requestId || this.#pending.has(request.request_id) || this.#cancelled.has(request.request_id) || this.#cancelControls.has(request.request_id)) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control request id collides with an active or retired request" });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control request id collides with an active or retired request" });
       return;
     }
     this.#cancelControls.set(request.request_id, requestId);
     let line: string;
     try { line = `${JSON.stringify(request)}\n`; }
     catch (error) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
       return;
     }
     if (Buffer.byteLength(line, "utf8") > this.#maximumLineBytes) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control exceeds the configured line size" });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: "cancel control exceeds the configured line size" });
       return;
     }
     try {
       this.#child.stdin.write(line, error => {
-        if (error != null) this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error.message });
+        if (error != null) this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error.message });
       });
     } catch (error) {
-      this.#onDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
+      this.#emitDiagnostic({ kind: "cancel_control_failed", requestId, message: error instanceof Error ? error.message : String(error) });
     }
   }
 }

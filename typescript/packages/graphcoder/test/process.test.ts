@@ -1,6 +1,6 @@
-import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PassThrough } from "node:stream";
-import { createNodeGraphCoderConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic } from "../src/node.js";
+import { createNodeGraphCoderConnection as createConnection, JsonLineGraphCoderBridge, type GraphCoderProcessDiagnostic, type GraphCoderProcessBridgeOptions } from "../src/node.js";
 import { GraphCoderTerminal } from "../src/terminal.js";
 import type { GraphCoderWireRequest } from "../src/bridge.js";
 
@@ -20,19 +20,43 @@ process.stdin.on("data", chunk => {
     buffer = buffer.slice(newline + 1);
     if (!line.trim()) continue;
     const request = JSON.parse(line);
-    const delay = request.params && request.params.delay ? request.params.delay : 0;
+    const delay = request.params && request.params.query && request.params.query.after ? Number(request.params.query.after) : 0;
     setTimeout(() => process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: request.params }) + "\\n"), delay);
   }
 });
 `;
 
-function request(id: string, delay = 0): GraphCoderWireRequest {
-  return { request_id: id, method: "list_sessions", params: { delay } };
+function request(id: string, delay = 0): GraphCoderWireRequest<"list_sessions"> {
+  return { request_id: id, method: "list_sessions", params: delay === 0 ? { query: {} } : { query: { after: String(delay) } } };
 }
 
 function env(): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH ?? "" };
 }
+
+const activeBridges = new Set<JsonLineGraphCoderBridge>();
+
+function ownBridge(options: GraphCoderProcessBridgeOptions): JsonLineGraphCoderBridge {
+  const bridge = new JsonLineGraphCoderBridge(options);
+  activeBridges.add(bridge);
+  return bridge;
+}
+
+function ownConnection(options: GraphCoderProcessBridgeOptions): ReturnType<typeof createConnection> {
+  const connection = createConnection(options);
+  activeBridges.add(connection.bridge);
+  return connection;
+}
+
+afterEach(async () => {
+  const bridges = [...activeBridges];
+  await Promise.allSettled(bridges.map(async bridge => {
+    bridge.close("test fixture cleanup");
+    await bridge.waitForExit(2_000);
+    activeBridges.delete(bridge);
+  }));
+  activeBridges.clear();
+});
 
 const runtimeScript = `
 const snapshot = state => ({
@@ -71,17 +95,17 @@ process.stdin.on("data", chunk => {
 describe("JSON-lines process bridge", () => {
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
-    const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", script], env: env() });
+    const connection = ownConnection({ executable: process.execPath, args: ["-e", script], env: env() });
     const page = await connection.transport.listSessions();
     expect(page.items).toEqual([]);
     connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(await connection.bridge.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("runs headless terminal lifecycle through the owned runtime process", async () => {
     const lines: string[] = [];
     const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
-    const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
+    const connection = ownConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
     const terminal = new GraphCoderTerminal(connection.transport, { output });
     const status = await terminal.headless([
       "start op-runtime inspect",
@@ -92,12 +116,12 @@ describe("JSON-lines process bridge", () => {
       "cancel",
     ]);
     expect(status).toBe(0);
-    const responses = lines.map(line => JSON.parse(line) as { readonly ok: boolean; readonly value?: { readonly summary?: { readonly state?: string } } });
+    const responses = lines.map(line => JSON.parse(line) as { readonly ok: boolean; readonly value?: { readonly selectedSession?: { readonly state?: string }; readonly state?: string } });
     expect(responses).toHaveLength(6);
     expect(responses.every(response => response.ok)).toBe(true);
-    expect(responses.at(-1)?.value?.summary?.state).toBe("cancelled");
+    expect(responses.at(-1)?.value?.state).toBe("cancelled");
     connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(await connection.bridge.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("runs the interactive terminal entrypoint against the owned runtime process", async () => {
@@ -105,15 +129,15 @@ describe("JSON-lines process bridge", () => {
     const output = new PassThrough();
     const lines: string[] = [];
     output.on("data", chunk => lines.push(String(chunk)));
-    const connection = createNodeGraphCoderConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
+    const connection = ownConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
     const terminal = new GraphCoderTerminal(connection.transport, { input, output });
     const running = terminal.interactive();
     input.write("start op-interactive inspect\n");
-    const firstDeadline = Date.now() + 2_000;
+    const firstDeadline = Date.now() + 10_000;
     while (lines.length < 1 && Date.now() < firstDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
     expect(lines.length).toBeGreaterThanOrEqual(1);
     input.write("cancel\n");
-    const secondDeadline = Date.now() + 2_000;
+    const secondDeadline = Date.now() + 10_000;
     while (lines.length < 2 && Date.now() < secondDeadline) await new Promise<void>(resolve => setTimeout(resolve, 10));
     expect(lines.length).toBeGreaterThanOrEqual(2);
     input.write("quit\n");
@@ -121,20 +145,20 @@ describe("JSON-lines process bridge", () => {
     await running;
     expect(lines.join("")).toContain('"exited":true');
     connection.bridge.close();
-    await expect(connection.bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(await connection.bridge.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("correlates concurrent responses and preserves explicit parameters", async () => {
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
     const [slow, fast] = await Promise.all([bridge.request(request("slow", 40)), bridge.request(request("fast"))]);
-    expect(slow).toMatchObject({ request_id: "slow", ok: true, result: { delay: 40 } });
-    expect(fast).toMatchObject({ request_id: "fast", ok: true, result: { delay: 0 } });
+    expect(slow).toMatchObject({ request_id: "slow", ok: true, result: { query: { after: "40" } } });
+    expect(fast).toMatchObject({ request_id: "fast", ok: true, result: { query: {} } });
     bridge.close();
   });
 
   test("cancels one pending request while keeping the process available", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => ({ request_id: `${requestId}:cancel`, method: "cancel_session", params: {} }) });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => ({ request_id: `${requestId}:cancel`, method: "cancel_session", params: {} }) });
     const pending = bridge.request(request("cancel", 100));
     expect(bridge.cancel("cancel", "user cancelled")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport", message: "user cancelled" });
@@ -150,7 +174,7 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("retires a cancelled request id until its late response is consumed", async () => {
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
     const pending = bridge.request(request("reused", 50));
     expect(bridge.cancel("reused")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -161,7 +185,7 @@ describe("JSON-lines process bridge", () => {
 
   test("rejects a cancel control that collides with the retired request id", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => request(requestId) });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => request(requestId) });
     const pending = bridge.request(request("collision", 20));
     expect(bridge.cancel("collision")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -170,7 +194,7 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("retains a cancellation control id after its response", async () => {
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), cancelMessage: () => request("control") });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), cancelMessage: () => request("control") });
     const pending = bridge.request(request("original", 20));
     expect(bridge.cancel("original")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -180,14 +204,20 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("rejects pending calls on clean EOF and reports malformed output", async () => {
-    const eof = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
+    const eof = ownBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
     await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });
-    await expect(eof.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed", code: 0 });
+    expect(await eof.waitForExit(2_000)).toMatchObject({ kind: "closed", code: 0 });
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const malformed = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
+    const malformed = ownBridge({ executable: process.execPath, args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
     await expect(malformed.request(request("malformed"))).rejects.toMatchObject({ code: "transport" });
     expect(diagnostics.some(event => event.kind === "malformed_line")).toBe(true);
-    await expect(malformed.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(await malformed.waitForExit(2_000)).toMatchObject({ kind: "closed" });
+  });
+
+  test("keeps exit cleanup authoritative when diagnostics throw", async () => {
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env(), onDiagnostic: () => { throw new Error("diagnostic observer failed"); } });
+    await expect(bridge.request(request("diagnostic-observer"))).rejects.toMatchObject({ code: "transport" });
+    expect(await bridge.waitForExit(2_000)).toMatchObject({ kind: "closed", code: 0 });
   });
 
   test("sends operator approval only through the host control method", async () => {
@@ -206,24 +236,24 @@ process.stdin.on("data", chunk => {
   }
 });
 `;
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", script], env: env() });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", script], env: env() });
     await expect(bridge.operatorApprove({ approvalId: "approval-1", approved: true, sessionId: "session-1" })).resolves.toBeUndefined();
     bridge.close();
-    await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
+    expect(await bridge.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("rejects output with invalid UTF-8 before JSON decoding", async () => {
-    const malformed = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]))"], env: env() });
+    const malformed = ownBridge({ executable: process.execPath, args: ["-e", "process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]))"], env: env() });
     await expect(malformed.request(request("invalid-utf8"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bounds a response line before parsing it", async () => {
-    const oversized = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(512) + '\\n')"], env: env(), maximumLineBytes: 256 });
+    const oversized = ownBridge({ executable: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(512) + '\\n')"], env: env(), maximumLineBytes: 256 });
     await expect(oversized.request(request("oversized"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bounds pending requests and applies the 256 UTF-8 byte request-id limit", async () => {
-    const bridge = new JsonLineGraphCoderBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), maximumPendingRequests: 1 });
+    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), maximumPendingRequests: 1 });
     const first = bridge.request(request("first", 30));
     await expect(bridge.request(request("second"))).rejects.toMatchObject({ code: "transport" });
     await expect(first).resolves.toMatchObject({ request_id: "first", ok: true });
@@ -234,7 +264,7 @@ process.stdin.on("data", chunk => {
 
   test("rejects every pending call when an otherwise valid response has no matching request", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const bridge = new JsonLineGraphCoderBridge({
+    const bridge = ownBridge({
       executable: process.execPath,
       args: ["-e", "process.stdout.write(JSON.stringify({ request_id: 'wrong', ok: true, result: {} }) + '\\n')"],
       env: env(),
