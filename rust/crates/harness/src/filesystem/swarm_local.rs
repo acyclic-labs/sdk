@@ -168,7 +168,7 @@ trait LocalCommunicationAdmitter: Send + Sync {
 }
 
 struct LocalCommunicationComposition {
-    host: Arc<CoordinatorTaskHost<LocalStream>>,
+    host: Arc<dyn DurableTaskHost>,
     task: ComponentIdentity,
     machine: MachineIdentity,
     schema: Value,
@@ -176,6 +176,7 @@ struct LocalCommunicationComposition {
     child_grants: Capabilities,
     limits: Limits,
     cancellation: Arc<LocalTaskCancellationSource>,
+    admission_gates: Arc<Mutex<BTreeMap<TaskId, Arc<Mutex<()>>>>>,
 }
 
 fn cleanup_admission_failure(
@@ -204,6 +205,14 @@ impl LocalCommunicationComposition {
 impl LocalCommunicationAdmitter for LocalCommunicationComposition {
     fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
+            let gate = {
+                let mut gates = self.admission_gates.lock().await;
+                gates
+                    .entry(task)
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone()
+            };
+            let _admission_guard = gate.lock().await;
             let owns_scope = self.cancellation.register_if_absent(task)?;
             let operation_id = OperationId::from_bytes(task.into_bytes());
             let admission = TaskAdmissionRecord {
@@ -357,6 +366,7 @@ async fn local_communication_bindings(
         child_grants: child_capabilities,
         limits,
         cancellation: Arc::new(LocalTaskCancellationSource::default()),
+        admission_gates: Arc::new(Mutex::new(BTreeMap::new())),
     });
     let waits = Arc::new(crate::communication::StreamWaitStore::new_with_clock(
         swarm.conversation_stream.clone(), host.owner_clock(),
@@ -4772,6 +4782,41 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
+    struct InterleavingAdmissionHost {
+        calls: AtomicUsize,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl DurableTaskHost for InterleavingAdmissionHost {
+        fn admit<'a>(
+            &'a self,
+            _admission: TaskAdmissionRecord,
+        ) -> BoxFuture<'a, Result<crate::Admission<TaskId>>> {
+            Box::pin(async move {
+                let call = self.calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    Err(Error::Conflict("first admission failed".into()))
+                } else {
+                    Ok(crate::Admission::Accepted(TaskId::from_bytes([7; 16])))
+                }
+            })
+        }
+
+        fn outcome<'a>(
+            &'a self,
+            _task_id: TaskId,
+        ) -> BoxFuture<'a, Result<Option<crate::Outcome<Value>>>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn cancel<'a>(&'a self, _task_id: TaskId) -> BoxFuture<'a, Result<()>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
     #[test]
     fn admission_failure_cleanup_covers_rejected_failed_reconcile_and_unknown() -> Result<()> {
         let source = LocalTaskCancellationSource::default();
@@ -4807,6 +4852,52 @@ mod tests {
             failure
         );
         assert!(source.receiver(task_id).is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn production_admitter_serializes_retry_before_failure_cleanup() -> Result<()> {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let host = Arc::new(InterleavingAdmissionHost {
+            calls: AtomicUsize::new(0),
+            entered: entered.clone(),
+            release: release.clone(),
+        });
+        let cancellation = Arc::new(LocalTaskCancellationSource::default());
+        let machine = LocalCommunicationMachine::new();
+        let composition = Arc::new(LocalCommunicationComposition {
+            host: host.clone(),
+            task: ComponentIdentity {
+                name: "test.communication".into(),
+                version: "1".into(),
+                digest: [8; 32],
+            },
+            machine: machine.identity().clone(),
+            schema: machine.schema.clone(),
+            root_grants: Capabilities::default(),
+            child_grants: Capabilities::default(),
+            limits: Limits::default(),
+            cancellation: cancellation.clone(),
+            admission_gates: Arc::new(tokio::sync::Mutex::new(BTreeMap::new())),
+        });
+        let task = TaskId::from_bytes([6; 16]);
+        let first = {
+            let composition = composition.clone();
+            tokio::spawn(async move { composition.admit(task, None).await })
+        };
+        entered.notified().await;
+        let second = {
+            let composition = composition.clone();
+            tokio::spawn(async move { composition.admit(task, None).await })
+        };
+        tokio::task::yield_now().await;
+        assert_eq!(host.calls.load(Ordering::SeqCst), 1);
+        release.notify_one();
+        assert!(matches!(first.await.expect("first admission task"), Err(Error::Conflict(_))));
+        assert!(second.await.expect("retry admission task").is_ok());
+        assert!(cancellation.receiver(task).is_some());
+        assert_eq!(host.calls.load(Ordering::SeqCst), 2);
         Ok(())
     }
 
