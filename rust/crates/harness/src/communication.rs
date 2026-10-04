@@ -1877,7 +1877,7 @@ mod tests {
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert!(matches!(
             journal.bounds().await,
-            Err(acyclic_stream::Error::NotFound)
+            Err(StreamError::NotFound)
         ));
         Ok(())
     }
