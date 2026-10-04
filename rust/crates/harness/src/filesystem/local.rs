@@ -14,6 +14,7 @@ use crate::{
         ExecutionReceiptRecord, ExecutionReceiptStore, ExecutionResolutionCapability,
         NativeExecutionProvider,
     },
+    native_tool::{native_command_tools, NativeCommandBinding, NATIVE_COMMAND_TOOL},
     model::{Model, ModelProvider},
     resources::ProviderRef,
     store::StreamAggregate,
@@ -914,6 +915,7 @@ pub struct LocalHarnessTools {
     tools: ToolRegistry,
     batch_publisher: Option<Arc<dyn crate::batch_publication::ModelBatchPublisher>>,
     authenticated_task: Option<TaskId>,
+    native_command: Option<NativeCommandBinding>,
 }
 
 impl LocalHarnessTools {
@@ -924,6 +926,7 @@ impl LocalHarnessTools {
             tools: ToolRegistry::new(),
             batch_publisher: None,
             authenticated_task: None,
+            native_command: None,
         }
     }
 
@@ -934,6 +937,7 @@ impl LocalHarnessTools {
             tools,
             batch_publisher: None,
             authenticated_task: None,
+            native_command: None,
         }
     }
 
@@ -945,6 +949,21 @@ impl LocalHarnessTools {
     ) -> Self {
         self.batch_publisher = Some(publisher);
         self
+    }
+
+    /// Binds the optional Harness native command tool to an owner-selected
+    /// host and policy. The host owns process admission, receipts, cleanup,
+    /// and recovery; this composition only registers its typed model contract.
+    /// The supplied policy becomes the immutable policy for this composition,
+    /// including the stock filesystem tools.
+    pub fn with_native_command(mut self, binding: NativeCommandBinding) -> Result<Self> {
+        if self.tools.get(NATIVE_COMMAND_TOOL).is_some() {
+            return Err(Error::Conflict(
+                "native command tool is already present in local tools".into(),
+            ));
+        }
+        self.native_command = Some(binding);
+        Ok(self)
     }
 
     /// Carries the durable task selected by the owning swarm composition.
@@ -968,6 +987,20 @@ impl LocalHarnessTools {
                 })?;
             builder = builder.tool(tool)?;
             builder = builder.grant(format!("tool:call:{}", definition.name));
+        }
+        if let Some(binding) = &self.native_command {
+            let native_tools = native_command_tools(binding)?;
+            for definition in native_tools.definitions()? {
+                let tool = native_tools
+                    .get_version(&definition.name, &definition.revision)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::Storage("native command registry lost selected revision".into())
+                    })?;
+                builder = builder.tool(tool)?;
+                builder = builder.grant(format!("tool:call:{}", definition.name));
+            }
+            builder = builder.policy(binding.policy());
         }
         if let Some(publisher) = &self.batch_publisher {
             builder = builder.batch_publisher(publisher.clone());

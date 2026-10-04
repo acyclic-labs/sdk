@@ -25,6 +25,7 @@ use crate::{
     interaction::{InteractionKind, InteractionOutcome, InteractionResolution, InteractionResponse, InteractionTicket},
     model::{Model, ModelContent, ModelMessage, ModelProvider, ModelRole},
     model_input::{CompletedModelBoundary, InheritedModelContext},
+    native_tool::NativeCommandBinding,
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
     runtime::TaskRunLimits,
@@ -212,6 +213,8 @@ pub struct LocalSwarmBindings {
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
     /// Optional host-only observation sink for lazy qualification metrics.
     pub observer: Option<Arc<dyn LocalSwarmObserver>>,
+    /// Optional owner-selected native command provider and policy.
+    pub native_command: Option<NativeCommandBinding>,
 }
 
 impl LocalSwarmBindings {
@@ -230,6 +233,7 @@ impl LocalSwarmBindings {
             model_fork_plans: None,
             filesystem_fork_resolver: None,
             observer: None,
+            native_command: None,
         }
     }
 
@@ -240,6 +244,14 @@ impl LocalSwarmBindings {
         publisher: Arc<dyn crate::batch_publication::ModelBatchPublisher>,
     ) -> Self {
         self.model_batch_publisher = Some(publisher);
+        self
+    }
+
+    /// Adds the optional Harness native command binding to every task
+    /// composition created by this swarm.
+    #[must_use]
+    pub fn with_native_command(mut self, binding: NativeCommandBinding) -> Self {
+        self.native_command = Some(binding);
         self
     }
 
@@ -277,6 +289,9 @@ impl LocalSwarmBindings {
                 registry.register(local_fork_tool(parent, plans.clone()))?;
                 tools = LocalHarnessTools::from_registry(registry);
             }
+            if let Some(binding) = &self.native_command {
+                tools = tools.with_native_command(binding.clone())?;
+            }
             return Ok(match &self.model_batch_publisher {
                 Some(publisher) => tools.with_batch_publisher(publisher.clone()),
                 None => tools,
@@ -291,7 +306,10 @@ impl LocalSwarmBindings {
         if let Some(plans) = &self.model_fork_plans {
             registry.register(local_fork_tool(parent, plans.clone()))?;
         }
-        let tools = LocalHarnessTools::from_registry(registry).with_authenticated_task(parent);
+        let mut tools = LocalHarnessTools::from_registry(registry).with_authenticated_task(parent);
+        if let Some(binding) = &self.native_command {
+            tools = tools.with_native_command(binding.clone())?;
+        }
         Ok(match &self.model_batch_publisher {
             Some(publisher) => tools.with_batch_publisher(publisher.clone()),
             None => tools,
