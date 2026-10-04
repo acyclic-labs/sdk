@@ -172,7 +172,7 @@ if ($RustTarget -eq "aarch64-pc-windows-msvc") {
 }
 $linkArch = if ($RustTarget -eq "aarch64-pc-windows-msvc") { "arm64" } else { "x64" }
 $msvcLink = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Recurse -File -Filter link.exe -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -match "\\Hostx64\\$linkArch\\link\.exe$" } | Select-Object -First 1
+    Where-Object { $_.FullName -match "\\Host(?:x64|arm64)\\$linkArch\\link\.exe$" } | Select-Object -First 1
 if ($msvcLink) {
     # Git for Windows also ships a link.exe (the symlink utility). Put the
     # MSVC linker first so clang's Windows ABI probe cannot invoke the wrong
