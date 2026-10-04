@@ -107,6 +107,10 @@ function validateQualificationLanes(manifest) {
       if (lane[field] !== undefined && (typeof lane[field] !== "string" || lane[field].trim() === "")) fail(`${lane.id} ${field} is invalid`);
       if (lane[field] !== undefined && !existsSync(resolve(ROOT, lane[field]))) fail(`${lane.id} ${field} does not exist: ${lane[field]}`);
     }
+    const receiptEnvironments = [lane.receipt_environment, ...Object.values(lane.receipt_environment_by_execution_kind ?? {})];
+    for (const environmentName of receiptEnvironments) {
+      if (environmentName !== undefined && (typeof environmentName !== "string" || !/^[A-Z][A-Z0-9_]+$/u.test(environmentName))) fail(`${lane.id} receipt environment is invalid`);
+    }
     if (lane.runtime_artifact_by_platform !== undefined) {
       if (!lane.runtime_artifact_by_platform || typeof lane.runtime_artifact_by_platform !== "object") fail(`${lane.id} runtime_artifact_by_platform is invalid`);
       for (const platform of lane.platforms) {
@@ -118,6 +122,50 @@ function validateQualificationLanes(manifest) {
     if (lane.requires_installed_package === true && lane.allows_mock_fixture === true) fail(`${lane.id} cannot allow a mock fixture with an installed package requirement`);
     if (lane.requires_lazy_observation === true && lane.id !== "installed-pty" && !Array.isArray(lane.required_markers)) fail(`${lane.id} must declare required markers with lazy observation`);
   }
+}
+
+function readLaneReceipt(path, lane, executionKind, source, platform) {
+  const receiptPath = resolve(path);
+  if (!existsSync(receiptPath)) fail(`${lane.id} ${executionKind} receipt is missing: ${receiptPath}`);
+  let record;
+  try { record = JSON.parse(readFileSync(receiptPath, "utf8")); }
+  catch (error) { fail(`${lane.id} ${executionKind} receipt is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+  const suite = record?.suite;
+  if (!suite || suite.status !== "passed") fail(`${lane.id} ${executionKind} receipt is not passed`);
+  if (suite.execution_kind !== executionKind || suite.platform !== platform) fail(`${lane.id} ${executionKind} receipt execution identity is invalid`);
+  if (!Array.isArray(record.artifacts) || record.artifacts.length === 0) fail(`${lane.id} ${executionKind} receipt has no artifact evidence`);
+  const descriptorPath = suite.descriptor_path;
+  if (typeof descriptorPath !== "string" || !existsSync(descriptorPath)) fail(`${lane.id} ${executionKind} descriptor is missing`);
+  let descriptor;
+  try { descriptor = JSON.parse(readFileSync(descriptorPath, "utf8")); }
+  catch (error) { fail(`${lane.id} ${executionKind} descriptor is invalid JSON: ${error instanceof Error ? error.message : String(error)}`); }
+  if (descriptor.source_commit !== source.commit || descriptor.source_tree !== source.tree) fail(`${lane.id} ${executionKind} receipt is bound to a different source`);
+  if (lane.driver && !JSON.stringify(descriptor.command ?? {}).includes(lane.driver)) fail(`${lane.id} ${executionKind} receipt command does not invoke its declared driver`);
+  for (const artifact of record.artifacts) {
+    if (artifact.source_commit !== source.commit || artifact.source_tree !== source.tree || artifact.fresh !== true) fail(`${lane.id} ${executionKind} artifact provenance is stale or not fresh`);
+  }
+  return { lane: lane.id, execution_kind: executionKind, receipt_path: receiptPath, suite_id: suite.id, descriptor_path: descriptorPath };
+}
+
+function requiredLaneReceipts(manifest, platform, source) {
+  const receipts = [];
+  for (const lane of manifest.qualification_lanes) {
+    if (!lane.platforms.includes(platform)) continue;
+    if (lane.receipt_environment_by_execution_kind) {
+      for (const executionKind of lane.execution_kinds) {
+        const environmentName = lane.receipt_environment_by_execution_kind[executionKind];
+        if (environmentName === undefined) fail(`${lane.id} lacks a receipt environment for ${executionKind}`);
+        const path = process.env[environmentName];
+        if (typeof path !== "string" || path.trim() === "") fail(`${lane.id} requires ${environmentName}; platform run cannot complete without the installed lane receipt`);
+        receipts.push(readLaneReceipt(path, lane, executionKind, source, platform));
+      }
+    } else if (lane.receipt_environment) {
+      const path = process.env[lane.receipt_environment];
+      if (typeof path !== "string" || path.trim() === "") fail(`${lane.id} requires ${lane.receipt_environment}; platform run cannot complete without the installed lane receipt`);
+      receipts.push(readLaneReceipt(path, lane, lane.execution_kinds[0], source, platform));
+    }
+  }
+  return receipts;
 }
 
 function loadManifest(path = MANIFEST_PATH) {
@@ -491,6 +539,7 @@ function validateArtifactBytes(gateId, path, bytes) {
 export async function run(manifest, { platform = platformName(), output = ".qualification/platform-gates" } = {}) {
   platform = requestedPlatform(platform);
   const sourceBefore = currentSource();
+  const laneReceipts = requiredLaneReceipts(manifest, platform, sourceBefore);
   const selected = manifest.gates.filter(gate => gate.platforms.includes(platform));
   if (selected.length === 0) fail(`no gates are defined for ${platform}`);
   const root = claimQualificationOutput(output, sourceBefore);
@@ -601,6 +650,7 @@ export async function run(manifest, { platform = platformName(), output = ".qual
     source_before: sourceBefore,
     source_after: sourceAfter,
     records,
+    qualification_lane_receipts: laneReceipts,
     status: records.length === selected.length && records.every(record => record.result.status === "passed") && sameSourceIdentity(sourceBefore, sourceAfter) && sourceBefore.clean && sourceAfter.clean ? "passed" : "failed",
   };
   const summaryPath = resolve(root, "summary.json");
@@ -608,7 +658,7 @@ export async function run(manifest, { platform = platformName(), output = ".qual
   return { summary_path: summaryPath, ...summary };
 }
 
-export { loadManifest, validateManifest, commandText, safeEnvironment, runtimeEnvironment };
+export { loadManifest, validateManifest, commandText, safeEnvironment, runtimeEnvironment, readLaneReceipt };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {

@@ -14,6 +14,7 @@
       "requires_installed_package": true,
       "allows_mock_fixture": false,
       "requires_process_ownership": true,
+      "receipt_environment": "GRAPHCODER_NATIVE_STAGE_RECEIPT",
       "required_markers": ["dropped-response", "retry", "reopen", "activity", "installed-package-export"]
     },
     {
@@ -26,6 +27,7 @@
       "requires_installed_package": true,
       "requires_process_ownership": true,
       "requires_lazy_observation": true,
+      "receipt_environment_by_execution_kind": {"native": "GRAPHCODER_HEADLESS_NATIVE_RECEIPT", "package": "GRAPHCODER_HEADLESS_PACKAGE_RECEIPT"},
       "allows_mock_fixture": false,
       "required_markers": ["approval transitions to approved", "writeback applied only with matching operation and generation", "cancellation and resume state transitions"]
     },
@@ -40,6 +42,7 @@
       "requires_installed_package": true,
       "requires_process_ownership": true,
       "requires_lazy_observation": true,
+      "receipt_environment": "GRAPHCODER_PTY_RECEIPT",
       "requires_approval_cancellation_writeback": true,
       "allows_mock_fixture": false,
       "negative_driver": "scripts/graphcoder-production-pty-winpty.test.py"
@@ -52,6 +55,7 @@
       "scenario": "docs/graphcoder-swarm/graphcoder-transport-fault-scenarios.json",
       "requires_installed_package": true,
       "requires_process_ownership": true,
+      "receipt_environment": "GRAPHCODER_TRANSPORT_FAULTS_RECEIPT",
       "allows_mock_fixture": false
     },
     {
