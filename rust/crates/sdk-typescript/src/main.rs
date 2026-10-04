@@ -572,6 +572,14 @@ fn contract_routes<'a>(
 
 fn proto_import_path(family: &str) -> String {
     match family {
+        "filesystem" => {
+            "../../../../typescript/packages/filesystem/generated/proto/filesystem/v2/filesystem_pb.js"
+                .to_owned()
+        }
+        "harness" => {
+            "../../../../typescript/packages/harness/generated/proto/harness/v2/harness_pb.js"
+                .to_owned()
+        }
         "objects" => {
             "../../../../typescript/packages/objects/generated/proto/objects/v2/objects_pb.js"
                 .to_owned()
@@ -581,6 +589,45 @@ fn proto_import_path(family: &str) -> String {
         _ => format!(
             "../../../../typescript/packages/{family}/generated/proto/{family}/v1/{family}_pb.js"
         ),
+    }
+}
+
+fn grpc_service_prefix(method: &GrpcMethodMetadata) -> Option<String> {
+    let service = method.rpc.split_once('/')?.0.rsplit('.').next()?;
+    let service = service.strip_suffix("Service").unwrap_or(service);
+    Some(lower_camel(service))
+}
+
+/// gRPC method names are only unique within one protobuf service.  Families
+/// such as Inference expose several services, so a facade must qualify only
+/// colliding names while retaining the short ergonomic names for the common
+/// single-service case.
+fn grpc_operation_keys(methods: &[GrpcMethodMetadata]) -> Vec<String> {
+    let base = methods
+        .iter()
+        .map(|method| lower_camel(&method.rpc_name))
+        .collect::<Vec<_>>();
+    base.iter()
+        .enumerate()
+        .map(|(index, key)| {
+            if base.iter().filter(|candidate| *candidate == key).count() == 1 {
+                key.clone()
+            } else {
+                grpc_service_prefix(&methods[index])
+                    .map(|prefix| format!("{prefix}{key}"))
+                    .unwrap_or_else(|| key.clone())
+            }
+        })
+        .collect()
+}
+
+fn package_proto_import_path(family: &str) -> String {
+    match family {
+        "filesystem" => "../generated/proto/filesystem/v2/filesystem_pb.js".to_owned(),
+        "harness" => "../generated/proto/harness/v2/harness_pb.js".to_owned(),
+        "objects" => "../generated/proto/objects/v2/objects_pb.js".to_owned(),
+        "stream" => "../generated/proto/stream/v2/stream_pb.js".to_owned(),
+        _ => format!("../generated/proto/{family}/v1/{family}_pb.js"),
     }
 }
 
@@ -738,6 +785,25 @@ fn json<T: Serialize>(value: &T) -> Result<String, Error> {
 }
 
 fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
+    let family_path = proto_import_path(&service.family);
+    let protocol_path = format!(
+        "../../../../typescript/packages/{}/generated/proto/protocol/v1/protocol_pb.js",
+        service.family
+    );
+    typescript_with_paths(service, &family_path, &protocol_path)
+}
+
+fn package_typescript(service: &ServiceMetadata) -> Result<String, Error> {
+    let family_path = package_proto_import_path(&service.family);
+    let protocol_path = "../generated/proto/protocol/v1/protocol_pb.js";
+    typescript_with_paths(service, &family_path, protocol_path)
+}
+
+fn typescript_with_paths(
+    service: &ServiceMetadata,
+    family_path: &str,
+    protocol_path: &str,
+) -> Result<String, Error> {
     let constant = format!("{}_METHODS", service.family.to_ascii_uppercase());
     let title = format!(
         "{}{}",
@@ -750,12 +816,13 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
     let message_types = service
         .methods
         .iter()
-        .flat_map(|method| {
-            [method.request_type.as_str(), method.response_type.as_str()]
-        })
-        .chain(service.grpc_methods.iter().flat_map(|method| {
-            [method.request_type.as_str(), method.response_type.as_str()]
-        }))
+        .flat_map(|method| [method.request_type.as_str(), method.response_type.as_str()])
+        .chain(
+            service
+                .grpc_methods
+                .iter()
+                .flat_map(|method| [method.request_type.as_str(), method.response_type.as_str()]),
+        )
         .collect::<BTreeSet<_>>();
     let family_message_imports = message_types
         .iter()
@@ -769,11 +836,6 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         .map(|qualified| local_type(qualified))
         .collect::<Vec<_>>()
         .join(", ");
-    let family_path = proto_import_path(&service.family);
-    let protocol_path = format!(
-        "../../../../typescript/packages/{}/generated/proto/protocol/v1/protocol_pb.js",
-        service.family
-    );
     if message_types.is_empty() {
         output.push_str(
             "// This family has no HTTP method projection in the current Rust model.\n\n",
@@ -881,12 +943,13 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         "{{\n{methods}\n}} as const satisfies Record<string, RustOwnedMethodMetadata>;\n\n"
     ));
     output.push_str("export interface RustOwnedGrpcMethodMetadata { readonly rpcName: string; readonly rpc: string; readonly requestType: string; readonly responseType: string; readonly clientStreaming: boolean; readonly serverStreaming: boolean; readonly requestFields: readonly RustOwnedFieldMetadata[]; readonly responseFields: readonly RustOwnedFieldMetadata[]; }\n\n");
-    let grpc_methods = service.grpc_methods.iter().map(|method| {
+    let grpc_keys = grpc_operation_keys(&service.grpc_methods);
+    let grpc_methods = service.grpc_methods.iter().zip(grpc_keys.iter()).map(|(method, key)| {
         let fields = |items: &[FieldMetadata]| items.iter().map(|field| {
             let oneof = field.oneof.as_deref().map_or_else(|| "undefined".to_owned(), |value| format!("{value:?}"));
             format!("{{ name: {:?}, jsonName: {:?}, number: {}, wireType: {:?}, repeated: {}, optional: {}, oneof: {}, proto3Optional: {} }}", field.name, field.json_name, field.number, field.wire_type, field.repeated, field.optional, oneof, field.proto3_optional)
         }).collect::<Vec<_>>().join(", ");
-        format!("  {}: {{ rpcName: {:?}, rpc: {:?}, requestType: {:?}, responseType: {:?}, clientStreaming: {}, serverStreaming: {}, requestFields: [{}], responseFields: [{}] }}", method.rpc_name, method.rpc_name, method.rpc, method.request_type, method.response_type, method.client_streaming, method.server_streaming, fields(&method.request_fields), fields(&method.response_fields))
+        format!("  {}: {{ rpcName: {:?}, rpc: {:?}, requestType: {:?}, responseType: {:?}, clientStreaming: {}, serverStreaming: {}, requestFields: [{}], responseFields: [{}] }}", key, method.rpc_name, method.rpc, method.request_type, method.response_type, method.client_streaming, method.server_streaming, fields(&method.request_fields), fields(&method.response_fields))
     }).collect::<Vec<_>>().join(",\n");
     output.push_str(&format!(
         "export const {}_GRPC_METHODS = {{\n{grpc_methods}\n}} as const satisfies Record<string, RustOwnedGrpcMethodMetadata>;\n\n",
@@ -897,21 +960,20 @@ fn typescript(service: &ServiceMetadata) -> Result<String, Error> {
         output.push_str(&format!(
             "export function create{title}GrpcClient(invoker: RustOwnedGrpcInvoker) {{\n  return {{\n"
         ));
-        for method in &service.grpc_methods {
-            let operation = lower_camel(&method.rpc_name);
+        for (method, operation) in service.grpc_methods.iter().zip(grpc_keys.iter()) {
             let request_type = local_type(&method.request_type);
             let response_type = local_type(&method.response_type);
             if method.server_streaming {
                 output.push_str(&format!(
                     "    {operation}(request: {request_type}): AsyncIterable<{response_type}> {{\n      return invoker.invokeGrpcStream<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
                     grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
-                    rpc_name = method.rpc_name,
+                    rpc_name = operation,
                 ));
             } else {
                 output.push_str(&format!(
                     "    {operation}(request: {request_type}): Promise<{response_type}> {{\n      return invoker.invokeGrpc<{request_type}, {response_type}>({grpc_constant}.{rpc_name}, request);\n    }},\n",
                     grpc_constant = format!("{}_GRPC_METHODS", service.family.to_ascii_uppercase()),
-                    rpc_name = method.rpc_name,
+                    rpc_name = operation,
                 ));
             }
         }
@@ -1046,6 +1108,14 @@ fn generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> 
     Ok(files)
 }
 
+fn package_generated_files(manifest: &Manifest) -> Result<Vec<(String, String)>, Error> {
+    manifest
+        .services
+        .iter()
+        .map(|service| Ok((service.family.clone(), package_typescript(service)?)))
+        .collect()
+}
+
 fn write_or_check(mode: &str, output_dir: &Path) -> Result<(), Error> {
     let source_revision =
         env::var("SDK_SOURCE_REVISION").unwrap_or_else(|_| "working-tree".to_owned());
@@ -1093,25 +1163,71 @@ fn write_or_check(mode: &str, output_dir: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+fn write_or_check_packages(mode: &str, repo_root: &Path) -> Result<(), Error> {
+    let source_revision =
+        env::var("SDK_SOURCE_REVISION").unwrap_or_else(|_| "working-tree".to_owned());
+    if source_revision == "working-tree"
+        && matches!(env::var("SDK_RELEASE").as_deref(), Ok("1" | "true" | "yes"))
+    {
+        return Err(Error::Missing(
+            "release generation requires SDK_SOURCE_REVISION".to_owned(),
+        ));
+    }
+    for (family, content) in package_generated_files(&model()?)? {
+        let path = repo_root
+            .join("typescript")
+            .join("packages")
+            .join(family)
+            .join("src")
+            .join("generated-client.ts");
+        if mode == "check" {
+            let current = fs::read_to_string(&path)?;
+            if current != content {
+                return Err(Error::Missing(format!(
+                    "Rust-generated TypeScript package drift: {}",
+                    path.display()
+                )));
+            }
+        } else {
+            fs::write(&path, content)?;
+        }
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let mut args = env::args_os().skip(1);
     let mode = args
         .next()
         .and_then(|value| value.into_string().ok())
         .unwrap_or_else(|| "write".to_owned());
-    if mode != "write" && mode != "check" {
-        eprintln!("usage: sdk-typescript [write|check] [output-directory]");
+    if !matches!(
+        mode.as_str(),
+        "write" | "check" | "packages-write" | "packages-check"
+    ) {
+        eprintln!(
+            "usage: sdk-typescript [write|check] [output-directory] | [packages-write|packages-check] [repo-root]"
+        );
         return ExitCode::FAILURE;
     }
     let output = args
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_OUTPUT));
-    match write_or_check(&mode, &output) {
+    let result = match mode.as_str() {
+        "packages-write" => write_or_check_packages("write", &output),
+        "packages-check" => write_or_check_packages("check", &output),
+        _ => write_or_check(&mode, &output),
+    };
+    match result {
         Ok(()) => {
             println!(
-                "{} Rust-owned TypeScript prototype in {}",
-                if mode == "write" { "wrote" } else { "checked" },
+                "{} Rust-owned TypeScript output in {}",
+                if mode.ends_with("write") {
+                    "wrote"
+                } else {
+                    "checked"
+                },
                 output.display()
             );
             ExitCode::SUCCESS
