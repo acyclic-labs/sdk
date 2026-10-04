@@ -101,6 +101,17 @@ fn has_read_result(request: &ModelRequest) -> bool {
     })
 }
 
+fn has_prompt_file(request: &ModelRequest, operation: OperationId) -> bool {
+    let path = format!("turns/{operation}/user.txt");
+    request.messages.iter().any(|message| match &message.content {
+        ModelContent::Part(ModelContentPart::File { file, .. }) => file.path() == path,
+        ModelContent::Parts(parts) => parts.iter().any(|part| {
+            matches!(part, ModelContentPart::File { file, .. } if file.path() == path)
+        }),
+        _ => false,
+    })
+}
+
 struct DeterministicProvider {
     requests_decoded: Mutex<Vec<ModelRequest>>,
     requests: Mutex<Vec<Vec<u8>>>,
@@ -194,7 +205,7 @@ impl ModelProvider for DeterministicProvider {
         let is_child_a = declared_task == Some("child-a");
         let is_child_b = declared_task == Some("child-b");
         let is_grandchild = declared_task == Some("grandchild");
-        let sibling_fork_attempt = dispatch == 6
+        let sibling_fork_attempt = has_prompt_file(&request, id(0xA2))
             && self.child_read_verified.load(Ordering::SeqCst)
             && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
