@@ -1,7 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 import * as wire from "../generated/proto/objects/v2/objects_pb.js";
 import { decode_objects_v2_json, encode_objects_v2_json, objects_v2_http_body_frame_bytes, objects_v2_http_error_code, objects_v2_http_json_frame_bytes, objects_v2_http_type, validate_objects_v2_get_body, validate_objects_v2_get_header, validate_objects_v2_http_endpoint, validate_objects_v2_response } from "../generated/wasm/acyclic_objects_wasm.js";
-import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { OBJECTS_METHODS, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import { ObjectsV2Error, ObjectsV2Provider, objectsV2Error } from "./v2.js";
 
 export interface ObjectsV2HttpOptions {
@@ -36,6 +36,8 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     this.fetcher = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   protected async invoke(route: string, bytes: Uint8Array, body: Uint8Array, maximum: bigint, signal?: AbortSignal): Promise<readonly Uint8Array[]> {
+    const method = Object.values(OBJECTS_METHODS).find(candidate => candidate.path === `v2/objects/${route}`);
+    if (method === undefined) throw new ObjectsV2Error(wire.ErrorCode.INVALID_ARGUMENT);
     const types = [objects_v2_http_type(route, false), objects_v2_http_type(route, true)];
     const jsonFrameBytes = objects_v2_http_json_frame_bytes();
     const bodyFrameBytes = objects_v2_http_body_frame_bytes();
@@ -46,7 +48,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
         throw new ObjectsV2Error(code === wire.ErrorCode.QUOTA_EXCEEDED ? code : wire.ErrorCode.UNAVAILABLE);
       }
     };
-    const streaming = route === "objects/put" || route === "multipart/upload-part";
+    const streaming = method.clientStreaming;
     const payloads: Uint8Array[] = [];
     let requestSize = 0;
     const add = (value: Uint8Array) => {
@@ -85,7 +87,7 @@ export class HttpObjectsV2 extends ObjectsV2Provider {
     try {
       const response = await this.fetcher(new URL(route, this.endpoint), { method: "POST", redirect: "error", signal: controller.signal, headers: { authorization: `Bearer ${this.options.token}`, "content-type": streaming ? "application/x-ndjson" : "application/json" }, body: request });
       if (response.status === 304) throw new ObjectsV2Error(wire.ErrorCode.NOT_MODIFIED);
-      if (route === "objects/get" && response.status === 200) {
+      if (method.serverStreaming && response.status === 200) {
         if (response.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase() !== "application/x-ndjson") throw new ObjectsV2Error(wire.ErrorCode.UNAVAILABLE);
         reader = response.body?.getReader();
         const frames: Uint8Array[] = [];
