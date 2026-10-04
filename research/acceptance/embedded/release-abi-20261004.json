@@ -1,0 +1,49 @@
+{
+  "schema": "acyclic.sdk.embedded.release-abi.v1",
+  "status": "qualified-local-release-package",
+  "source": {
+    "revision": "dca61a23a95d5156fa9284adcbc54bce6e4609d9",
+    "crate": "rust/crates/sdk-embedded-prototype",
+    "version": "0.2.0",
+    "abi_version": 1,
+    "source_digest": "e60273cd4f2bbf6132c67872a411a86328291628a2fbd91e3033725809f2c8a3",
+    "cargo_lock_sha256": "6483b04e38523feab1b14815d834f01adc91f6c641afc68cd950bf435016a7c8"
+  },
+  "toolchain": {
+    "rust": "1.98.1",
+    "cbindgen": "0.29.4",
+    "clang": "17.0.2",
+    "cmake": "3.26.4",
+    "ninja": true,
+    "offline_locked": true
+  },
+  "foreign_consumers": {
+    "rust_unit_tests": { "status": "passed", "tests": 14 },
+    "c_consumer": { "status": "passed", "checks": ["layout", "append", "read", "release", "stale_handles"] },
+    "python_ctypes_consumer": { "status": "passed", "checks": ["append", "follow", "owned_buffers", "cancel", "stale_handles"] },
+    "cpp_cross_thread_consumer": { "status": "passed", "checks": ["blocked_pull_wakeup", "cross_thread_cancel"] },
+    "cmake_ctest": { "status": "passed", "passed": 3, "total": 3 },
+    "clean_prefix_cpp_consumer": { "status": "passed" }
+  },
+  "reproducibility": {
+    "independent_clean_builds": 2,
+    "source_digests_equal": true,
+    "artifact_hashes_equal": true,
+    "pe_coff_timestamp_normalized": 0,
+    "pe_debug_timestamps_normalized": 0,
+    "codeview_pdb_guid_normalized": true
+  },
+  "artifacts": {
+    "include/acyclic_embedded_prototype.h": "64837e5a4e468e9748969025d3631e39b69e9de7f77d66d26e7876247b90c109",
+    "include/acyclic/embedded.hpp": "49e06d55fe822c65604eb5699b1672fa8262ee9feb5a58019aa77d85b3f12572",
+    "bin/acyclic_sdk_embedded_prototype.dll": "1ca59457792c86cd6d9359dd6d207afebf9abf5f9978588ec110e034ffe84b58",
+    "lib/acyclic_sdk_embedded_prototype.dll.lib": "67ae3ed7a570c2bf1961c234b21ef1af15204cd84c5ecab9b499fe73c9b7eefc",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake": "0836e861a779ceede1c0624507125c50ead8182ae99e00b716415fd3d5e1f066",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake": "c626df80d51f26a450ee36ae47e466121b32f0a9a98894687c0b7edc332170c4"
+  },
+  "publication": {
+    "registry_published": false,
+    "production_deployed": false,
+    "qualification_scope": "local Windows release ABI and clean CMake prefix"
+  }
+}

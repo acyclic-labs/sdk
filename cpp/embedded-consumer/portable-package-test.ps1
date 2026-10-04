@@ -14,6 +14,67 @@ function Invoke-Checked([string]$Command, [string[]]$Arguments) {
     }
 }
 
+function Normalize-PeTimestamp([string]$Path) {
+    # rustc/LLVM writes build-specific time and PDB identity data into the PE
+    # image.  Normalize those non-runtime fields before hashing or installing
+    # the release DLL so two clean builds from identical Rust inputs produce
+    # the same package bytes.
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    if ($bytes.Length -lt 0x40 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+        throw "The release artifact is not a PE image: $Path"
+    }
+    $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+    if ($peOffset -lt 0 -or $peOffset + 12 -gt $bytes.Length -or
+        $bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or
+        $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
+        throw "The release artifact has no valid PE signature: $Path"
+    }
+    $timestampOffset = $peOffset + 8
+    [Array]::Clear($bytes, $timestampOffset, 4)
+
+    $optionalOffset = $peOffset + 24
+    $optionalSize = [BitConverter]::ToUInt16($bytes, $peOffset + 20)
+    $sectionOffset = $optionalOffset + $optionalSize
+    $sectionCount = [BitConverter]::ToUInt16($bytes, $peOffset + 6)
+    $magic = [BitConverter]::ToUInt16($bytes, $optionalOffset)
+    $dataDirectoryOffset = if ($magic -eq 0x20B) { $optionalOffset + 112 } else { $optionalOffset + 96 }
+    $debugDirectoryOffset = $dataDirectoryOffset + (6 * 8)
+    $debugRva = [BitConverter]::ToUInt32($bytes, $debugDirectoryOffset)
+    $debugSize = [BitConverter]::ToUInt32($bytes, $debugDirectoryOffset + 4)
+    if ($debugRva -ne 0 -and $debugSize -ne 0) {
+        $debugFileOffset = -1
+        for ($index = 0; $index -lt $sectionCount; $index++) {
+            $header = $sectionOffset + (40 * $index)
+            $virtualSize = [BitConverter]::ToUInt32($bytes, $header + 8)
+            $virtualAddress = [BitConverter]::ToUInt32($bytes, $header + 12)
+            $rawSize = [BitConverter]::ToUInt32($bytes, $header + 16)
+            $rawPointer = [BitConverter]::ToUInt32($bytes, $header + 20)
+            $span = [Math]::Max($virtualSize, $rawSize)
+            if ($debugRva -ge $virtualAddress -and $debugRva -lt ($virtualAddress + $span)) {
+                $debugFileOffset = $rawPointer + ($debugRva - $virtualAddress)
+                break
+            }
+        }
+        if ($debugFileOffset -lt 0 -or $debugFileOffset + $debugSize -gt $bytes.Length -or ($debugSize % 28) -ne 0) {
+            throw "The release artifact has an invalid PE debug directory: $Path"
+        }
+        for ($entry = 0; $entry -lt $debugSize; $entry += 28) {
+            $entryOffset = $debugFileOffset + $entry
+            [Array]::Clear($bytes, $entryOffset + 4, 4)
+            $type = [BitConverter]::ToUInt32($bytes, $entryOffset + 12)
+            $dataSize = [BitConverter]::ToUInt32($bytes, $entryOffset + 16)
+            $dataPointer = [BitConverter]::ToUInt32($bytes, $entryOffset + 24)
+            # CodeView RSDS records contain a random PDB GUID. The package
+            # intentionally excludes the PDB, so the GUID has no runtime use.
+            if ($type -eq 2 -and $dataSize -ge 20 -and $dataPointer + $dataSize -le $bytes.Length -and
+                [BitConverter]::ToUInt32($bytes, $dataPointer) -eq 0x53445352) {
+                [Array]::Clear($bytes, $dataPointer + 4, 16)
+            }
+        }
+    }
+    [System.IO.File]::WriteAllBytes($Path, $bytes)
+}
+
 $rootPath = (Resolve-Path -LiteralPath $Root).Path
 $buildPath = [System.IO.Path]::GetFullPath($BuildDirectory)
 $rustTarget = Join-Path $buildPath "rust-target"
@@ -38,7 +99,7 @@ $sourceFiles = @(
     "cpp/embedded-consumer/cross_thread_cancel_smoke.cpp"
 )
 
-Invoke-Checked "cargo" @("build", "--locked", "--release", "--manifest-path", $manifest, "--target-dir", $rustTarget)
+Invoke-Checked "cargo" @("build", "--locked", "--offline", "--release", "--manifest-path", $manifest, "--target-dir", $rustTarget)
 $release = Join-Path $rustTarget "release"
 $runtime = Join-Path $release "acyclic_sdk_embedded_prototype.dll"
 $importLibrary = Join-Path $release "acyclic_sdk_embedded_prototype.dll.lib"
@@ -46,6 +107,7 @@ $header = Get-ChildItem -LiteralPath (Join-Path $release "build") -Recurse -File
 if (-not (Test-Path -LiteralPath $runtime -PathType Leaf)) { throw "Rust release DLL was not produced: $runtime" }
 if (-not (Test-Path -LiteralPath $importLibrary -PathType Leaf)) { throw "Rust import library was not produced: $importLibrary" }
 if (-not $header) { throw "cbindgen header was not produced under $release\build" }
+Normalize-PeTimestamp $runtime
 
 $clang = (Get-Command clang++.exe -ErrorAction Stop).Source
 $msvcLink = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Recurse -File -Filter link.exe -ErrorAction SilentlyContinue |
@@ -102,6 +164,7 @@ $receipt = [ordered]@{
     source_digest = $sourceDigest
     generator = "cargo + cbindgen 0.29.4 + CMake/Ninja"
     platform = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+    reproducibility = [ordered]@{ pe_timestamp_normalized = $true; normalized_timestamp = 0 }
     tests = [ordered]@{ ctest = "passed"; clean_prefix_consumer = "passed"; registry_published = $false }
     artifacts = $artifacts
 }
