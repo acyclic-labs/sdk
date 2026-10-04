@@ -143,6 +143,29 @@ INSTALLED_RUNTIME="$(find "$PREFIX" -type f -name "$RUNTIME_NAME" -print -quit)"
 INSTALLED_HEADER="$PREFIX/include/acyclic_embedded_prototype.h"
 test -f "$INSTALLED_RUNTIME"
 test -f "$INSTALLED_HEADER"
+python3 - "$PREFIX" "$RUNTIME_NAME" <<'PY'
+import pathlib
+import sys
+
+prefix = pathlib.Path(sys.argv[1])
+runtime_name = sys.argv[2]
+expected = {
+    "include/acyclic/embedded.hpp",
+    "include/acyclic_embedded_prototype.h",
+    f"lib/{runtime_name}",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake",
+    "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake",
+}
+actual = {
+    path.relative_to(prefix).as_posix()
+    for path in prefix.rglob("*")
+    if path.is_file()
+}
+if actual != expected:
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    raise SystemExit(f"installed package file set mismatch: missing={missing} extra={extra}")
+PY
 INSTALLED_LIBRARY_DIRECTORY="$(dirname "$INSTALLED_RUNTIME")"
 C_CONSUMER="$BUILD_DIRECTORY/c-consumer"
 "$CC" "${C_CONSUMER_PLATFORM_ARGS[@]}" -std=c11 -I"$PREFIX/include" \
