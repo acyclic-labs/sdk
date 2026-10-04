@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import base64
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -74,6 +75,10 @@ def main() -> int:
         "rust_authority_manifest_sha256": manifest,
         "observations": observations,
         "rpc_count": len(observations),
+        "current_rpc_count": int(os.environ.get("ACYCLIC_RUST_CURRENT_RPC_COUNT", len(observations))),
+        "archived_rpc_count": int(os.environ.get("ACYCLIC_RUST_ARCHIVED_RPC_COUNT", "0")),
+        "all_rpc_count": int(os.environ.get("ACYCLIC_RUST_ALL_RPC_COUNT", len(observations))),
+        "inventory_scope": "current-rust-authority",
         "byte_evidence": "actual-ag-proto-serialized-request-and-response-files",
     }
     Path(output).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

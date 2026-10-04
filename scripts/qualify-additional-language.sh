@@ -27,31 +27,37 @@ streaming_proto="$product_root/objects/v2/objects.proto"
   exit 1
 }
 descriptor_set="$output_root/rust-contracts.pb"
-contract_proto_count=0
-rpc_count=0
+product_manifest="$product_root/rust-authority.json"
+[[ -f "$product_manifest" ]] || { echo 'Rust authority manifest is missing from product output' >&2; exit 1; }
+inventory_json="$output_root/rust-contract-inventory.json"
+python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
+  "$product_root" "$inventory_json"
+read -r rpc_count archived_rpc_count all_rpc_count < <(
+  python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
+    "$product_root" "$inventory_json" --counts
+)
+mapfile -t contract_protos < <(
+  python3 "$source_root/scripts/resolve-rust-contract-inventory.py" \
+    "$product_root" "$inventory_json" --current-protos
+)
+contract_proto_count=${#contract_protos[@]}
+[[ "$rpc_count" == 106 ]] || { echo "Rust current authority has $rpc_count RPC methods; expected 106" >&2; exit 1; }
+[[ "$all_rpc_count" == 106 || "$all_rpc_count" == 112 ]] || {
+  echo "Rust product output has $all_rpc_count total RPC methods; expected 106 current or 112 including the immutable six-entry tail" >&2
+  exit 1
+}
+export ACYCLIC_RUST_CURRENT_RPC_COUNT="$rpc_count"
+export ACYCLIC_RUST_ARCHIVED_RPC_COUNT="$archived_rpc_count"
+export ACYCLIC_RUST_ALL_RPC_COUNT="$all_rpc_count"
 # LuaJIT invokes its own Rust/C ABI qualification script. Keep this wrapper
 # free of a protoc host dependency for that lane while retaining the complete
 # descriptor inventory for the source-generating targets below.
 if [[ "$language" != "lua-remote" ]]; then
-  mapfile -t contract_protos < <(find "$product_root" -type f -name '*.proto' \
-    ! -path '*/validation/*' | LC_ALL=C sort)
-  [[ "${#contract_protos[@]}" -eq 9 ]] || {
-    echo "Rust product output has ${#contract_protos[@]} contract protobufs; expected 9" >&2
-    exit 1
-  }
-  contract_proto_count=${#contract_protos[@]}
-  rpc_count=$(rg -h '^[[:space:]]*rpc[[:space:]]+' "${contract_protos[@]}" | wc -l | tr -d ' ')
-  [[ "$rpc_count" == 106 ]] || {
-    echo "Rust product output has $rpc_count RPC methods; expected 106" >&2
-    exit 1
-  }
   protoc -I "$product_root" --descriptor_set_out="$descriptor_set" --include_imports "${contract_protos[@]}"
   [[ -s "$descriptor_set" ]] || { echo 'Rust contract descriptor bundle is missing' >&2; exit 1; }
 fi
 proto_relative=${proto#"$product_root/"}
 source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
-product_manifest="$product_root/rust-authority.json"
-[[ -f "$product_manifest" ]] || { echo 'Rust authority manifest is missing from product output' >&2; exit 1; }
 manifest_digest=$(hash_file "$product_manifest")
 export ACYCLIC_RUST_SOURCE_REVISION="$source_revision"
 export ACYCLIC_RUST_AUTHORITY_MANIFEST_SHA256="$manifest_digest"
@@ -90,7 +96,7 @@ write_receipt() {
   local manifest_digest
   manifest_digest=$(hash_file "$product_manifest")
   cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"$source_revision","rust_product_root":"generated-products","rust_authority_manifest_sha256":"$manifest_digest","proto":"$proto_relative","proto_sha256":"$proto_digest","contract_proto_count":$contract_proto_count,"rpc_count":$rpc_count,"descriptor_set":"rust-contracts.pb","streaming_proto":"objects/v2/objects.proto","artifact_root":"$output_root"}
+{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"$source_revision","rust_product_root":"generated-products","rust_authority_manifest_sha256":"$manifest_digest","proto":"$proto_relative","proto_sha256":"$proto_digest","contract_proto_count":$contract_proto_count,"rpc_count":$rpc_count,"current_rpc_count":$rpc_count,"archived_rpc_count":$archived_rpc_count,"all_rpc_count":$all_rpc_count,"inventory_scope":"current-rust-authority","archived_inventory_scope":"immutable-compatibility-only","descriptor_set":"rust-contracts.pb","streaming_proto":"objects/v2/objects.proto","artifact_root":"$output_root"}
 EOF
 }
 
