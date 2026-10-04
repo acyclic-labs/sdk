@@ -4,6 +4,8 @@ The goal remains active. All 68 entries in [requirements.json](requirements.json
 
 ## Current integrated evidence
 
+At source `d595f3ba4`, 10 Windows native lazy-projection regressions pass with no ignored cases after integration. Registry refresh reads an unseen suffix, metadata inspection avoids cold child activation, and cancellation releases the refresh fence before host propagation. See [focused source and artifact evidence](checkpoint-integrated-lazy-native-2026-10-04.json). Independent review, installed counters and full coordinator qualification remain required.
+
 At source `173cb1b85`, 12 Windows native exact-input tests pass with no ignored cases, including the physical corruption/deletion test enabled by `test-support`. These capture serialized provider requests and exercise generation-pinned content, explicit limits, schema denials and restart replay. See [source, suite and artifact evidence](checkpoint-exact-input-native-2026-10-04.json). Full recursive coordinator, WASM and installed qualification remain separate gates.
 
 At source `1953894ae`, the two Windows native owned/shared crash-atomic regressions pass with no ignored cases after hidden subprocess launch and intentional crash termination changes. Test execution takes 14.99 seconds. See [focused source, log and executable evidence](checkpoint-hidden-crash-atomic-native-2026-10-04.json). This does not qualify the full Filesystem matrix or the Harness swarm.
