@@ -395,7 +395,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
     use std::sync::Arc;
 
     let service = Service::new(Arc::new(acyclic_stream::MemoryStream::default()));
-    let path = "/typed/stream".to_owned();
+    let path = "typed/stream".to_owned();
     let records: Vec<Bytes> = vec![Bytes::from_static(b"alpha"), Bytes::from_static(b"beta")];
     let key = Bytes::from_static(b"typed-stream-append");
 
@@ -433,7 +433,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
 
     let fork = wire::ForkRequest {
         source: path.clone(),
-        destination: "/typed/stream-fork".into(),
+        destination: "typed/stream-fork".into(),
         at_tail: Some(2),
         idempotency_key: Some(Bytes::from_static(b"typed-stream-fork")),
     };
@@ -507,7 +507,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         mutations: vec![wire::CommitMutation {
             mutation: Some(wire::commit_mutation::Mutation::Append(
                 wire::AppendMutation {
-                    path: "/typed/commit".into(),
+                    path: "typed/commit".into(),
                     records: vec![Bytes::from_static(b"commit")],
                 },
             )),
