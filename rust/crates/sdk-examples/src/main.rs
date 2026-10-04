@@ -1198,16 +1198,27 @@ fn run_rust(
 
     let compile_path = consumers.join(format!("{}-compile.bin", snippet.metadata.id));
     let runtime_path = consumers.join(format!("{}-runtime.bin", snippet.metadata.id));
-    fs::copy(&installed, &compile_path)
-        .map_err(|error| format!("copy Rust compile artifact: {error}"))?;
-    fs::copy(&installed, &runtime_path)
-        .map_err(|error| format!("copy Rust runtime artifact: {error}"))?;
+    // Windows PE linkers stamp the executable header with the invocation time.
+    // Keep the exact installed executable for the invocation, but publish
+    // normalized compile/runtime evidence so regeneration compares the
+    // authored/package bytes rather than that volatile header field.
+    let installed_bytes =
+        fs::read(&installed).map_err(|error| format!("read installed Rust consumer: {error}"))?;
+    let (normalized_bytes, artifact_normalization) =
+        normalize_invocation_artifact(&installed_bytes);
+    let invocation_path = consumers.join(format!("{}-invocation.bin", snippet.metadata.id));
+    fs::write(&invocation_path, &installed_bytes)
+        .map_err(|error| format!("write Rust invocation artifact: {error}"))?;
+    fs::write(&compile_path, &normalized_bytes)
+        .map_err(|error| format!("write Rust compile artifact: {error}"))?;
+    fs::write(&runtime_path, &normalized_bytes)
+        .map_err(|error| format!("write Rust runtime artifact: {error}"))?;
     fs::copy(staging.join("Cargo.toml"), &consumer_manifest)
         .map_err(|error| format!("copy Rust consumer manifest: {error}"))?;
     fs::copy(staging.join("Cargo.lock"), &consumer_lock)
         .map_err(|error| format!("copy Rust consumer lock: {error}"))?;
-    let compile_digest = hash(&fs::read(&compile_path).map_err(|error| error.to_string())?);
-    let runtime_digest = hash(&fs::read(&runtime_path).map_err(|error| error.to_string())?);
+    let compile_digest = hash(&normalized_bytes);
+    let runtime_digest = hash(&normalized_bytes);
     let package_bytes = fs::read(&package_path).map_err(|error| error.to_string())?;
     let package_digest = hash(&package_bytes);
     let package_size = package_bytes.len();
@@ -1235,6 +1246,12 @@ fn run_rust(
         "compile_artifact_sha256": compile_digest,
         "runtime_artifact_path": portable_output_path(&runtime_path, &qualification),
         "runtime_artifact_sha256": runtime_digest,
+        "invocation_artifact": {
+            "path": portable_output_path(&invocation_path, &qualification),
+            "bytes": installed_bytes.len(),
+            "normalized_sha256": hash(&normalized_bytes),
+            "normalization": artifact_normalization,
+        },
         "package_artifact_path": portable_output_path(&package_path, &qualification),
         "package_artifact_sha256": package_digest,
         "package_artifact_size": package_size,
@@ -1253,6 +1270,12 @@ fn run_rust(
             "compiled_snippet_sha256": snippet_digest,
             "compile_artifact_path": portable_output_path(&compile_path, &qualification),
             "compile_artifact_sha256": compile_digest,
+            "invocation_artifact": {
+                "path": portable_output_path(&invocation_path, &qualification),
+                "bytes": installed_bytes.len(),
+                "normalized_sha256": hash(&normalized_bytes),
+                "normalization": artifact_normalization,
+            },
             "package_artifact_path": portable_output_path(&package_path, &qualification),
             "package_artifact_sha256": package_digest,
             "package_artifact_size": package_size,
@@ -2384,6 +2407,29 @@ fn git_revision(root: &Path) -> String {
         .unwrap_or_else(|| "working-tree".to_owned())
 }
 
+fn normalize_invocation_artifact(bytes: &[u8]) -> (Vec<u8>, &'static str) {
+    // PE/COFF stores a linker timestamp in the COFF header. It changes on
+    // every cargo install even when the source, lockfile, and package bytes
+    // are identical. The timestamp is not part of the executable behavior,
+    // so zero only that field and retain every other byte for the evidence
+    // artifact. Non-PE targets remain byte-for-byte unchanged.
+    if bytes.len() < 0x40 || &bytes[..2] != b"MZ" {
+        return (bytes.to_vec(), "identity-v1");
+    }
+    let pe_offset =
+        u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+    let timestamp = pe_offset.saturating_add(8);
+    if pe_offset + 12 > bytes.len()
+        || &bytes[pe_offset..pe_offset + 4] != b"PE\0\0"
+        || timestamp + 4 > bytes.len()
+    {
+        return (bytes.to_vec(), "identity-v1");
+    }
+    let mut normalized = bytes.to_vec();
+    normalized[timestamp..timestamp + 4].fill(0);
+    (normalized, "pe-coff-timestamp-zero-v1")
+}
+
 fn hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -2417,6 +2463,28 @@ mod tests {
         assert!(error.contains("does not match compiled producer"));
         assert!(error.contains(compiled));
         assert!(error.contains(&changed));
+    }
+
+    #[test]
+    fn pe_invocation_normalization_only_clears_coff_timestamp() {
+        let mut executable = vec![0u8; 0x90];
+        executable[..2].copy_from_slice(b"MZ");
+        executable[0x3c..0x40].copy_from_slice(&(0x60u32).to_le_bytes());
+        executable[0x60..0x64].copy_from_slice(b"PE\0\0");
+        executable[0x68..0x6c].copy_from_slice(&0x12345678u32.to_le_bytes());
+        executable[0x80] = 0xa5;
+        let (normalized, method) = normalize_invocation_artifact(&executable);
+        assert_eq!(method, "pe-coff-timestamp-zero-v1");
+        assert_eq!(&normalized[0x68..0x6c], &[0, 0, 0, 0]);
+        assert_eq!(normalized[0x80], 0xa5);
+    }
+
+    #[test]
+    fn non_pe_invocation_normalization_preserves_bytes() {
+        let bytes = b"not an executable";
+        let (normalized, method) = normalize_invocation_artifact(bytes);
+        assert_eq!(method, "identity-v1");
+        assert_eq!(normalized, bytes);
     }
 
     #[test]
