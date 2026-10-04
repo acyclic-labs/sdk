@@ -121,7 +121,7 @@ try {
         $ruby = if ($env:RUBY) { $env:RUBY } else { 'ruby' }
         Run-Checked $ruby @('generate.rb', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'ruby')
-        $commands['ruby'] = @{ runtime = $ruby; generator = 'generate.rb'; lock = (Get-Content (Join-Path $package 'generator.lock.json') -Raw | ConvertFrom-Json).generator_version }
+        $commands['ruby'] = @{ runtime = [IO.Path]::GetFileName($ruby); generator = 'generate.rb'; lock = (Get-Content (Join-Path $package 'generator.lock.json') -Raw | ConvertFrom-Json).generator_version }
     }
     if ($languages -contains 'php') {
         $package = Join-Path $stage 'php'
@@ -129,7 +129,7 @@ try {
         $php = if ($env:PHP) { $env:PHP } else { 'php' }
         Run-Checked $php @('tools/generate.php', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'php')
-        $commands['php'] = @{ runtime = $php; generator = 'tools/generate.php'; lock = (Get-Content (Join-Path $package 'generator.lock.json') -Raw | ConvertFrom-Json).generator_version }
+        $commands['php'] = @{ runtime = [IO.Path]::GetFileName($php); generator = 'tools/generate.php'; lock = (Get-Content (Join-Path $package 'generator.lock.json') -Raw | ConvertFrom-Json).generator_version }
     }
     if ($languages -contains 'dart') {
         $package = Join-Path $stage 'dart'
@@ -137,14 +137,14 @@ try {
         $dart = if ($env:DART) { $env:DART } else { 'dart' }
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
-        $commands['dart'] = @{ runtime = $dart; generator = 'tool/generate.dart'; lock = (Get-Content (Join-Path $package 'generator.lock.yaml') -Raw) }
+        $commands['dart'] = @{ runtime = [IO.Path]::GetFileName($dart); generator = 'tool/generate.dart'; lock = (Get-Content (Join-Path $package 'generator.lock.yaml') -Raw) }
     }
     [ordered]@{
         schema = 'acyclic.ruby-php-dart.package-adapter.v1'
         authority_sha256 = Sha256 $authority
         request_sha256 = Sha256 $request
         authority_source_revision = $authorityDocument.source_revision
-        source_root = $sourceRoot
+        source_root = 'caller-supplied authority input (path omitted for portability)'
         languages = $languages
         commands = $commands
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $outputParent 'generation-receipt.json') -Encoding UTF8
