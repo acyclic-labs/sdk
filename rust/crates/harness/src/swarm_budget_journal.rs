@@ -2152,18 +2152,12 @@ mod tests {
         assert_eq!(reopened.root_usage_cursor()?.usage, Some(measured));
         assert_eq!(reopened.usage()?.consumed, measured);
 
-        let mut wrong_provider = reopened.root_usage_receipt_issuer(
-            DurableRuntimeSource::new(
+        assert!(matches!(
+            reopened.root_usage_receipt_issuer(DurableRuntimeSource::new(
                 source_root.path().join("provider-usage.json"),
                 "different-reopened-provider",
-            ),
-        )?;
-        let wrong_receipt = wrong_provider.issue_at_least(measured)?;
-        assert!(matches!(
-            reopened
-                .report_root_usage_with_receipt(&owner, wrong_receipt)
-                .await,
-            Err(Error::Conflict(message)) if message.contains("provider identity")
+            )),
+            Err(Error::Unauthorized(message)) if message.contains("not bound")
         ));
         assert!(matches!(
             reopened.root_dispatch_permit(&owner, operation_id, 0, [41; 32]),
