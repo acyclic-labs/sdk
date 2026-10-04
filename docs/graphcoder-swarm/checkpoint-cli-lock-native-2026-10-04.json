@@ -1,0 +1,55 @@
+{
+  "cli": {
+    "source_tree": "0f9f6668b8344584bc2598ca76ce2a1d1430d7e2",
+    "command": "cargo test -p acyclic-graphcoder-cli -- --nocapture",
+    "passed": 7,
+    "ignored": 0,
+    "failed": 0,
+    "source_commit": "f07b958d86c4eeb255ed4d133a1605354301c18f"
+  },
+  "recorded_at": "2026-10-04T21:21:45.0811745Z",
+  "files": [
+    {
+      "source_path": "C:\\graphcoder-builds\\cli-snapshot-f07b958d8.log",
+      "sha256": "9d139b297b27fe2a1522d6aeb29c920565acc237341bb52e99901bdb0184e90b",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\fd4e73c29\\terminal-lock\\cli-snapshot-f07b958d8.log"
+    },
+    {
+      "source_path": "C:\\graphcoder-builds\\frozen-lock-fd4e73c29.log",
+      "sha256": "7f6d65105db1fb518c86a1c76c180e73c466213b4b6d896d9d2ef38a2664a511",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\fd4e73c29\\terminal-lock\\frozen-lock-fd4e73c29.log"
+    },
+    {
+      "source_path": "C:\\graphcoder-builds\\root-stream-20261004\\target\\debug\\deps\\graphcoder_runtime-b0aba228ca422570.exe",
+      "sha256": "d6f1c3b4549b8d4fc8140748590b8ad0c9e700a2d9cea443c0bdfd7d5053a49f",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\fd4e73c29\\terminal-lock\\graphcoder_runtime-b0aba228ca422570.exe"
+    },
+    {
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\rust\\crates\\graphcoder-cli\\src\\main.rs",
+      "sha256": "feb4b21014c34ba52f2c00abe6e978e753e3c77724646fe4e46f320bcde519ff",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\fd4e73c29\\terminal-lock\\main.rs"
+    },
+    {
+      "source_path": "C:\\Users\\varun\\.codex\\worktrees\\graphcoder-sdk\\sdk\\bun.lock",
+      "sha256": "367c71645286f9fbf4e5aa1678ea9c80e3f51c3456b8df1418054575fef2e4d8",
+      "archive_path": "D:\\graphcoder-builds\\root-qualification-artifacts\\fd4e73c29\\terminal-lock\\bun.lock"
+    }
+  ],
+  "platform": "windows",
+  "limitations": [
+    "Existing CLI echo/stage fixture and framing/credential tests only",
+    "No installed recursive/command approval/writeback qualification",
+    "Integrated cancellation fault remains failing"
+  ],
+  "kind": "native-cli-and-frozen-lock-checkpoint",
+  "frozen_install": {
+    "source_tree": "d605e406b6668bed746ffeb4c2eff211f1787710",
+    "command": "bun install --frozen-lockfile",
+    "packages": 177,
+    "installs": 112,
+    "changes": 0,
+    "exit_code": 0,
+    "source_commit": "fd4e73c2944bb9325fc66f5e4b2bed7eb988fbae"
+  },
+  "source_clean_after": true
+}
