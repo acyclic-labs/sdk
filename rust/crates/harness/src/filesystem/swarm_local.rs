@@ -4470,7 +4470,11 @@ async fn load_startup_projection(
         Err(StreamError::NotFound) => 0,
         Err(error) => return Err(Error::Storage(error.to_string())),
     };
-    sessions_from_records(load_records_at(stream, registry_tail).await?)
+    let records = load_records_at(stream, registry_tail).await?;
+    if records.is_empty() {
+        return Ok((BTreeMap::new(), BTreeMap::new()));
+    }
+    sessions_from_records(records)
 }
 
 fn sessions_from_records(
@@ -4502,7 +4506,44 @@ fn sessions_from_records(
             record,
         )?;
     }
+    validate_session_projection(&sessions)?;
     Ok((sessions, fork_payloads))
+}
+
+fn validate_session_projection(
+    sessions: &BTreeMap<TaskId, LocalSwarmSession>,
+) -> Result<()> {
+    let roots: Vec<_> = sessions
+        .values()
+        .filter(|session| session.parent.is_none())
+        .collect();
+    if roots.len() != 1 {
+        return Err(Error::Conflict(
+            "local swarm registry must contain exactly one root session".into(),
+        ));
+    }
+    let root = roots[0];
+    if root.depth != 0 {
+        return Err(Error::Conflict(
+            "local swarm root session has a nonzero depth".into(),
+        ));
+    }
+    for session in sessions.values().filter(|session| session.parent.is_some()) {
+        let parent = sessions
+            .get(&session.parent.expect("filtered parent"))
+            .ok_or_else(|| Error::Conflict("local swarm child session has no parent".into()))?;
+        if session.depth != parent.depth.saturating_add(1) {
+            return Err(Error::Conflict(
+                "local swarm child session depth does not follow its parent".into(),
+            ));
+        }
+        if matches!(session.phase, LocalSessionPhase::Activating) && session.operation.is_none() {
+            return Err(Error::Conflict(
+                "activating local swarm session is missing its operation identity".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn load_records(stream: &acyclic_stream::Stream<LocalStream>) -> Result<Vec<StoredRecord>> {
@@ -4622,6 +4663,16 @@ fn apply_record(
                 {
                     return Err(Error::Conflict(
                         "persisted session cancellation follows terminal completion".into(),
+                    ));
+                }
+            }
+            if let Some(existing) = sessions.get(&next.task) {
+                if existing.parent != next.parent
+                    || existing.depth != next.depth
+                    || existing.task_description != next.task_description
+                {
+                    return Err(Error::Conflict(
+                        "persisted session identity changed for the task key".into(),
                     ));
                 }
             }
