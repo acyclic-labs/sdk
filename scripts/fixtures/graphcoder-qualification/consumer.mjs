@@ -84,7 +84,26 @@ try {
     assert(methods.has(method), `native fixture did not observe ${method}`);
   }
   const lazyObservation = assertLazyCounters(lazyObservationPath, { require: lazyObservationPath !== undefined });
-  process.stdout.write(JSON.stringify({ ok: true, scenario: "PKG-NATIVE-01", calls: calls.length, package: identity, lazy_observation: lazyObservation ?? null }) + "\n");
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    scenario: "PKG-NATIVE-01",
+    calls: calls.length,
+    checks: [
+      "installed-package-identity",
+      "archive-to-install-manifest-mapping",
+      "export-map-and-bin-targets",
+      "bridge-executable-and-host-identity",
+      "summary-only-listing",
+      "session-history-pages",
+      "snake-case-change-and-file-decoding",
+      "authenticated-operator-approval",
+      "writeback-receipt",
+      "cancel-resume-lifecycle",
+      "terminal-adapter",
+    ],
+    package: identity,
+    lazy_observation: lazyObservation ?? null,
+  }) + "\n");
 } finally {
   processBridge.close();
 }
