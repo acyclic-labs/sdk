@@ -235,9 +235,7 @@ pub fn validate_inbox_page(
         }
         nonzero_task(item.sender, "inbox sender")?;
         if item.delivered_at_epoch_ms == 0 {
-            return Err(Error::Invalid(
-                "inbox delivery timestamp is invalid".into(),
-            ));
+            return Err(Error::Invalid("inbox delivery timestamp is invalid".into()));
         }
         let identity = OperationId::parse(&item.message_id)
             .map_err(|_| Error::Invalid("inbox message identity is not canonical".into()))?;
@@ -347,6 +345,27 @@ pub struct WaitRequest {
 }
 
 impl WaitRequest {
+    /// Bound future waits while allowing expired declarations to retain their
+    /// typed timeout/deadline outcome on recovery. Neither bound can disable
+    /// validation of the other merely because it has already elapsed.
+    fn validate_admission_at(&self, now_epoch_ms: u64) -> Result<()> {
+        self.validate(None)?;
+        let deadline = match self.target {
+            WaitTarget::Deadline { deadline_epoch_ms } => Some(deadline_epoch_ms),
+            _ => None,
+        };
+        if [self.timeout_epoch_ms, deadline]
+            .into_iter()
+            .flatten()
+            .any(|bound| bound.saturating_sub(now_epoch_ms) > MAX_WAIT_DURATION_MS)
+        {
+            return Err(Error::Invalid(
+                "wait bound is outside the permitted window".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Validates the immutable wait declaration.
     pub fn validate(&self, now_epoch_ms: Option<u64>) -> Result<()> {
         nonzero_operation(self.operation_id, "wait")?;
@@ -768,6 +787,7 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
             if let Some(retained) = Self::retained(&events, &request, now_epoch_ms)? {
                 return Ok(retained.completion);
             }
+            request.validate_admission_at(now_epoch_ms)?;
             let append = self
                 .append(
                     &stream,
@@ -940,23 +960,7 @@ impl DurableCommunication {
         request: WaitRequest,
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
-        let initial_now = unix_millis()?;
-        // A request whose timeout has already elapsed is a valid replay of a
-        // previously admitted wait. Preserve the typed terminal result rather
-        // than turning recovery into an invalid-input error. Zero remains
-        // invalid through the ordinary validation path.
-        let expired = request
-            .timeout_epoch_ms
-            .is_some_and(|deadline| deadline <= initial_now);
-        let deadline_expired = matches!(
-            &request.target,
-            WaitTarget::Deadline { deadline_epoch_ms } if *deadline_epoch_ms <= initial_now
-        );
-        if expired || deadline_expired {
-            request.validate(None)?;
-        } else {
-            request.validate(Some(initial_now))?;
-        }
+        request.validate_admission_at(unix_millis()?)?;
         if cancellation.is_some() && request.cancellation_id.is_none() {
             return Err(Error::Invalid(
                 "live wait cancellation requires its declared cancellation identity".into(),
@@ -1842,6 +1846,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn every_future_bound_is_checked_before_wait_admission() -> Result<()> {
+        let provider = Arc::new(acyclic_stream::MemoryStream::default());
+        let stream = acyclic_stream::StreamClient::new(provider);
+        let waits = StreamWaitStore::new(stream.clone());
+        let communication = DurableCommunication::new(host(BTreeMap::new())?);
+        let now = unix_millis()?;
+        let far = now + MAX_WAIT_DURATION_MS + 60_000;
+        for (deadline, timeout) in [(far, None), (far, Some(now - 1)), (now - 1, Some(far))] {
+            let request = WaitRequest {
+                operation_id: operation(60),
+                waiter: task(1),
+                target: WaitTarget::Deadline {
+                    deadline_epoch_ms: deadline,
+                },
+                timeout_epoch_ms: timeout,
+                cancellation_id: None,
+            };
+            assert!(matches!(
+                waits.open(request.clone()).await,
+                Err(Error::Invalid(_))
+            ));
+            assert!(matches!(
+                communication.wait(request, None).await,
+                Err(Error::Invalid(_))
+            ));
+        }
+        let journal = stream
+            .stream(format!("harness/v2/waits/{}", task(1)))
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        assert!(matches!(
+            journal.bounds().await,
+            Err(acyclic_stream::Error::NotFound)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn wait_observes_already_cancelled_and_closed_channels_without_spinning() -> Result<()> {
         let host = host(BTreeMap::new())?;
         let provider = Arc::new(acyclic_stream::MemoryStream::default());
@@ -2074,7 +2115,9 @@ mod tests {
             .cancel(request)
             .await
             .expect_err("a foreign owner must not cancel another wait");
-        assert!(matches!(error, Error::Conflict(message) if message.contains("retained admission")));
+        assert!(
+            matches!(error, Error::Conflict(message) if message.contains("retained admission"))
+        );
         Ok(())
     }
 
