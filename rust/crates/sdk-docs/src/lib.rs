@@ -17,6 +17,15 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR");
+    command
+}
+
 /// The bundle format version. Increment when the JSON contract changes.
 pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
 
@@ -1646,7 +1655,7 @@ fn git_blob_sha256(
     relative: &str,
 ) -> Result<String, Error> {
     let object = format!("{revision}:{relative}");
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repository_root)
         .arg("show")
@@ -2754,10 +2763,37 @@ fn collect_rustdoc_generated_sources(
             .and_then(|name| name.to_str())
             .ok_or_else(|| Error::Strict("generated rustdoc source has no file name".to_owned()))?;
         let profile_segment = generated_source_profile_segment(profile_name);
-        let logical_path = format!(
+        let base_logical_path = format!(
             "{}/src/generated/{profile_segment}/{file_name}",
             relative_path(repository_root, crate_dir)
         );
+        let source_digest = digest_bytes(normalized.as_bytes());
+        let mut logical_path = base_logical_path.clone();
+        if sources
+            .iter()
+            .any(|source| source.path == logical_path && source.blake3 != digest_bytes(&bytes))
+        {
+            let stem = Path::new(file_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(file_name);
+            let extension = Path::new(file_name)
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| format!(".{value}"))
+                .unwrap_or_default();
+            let directory = Path::new(&base_logical_path)
+                .parent()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default();
+            logical_path = format!("{directory}/{stem}-{}{extension}", &source_digest[..12]);
+            if sources
+                .iter()
+                .any(|source| source.path == logical_path && source.blake3 != digest_bytes(&bytes))
+            {
+                logical_path = format!("{directory}/{stem}-{source_digest}{extension}");
+            }
+        }
         if let Some(existing) = aliases.get(&path_identity(&normalized)) {
             if existing != &logical_path {
                 continue;
@@ -2766,7 +2802,7 @@ fn collect_rustdoc_generated_sources(
         if let Some(existing) = sources.iter().find(|source| source.path == logical_path) {
             if existing.blake3 != digest_bytes(&bytes) {
                 return Err(Error::Strict(format!(
-                    "generated rustdoc source basename collision at {logical_path}"
+                    "generated rustdoc source path collision at {logical_path}"
                 )));
             }
         } else {
@@ -3945,7 +3981,7 @@ fn collect_json_recursive(directory: &Path, result: &mut Vec<PathBuf>) -> Result
 
 fn git_revision(root: &Path) -> Option<String> {
     git_checkout_root(root)?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(["-C", root.to_str()?, "rev-parse", "HEAD"])
         .output()
         .ok()?;
@@ -3961,7 +3997,7 @@ fn git_revision(root: &Path) -> Option<String> {
 /// unrelated parent checkout revision.
 fn git_checkout_root(root: &Path) -> Option<PathBuf> {
     let requested = fs::canonicalize(root).ok()?;
-    let output = Command::new("git")
+    let output = git_command()
         .args(["-C", root.to_str()?, "rev-parse", "--show-toplevel"])
         .output()
         .ok()?;
@@ -4039,7 +4075,7 @@ fn verify_release_qualification(
         )));
     }
     let tag_ref = format!("refs/tags/{tag}^{{commit}}");
-    let output = Command::new("git")
+    let output = git_command()
         .args([
             "-C",
             repository_root.to_str().unwrap_or_default(),
@@ -4114,7 +4150,7 @@ fn git_worktree_dirty(root: &Path) -> bool {
     if git_checkout_root(root).is_none() {
         return false;
     }
-    Command::new("git")
+    git_command()
         .args([
             "-C",
             root.to_str().unwrap_or_default(),
@@ -4457,6 +4493,62 @@ mod tests {
                 .count(),
             1
         );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rustdoc_generated_source_basename_collisions_get_stable_suffixes() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-generated-source-collision-{}",
+            std::process::id()
+        ));
+        let first = root.join("target/debug/build/acyclic-stream-test-abc/out/wire.rs");
+        let second = root.join("target/debug/build/acyclic-stream-test-def/out/wire.rs");
+        fs::create_dir_all(first.parent().unwrap()).unwrap();
+        fs::create_dir_all(second.parent().unwrap()).unwrap();
+        fs::write(&first, "pub struct First;\n").unwrap();
+        fs::write(&second, "pub struct Second;\n").unwrap();
+        let crate_dir = root.join("rust/crates/stream");
+        fs::create_dir_all(crate_dir.join("src")).unwrap();
+        let value = serde_json::json!({
+            "root": 1,
+            "index": {
+                "1": {"crate_id": 0, "name": "stream", "visibility": "public", "inner": {"module": {"items": [2, 3]}}},
+                "2": {"crate_id": 0, "name": "First", "visibility": "public", "span": {"filename": first.to_string_lossy(), "begin": [1, 1]}, "inner": {"struct": {}}},
+                "3": {"crate_id": 0, "name": "Second", "visibility": "public", "span": {"filename": second.to_string_lossy(), "begin": [1, 1]}, "inner": {"struct": {}}}
+            }
+        });
+        let mut sources = Vec::new();
+        let mut aliases = HashMap::new();
+        let mut diagnostics = Vec::new();
+        collect_rustdoc_generated_sources(
+            &value,
+            &root,
+            &crate_dir,
+            "acyclic-stream",
+            "host-default",
+            &mut sources,
+            &mut aliases,
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty());
+        assert_eq!(sources.len(), 2);
+        assert!(sources
+            .iter()
+            .any(|source| source.path.ends_with("/wire.rs")));
+        assert!(sources.iter().any(|source| {
+            source
+                .path
+                .starts_with("rust/crates/stream/src/generated/host-default/wire-")
+                && source.path.ends_with(".rs")
+        }));
+        assert!(sources
+            .iter()
+            .any(|source| source.contents == "pub struct First;\n"));
+        assert!(sources
+            .iter()
+            .any(|source| source.contents == "pub struct Second;\n"));
         let _ = fs::remove_dir_all(root);
     }
 
