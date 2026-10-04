@@ -171,6 +171,23 @@ pub fn generate_remote_facade(language: FacadeLanguage) -> FacadeOutput {
     }
 }
 
+/// Generate checker fixtures for the Rust-owned Python and Go refinements.
+///
+/// These files are emitted beside the installed facade sources so release
+/// qualification exercises the exact constructors shipped to consumers.
+pub fn generate_type_policy_qualification_tests() -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "python/tests/generated_type_policy_test.py",
+            python_go::render_python_type_policy_test(),
+        ),
+        (
+            "go/type_policy_generated_test.go",
+            python_go::render_go_type_policy_test(),
+        ),
+    ]
+}
+
 /// Return operation policies for every family in the unified Rust registry.
 pub fn all_facade_operations() -> Vec<FacadeOperationPolicy> {
     FAMILY_VIEWS.iter().flat_map(facade_operations).collect()
@@ -293,6 +310,7 @@ fn rust_policy_source_binding() -> String {
         include_bytes!("filesystem.rs").as_slice(),
         include_bytes!("harness.rs").as_slice(),
         include_bytes!("protocol.rs").as_slice(),
+        include_bytes!("type_policy.rs").as_slice(),
     ] {
         digest.update(source);
     }

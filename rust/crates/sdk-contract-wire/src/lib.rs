@@ -38,7 +38,7 @@ pub use embedded_facades::{EmbeddedFacadeOutput, generate_embedded_facades};
 pub use facades::{
     CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
     FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_remote_facade,
-    generate_remote_facades,
+    generate_remote_facades, generate_type_policy_qualification_tests,
 };
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,

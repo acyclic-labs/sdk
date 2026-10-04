@@ -11,6 +11,7 @@ use acyclic_sdk_contract_wire::{
     family_registry::family_view,
     filesystem::{filesystem_descriptor, filesystem_proto},
     generate_embedded_facades, generate_product_bindings, generate_remote_facades,
+    generate_type_policy_qualification_tests,
     harness::{harness_descriptor, harness_proto},
     inference::{inference_descriptor, inference_proto},
     machines::{machines_descriptor, machines_proto},
@@ -457,6 +458,9 @@ fn product_artifacts(root: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn Erro
     }
     for facade in generate_embedded_facades() {
         artifacts.push((facade.path.to_owned(), facade.source.into_bytes()));
+    }
+    for (path, source) in generate_type_policy_qualification_tests() {
+        artifacts.push((path.to_owned(), source.into_bytes()));
     }
     let _ = fs::remove_dir_all(staging);
     Ok(artifacts)
