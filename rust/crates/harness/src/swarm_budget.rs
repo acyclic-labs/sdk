@@ -4039,7 +4039,13 @@ mod tests {
 
     #[test]
     fn root_provider_limiter_excludes_reserved_descendant_capacity() -> Result<()> {
-        let budget = SwarmBudget::new(id(25), owner(0), limits())?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            id(25),
+            owner(0),
+            limits(),
+            Some(IdempotencyKey::new("root-limiter")?),
+        )?;
+        budget.bind_root_provider_identity(&owner(0), "local-provider", [17; 32])?;
         budget.reserve_child(request(26, None))?;
         let mut limiter = budget.root_usage_limiter()?;
         for _ in 0..6 {
@@ -4512,7 +4518,7 @@ mod tests {
 
     #[test]
     fn root_usage_reduces_descendant_remaining_budget() -> Result<()> {
-        let budget = SwarmBudget::new(
+        let budget = SwarmBudget::new_with_root_dispatch(
             id(9),
             owner(0),
             SwarmBudgetLimits {
@@ -4521,15 +4527,24 @@ mod tests {
                 max_execution_time_ms: 1_000,
                 ..limits()
             },
+            Some(IdempotencyKey::new("root-usage")?),
         )?;
-        budget.report_root_usage(
-            &owner(0),
-            SwarmUsage {
-                model_steps: 7,
-                output_bytes: 70,
-                execution_time_ms: 700,
-            },
-        )?;
+        budget.bind_root_provider_identity(&owner(0), "local-provider", [17; 32])?;
+        let usage = SwarmUsage {
+            model_steps: 7,
+            output_bytes: 70,
+            execution_time_ms: 700,
+        };
+        let mut issuer = budget.root_usage_receipt_issuer(MeasuredSource {
+            snapshots: Mutex::new(vec![usage]),
+        })?;
+        let receipt = issuer.issue()?;
+        budget.apply_event(SwarmBudgetEvent::RootUsageReported {
+            owner: owner(0),
+            usage,
+            fingerprint: receipt.source_fingerprint(),
+            receipt: receipt.into_receipt(),
+        })?;
         assert!(budget.reserve_child(request(1, None)).is_err());
         assert!(
             budget
