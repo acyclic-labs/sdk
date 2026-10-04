@@ -143,15 +143,19 @@ if (-not $header) { throw "cbindgen header was not produced under $release\build
 Assert-PeMachine $runtime $RustTarget
 Normalize-PeTimestamp $runtime
 
-$clang = (Get-Command clang++.exe -ErrorAction Stop).Source
-$clangC = (Get-Command clang.exe -ErrorAction Stop).Source
+$clang = $null
+$clangC = $null
+if ($RustTarget -eq "aarch64-pc-windows-msvc" -and
+    $env:CC_aarch64_pc_windows_msvc -and
+    (Test-Path -LiteralPath $env:CC_aarch64_pc_windows_msvc)) {
+    $clangC = (Resolve-Path -LiteralPath $env:CC_aarch64_pc_windows_msvc).Path
+    $armClangPlusPlus = Join-Path (Split-Path -Parent $clangC) "clang++.exe"
+    if (Test-Path -LiteralPath $armClangPlusPlus) { $clang = $armClangPlusPlus }
+}
+if (-not $clangC) { $clangC = (Get-Command clang.exe -ErrorAction Stop).Source }
+if (-not $clang) { $clang = (Get-Command clang++.exe -ErrorAction Stop).Source }
 $cmakeTargetArgs = @()
 if ($RustTarget -eq "aarch64-pc-windows-msvc") {
-    if ($env:CC_aarch64_pc_windows_msvc -and (Test-Path -LiteralPath $env:CC_aarch64_pc_windows_msvc)) {
-        $clangC = (Resolve-Path -LiteralPath $env:CC_aarch64_pc_windows_msvc).Path
-        $armClangPlusPlus = Join-Path (Split-Path -Parent $clangC) "clang++.exe"
-        if (Test-Path -LiteralPath $armClangPlusPlus) { $clang = $armClangPlusPlus }
-    }
     $env:CC_aarch64_pc_windows_msvc = $clangC
     # Cargo invokes the linker without a target flag.  Wrap clang so an ARM64
     # build cannot silently link the host x64 architecture.
