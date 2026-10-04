@@ -40,3 +40,4 @@ Models are mocked. No sandbox or cloud is implemented. Workspace routing is not 
 
 
 
+`nLatest focused checkpoint: source39707322e passes 34/34 native storage, message-page and communication cases; receipt and archived artifact recorded. No production or installed gate is closed by this focused run.
