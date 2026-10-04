@@ -36,6 +36,12 @@ public final class GeneratedStreamOperations {
   public RustEmbedded.Reader follow(Stream.FollowRequest request) {
     return engine.openReader(request.getPath(), request.getFrom(), 0, true);
   }
+  public Stream.ReadResponse nextRead(RustEmbedded.Reader reader) {
+    return reader.nextRead();
+  }
+  public Stream.ChildrenResponse nextChild(RustEmbedded.ChildrenReader reader) {
+    return reader.next();
+  }
   public RustEmbedded.ChildrenReader children(Stream.ChildrenRequest request) {
     return engine.children(request);
   }

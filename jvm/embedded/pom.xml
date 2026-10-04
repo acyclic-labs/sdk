@@ -11,6 +11,7 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <jna.version>5.15.0</jna.version>
     <protobuf.version>4.31.1</protobuf.version>
+    <sdk.contract.root>${project.basedir}/../../target/sdk-contract</sdk.contract.root>
   </properties>
   <build>
     <extensions>
@@ -27,7 +28,7 @@
         <version>0.6.1</version>
         <configuration>
           <protocArtifact>com.google.protobuf:protoc:${protobuf.version}:exe:${os.detected.classifier}</protocArtifact>
-          <protoSourceRoot>${project.basedir}/../../rust/crates/stream/proto</protoSourceRoot>
+          <protoSourceRoot>${sdk.contract.root}</protoSourceRoot>
           <includes>
             <include>stream/v2/stream.proto</include>
           </includes>
