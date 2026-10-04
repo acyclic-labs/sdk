@@ -45,8 +45,7 @@ import {
   type WarmView,
   type WatchRunRequest,
 } from "../generated/proto/inference/v1/inference_pb.js";
-import { INFERENCE_REMOTE_POLICY, selectRustOwnedTransport, validateRustOwnedCredentialPolicy } from "./generated-client.js";
-import { INFERENCE_HANDSHAKE } from "./generated-client.js";
+import { INFERENCE_HANDSHAKE, INFERENCE_REMOTE_POLICY, negotiateRustOwnedEndpoint, selectRustOwnedTransport, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 import {
   EvaluationsService,
   file_inference_v1_inference,
@@ -56,12 +55,6 @@ import {
   WarmContextsService,
 } from "../generated/proto/inference/v1/inference_pb.js";
 import { http_path } from "../generated/proto/validation/v1/options_pb.js";
-import {
-  CapabilitySetSchema,
-  HandshakeRequestSchema,
-  HandshakeResponseSchema,
-  ProtocolIdentitySchema,
-} from "../generated/proto/protocol/v1/protocol_pb.js";
 import { INFERENCE_FIXED_WIDTHS } from "./widths.js";
 
 export * from "../generated/proto/inference/v1/inference_pb.js";
@@ -461,36 +454,9 @@ export class HttpInferenceTransport implements InferenceTransport {
 
   async #ensureHandshake(headers: Headers, signal?: AbortSignal): Promise<void> {
     if (this.#handshake !== undefined) return this.#handshake;
-    const request = create(HandshakeRequestSchema, {
-      protocol: create(ProtocolIdentitySchema, {
-        version: INFERENCE_HANDSHAKE.version,
-        descriptorDigest: INFERENCE_HANDSHAKE.descriptorDigest,
-      }),
-      required: create(CapabilitySetSchema, { capabilities: [] }),
+    const pending = negotiateRustOwnedEndpoint(this.fetcher, this.endpoint, headers, INFERENCE_HANDSHAKE, this.maximumMessageBytes, signal).catch(error => {
+      throw new InferenceTransportError(0, error instanceof Error ? error.message : String(error));
     });
-    const pending = (async () => {
-      const response = await this.fetcher(`${this.endpoint.replace(/\/$/, "")}${INFERENCE_HANDSHAKE.route}`, {
-        method: "POST",
-        headers: new Headers(headers),
-        body: toJsonString(HandshakeRequestSchema, request),
-        signal,
-      });
-      if (!response.ok) {
-        throw new InferenceTransportError(
-          response.status,
-          await readBoundedText(response, this.maximumMessageBytes, "handshake response"),
-        );
-      }
-      const responseMessage = fromJson(
-        HandshakeResponseSchema,
-        JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "handshake response")),
-      );
-      const identity = responseMessage.protocol;
-      if (identity?.version !== INFERENCE_HANDSHAKE.version ||
-          identity.descriptorDigest !== INFERENCE_HANDSHAKE.descriptorDigest) {
-        throw new InferenceTransportError(response.status, "inference endpoint handshake identity mismatch");
-      }
-    })();
     this.#handshake = pending;
     try {
       await pending;

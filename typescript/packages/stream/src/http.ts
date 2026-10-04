@@ -5,7 +5,7 @@ import { StreamError } from "./types.js";
 import { decodeHttpResponseFor } from "./http-contract.js";
 import type { HttpResponseFor, HttpRoute } from "./http-contract.js";
 import { encodeHttpRequest, ensureStreamWasm, normalizeWireCommitBytes, validateHttpEndpointValue, validateWireRequest, wireAppendRequest, wireCreateTokenRequest, wireInspectIdempotencyRequest, wireReadCommitRequest, wireRequest } from "./contract.js";
-import { validateRustOwnedCredentialPolicy } from "./generated-client.js";
+import { STREAM_HANDSHAKE, negotiateRustOwnedEndpoint, validateRustOwnedCredentialPolicy } from "./generated-client.js";
 
 export interface HttpStreamProviderOptions { readonly endpoint: string; readonly token: string; readonly fetcher?: typeof fetch; readonly maximumResponseBytes?: number }
 
@@ -15,6 +15,7 @@ export class HttpStreamProvider implements StreamProvider {
   readonly #token: string;
   readonly #fetcher: typeof fetch;
   readonly #maximum: number;
+  #handshake: Promise<void> | undefined;
   constructor(options: HttpStreamProviderOptions) {
     validateHttpEndpointValue(options.endpoint);
     const endpoint = new URL(options.endpoint);
@@ -84,7 +85,9 @@ export class HttpStreamProvider implements StreamProvider {
     return this.#request("tail", await encodeHttpRequest("tail", input), signal);
   }
   async #request<Route extends HttpRoute>(route: Route, body: unknown, signal?: AbortSignal, readFrom?: bigint, onCursor?: (next: bigint) => void): Promise<HttpResponseFor<Route>> {
-    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers: { authorization: `Bearer ${this.#token}`, "content-type": "application/json" }, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
+    const headers = { authorization: `Bearer ${this.#token}`, "content-type": "application/json" };
+    await this.#ensureHandshake(headers, signal);
+    const response = await this.#fetcher(new URL(`v1/stream/${route}`, this.#endpoint), { method: "POST", headers, body: typeof body === "string" ? body : JSON.stringify(body), ...(signal === undefined ? {} : { signal }) });
     let text: string;
     try { text = await boundedText(response, this.#maximum); }
     catch (error) { if (error instanceof StreamError) throw error; throw new StreamError("invalid_response", `invalid ${route} response encoding: ${error instanceof Error ? error.message : String(error)}`, response.status); }
@@ -94,6 +97,13 @@ export class HttpStreamProvider implements StreamProvider {
        if (route === "read" && readFrom !== undefined) onCursor?.(nextHttpFollowCursor(text, readFrom));
       return decodeHttpResponseFor(route, text);
     } catch (error) { throw new StreamError("invalid_response", `invalid ${route} response: ${error instanceof Error ? error.message : String(error)}`, response.status); }
+  }
+  async #ensureHandshake(headers: HeadersInit, signal?: AbortSignal): Promise<void> {
+    if (this.#handshake !== undefined) return this.#handshake;
+    const pending = negotiateRustOwnedEndpoint(this.#fetcher, this.#endpoint, headers, STREAM_HANDSHAKE, this.#maximum, signal)
+      .catch(error => { this.#handshake = undefined; throw error; });
+    this.#handshake = pending;
+    return pending;
   }
 }
 
