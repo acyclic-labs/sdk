@@ -7114,9 +7114,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         if self.has_pending_mutations() {
             return Err(OperationFailure::before_work(FsError::PendingLiveMutation));
         }
+        // Authored identities belong to the live operation being published.
+        // Scope this binding to compilation so a fixture/importer binding
+        // cannot leak into a later retry or ordinary customer mutation.
+        let previous_authored_operation = self.authored_operation_id;
+        self.authored_operation_id = Some(operation_id);
         let transaction = self
             .apply_authored_transaction(authored, budget, cancellation)
-            .await?;
+            .await;
+        self.authored_operation_id = previous_authored_operation;
+        let transaction = transaction?;
         let mut work = transaction.work;
         let created_file_ids = transaction.value.created_file_ids;
         let publication = self
