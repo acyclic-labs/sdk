@@ -322,7 +322,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
 
     /// Wraps a real provider with the complete root admission and measurement
     /// boundary derived from this durable projection.
-    pub fn metered_root_provider<M, S>(
+    pub(crate) fn metered_root_provider<M, S>(
         &self,
         provider: Arc<M>,
         source: S,
@@ -343,7 +343,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     /// Wraps root work with a durable refresh callback. The callback reloads
     /// the current journal projection immediately before each provider call,
     /// so concurrent handles cannot spend capacity held by descendants.
-    pub fn metered_root_provider_with_refresh<M, S>(
+    pub(crate) fn metered_root_provider_with_refresh<M, S>(
         &self,
         provider: Arc<M>,
         source: S,
@@ -1008,7 +1008,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
     /// Durably claims one root model step before the provider starts. The
     /// append is CAS ordered with child reservations, so a child reservation
     /// that wins first is reflected in the claim's remaining budget.
-    pub async fn claim_root_model_step(
+    pub(crate) async fn claim_root_model_step(
         &mut self,
         owner: &SwarmOwnerFence,
         operation_id: OperationId,

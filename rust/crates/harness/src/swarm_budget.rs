@@ -4299,19 +4299,56 @@ mod tests {
             output_bytes: 50,
             execution_time_ms: 500,
         };
-        budget.reserve_child(first_request)?;
+        let first = budget.reserve_child(first_request)?.reservation;
         let mut second_request = request(3, Some(parent.operation_id));
         second_request.resources = SwarmResourceRequest {
             model_steps: 3,
             output_bytes: 30,
             execution_time_ms: 300,
         };
-        budget.reserve_child(second_request)?;
+        let second = budget.reserve_child(second_request)?.reservation;
+
+        budget.activate(
+            parent.operation_id,
+            owner(0),
+            publication(parent.operation_id, None),
+        )?;
+        budget.activate(
+            first.operation_id,
+            owner(0),
+            publication(first.operation_id, Some(parent.operation_id)),
+        )?;
+        budget.activate(
+            second.operation_id,
+            owner(0),
+            publication(second.operation_id, Some(parent.operation_id)),
+        )?;
+        budget.complete(
+            first.operation_id,
+            &owner(0),
+            SwarmUsage {
+                model_steps: 5,
+                output_bytes: 50,
+                execution_time_ms: 500,
+            },
+        )?;
+        budget.complete(
+            second.operation_id,
+            &owner(0),
+            SwarmUsage {
+                model_steps: 3,
+                output_bytes: 30,
+                execution_time_ms: 300,
+            },
+        )?;
+        budget.complete(parent.operation_id, &owner(0), SwarmUsage::default())?;
 
         let usage = budget.usage()?;
-        assert_eq!(usage.reserved.model_steps, 8);
-        assert_eq!(usage.reserved.output_bytes, 80);
-        assert_eq!(usage.reserved.execution_time_ms, 800);
+        assert_eq!(usage.reserved, SwarmUsage::default());
+        assert_eq!(usage.consumed.model_steps, 8);
+        assert_eq!(usage.consumed.output_bytes, 80);
+        assert_eq!(usage.consumed.execution_time_ms, 800);
+        assert_eq!(usage.active_agents, 0);
         Ok(())
     }
 
