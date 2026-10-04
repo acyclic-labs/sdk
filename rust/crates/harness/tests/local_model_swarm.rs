@@ -14,7 +14,7 @@ use acyclic_harness::{
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{
         FilesystemHost, LocalFilesystemForkResolver, LocalSessionPhase, LocalSwarmBindings,
-        PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
+        LocalSwarmConfig, PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{
         Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider, ModelRequest, ModelRole,
@@ -597,6 +597,68 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         provider.dispatches.load(Ordering::SeqCst),
         dispatches_before_restart
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn model_selected_child_rejects_grandchild_at_configured_depth() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path()).await?;
+    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let child_a = id(0xE1);
+    let child_b = id(0xE2);
+    let grandchild = id(0xE3);
+    let provider = DeterministicProvider::new(child_a, child_b, grandchild);
+    let model = Model::new("mock", "local-model-swarm-depth", "1", json!({}))?;
+    let limits = Limits::default();
+    let resolver = Arc::new(
+        LocalFilesystemForkResolver::new(
+            host.clone(),
+            stream.clone(),
+            stream_provider,
+            project.clone(),
+        )?
+        .with_host_secret([0x5A; 32])?,
+    );
+    let mut config = LocalSwarmConfig::new(model, limits)?;
+    config.maximum_depth = 1;
+    let swarm = PersistentLocalSwarm::open_shared_with_bindings(
+        directory.path(),
+        config,
+        provider.clone(),
+        LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+    )
+    .await?;
+    provider.bind_swarm(&swarm);
+
+    let result = swarm
+        .run_root(id(0xE0), "start depth-limited local swarm")
+        .await;
+    assert!(matches!(
+        result,
+        Err(Error::Unauthorized(message)) if message.contains("depth limit")
+    ));
+    assert!(!provider.grandchild_inherited_read.load(Ordering::SeqCst));
+    let sessions = swarm.sessions().await?;
+    assert_eq!(sessions.len(), 3, "root and exactly two depth-one children");
+    assert!(matches!(
+        swarm
+            .session(acyclic_harness::TaskId::from_bytes(child_a.into_bytes()))
+            .await?
+            .phase,
+        LocalSessionPhase::Failed(message) if message.contains("depth limit")
+    ));
+    assert!(matches!(
+        swarm
+            .session(acyclic_harness::TaskId::from_bytes(child_b.into_bytes()))
+            .await?
+            .phase,
+        LocalSessionPhase::Activating | LocalSessionPhase::Completed
+    ));
+    assert!(swarm
+        .session(acyclic_harness::TaskId::from_bytes(grandchild.into_bytes()))
+        .await
+        .is_err());
     Ok(())
 }
 
