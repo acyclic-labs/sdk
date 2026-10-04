@@ -77,7 +77,15 @@ def fixtures() -> tuple[dict[str, dict], dict, dict]:
             method["terminal_code"] = 1
         methods.append(method)
     inventory = {"methods": list(expected.values()), "authority": {"source_git_sha": "git", "model_digest": "model"}}
-    receipt = {"authority": inventory["authority"], "methods": methods}
+    receipt = {
+        "authority": inventory["authority"],
+        "executed_package": {
+            "language": "test",
+            "source_git_sha": "git",
+            "model_digest": "model",
+        },
+        "methods": methods,
+    }
     return expected, inventory["authority"], receipt
 
 

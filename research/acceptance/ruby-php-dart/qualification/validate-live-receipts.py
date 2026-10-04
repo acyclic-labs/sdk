@@ -15,6 +15,7 @@ import hashlib
 import json
 import subprocess
 import tempfile
+import re
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,47 @@ def normalize_digest(value: Any) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return value.removeprefix("sha256:").lower()
+
+
+def validate_executed_package_binding(
+    language: str, receipt: dict[str, Any], authority: dict[str, Any], strict_rust_oracle: bool
+) -> dict[str, Any] | None:
+    binding = receipt.get("executed_package")
+    if binding is None:
+        binding = receipt.get("package_binding")
+    if binding is None:
+        binding = receipt.get("package_provenance")
+    if binding is None:
+        if strict_rust_oracle:
+            raise ValueError(f"{language}: executed package metadata is missing")
+        return None
+    if not isinstance(binding, dict):
+        raise ValueError(f"{language}: executed package metadata must be an object")
+    if binding.get("language") not in (None, language):
+        raise ValueError(f"{language}: executed package language does not match receipt language")
+    if binding.get("source_git_sha") != authority.get("source_git_sha"):
+        raise ValueError(f"{language}: executed package source_git_sha does not match Rust authority")
+    package_model = binding.get("model_digest", binding.get("rust_model_digest"))
+    if package_model != authority.get("model_digest"):
+        raise ValueError(f"{language}: executed package model digest does not match Rust authority")
+    producer_closure = binding.get("producer_source_file_hashes")
+    if producer_closure is not None and producer_closure != authority.get("source_file_hashes"):
+        raise ValueError(f"{language}: executed package producer source closure does not match Rust authority")
+    for field in ("source_file_hashes", "generated_source_file_hashes", "package_source_file_hashes"):
+        hashes = binding.get(field)
+        if hashes is None:
+            continue
+        if not isinstance(hashes, dict) or not hashes:
+            raise ValueError(f"{language}: executed package {field} must be a non-empty hash map")
+        for path, digest in hashes.items():
+            if not isinstance(digest, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", digest):
+                raise ValueError(f"{language}: executed package {field}[{path!r}] is not a SHA-256")
+    for field in ("artifact_sha256", "package_artifact_sha256", "provenance_sha256"):
+        if field in binding and binding[field] is not None:
+            digest = binding[field]
+            if not isinstance(digest, str) or not re.fullmatch(r"(?:sha256:)?[0-9a-fA-F]{64}", digest):
+                raise ValueError(f"{language}: executed package {field} is not a SHA-256")
+    return binding
 
 
 def canonical_terminal(value: Any) -> Any:
@@ -62,6 +104,7 @@ def validate_receipt(
     for field in ("source_git_sha", "model_digest"):
         if receipt_authority.get(field) != authority.get(field):
             raise ValueError(f"{language}: receipt authority {field} does not match Rust authority")
+    validate_executed_package_binding(language, receipt, authority, strict_rust_oracle)
     methods = receipt.get("methods")
     if not isinstance(methods, list) or len(methods) != 106:
         raise ValueError(f"{language}: receipt must contain exactly 106 methods")

@@ -2,6 +2,7 @@
 use acyclic_sdk_contract_wire::{compare_family_rpc_message, family_rpc_streaming, RpcDirection};
 use base64::Engine;
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::{env, fs, path::PathBuf};
 
 const EXPECTED_SCHEMA: &str = "acyclic.sdk.rpd.rust-authority-consumer-inventory.v1";
@@ -49,6 +50,12 @@ fn read_json(path: &PathBuf) -> Result<Value, String> {
     serde_json::from_slice(&bytes).map_err(|e| format!("decode {}: {e}", path.display()))
 }
 
+fn current_executable_sha256() -> Result<String, String> {
+    let path = env::current_exe().map_err(|error| format!("resolve verifier executable: {error}"))?;
+    let bytes = fs::read(&path).map_err(|error| format!("read verifier executable {}: {error}", path.display()))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
 fn object<'a>(value: &'a Value, label: &str) -> Result<&'a Map<String, Value>, String> {
     value.as_object().ok_or_else(|| format!("{label} must be an object"))
 }
@@ -73,6 +80,91 @@ fn contract_family<'a>(entry: &'a Map<String, Value>, label: &str) -> Result<&'a
     match normalized {
         "actors" | "workers" | "objects" | "stream" | "inference" | "machines" | "filesystem" | "harness" => Ok(normalized),
         _ => Err(format!("{label}.family {family:?} is not a registered Rust contract family")),
+    }
+}
+
+fn validate_producer_provenance(
+    expected_root: &Map<String, Value>,
+    observed_root: &Map<String, Value>,
+    observed_schema: &str,
+    expected_authority: &Map<String, Value>,
+    observed_authority: &Map<String, Value>,
+    failures: &mut Vec<String>,
+) {
+    let Some(language) = observed_schema
+        .strip_prefix("acyclic.sdk.rpd.")
+        .and_then(|value| value.strip_suffix("-live-receipt.v1"))
+    else {
+        failures.push("observed.schema does not identify an RPD language".to_owned());
+        return;
+    };
+    let Some(packages) = expected_root.get("packages").and_then(Value::as_object) else {
+        failures.push("expected.packages is missing; producer provenance is required".to_owned());
+        return;
+    };
+    let Some(expected_package) = packages.get(language).and_then(Value::as_object) else {
+        failures.push(format!("expected.packages.{language} is missing"));
+        return;
+    };
+    let Some(expected_provenance) = expected_package.get("provenance").and_then(Value::as_object) else {
+        failures.push(format!("expected.packages.{language}.provenance is missing"));
+        return;
+    };
+    let Some(observed_package) = observed_root.get("executed_package").and_then(Value::as_object) else {
+        failures.push("observed.executed_package is missing; runtime package provenance is required".to_owned());
+        return;
+    };
+    let observed_provenance = observed_package
+        .get("provenance")
+        .and_then(Value::as_object)
+        .unwrap_or(observed_package);
+    for (field, label) in [("source_git_sha", "source Git revision"), ("rust_model_digest", "Rust model digest")] {
+        let expected_value = expected_provenance.get(field).and_then(Value::as_str);
+        let observed_value = observed_package
+            .get(field)
+            .or_else(|| observed_provenance.get(field))
+            .and_then(Value::as_str);
+        if expected_value.is_none() || observed_value.is_none() {
+            failures.push(format!("{language}: executed package {label} provenance is missing"));
+        } else if expected_value != observed_value {
+            failures.push(format!("{language}: executed package {label} provenance differs from the Rust producer"));
+        }
+    }
+    if expected_provenance.get("source_git_sha") != expected_authority.get("source_git_sha") {
+        failures.push(format!("{language}: expected package producer source_git_sha differs from authority"));
+    }
+    if expected_provenance.get("rust_model_digest") != expected_authority.get("model_digest") {
+        failures.push(format!("{language}: expected package producer rust_model_digest differs from authority"));
+    }
+    if observed_authority.get("source_git_sha") != expected_authority.get("source_git_sha")
+        || observed_authority.get("model_digest") != expected_authority.get("model_digest")
+    {
+        failures.push(format!("{language}: observed authority is not the Rust producer authority"));
+    }
+    let Some(expected_generator) = expected_provenance.get("generator").and_then(Value::as_object) else {
+        failures.push(format!("{language}: expected producer generator identity is missing"));
+        return;
+    };
+    let Some(observed_generator) = observed_provenance.get("generator").and_then(Value::as_object) else {
+        failures.push(format!("{language}: executed package generator identity is missing"));
+        return;
+    };
+    if expected_generator != observed_generator {
+        failures.push(format!("{language}: executed package generator identity differs from the Rust producer record"));
+    }
+    for field in ["generator_lock_sha256", "schema_inputs_sha256"] {
+        if expected_provenance.get(field).is_some()
+            && expected_provenance.get(field) != observed_provenance.get(field)
+        {
+            failures.push(format!("{language}: executed package {field} provenance differs from the producer record"));
+        }
+    }
+    for field in ["generator_executable_sha256", "toolchain", "producer_source_file_hashes"] {
+        if let Some(expected_value) = expected_provenance.get(field) {
+            if observed_provenance.get(field) != Some(expected_value) {
+                failures.push(format!("{language}: executed package {field} provenance differs from the producer record"));
+            }
+        }
     }
 }
 
@@ -215,6 +307,12 @@ fn canonical_status(status: &str) -> &str {
 
 fn main() -> Result<(), String> {
     let (expected_path, observed_path, source_sha, output_path, verifier_sha, allow_partial) = args();
+    let actual_verifier_sha = current_executable_sha256()?;
+    if verifier_sha.to_ascii_lowercase() != actual_verifier_sha {
+        return Err(format!(
+            "--verifier-sha256 does not match the running executable: declared {verifier_sha}, actual {actual_verifier_sha}"
+        ));
+    }
     let expected = read_json(&expected_path)?;
     let observed = read_json(&observed_path)?;
     let expected_root = object(&expected, "expected")?;
@@ -260,6 +358,14 @@ fn main() -> Result<(), String> {
     }
     if expected_sha != source_sha { failures.push(format!("expected authority source_git_sha {expected_sha} differs from CLI {source_sha}")); }
     if observed_sha != source_sha { failures.push(format!("observed authority source_git_sha {observed_sha} differs from CLI {source_sha}")); }
+    validate_producer_provenance(
+        expected_root,
+        observed_root,
+        observed_schema,
+        expected_authority,
+        observed_authority,
+        &mut failures,
+    );
     let expected_methods = expected_root.get("methods").and_then(Value::as_array).ok_or("expected.methods is missing")?;
     let observed_methods = observed_root.get("methods").and_then(Value::as_array).ok_or("observed.methods is missing")?;
     if expected_count != expected_methods.len() { failures.push("expected.method_count differs from expected.methods length".to_owned()); }
@@ -385,7 +491,7 @@ fn main() -> Result<(), String> {
         "partial" => "unqualified",
         _ => "rejected",
     };
-    let result = json!({"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":status,"qualification":qualification,"source_git_sha":source_sha,"verifier_sha256":verifier_sha,"method_count":expected_methods.len(),"semantic_comparisons":comparisons,"failures":failures});
+    let result = json!({"schema":"acyclic.sdk.rpd.rust-semantic-verifier.v1","status":status,"qualification":qualification,"source_git_sha":source_sha,"verifier_sha256":actual_verifier_sha,"method_count":expected_methods.len(),"semantic_comparisons":comparisons,"failures":failures});
     if let Some(parent) = output_path.parent() { fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?; }
     fs::write(&output_path, serde_json::to_vec_pretty(&result).map_err(|e| format!("encode result: {e}"))?).map_err(|e| format!("write {}: {e}", output_path.display()))?;
     if status == "failed" { return Err("Rust semantic verifier rejected observations".to_owned()); }
