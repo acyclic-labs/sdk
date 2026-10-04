@@ -295,6 +295,19 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
             payload: body.clone(),
         })
         .await?;
+    communication
+        .send(MessageRequest {
+            sender: sibling,
+            recipient: parent,
+            message_id: request.message_id,
+            target: MessageTarget::Parent,
+            payload: body.clone(),
+        })
+        .await?;
+    let before_reopen = communication.inbox(child, 0, 8).await?;
+    assert!(before_reopen.iter().all(|item| {
+        item.sender == parent && item.delivered_at_epoch_ms > 0
+    }));
     // A low-level host caller still cannot bypass the direct parent/child
     // relationship enforced by the typed communication adapter.
     assert!(matches!(
@@ -310,6 +323,7 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
         .inbox(child, 0, 8)
         .await?;
     assert_eq!(items.len(), 2);
+    assert_eq!(items, before_reopen, "reopen must preserve exact delivery metadata");
     assert_eq!(items[0].sequence, 1);
     assert_eq!(items[1].sequence, 2);
     assert_eq!(items[0].message_id, request.message_id.to_string());
@@ -354,8 +368,11 @@ async fn local_stream_and_filesystem_mail_reopens_idempotently() -> Result<()> {
     let parent_items = DurableCommunication::new(reopened.clone())
         .inbox(parent, 0, 8)
         .await?;
-    assert_eq!(parent_items.len(), 1);
+    assert_eq!(parent_items.len(), 2);
+    assert_eq!(parent_items[0].sender, child);
+    assert_eq!(parent_items[1].sender, sibling);
     assert_eq!(parent_items[0].message_id, request.message_id.to_string());
+    assert_eq!(parent_items[1].message_id, request.message_id.to_string());
     assert!(
         DurableCommunication::new(reopened)
             .inbox(sibling, 0, 8)
@@ -457,7 +474,7 @@ async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
             limit: 8,
         },
         timeout_epoch_ms: None,
-        cancellation_id: None,
+        cancellation_id: Some(OperationId::from_bytes([17; 16])),
     };
     let task_wait_store = wait_store.clone();
     let task_cancel_request = cancel_request.clone();
