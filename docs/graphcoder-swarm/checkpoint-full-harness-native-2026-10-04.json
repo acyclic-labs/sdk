@@ -1,0 +1,21 @@
+{
+  "gate": "full native Harness library",
+  "source_commit": "131b2e2b949fae4cd64ad6001b48f7c11def63ae",
+  "source_tree": "e5b88d3530ac93b5e315a220153bef9edbdd7f2a",
+  "suite_tree": "dbc65d38da586a58a6b571978c4905fd8b69f461",
+  "suite_tree_sha256": "1120A8EB3ED8E57E2F545EF88F96809CD1A47C24A6110216DE68E60E43302612",
+  "platform": "Windows native",
+  "command": "cargo test --locked -p acyclic-harness --features filesystem-local --lib",
+  "passed": 349,
+  "failed": 0,
+  "ignored": 0,
+  "filtered": 0,
+  "exit_code": 0,
+  "artifact_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\131b2e2b9\\acyclic_harness-641f85f696abacc6.exe",
+  "artifact_sha256": "052AC9035FB1AAF96053246DE81FEE86CF9A09D049F1CE56B087BE514532B417",
+  "log_path": "C:\\graphcoder-builds\\root-qualification-artifacts\\131b2e2b9\\full-harness-lib.txt",
+  "log_sha256": "EC080DE18D093BFEBA5602D5E768AB9438A35D5FCE6230CEAA404DF981F0E2BA",
+  "lock_sha256": "48095856B845B20159465F61CEBB719DDCEB5E7D77B277FAA5DB663AC6D1E4C9",
+  "requirements_sha256": "4D723C6391A234D8CF18C149960C3D45EB19459A642FF326CB8DC439DC1605EF",
+  "scope": "All 349 current integrated Harness library tests pass. This excludes integration test binaries, production recursive swarm coordinator/fault qualification, installed artifacts, terminal PTY, generated bindings and platform lanes."
+}

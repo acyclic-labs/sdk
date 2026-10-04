@@ -45,3 +45,5 @@ Latest focused checkpoint: source39707322e passes 34/34 native storage, message-
 
 
 Cold recursive boundary checkpoint: source9dfc54cb5 passes 3/3 with fresh providers after releasing original handles. The production coordinator and fault-injection failures remain independent open gates.
+
+Current full library checkpoint: source131b2e2b9 passes 349/349 Windows native Harness library tests; see [receipt](checkpoint-full-harness-native-2026-10-04.json). No installed or production coordinator gate is closed by this library run.
