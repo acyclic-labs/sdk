@@ -400,7 +400,8 @@ pub trait SwarmUsageSource {
         _operation_id: OperationId,
         _dispatch_id: &IdempotencyKey,
         _usage: SwarmUsage,
-    ) {
+    ) -> Result<()> {
+        Ok(())
     }
 
     /// Restores the last durable runtime counter before a dispatch resumes.
@@ -411,7 +412,8 @@ pub trait SwarmUsageSource {
         _operation_id: OperationId,
         _dispatch_id: &IdempotencyKey,
         _usage: SwarmUsage,
-    ) {
+    ) -> Result<()> {
+        Ok(())
     }
 }
 
@@ -433,7 +435,7 @@ impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
         usage: SwarmUsage,
-    ) {
+    ) -> Result<()> {
         (**self).record_runtime_usage(operation_id, dispatch_id, usage)
     }
 
@@ -442,7 +444,7 @@ impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
         usage: SwarmUsage,
-    ) {
+    ) -> Result<()> {
         (**self).restore_runtime_usage(operation_id, dispatch_id, usage)
     }
 }
@@ -625,14 +627,14 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         VerifiedSwarmUsageReceipt::from_verified(receipt)
     }
 
-    fn record_runtime_usage(&self, usage: SwarmUsage) {
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
         self.source
-            .record_runtime_usage(self.operation_id, &self.dispatch_id, usage);
+            .record_runtime_usage(self.operation_id, &self.dispatch_id, usage)
     }
 
-    fn restore_runtime_usage(&self, usage: SwarmUsage) {
+    fn restore_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
         self.source
-            .restore_runtime_usage(self.operation_id, &self.dispatch_id, usage);
+            .restore_runtime_usage(self.operation_id, &self.dispatch_id, usage)
     }
 
     /// Returns the next sequence expected from this issuer.
@@ -710,12 +712,12 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         &self.token
     }
 
-    fn record_runtime_usage(&self, usage: SwarmUsage) {
-        self.issuer.record_runtime_usage(usage);
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.record_runtime_usage(usage)
     }
 
-    pub(crate) fn restore_runtime_usage(&self, usage: SwarmUsage) {
-        self.issuer.restore_runtime_usage(usage);
+    pub(crate) fn restore_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.restore_runtime_usage(usage)
     }
 
     /// Returns the mutable pre-work provider limiter.
@@ -806,8 +808,8 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         Ok(())
     }
 
-    fn record_runtime_usage(&self, usage: SwarmUsage) {
-        self.issuer.record_runtime_usage(usage);
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.record_runtime_usage(usage)
     }
 
     /// Returns the mutable pre-work provider limiter.
@@ -856,7 +858,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
         match self {
             Self::Child(context) => {
                 let result = context.limiter_mut().admit_model_step();
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
             Self::Root(context) => {
@@ -866,7 +868,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     ..current
                 })?;
                 let result = context.limiter_mut().admit_model_step();
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
         }
@@ -876,7 +878,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
         match self {
             Self::Child(context) => {
                 let result = context.limiter_mut().admit_output(bytes);
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
             Self::Root(context) => {
@@ -886,7 +888,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     ..current
                 })?;
                 let result = context.limiter_mut().admit_output(bytes);
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
         }
@@ -896,7 +898,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
         match self {
             Self::Child(context) => {
                 let result = context.limiter_mut().admit_execution_time(elapsed_ms);
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
             Self::Root(context) => {
@@ -906,7 +908,7 @@ impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
                     ..current
                 })?;
                 let result = context.limiter_mut().admit_execution_time(elapsed_ms);
-                context.record_runtime_usage(context.limiter.usage());
+                context.record_runtime_usage(context.limiter.usage())?;
                 result
             }
         }
@@ -1467,13 +1469,12 @@ where
 
     fn reconcile_admitted<'a>(
         &'a self,
-        request: crate::model::ModelRequest,
+        prepared: crate::model_input::PreparedModelInput,
         attempt: crate::model::ModelAttempt,
     ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
         let provider = self.provider.clone();
         let meter = self.meter.clone();
         Box::pin(async move {
-            provider.admit(&request)?;
             let remaining_ms = meter.remaining_execution_time_ms()?;
             if remaining_ms == 0 {
                 return Err(Error::Conflict(
@@ -1483,7 +1484,7 @@ where
             let started = Instant::now();
             let reconciled = tokio::time::timeout(
                 tokio::time::Duration::from_millis(remaining_ms),
-                provider.reconcile_admitted(request, attempt),
+                provider.reconcile_admitted(prepared, attempt),
             )
             .await;
             let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
@@ -2216,7 +2217,7 @@ impl SwarmBudget {
             limits,
         )?;
         if let Some(usage) = issuer.cursor().usage {
-            issuer.restore_runtime_usage(usage);
+            issuer.restore_runtime_usage(usage)?;
         }
         Ok(SwarmRootDispatchContext::new(limiter, issuer))
     }

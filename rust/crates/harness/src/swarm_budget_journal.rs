@@ -768,7 +768,7 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         let cursor = reservation.usage_cursor();
         let context = token.resume_usage_context(source, cursor?)?;
         if let Some(usage) = context.receipt_cursor().usage {
-            context.restore_runtime_usage(usage);
+            context.restore_runtime_usage(usage)?;
         }
         Ok(context)
     }
