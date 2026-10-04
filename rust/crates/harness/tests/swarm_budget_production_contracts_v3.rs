@@ -33,7 +33,9 @@ fn request(operation_id: OperationId, key: String) -> SwarmForkRequest {
 
 fn limits() -> SwarmBudgetLimits {
     SwarmBudgetLimits {
-        max_active_agents: 3,
+        // The root counts toward active capacity. The concurrency case below
+        // intentionally admits the root plus three live children.
+        max_active_agents: 4,
         max_total_agents: 4,
         max_recursion_depth: 1,
         max_model_steps: 8,
@@ -57,6 +59,10 @@ impl MeasuredSequence {
 impl SwarmUsageSource for &MeasuredSequence {
     fn provider_identity(&self) -> &str {
         "local-production-measurement"
+    }
+
+    fn source_fingerprint(&self) -> [u8; 32] {
+        *blake3::hash(b"local-production-measurement").as_bytes()
     }
 
     fn cumulative_usage(
@@ -94,6 +100,13 @@ async fn production_root_context_uses_remaining_capacity_and_durable_cursor() ->
         root_dispatch,
     )
     .await?;
+    journal
+        .bind_root_provider_identity(
+            &owner,
+            "local-production-measurement",
+            *blake3::hash(b"local-production-measurement").as_bytes(),
+        )
+        .await?;
     journal
         .reserve_child(request(OperationId::new(), "child-reservation".into()))
         .await?;

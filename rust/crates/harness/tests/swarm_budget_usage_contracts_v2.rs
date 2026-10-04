@@ -60,6 +60,10 @@ impl SwarmUsageSource for SequenceSource {
         "public-budget-provider"
     }
 
+    fn source_fingerprint(&self) -> [u8; 32] {
+        *blake3::hash(b"public-budget-provider").as_bytes()
+    }
+
     fn cumulative_usage(
         &self,
         _operation_id: OperationId,

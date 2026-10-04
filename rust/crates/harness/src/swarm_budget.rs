@@ -11,9 +11,29 @@ use crate::{
     Error, IdempotencyKey, OperationId, Result, contract::canonical_json_bytes,
     runtime::TaskAdmissionRecord,
 };
+use futures::Stream;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
+    time::Instant,
+};
+
+/// Refreshes a root provider's remaining ceiling from its durable budget
+/// projection immediately before a model request.
+pub type RootBudgetRefresh = Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SwarmResourceRequest>> + Send + Sync>;
+
+/// Claims a root model step in the durable budget before provider work starts.
+pub type RootBudgetClaim = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
+/// Confirms a child dispatch after its model request has been prepared.
+pub type DispatchConfirmation = Arc<dyn Fn(OperationId, IdempotencyKey, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
+
+/// Produces the opaque cross-stream mutation committed with `ModelStarted`.
+pub type DispatchPermitFactory = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<crate::model::ModelDispatchPermit>> + Send + Sync>;
 
 /// Maximum number of agents one budget projection may retain.
 pub const MAX_SWARM_AGENTS: u64 = 1_000_000;
@@ -214,10 +234,7 @@ impl SwarmUsageLimiter {
     /// already consumed by the same dispatch attempt.
     pub fn resume(limits: SwarmResourceRequest, usage: SwarmUsage) -> Result<Self> {
         limits.validate()?;
-        if usage.model_steps > limits.model_steps
-            || usage.output_bytes > limits.output_bytes
-            || usage.execution_time_ms > limits.execution_time_ms
-        {
+        if usage_exceeds_limits(usage, limits) {
             return Err(Error::Conflict(
                 "restored provider usage exceeds the child reservation ceiling".into(),
             ));
@@ -242,47 +259,39 @@ impl SwarmUsageLimiter {
 
     /// Reserves one model step before invoking the model.
     pub fn admit_model_step(&mut self) -> Result<SwarmUsage> {
-        let next = self
-            .usage
-            .model_steps
-            .checked_add(1)
-            .ok_or_else(|| Error::Conflict("provider model step ceiling exhausted".into()))?;
-        if next > self.limits.model_steps {
+        if self.usage.model_steps >= self.limits.model_steps {
             return Err(Error::Conflict(
                 "provider model step ceiling exhausted".into(),
             ));
         }
-        self.usage.model_steps = next;
+        self.usage.model_steps += 1;
         Ok(self.usage)
     }
 
     /// Reserves output bytes before accepting them from the provider.
     pub fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
-        let next = self
-            .usage
-            .output_bytes
-            .checked_add(bytes)
-            .ok_or_else(|| Error::Conflict("provider output ceiling exhausted".into()))?;
-        if next > self.limits.output_bytes {
+        let remaining = self.limits.output_bytes.saturating_sub(self.usage.output_bytes);
+        if bytes > remaining {
+            self.usage.output_bytes = self.limits.output_bytes;
             return Err(Error::Conflict("provider output ceiling exhausted".into()));
         }
-        self.usage.output_bytes = next;
+        self.usage.output_bytes += bytes;
         Ok(self.usage)
     }
 
     /// Advances measured elapsed time before allowing another provider slice.
     pub fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
-        let next = self
-            .usage
+        let remaining = self
+            .limits
             .execution_time_ms
-            .checked_add(elapsed_ms)
-            .ok_or_else(|| Error::Conflict("provider execution time ceiling exhausted".into()))?;
-        if next > self.limits.execution_time_ms {
+            .saturating_sub(self.usage.execution_time_ms);
+        if elapsed_ms > remaining {
+            self.usage.execution_time_ms = self.limits.execution_time_ms;
             return Err(Error::Conflict(
                 "provider execution time ceiling exhausted".into(),
             ));
         }
-        self.usage.execution_time_ms = next;
+        self.usage.execution_time_ms += elapsed_ms;
         Ok(self.usage)
     }
 }
@@ -348,19 +357,30 @@ impl SwarmUsageReceipt {
 /// mutation APIs accept this crate-visible proof wrapper so callers cannot
 /// manufacture a budget release by passing an arbitrary usage value.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct VerifiedSwarmUsageReceipt(SwarmUsageReceipt);
+pub struct VerifiedSwarmUsageReceipt {
+    receipt: SwarmUsageReceipt,
+    source_fingerprint: [u8; 32],
+}
 
 impl VerifiedSwarmUsageReceipt {
     /// Binds a provider receipt after the host verifies its measurement.
-    fn from_verified(receipt: SwarmUsageReceipt) -> Result<Self> {
+    fn from_verified(receipt: SwarmUsageReceipt, source_fingerprint: [u8; 32]) -> Result<Self> {
         receipt.validate()?;
-        Ok(Self(receipt))
+        Ok(Self {
+            receipt,
+            source_fingerprint,
+        })
     }
 
     /// Returns the durable receipt for the compound scheduler event.
     #[must_use]
     pub(crate) fn into_receipt(self) -> SwarmUsageReceipt {
-        self.0
+        self.receipt
+    }
+
+    /// Returns the authenticated source capability bound by the issuer.
+    pub(crate) fn source_fingerprint(&self) -> [u8; 32] {
+        self.source_fingerprint
     }
 }
 
@@ -373,12 +393,79 @@ pub trait SwarmUsageSource {
     /// Stable provider identity retained in each receipt.
     fn provider_identity(&self) -> &str;
 
+    /// Authenticated capability identity for this measurement source. Durable
+    /// local sources override this with a journal-bound fingerprint; the
+    /// provider label alone is never sufficient for root accounting.
+    fn source_fingerprint(&self) -> [u8; 32] {
+        [0; 32]
+    }
+
     /// Reads cumulative usage for the exact operation and dispatch attempt.
     fn cumulative_usage(
         &self,
         operation_id: OperationId,
         dispatch_id: &IdempotencyKey,
     ) -> Result<SwarmUsage>;
+
+    /// Receives locally admitted counters when this source owns runtime
+    /// measurement. External hosts may leave this hook at its default and
+    /// return authoritative counters from [`Self::cumulative_usage`].
+    fn record_runtime_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+        _usage: SwarmUsage,
+    ) -> Result<()> {
+        Ok(())
+    }
+
+    /// Restores the last durable runtime counter before a dispatch resumes.
+    /// Host authoritative sources may leave this hook unchanged; their
+    /// cumulative measurement remains independently validated on receipt.
+    fn restore_runtime_usage(
+        &self,
+        _operation_id: OperationId,
+        _dispatch_id: &IdempotencyKey,
+        _usage: SwarmUsage,
+    ) -> Result<()> {
+        Ok(())
+    }
+}
+
+impl<T: SwarmUsageSource + ?Sized> SwarmUsageSource for Arc<T> {
+    fn provider_identity(&self) -> &str {
+        (**self).provider_identity()
+    }
+
+    fn source_fingerprint(&self) -> [u8; 32] {
+        (**self).source_fingerprint()
+    }
+
+    fn cumulative_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        (**self).cumulative_usage(operation_id, dispatch_id)
+    }
+
+    fn record_runtime_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        usage: SwarmUsage,
+    ) -> Result<()> {
+        (**self).record_runtime_usage(operation_id, dispatch_id, usage)
+    }
+
+    fn restore_runtime_usage(
+        &self,
+        operation_id: OperationId,
+        dispatch_id: &IdempotencyKey,
+        usage: SwarmUsage,
+    ) -> Result<()> {
+        (**self).restore_runtime_usage(operation_id, dispatch_id, usage)
+    }
 }
 
 /// Monotonic receipt issuer bound to one provider dispatch.
@@ -477,10 +564,7 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         validate_issuer_cursor(sequence, last_usage)?;
         let mut issuer = Self::with_limits(source, operation_id, dispatch_id, limits)?;
         if let Some(usage) = last_usage {
-            if usage.model_steps > limits.model_steps
-                || usage.output_bytes > limits.output_bytes
-                || usage.execution_time_ms > limits.execution_time_ms
-            {
+            if usage_exceeds_limits(usage, limits) {
                 return Err(Error::Conflict(
                     "restored provider usage exceeds the child reservation ceiling".into(),
                 ));
@@ -511,6 +595,14 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
 
     /// Reads provider counters and issues the next verified durable receipt.
     pub fn issue(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issue_at_least(SwarmUsage::default())
+    }
+
+    /// Reads provider counters and issues a receipt only when the host
+    /// measurement covers the metered runtime counters. The cursor advances
+    /// after this check, so a rejected stale measurement cannot skip a
+    /// sequence on restart.
+    pub fn issue_at_least(&mut self, minimum: SwarmUsage) -> Result<VerifiedSwarmUsageReceipt> {
         let sequence = self
             .sequence
             .checked_add(1)
@@ -518,11 +610,16 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         let usage = self
             .source
             .cumulative_usage(self.operation_id, &self.dispatch_id)?;
+        if usage.model_steps < minimum.model_steps
+            || usage.output_bytes < minimum.output_bytes
+            || usage.execution_time_ms < minimum.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "host usage source is behind metered provider usage".into(),
+            ));
+        }
         if let Some(limits) = self.limits {
-            if usage.model_steps > limits.model_steps
-                || usage.output_bytes > limits.output_bytes
-                || usage.execution_time_ms > limits.execution_time_ms
-            {
+            if usage_exceeds_limits(usage, limits) {
                 return Err(Error::Conflict(
                     "provider usage exceeds the child reservation ceiling".into(),
                 ));
@@ -540,7 +637,17 @@ impl<S: SwarmUsageSource> SwarmUsageReceiptIssuer<S> {
         )?;
         self.sequence = sequence;
         self.last_usage = Some(usage);
-        VerifiedSwarmUsageReceipt::from_verified(receipt)
+        VerifiedSwarmUsageReceipt::from_verified(receipt, self.source.source_fingerprint())
+    }
+
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.source
+            .record_runtime_usage(self.operation_id, &self.dispatch_id, usage)
+    }
+
+    fn restore_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.source
+            .restore_runtime_usage(self.operation_id, &self.dispatch_id, usage)
     }
 
     /// Returns the next sequence expected from this issuer.
@@ -583,7 +690,7 @@ pub struct SwarmDispatchContext<S> {
 
 impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
     /// Binds a fresh provider dispatch to its admission token.
-    pub fn new(token: SwarmDispatchToken, source: S) -> Result<Self> {
+    pub(crate) fn new(token: SwarmDispatchToken, source: S) -> Result<Self> {
         let limiter = token.usage_limiter()?;
         let issuer = token.usage_receipt_issuer(source)?;
         Ok(Self {
@@ -598,7 +705,7 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
     /// The cursor must come from the journal for this operation. Restoring it
     /// before provider work resumes prevents a process restart from reopening
     /// capacity already consumed by the same dispatch.
-    pub fn resume(
+    pub(crate) fn resume(
         token: SwarmDispatchToken,
         source: S,
         cursor: SwarmUsageReceiptCursor,
@@ -618,6 +725,14 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
         &self.token
     }
 
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.record_runtime_usage(usage)
+    }
+
+    pub(crate) fn restore_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.restore_runtime_usage(usage)
+    }
+
     /// Returns the mutable pre-work provider limiter.
     ///
     /// The provider adapter must call its admission methods before each model
@@ -634,6 +749,13 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
     /// Reads provider counters and creates the next verified usage receipt.
     pub fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
         self.issuer.issue()
+    }
+
+    fn issue_usage_receipt_at_least(
+        &mut self,
+        minimum: SwarmUsage,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_at_least(minimum)
     }
 
     /// Returns the latest provider measurement accepted by this context.
@@ -657,11 +779,50 @@ impl<S: SwarmUsageSource> SwarmDispatchContext<S> {
 pub struct SwarmRootDispatchContext<S> {
     limiter: SwarmUsageLimiter,
     issuer: SwarmUsageReceiptIssuer<S>,
+    dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
 }
 
 impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     fn new(limiter: SwarmUsageLimiter, issuer: SwarmUsageReceiptIssuer<S>) -> Self {
-        Self { limiter, issuer }
+        Self {
+            limiter,
+            issuer,
+            dynamic_limits: None,
+        }
+    }
+
+    fn new_with_dynamic(
+        limiter: SwarmUsageLimiter,
+        issuer: SwarmUsageReceiptIssuer<S>,
+        dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
+    ) -> Self {
+        Self {
+            limiter,
+            issuer,
+            dynamic_limits: Some(dynamic_limits),
+        }
+    }
+
+    fn check_dynamic(&self, next: SwarmUsage) -> Result<()> {
+        let Some(dynamic_limits) = &self.dynamic_limits else {
+            return Ok(());
+        };
+        let limits = *dynamic_limits
+            .lock()
+            .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))?;
+        if next.model_steps > limits.model_steps
+            || next.output_bytes > limits.output_bytes
+            || next.execution_time_ms > limits.execution_time_ms
+        {
+            return Err(Error::Conflict(
+                "root provider exceeds remaining swarm budget".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn record_runtime_usage(&self, usage: SwarmUsage) -> Result<()> {
+        self.issuer.record_runtime_usage(usage)
     }
 
     /// Returns the mutable pre-work provider limiter.
@@ -679,6 +840,13 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
         self.issuer.issue()
     }
 
+    fn issue_usage_receipt_at_least(
+        &mut self,
+        minimum: SwarmUsage,
+    ) -> Result<VerifiedSwarmUsageReceipt> {
+        self.issuer.issue_at_least(minimum)
+    }
+
     /// Returns the latest provider measurement accepted by this context.
     #[must_use]
     pub const fn usage(&self) -> SwarmUsage {
@@ -690,6 +858,693 @@ impl<S: SwarmUsageSource> SwarmRootDispatchContext<S> {
     #[must_use]
     pub fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
         self.issuer.cursor()
+    }
+}
+
+enum SwarmProviderBoundary<S> {
+    Child(SwarmDispatchContext<S>),
+    Root(SwarmRootDispatchContext<S>),
+}
+
+impl<S: SwarmUsageSource> SwarmProviderBoundary<S> {
+    fn admit_model_step(&mut self) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => {
+                let result = context.limiter_mut().admit_model_step();
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    model_steps: current.model_steps.saturating_add(1),
+                    ..current
+                })?;
+                let result = context.limiter_mut().admit_model_step();
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+        }
+    }
+
+    fn admit_output(&mut self, bytes: u64) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => {
+                let result = context.limiter_mut().admit_output(bytes);
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    output_bytes: current.output_bytes.saturating_add(bytes),
+                    ..current
+                })?;
+                let result = context.limiter_mut().admit_output(bytes);
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+        }
+    }
+
+    fn admit_execution_time(&mut self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        match self {
+            Self::Child(context) => {
+                let result = context.limiter_mut().admit_execution_time(elapsed_ms);
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+            Self::Root(context) => {
+                let current = context.limiter.usage();
+                context.check_dynamic(SwarmUsage {
+                    execution_time_ms: current.execution_time_ms.saturating_add(elapsed_ms),
+                    ..current
+                })?;
+                let result = context.limiter_mut().admit_execution_time(elapsed_ms);
+                context.record_runtime_usage(context.limiter.usage())?;
+                result
+            }
+        }
+    }
+
+    fn remaining_execution_time_ms(&self) -> u64 {
+        let (limits, usage) = match self {
+            Self::Child(context) => (context.limiter.limits(), context.limiter.usage()),
+            Self::Root(context) => (context.limiter.limits(), context.limiter.usage()),
+        };
+        limits
+            .execution_time_ms
+            .saturating_sub(usage.execution_time_ms)
+    }
+
+    fn issue_usage_receipt(&mut self) -> Result<VerifiedSwarmUsageReceipt> {
+        let local = self.usage();
+        let receipt = match self {
+            Self::Child(context) => context.issue_usage_receipt_at_least(local)?,
+            Self::Root(context) => context.issue_usage_receipt_at_least(local)?,
+        };
+        Ok(receipt)
+    }
+
+    fn usage(&self) -> SwarmUsage {
+        match self {
+            Self::Child(context) => context.usage(),
+            Self::Root(context) => context.usage(),
+        }
+    }
+
+    fn receipt_cursor(&self) -> SwarmUsageReceiptCursor {
+        match self {
+            Self::Child(context) => context.receipt_cursor(),
+            Self::Root(context) => context.receipt_cursor(),
+        }
+    }
+}
+
+/// Shared metering handle for one concrete model dispatch.
+pub struct SwarmProviderMeter<S> {
+    context: Arc<Mutex<SwarmProviderBoundary<S>>>,
+    deferred_error: Arc<Mutex<Option<String>>>,
+}
+
+impl<S> Clone for SwarmProviderMeter<S> {
+    fn clone(&self) -> Self {
+        Self {
+            context: self.context.clone(),
+            deferred_error: self.deferred_error.clone(),
+        }
+    }
+}
+
+impl<S: SwarmUsageSource> SwarmProviderMeter<S> {
+    fn new(boundary: SwarmProviderBoundary<S>) -> Self {
+        Self {
+            context: Arc::new(Mutex::new(boundary)),
+            deferred_error: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn check_deferred_error(&self) -> Result<()> {
+        let error = self
+            .deferred_error
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider deferred error lock is poisoned".into()))?
+            .clone();
+        match error {
+            Some(error) => Err(Error::Storage(error)),
+            None => Ok(()),
+        }
+    }
+
+    fn record_deferred_error(&self, error: Error) {
+        if let Ok(mut deferred) = self.deferred_error.lock() {
+            deferred.get_or_insert_with(|| format!("metered stream finalization failed: {error}"));
+        }
+    }
+
+    /// Admits one model provider request before invoking the provider.
+    pub fn admit_model_step(&self) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_model_step()
+    }
+
+    /// Admits bytes before accepting model output from the provider.
+    pub fn admit_output(&self, bytes: u64) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_output(bytes)
+    }
+
+    /// Admits one measured elapsed execution slice.
+    pub fn admit_execution_time(&self, elapsed_ms: u64) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .admit_execution_time(elapsed_ms)
+    }
+
+    fn remaining_execution_time_ms(&self) -> Result<u64> {
+        self.check_deferred_error()?;
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .remaining_execution_time_ms())
+    }
+
+    /// Accounts one provider event using its canonical serialized output size.
+    pub fn observe_model_event(&self, event: &crate::model::ModelEvent) -> Result<SwarmUsage> {
+        let bytes = u64::try_from(canonical_json_bytes(event)?.len())
+            .map_err(|_| Error::Invalid("model event output size exceeds u64".into()))?;
+        self.admit_output(bytes)
+    }
+
+    /// Issues the next receipt from the host-bound cumulative measurement source.
+    pub fn issue_usage_receipt(&self) -> Result<VerifiedSwarmUsageReceipt> {
+        self.check_deferred_error()?;
+        self.context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .issue_usage_receipt()
+    }
+
+    /// Returns the latest guarded usage admitted by this runtime.
+    pub fn usage(&self) -> Result<SwarmUsage> {
+        self.check_deferred_error()?;
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .usage())
+    }
+
+    /// Returns the cursor that must be persisted with the next receipt.
+    pub fn receipt_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
+        self.check_deferred_error()?;
+        Ok(self
+            .context
+            .lock()
+            .map_err(|_| Error::Storage("swarm provider meter lock is poisoned".into()))?
+            .receipt_cursor())
+    }
+}
+
+/// Model provider adapter that enforces a dispatch's step, output, and
+/// elapsed-time ceilings around the real provider stream.
+pub struct MeteredModelProvider<P: ?Sized, S> {
+    provider: Arc<P>,
+    meter: SwarmProviderMeter<S>,
+    root_refresh: Option<RootBudgetRefresh>,
+    root_dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
+    root_claim: Option<RootBudgetClaim>,
+    dispatch_confirmation: Option<DispatchConfirmation>,
+    dispatch_permit: Option<DispatchPermitFactory>,
+    bound_dispatch_id: Option<IdempotencyKey>,
+}
+
+struct MeteredStream<'a, S: SwarmUsageSource> {
+    inner: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
+    meter: SwarmProviderMeter<S>,
+    started: Instant,
+    charged_ms: u64,
+    deadline: Pin<Box<tokio::time::Sleep>>,
+    finished: bool,
+}
+
+impl<S: SwarmUsageSource> Stream for MeteredStream<'_, S> {
+    type Item = Result<crate::model::ModelEvent>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.finished {
+            return Poll::Ready(None);
+        }
+        if this.deadline.as_mut().poll(cx).is_ready() {
+            this.finished = true;
+            let elapsed_ms =
+                u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            let delta = elapsed_ms.saturating_sub(this.charged_ms);
+            return Poll::Ready(Some(match this.meter.admit_execution_time(delta) {
+                Ok(_) => Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                )),
+                Err(error) => Err(error),
+            }));
+        }
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(next) => {
+                let elapsed_ms =
+                    u64::try_from(this.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let delta = elapsed_ms.saturating_sub(this.charged_ms);
+                this.charged_ms = elapsed_ms;
+                if let Err(error) = this.meter.admit_execution_time(delta) {
+                    this.finished = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+                match next {
+                    Some(Ok(event)) => match this.meter.observe_model_event(&event) {
+                        Ok(_) => Poll::Ready(Some(Ok(event))),
+                        Err(error) => {
+                            this.finished = true;
+                            Poll::Ready(Some(Err(error)))
+                        }
+                    },
+                    Some(Err(error)) => {
+                        this.finished = true;
+                        Poll::Ready(Some(Err(error)))
+                    }
+                    None => {
+                        this.finished = true;
+                        Poll::Ready(None)
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<S: SwarmUsageSource> Drop for MeteredStream<'_, S> {
+    fn drop(&mut self) {
+        if self.finished {
+            return;
+        }
+        let elapsed_ms = u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let delta = elapsed_ms.saturating_sub(self.charged_ms);
+        if let Err(error) = self.meter.admit_execution_time(delta) {
+            self.meter.record_deferred_error(error);
+        }
+    }
+}
+
+impl<P, S> MeteredModelProvider<P, S>
+where
+    P: crate::model::ModelProvider + ?Sized + 'static,
+    S: SwarmUsageSource + Send + Sync + 'static,
+{
+    /// Wraps one real provider with an admitted dispatch context.
+    pub(crate) fn new(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let bound_dispatch_id = context.token().dispatch_id().cloned();
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Child(context));
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id,
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps one real provider with an admitted root dispatch context.
+    pub(crate) fn new_root(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(context));
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id: None,
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps root work with a shared remaining-ceiling view that local child
+    /// admission can update while the root turn is still running.
+    pub(crate) fn new_root_with_dynamic(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        dynamic_limits: Arc<Mutex<SwarmResourceRequest>>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(
+            SwarmRootDispatchContext::new_with_dynamic(
+                context.limiter,
+                context.issuer,
+                dynamic_limits,
+            ),
+        ));
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+            root_refresh: None,
+            root_dynamic_limits: None,
+            root_claim: None,
+            dispatch_confirmation: None,
+            dispatch_permit: None,
+            bound_dispatch_id: None,
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps root work with a callback that refreshes its cumulative ceiling
+    /// before each request. The callback is evaluated by the provider wrapper,
+    /// while the context performs the final check immediately before the
+    /// model stream is entered.
+    pub(crate) fn new_root_with_refresh(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, None)
+    }
+
+    /// Wraps root work with refresh and a durable per-step claim callback.
+    pub(crate) fn new_root_with_refresh_and_claim(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+        claim: RootBudgetClaim,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), Some(claim), None)
+    }
+
+    /// Wraps root work with refresh and an opaque permit factory. The permit
+    /// is committed atomically with the execution journal's model start.
+    pub(crate) fn new_root_with_refresh_and_permit(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: RootBudgetRefresh,
+        permit: DispatchPermitFactory,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, Some(permit))
+    }
+
+    fn new_root_with_refresh_and_options(
+        provider: Arc<P>,
+        context: SwarmRootDispatchContext<S>,
+        refresh: Option<RootBudgetRefresh>,
+        claim: Option<RootBudgetClaim>,
+        permit: Option<DispatchPermitFactory>,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let dynamic_limits = Arc::new(Mutex::new(context.limiter.limits()));
+        let root_context = SwarmRootDispatchContext::new_with_dynamic(
+            context.limiter,
+            context.issuer,
+            dynamic_limits.clone(),
+        );
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Root(root_context));
+        let wrapped = Arc::new(Self {
+            provider,
+            meter: meter.clone(),
+            root_refresh: refresh,
+            root_dynamic_limits: Some(dynamic_limits),
+            root_claim: claim,
+            dispatch_confirmation: None,
+            dispatch_permit: permit,
+            bound_dispatch_id: None,
+        });
+        (wrapped, meter)
+    }
+
+    /// Wraps child work with a callback that confirms its prepared dispatch
+    /// immediately before the provider stream is entered.
+    pub(crate) fn new_with_dispatch_confirmation(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+        confirmation: DispatchConfirmation,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let (mut wrapped, meter) = Self::new(provider, context);
+        let inner = Arc::get_mut(&mut wrapped).expect("new wrapper is unique");
+        inner.dispatch_confirmation = Some(confirmation);
+        (wrapped, meter)
+    }
+
+    /// Wraps child work with an opaque per-step permit factory.
+    pub(crate) fn new_with_dispatch_permit(
+        provider: Arc<P>,
+        context: SwarmDispatchContext<S>,
+        permit: DispatchPermitFactory,
+    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
+        let (mut wrapped, meter) = Self::new(provider, context);
+        let inner = Arc::get_mut(&mut wrapped).expect("new wrapper is unique");
+        inner.dispatch_permit = Some(permit);
+        (wrapped, meter)
+    }
+
+    /// Returns the handle used to publish the dispatch receipt after the
+    /// provider stream has been consumed.
+    #[must_use]
+    pub fn meter(&self) -> SwarmProviderMeter<S> {
+        self.meter.clone()
+    }
+
+    fn wrap_stream<'a>(
+        stream: futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>>,
+        meter: SwarmProviderMeter<S>,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        let remaining_ms = match meter.remaining_execution_time_ms() {
+            Ok(remaining_ms) => remaining_ms,
+            Err(error) => {
+                return Box::pin(futures::stream::once(async move { Err(error) }));
+            }
+        };
+        if remaining_ms == 0 {
+            return Box::pin(futures::stream::once(async {
+                Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                ))
+            }));
+        }
+        Box::pin(MeteredStream {
+            inner: stream,
+            meter,
+            started: Instant::now(),
+            charged_ms: 0,
+            deadline: Box::pin(tokio::time::sleep(tokio::time::Duration::from_millis(
+                remaining_ms,
+            ))),
+            finished: false,
+        })
+    }
+
+    async fn refresh_root_ceiling(&self) -> Result<()> {
+        let (Some(refresh), Some(dynamic_limits)) =
+            (self.root_refresh.as_ref(), self.root_dynamic_limits.as_ref())
+        else {
+            return Ok(());
+        };
+        let limits = refresh().await?;
+        *dynamic_limits
+            .lock()
+            .map_err(|_| Error::Storage("swarm root dynamic budget lock is poisoned".into()))? =
+            limits;
+        Ok(())
+    }
+}
+
+impl<P, S> crate::model::ModelProvider for MeteredModelProvider<P, S>
+where
+    P: crate::model::ModelProvider + ?Sized + 'static,
+    S: SwarmUsageSource + Send + Sync + 'static,
+{
+    fn model_option_policy(&self) -> Option<&crate::model::ModelOptionPolicy> {
+        self.provider.model_option_policy()
+    }
+
+    fn admit(&self, request: &crate::model::ModelRequest) -> Result<()> {
+        self.provider.admit(request)
+    }
+
+    fn before_model_prepare<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.provider.before_model_prepare().await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn before_model_dispatch(
+        &self,
+        operation_id: OperationId,
+        step: u32,
+    ) -> futures::future::BoxFuture<'_, Result<()>> {
+        Box::pin(async move {
+            self.provider
+                .before_model_dispatch(operation_id, step)
+                .await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn prepare_model_dispatch<'a>(
+        &'a self,
+        operation_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> futures::future::BoxFuture<'a, Result<Option<crate::model::ModelDispatchPermit>>> {
+        let provider = self.provider.clone();
+        let dispatch_permit = self.dispatch_permit.clone();
+        let root_claim = self.root_claim.clone();
+        let dispatch_confirmation = self.dispatch_confirmation.clone();
+        let bound_dispatch_id = self.bound_dispatch_id.clone();
+        Box::pin(async move {
+            // Always run the wrapped provider hook. A metering boundary may
+            // add one authenticated budget mutation, but it must not hide an
+            // adapter's own preparation contract.
+            let inner = provider
+                .prepare_model_dispatch(operation_id, step, request_digest)
+                .await?;
+            if inner.is_some()
+                && (dispatch_permit.is_some()
+                    || root_claim.is_some()
+                    || dispatch_confirmation.is_some())
+            {
+                return Err(Error::Conflict(
+                    "provider and harness both supplied model dispatch admission".into(),
+                ));
+            }
+            if let Some(factory) = dispatch_permit {
+                return factory(operation_id, step, request_digest).await.map(Some);
+            }
+            if let Some(claim) = root_claim {
+                claim(operation_id, step, request_digest).await?;
+                return Ok(None);
+            }
+            if let Some(confirmation) = dispatch_confirmation {
+                let dispatch_id = bound_dispatch_id.ok_or_else(|| {
+                    Error::Unauthorized("child dispatch confirmation identity is missing".into())
+                })?;
+                confirmation(operation_id, dispatch_id, request_digest).await?;
+                return Ok(None);
+            }
+            Ok(inner)
+        })
+    }
+
+    fn before_model_reconcile<'a>(&'a self) -> futures::future::BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.provider.before_model_reconcile().await?;
+            self.refresh_root_ceiling().await
+        })
+    }
+
+    fn output_token_limit_for_bytes(&self, max_output_bytes: u64) -> Option<u32> {
+        self.provider.output_token_limit_for_bytes(max_output_bytes)
+    }
+
+    fn generate<'a>(
+        &'a self,
+        prepared: crate::model_input::PreparedModelInput,
+    ) -> futures::stream::BoxStream<'a, Result<crate::model::ModelEvent>> {
+        if let Err(error) = self.meter.admit_model_step() {
+            return Box::pin(futures::stream::once(async move { Err(error) }));
+        }
+        let stream = self.provider.generate(prepared);
+        Self::wrap_stream(stream, self.meter.clone())
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        attempt: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        let provider = self.provider.clone();
+        let meter = self.meter.clone();
+        Box::pin(async move {
+            let remaining_ms = meter.remaining_execution_time_ms()?;
+            if remaining_ms == 0 {
+                return Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                ));
+            }
+            let started = Instant::now();
+            let reconciled = tokio::time::timeout(
+                tokio::time::Duration::from_millis(remaining_ms),
+                provider.reconcile(attempt),
+            )
+            .await;
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            meter.admit_execution_time(elapsed_ms)?;
+            let events = match reconciled {
+                Ok(events) => events?,
+                Err(_) => {
+                    return Err(Error::Conflict(
+                        "provider execution time ceiling exhausted".into(),
+                    ));
+                }
+            };
+            if let Some(events) = &events {
+                for event in events {
+                    meter.observe_model_event(event)?;
+                }
+            }
+            Ok(events)
+        })
+    }
+
+    fn reconcile_admitted<'a>(
+        &'a self,
+        prepared: crate::model_input::PreparedModelInput,
+        attempt: crate::model::ModelAttempt,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        let provider = self.provider.clone();
+        let meter = self.meter.clone();
+        Box::pin(async move {
+            let remaining_ms = meter.remaining_execution_time_ms()?;
+            if remaining_ms == 0 {
+                return Err(Error::Conflict(
+                    "provider execution time ceiling exhausted".into(),
+                ));
+            }
+            let started = Instant::now();
+            let reconciled = tokio::time::timeout(
+                tokio::time::Duration::from_millis(remaining_ms),
+                provider.reconcile_admitted(prepared, attempt),
+            )
+            .await;
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            meter.admit_execution_time(elapsed_ms)?;
+            let events = match reconciled {
+                Ok(events) => events?,
+                Err(_) => {
+                    return Err(Error::Conflict(
+                        "provider execution time ceiling exhausted".into(),
+                    ));
+                }
+            };
+            if let Some(events) = &events {
+                for event in events {
+                    meter.observe_model_event(event)?;
+                }
+            }
+            Ok(events)
+        })
     }
 }
 
@@ -895,6 +1750,11 @@ pub struct SwarmForkReservation {
     /// Provider dispatch identity recorded when publication is activated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_id: Option<IdempotencyKey>,
+    /// Per-step dispatch identities durably confirmed after the child lease
+    /// became eligible to run.  A confirmed step keeps its reservation held
+    /// until the provider reaches a durable terminal outcome.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub confirmed_dispatches: BTreeMap<u32, ([u8; 32], IdempotencyKey)>,
     /// Current reservation lifecycle.
     pub state: SwarmReservationState,
     /// Publication evidence, present before activation.
@@ -947,6 +1807,17 @@ pub enum SwarmBudgetEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         root_dispatch_id: Option<IdempotencyKey>,
     },
+    /// Binds the authenticated host measurement source before root work is
+    /// admitted. A reopened session cannot select a different source before
+    /// its first durable usage receipt.
+    RootProviderBound {
+        /// Owner fence that authenticated the binding.
+        owner: SwarmOwnerFence,
+        /// Stable host/provider capability identity.
+        provider: String,
+        /// Durable source fingerprint tied to the local usage journal.
+        fingerprint: [u8; 32],
+    },
     /// Persists an admission before a fork is dispatched.
     ChildReserved {
         /// Exact child reservation.
@@ -963,6 +1834,32 @@ pub enum SwarmBudgetEvent {
         /// Provider dispatch identity, when activation crossed a provider
         /// dispatch boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        dispatch_id: Option<IdempotencyKey>,
+    },
+    /// Confirms that one prepared child model request won the dispatch CAS.
+    ChildDispatchConfirmed {
+        /// Child operation identity.
+        operation_id: OperationId,
+        /// Exact owner fence used for confirmation.
+        owner: SwarmOwnerFence,
+        /// Per-step provider dispatch identity.
+        dispatch_id: IdempotencyKey,
+        /// Executor model step.
+        step: u32,
+        /// Digest of the exact prepared model request.
+        request_digest: [u8; 32],
+    },
+    /// Claims one root model step before provider work starts.
+    RootModelStepClaimed {
+        /// Exact owner fence used for the claim.
+        owner: SwarmOwnerFence,
+        /// Root operation identity.
+        operation_id: OperationId,
+        /// Executor model step.
+        step: u32,
+        /// Digest of the exact prepared model request.
+        request_digest: [u8; 32],
+        /// Stable root provider dispatch identity.
         dispatch_id: Option<IdempotencyKey>,
     },
     /// Adds cumulative measured usage to a live child.
@@ -984,6 +1881,9 @@ pub enum SwarmBudgetEvent {
         usage: SwarmUsage,
         /// Provider evidence retained with the durable usage transition.
         receipt: SwarmUsageReceipt,
+        /// Source capability that issued the root receipt.
+        #[serde(default)]
+        fingerprint: [u8; 32],
     },
     /// Marks a child complete and releases only its unconsumed reservation.
     ChildCompleted {
@@ -1163,6 +2063,13 @@ struct SwarmBudgetState {
     root_usage: SwarmUsage,
     root_usage_sequence: u64,
     root_dispatch_id: Option<IdempotencyKey>,
+    /// Provider identity pinned by the first authenticated root receipt.
+    /// Reopened issuers must continue using the same host capability.
+    root_provider_identity: Option<String>,
+    root_source_fingerprint: Option<[u8; 32]>,
+    /// Durable root step claims that have not yet been reflected in a
+    /// cumulative provider usage receipt.
+    root_claims: BTreeMap<(OperationId, u32), ([u8; 32], IdempotencyKey, SwarmUsage)>,
     reservations: BTreeMap<OperationId, SwarmForkReservation>,
     idempotency: BTreeMap<IdempotencyKey, ([u8; 32], OperationId)>,
 }
@@ -1219,6 +2126,9 @@ impl SwarmBudget {
                 root_usage: SwarmUsage::default(),
                 root_usage_sequence: 0,
                 root_dispatch_id,
+                root_provider_identity: None,
+                root_source_fingerprint: None,
+                root_claims: BTreeMap::new(),
                 reservations: BTreeMap::new(),
                 idempotency: BTreeMap::new(),
             })),
@@ -1290,6 +2200,66 @@ impl SwarmBudget {
         Ok(self.lock()?.root_dispatch_id.clone())
     }
 
+    /// Returns the authenticated source capability bound to root usage.
+    pub fn root_source_fingerprint(&self) -> Result<Option<[u8; 32]>> {
+        Ok(self.lock()?.root_source_fingerprint)
+    }
+
+    /// Requires the exact authenticated root source capability.
+    pub fn require_root_source(
+        &self,
+        provider: &str,
+        fingerprint: [u8; 32],
+    ) -> Result<()> {
+        let state = self.lock()?;
+        require_root_source_matches(&state, provider, fingerprint)
+    }
+
+    /// Returns cumulative root usage after a verified receipt has settled.
+    pub fn root_usage(&self) -> Result<SwarmUsage> {
+        Ok(self.lock()?.root_usage)
+    }
+
+    /// Binds the root usage source before the first provider dispatch or
+    /// receipt. The binding is immutable for the lifetime of the session.
+    pub fn bind_root_provider_identity(
+        &self,
+        owner: &SwarmOwnerFence,
+        provider: impl Into<String>,
+        fingerprint: [u8; 32],
+    ) -> Result<()> {
+        owner.validate()?;
+        let provider = provider.into();
+        if provider.is_empty() || provider.len() > 255 || provider.chars().any(char::is_control) {
+            return Err(Error::Invalid(
+                "swarm root provider identity is invalid".into(),
+            ));
+        }
+        if fingerprint == [0; 32] {
+            return Err(Error::Invalid("swarm root source fingerprint is empty".into()));
+        }
+        let mut state = self.lock()?;
+        if state.owner != *owner {
+            return Err(Error::Conflict("stale swarm owner generation".into()));
+        }
+        if !state.root_claims.is_empty() || state.root_usage_sequence != 0 {
+            return Err(Error::Conflict(
+                "root usage source must be bound before root dispatch".into(),
+            ));
+        }
+        if let Some(existing) = &state.root_provider_identity {
+            if existing != &provider || state.root_source_fingerprint != Some(fingerprint) {
+                return Err(Error::Conflict(
+                    "swarm root provider identity changed across recovery".into(),
+                ));
+            }
+            return Ok(());
+        }
+        state.root_provider_identity = Some(provider);
+        state.root_source_fingerprint = Some(fingerprint);
+        Ok(())
+    }
+
     /// Returns the durable provider receipt cursor for root usage.
     pub fn root_usage_cursor(&self) -> Result<SwarmUsageReceiptCursor> {
         let state = self.lock()?;
@@ -1315,6 +2285,7 @@ impl SwarmBudget {
     /// and excludes capacity already consumed or reserved by descendants.
     pub fn root_usage_limiter(&self) -> Result<SwarmUsageLimiter> {
         let state = self.lock()?;
+        require_root_provider_bound(&state, "metering")?;
         let limits = root_resource_limits(&state)?;
         SwarmUsageLimiter::resume(limits, state.root_usage)
     }
@@ -1326,6 +2297,8 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmUsageReceiptIssuer<S>> {
         let state = self.lock()?;
+        let source_fingerprint = source.source_fingerprint();
+        require_root_source_matches(&state, source.provider_identity(), source_fingerprint)?;
         let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
             Error::Unauthorized("canonical root dispatch lease required".into())
         })?;
@@ -1351,6 +2324,8 @@ impl SwarmBudget {
         source: S,
     ) -> Result<SwarmRootDispatchContext<S>> {
         let state = self.lock()?;
+        let source_fingerprint = source.source_fingerprint();
+        require_root_source_matches(&state, source.provider_identity(), source_fingerprint)?;
         let limits = root_resource_limits(&state)?;
         let limiter = SwarmUsageLimiter::resume(limits, state.root_usage)?;
         let dispatch_id = state.root_dispatch_id.clone().ok_or_else(|| {
@@ -1367,6 +2342,9 @@ impl SwarmBudget {
             cursor,
             limits,
         )?;
+        if let Some(usage) = issuer.cursor().usage {
+            issuer.restore_runtime_usage(usage)?;
+        }
         Ok(SwarmRootDispatchContext::new(limiter, issuer))
     }
 
@@ -1508,6 +2486,7 @@ impl SwarmBudget {
             usage: SwarmUsage::default(),
             usage_sequence: 0,
             dispatch_id: None,
+            confirmed_dispatches: BTreeMap::new(),
             state: SwarmReservationState::Reserved,
             publication: None,
             request_digest: digest,
@@ -1596,6 +2575,245 @@ impl SwarmBudget {
         })
     }
 
+    /// Reconstructs the dispatch token for an already active reservation.
+    ///
+    /// Activation is persisted before provider work begins.  After a process
+    /// restart the in-memory token is gone, so recovery must rebuild it from
+    /// the durable publication and dispatch identity instead of admitting the
+    /// child a second time.
+    pub(crate) fn resume_active_with_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let state = self.lock()?;
+        require_owner(&state, &owner)?;
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        let dispatch_id = reservation.dispatch_id.clone().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no provider dispatch identity".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: Some(dispatch_id),
+            resources: reservation.resources,
+        })
+    }
+
+    /// Reconstructs an active child that has not yet won the provider
+    /// confirmation CAS.  Recovery may use this token to retry confirmation;
+    /// it must not start provider work until confirmation is durable.
+    pub(crate) fn resume_active_unconfirmed_with_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let state = self.lock()?;
+        require_owner(&state, &owner)?;
+        let reservation = state
+            .reservations
+            .get(&operation_id)
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        if !reservation.confirmed_dispatches.is_empty() {
+            return Err(Error::Conflict("swarm dispatch is already confirmed".into()));
+        }
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        let dispatch_id = reservation.dispatch_id.clone().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no provider dispatch identity".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: Some(dispatch_id),
+            resources: reservation.resources,
+        })
+    }
+
+    /// Confirms one child dispatch in the in-memory projection.  The durable
+    /// journal persists the corresponding event before invoking the provider.
+    pub(crate) fn confirm_dispatch(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+    ) -> Result<SwarmDispatchToken> {
+        let request_digest = *blake3::hash(dispatch_id.0.as_bytes()).as_bytes();
+        self.confirm_dispatch_step(operation_id, owner, dispatch_id, 0, request_digest)
+    }
+
+    fn confirm_dispatch_step(
+        &self,
+        operation_id: OperationId,
+        owner: &SwarmOwnerFence,
+        dispatch_id: IdempotencyKey,
+        step: u32,
+        request_digest: [u8; 32],
+    ) -> Result<SwarmDispatchToken> {
+        if request_digest == [0; 32] {
+            return Err(Error::Invalid(
+                "swarm dispatch confirmation requires a request digest".into(),
+            ));
+        }
+        IdempotencyKey::new(dispatch_id.0.clone())?;
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        let mut reservation = state
+            .reservations
+            .get(&operation_id)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("swarm reservation {operation_id}")))?;
+        if reservation.owner != *owner {
+            return Err(Error::Conflict("stale swarm reservation generation".into()));
+        }
+        if reservation.state != SwarmReservationState::Active {
+            return Err(Error::Conflict("swarm reservation is not active".into()));
+        }
+        let activation_id = reservation
+            .dispatch_id
+            .as_ref()
+            .ok_or_else(|| Error::Conflict("swarm dispatch identity is missing".into()))?;
+        if step == 0 {
+            if activation_id != &dispatch_id {
+                return Err(Error::Conflict("swarm dispatch identity differs".into()));
+            }
+        } else {
+            let expected = format!(
+                "{}:model:{}:{}",
+                activation_id.0,
+                step,
+                blake3::hash(&request_digest).to_hex(),
+            );
+            if dispatch_id.0 != expected {
+                return Err(Error::Conflict(
+                    "swarm dispatch identity is not bound to the admitted lease".into(),
+                ));
+            }
+        }
+        if let Some((existing_digest, existing_id)) =
+            reservation.confirmed_dispatches.get(&step)
+        {
+            if *existing_digest != request_digest || existing_id != &dispatch_id {
+                return Err(Error::Conflict("swarm dispatch retry differs".into()));
+            }
+            return self.token_from_reservation(reservation, owner.clone());
+        }
+        reservation
+            .confirmed_dispatches
+            .insert(step, (request_digest, dispatch_id));
+        let token = self.token_from_reservation(reservation.clone(), owner.clone())?;
+        state.reservations.insert(operation_id, reservation);
+        Ok(token)
+    }
+
+    fn token_from_reservation(
+        &self,
+        reservation: SwarmForkReservation,
+        owner: SwarmOwnerFence,
+    ) -> Result<SwarmDispatchToken> {
+        let publication = reservation.publication.as_ref().ok_or_else(|| {
+            Error::Storage("active swarm reservation has no fork publication".into())
+        })?;
+        Ok(SwarmDispatchToken {
+            operation_id: reservation.operation_id,
+            parent_operation_id: reservation.parent_operation_id,
+            owner,
+            completed_boundary_digest: publication.completed_boundary_digest,
+            workspace_generation_digest: publication.workspace_generation_digest,
+            dispatch_id: reservation.dispatch_id,
+            resources: reservation.resources,
+        })
+    }
+
+    /// Claims one root model step against the current remaining session
+    /// ceiling. The claim is durable and remains held until a cumulative root
+    /// usage receipt accounts for it.
+    pub(crate) fn claim_root_model_step(
+        &self,
+        owner: &SwarmOwnerFence,
+        operation_id: OperationId,
+        step: u32,
+        request_digest: [u8; 32],
+        dispatch_id: IdempotencyKey,
+    ) -> Result<SwarmUsage> {
+        if request_digest == [0; 32] {
+            return Err(Error::Invalid("root model request digest is empty".into()));
+        }
+        IdempotencyKey::new(dispatch_id.0.clone())?;
+        let mut state = self.lock()?;
+        require_owner(&state, owner)?;
+        require_root_provider_bound(&state, "model claims")?;
+        let key = (operation_id, step);
+        if let Some((existing_digest, existing_id, _)) = state.root_claims.get(&key) {
+            if *existing_digest == request_digest && existing_id == &dispatch_id {
+                return Err(Error::Indeterminate(operation_id));
+            }
+            return Err(Error::Conflict("root model claim identity differs".into()));
+        }
+        // A root agent owns one model dispatch slot at a time.  The model
+        // step ceiling is session-wide and may be much larger than one, so
+        // it cannot fence two concurrent turns for the same root agent.  The
+        // durable claim map is the authenticated in-flight marker; it is
+        // removed only when a root usage receipt settles the claim, allowing
+        // later steps in the same turn to proceed without reserving the
+        // entire remaining root budget.
+        if !state.root_claims.is_empty() {
+            return Err(Error::Conflict("root model dispatch is already active".into()));
+        }
+        let remaining = root_resource_limits(&state)?;
+        if remaining.model_steps == 0 {
+            return Err(Error::Conflict("root model step budget exhausted".into()));
+        }
+        if operation_id.into_bytes() == [0; 16] {
+            return Err(Error::Invalid("root model claim operation identity is empty".into()));
+        }
+        // Reserve one model step plus a proportional output/time slice for
+        // this in-flight dispatch.  Reserving the entire remaining ceiling
+        // would make a normal multi-step turn unable to admit its next model
+        // request before the final cumulative receipt is published.  The
+        // proportional slices still make concurrent root claims consume the
+        // shared output/time capacity before either provider starts.
+        let claim = SwarmUsage {
+            model_steps: 1,
+            output_bytes: remaining
+                .output_bytes
+                .div_ceil(remaining.model_steps),
+            execution_time_ms: remaining
+                .execution_time_ms
+                .div_ceil(remaining.model_steps),
+        };
+        if claim.model_steps == 0 || claim.output_bytes == 0 || claim.execution_time_ms == 0 {
+            return Err(Error::Conflict("root model step budget exhausted".into()));
+        }
+        state.root_claims.insert(key, (request_digest, dispatch_id, claim));
+        Ok(state.root_usage)
+    }
+
     /// Reports cumulative usage and retains the unconsumed remainder.
     pub(crate) fn report_usage(
         &self,
@@ -1630,7 +2848,7 @@ impl SwarmBudget {
     ) -> Result<SwarmUsage> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_root_usage(&mut state, owner, usage, None)
+        update_root_usage(&mut state, owner, usage, None, None)
     }
 
     fn report_usage_event(
@@ -1662,10 +2880,11 @@ impl SwarmBudget {
         owner: &SwarmOwnerFence,
         usage: SwarmUsage,
         receipt: Option<&SwarmUsageReceipt>,
+        fingerprint: Option<[u8; 32]>,
     ) -> Result<SwarmUsage> {
         let mut state = self.lock()?;
         require_owner(&state, owner)?;
-        update_root_usage(&mut state, owner, usage, receipt)
+        update_root_usage(&mut state, owner, usage, receipt, fingerprint)
     }
 
     /// Cancels a child and releases active/unconsumed resources without refunding consumed usage.
@@ -1688,6 +2907,9 @@ impl SwarmBudget {
             return Err(Error::Conflict(
                 "completed swarm child cannot be cancelled".into(),
             ));
+        }
+        if !reservation.confirmed_dispatches.is_empty() {
+            return Err(Error::Indeterminate(operation_id));
         }
         if state.reservations.values().any(|descendant| {
             descendant.parent_operation_id == Some(operation_id)
@@ -1750,6 +2972,13 @@ impl SwarmBudget {
             SwarmBudgetEvent::Started { .. } => {
                 Err(Error::Conflict("swarm session already exists".into()))
             }
+            SwarmBudgetEvent::RootProviderBound {
+                owner,
+                provider,
+                fingerprint,
+            } => {
+                self.bind_root_provider_identity(&owner, provider, fingerprint)
+            }
             SwarmBudgetEvent::ChildReserved { reservation } => {
                 let request = request_from_reservation(&reservation)?;
                 let receipt = self.reserve_child(request)?;
@@ -1768,6 +2997,38 @@ impl SwarmBudget {
             } => self
                 .activate_with_dispatch(operation_id, owner, publication, dispatch_id)
                 .map(|_| ()),
+            SwarmBudgetEvent::ChildDispatchConfirmed {
+                operation_id,
+                owner,
+                dispatch_id,
+                step,
+                request_digest,
+            } => self
+                .confirm_dispatch_step(
+                    operation_id,
+                    &owner,
+                    dispatch_id,
+                    step,
+                    request_digest,
+                )
+                .map(|_| ()),
+            SwarmBudgetEvent::RootModelStepClaimed {
+                owner,
+                operation_id,
+                step,
+                request_digest,
+                dispatch_id,
+            } => self
+                .claim_root_model_step(
+                    &owner,
+                    operation_id,
+                    step,
+                    request_digest,
+                    dispatch_id.ok_or_else(|| {
+                        Error::Invalid("root model claim has no dispatch identity".into())
+                    })?,
+                )
+                .map(|_| ()),
             SwarmBudgetEvent::UsageReported {
                 operation_id,
                 owner,
@@ -1780,8 +3041,9 @@ impl SwarmBudget {
                 owner,
                 usage,
                 receipt,
+                fingerprint,
             } => self
-                .report_root_usage_event(&owner, usage, Some(&receipt))
+                .report_root_usage_event(&owner, usage, Some(&receipt), Some(fingerprint))
                 .map(|_| ()),
             SwarmBudgetEvent::ChildCompleted {
                 operation_id,
@@ -1852,6 +3114,37 @@ fn require_owner(state: &SwarmBudgetState, owner: &SwarmOwnerFence) -> Result<()
     Ok(())
 }
 
+fn require_root_provider_bound(state: &SwarmBudgetState, operation: &str) -> Result<[u8; 32]> {
+    let Some(fingerprint) = state.root_source_fingerprint else {
+        return Err(Error::Unauthorized(format!(
+            "root usage source must be bound before {operation}"
+        )));
+    };
+    if fingerprint == [0; 32] || state.root_provider_identity.is_none() {
+        return Err(Error::Unauthorized(
+            "root usage source binding is incomplete".into(),
+        ));
+    }
+    Ok(fingerprint)
+}
+
+fn require_root_source_matches(
+    state: &SwarmBudgetState,
+    provider: &str,
+    fingerprint: [u8; 32],
+) -> Result<()> {
+    require_root_provider_bound(state, "using a provider")?;
+    if fingerprint == [0; 32]
+        || state.root_source_fingerprint != Some(fingerprint)
+        || state.root_provider_identity.as_deref() != Some(provider)
+    {
+        return Err(Error::Unauthorized(
+            "root usage source is not bound to this budget".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn add_usage(current: SwarmUsage, delta: SwarmUsage) -> Result<SwarmUsage> {
     Ok(SwarmUsage {
         model_steps: current
@@ -1896,7 +3189,17 @@ fn reservation_resources(reservation: &SwarmForkReservation) -> SwarmUsage {
     }
 }
 
+fn usage_exceeds_limits(usage: SwarmUsage, limits: SwarmResourceRequest) -> bool {
+    usage.model_steps > limits.model_steps
+        || usage.output_bytes > limits.output_bytes
+        || usage.execution_time_ms > limits.execution_time_ms
+}
+
 fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest> {
+    let root_claimed = state.root_claims.values().try_fold(
+        SwarmUsage::default(),
+        |total, (_, _, claim)| add_usage(total, *claim),
+    )?;
     let ceiling = |limit: u64, consumed: u64, root: u64, reserved: u64| {
         limit
             .checked_sub(consumed)
@@ -1909,19 +3212,22 @@ fn root_resource_limits(state: &SwarmBudgetState) -> Result<SwarmResourceRequest
             state.limits.max_model_steps,
             state.usage.consumed.model_steps,
             state.root_usage.model_steps,
-            state.usage.reserved.model_steps,
+            state.usage.reserved.model_steps.checked_add(root_claimed.model_steps)
+                .ok_or_else(|| Error::Storage("root model claim projection overflow".into()))?,
         )?,
         output_bytes: ceiling(
             state.limits.max_output_bytes,
             state.usage.consumed.output_bytes,
             state.root_usage.output_bytes,
-            state.usage.reserved.output_bytes,
+            state.usage.reserved.output_bytes.checked_add(root_claimed.output_bytes)
+                .ok_or_else(|| Error::Storage("root output claim projection overflow".into()))?,
         )?,
         execution_time_ms: ceiling(
             state.limits.max_execution_time_ms,
             state.usage.consumed.execution_time_ms,
             state.root_usage.execution_time_ms,
-            state.usage.reserved.execution_time_ms,
+            state.usage.reserved.execution_time_ms.checked_add(root_claimed.execution_time_ms)
+                .ok_or_else(|| Error::Storage("root execution-time claim projection overflow".into()))?,
         )?,
     };
     if limits.model_steps == 0 || limits.output_bytes == 0 || limits.execution_time_ms == 0 {
@@ -1994,10 +3300,7 @@ fn validate_ancestor_ceilings(
         complete,
     )?;
     let own_total = add_usage(usage, own_descendants)?;
-    if own_total.model_steps > reservation.resources.model_steps
-        || own_total.output_bytes > reservation.resources.output_bytes
-        || own_total.execution_time_ms > reservation.resources.execution_time_ms
-    {
+    if usage_exceeds_limits(own_total, reservation.resources) {
         return Err(Error::Conflict(
             "swarm usage exceeds its remaining descendant resource budget".into(),
         ));
@@ -2166,10 +3469,7 @@ fn update_usage(
         ));
     }
     let delta = usage.checked_delta(reservation.usage)?;
-    if usage.model_steps > reservation.resources.model_steps
-        || usage.output_bytes > reservation.resources.output_bytes
-        || usage.execution_time_ms > reservation.resources.execution_time_ms
-    {
+    if usage_exceeds_limits(usage, reservation.resources) {
         return Err(Error::Conflict(
             "child usage exceeds its reservation".into(),
         ));
@@ -2255,9 +3555,27 @@ fn update_root_usage(
     _owner: &SwarmOwnerFence,
     usage: SwarmUsage,
     receipt: Option<&SwarmUsageReceipt>,
+    fingerprint: Option<[u8; 32]>,
 ) -> Result<SwarmUsage> {
+    let bound_fingerprint = require_root_provider_bound(state, "usage reports")?;
     if let Some(receipt) = receipt {
         receipt.validate()?;
+        let fingerprint = fingerprint.ok_or_else(|| {
+            Error::Unauthorized("root usage source binding is required".into())
+        })?;
+        if fingerprint != bound_fingerprint {
+            return Err(Error::Conflict(
+                "swarm root usage source fingerprint changed across receipts".into(),
+            ));
+        }
+        require_root_source_matches(state, &receipt.provider, fingerprint).map_err(|error| {
+            match error {
+                Error::Unauthorized(_) => Error::Conflict(
+                    "swarm root usage provider identity changed across receipts".into(),
+                ),
+                other => other,
+            }
+        })?;
         let expected_sequence = state
             .root_usage_sequence
             .checked_add(1)
@@ -2274,6 +3592,10 @@ fn update_root_usage(
                 "swarm root usage receipt is stale or mismatched".into(),
             ));
         }
+    } else if state.root_source_fingerprint.is_some() {
+        return Err(Error::Unauthorized(
+            "root usage receipt required after source binding".into(),
+        ));
     }
     let delta = usage.checked_delta(state.root_usage)?;
     let next = add_usage(state.usage.consumed, delta)?;
@@ -2296,7 +3618,16 @@ fn update_root_usage(
     }
     state.root_usage = usage;
     state.usage.consumed = next;
+    let mut remaining_claims = delta.model_steps;
+    while remaining_claims != 0 {
+        let Some(key) = state.root_claims.keys().next().copied() else {
+            break;
+        };
+        state.root_claims.remove(&key);
+        remaining_claims = remaining_claims.saturating_sub(1);
+    }
     if let Some(receipt) = receipt {
+        state.root_provider_identity = Some(receipt.provider.clone());
         state.root_usage_sequence = receipt.sequence;
     }
     Ok(usage)
@@ -2357,7 +3688,7 @@ mod tests {
         runtime::{TaskAdmissionRecord, TaskRunLimits},
     };
     use serde_json::json;
-    use std::sync::Mutex;
+    use std::{sync::Mutex, time::Duration};
     fn id(byte: u8) -> OperationId {
         OperationId::from_bytes([byte; 16])
     }
@@ -2399,6 +3730,36 @@ mod tests {
             completed_boundary_digest: [1; 32],
             workspace_generation_digest: [2; 32],
         }
+    }
+
+    #[test]
+    fn root_dispatch_requires_explicit_source_binding() -> Result<()> {
+        let session = id(90);
+        let root_owner = owner(0);
+        let dispatch = IdempotencyKey::new("root-lease")?;
+        let budget = SwarmBudget::new_with_root_dispatch(
+            session,
+            root_owner.clone(),
+            limits(),
+            Some(dispatch),
+        )?;
+        assert!(matches!(
+            budget.claim_root_model_step(&root_owner, session, 0, [9; 32], IdempotencyKey::new("step")?),
+            Err(Error::Unauthorized(_))
+        ));
+        budget.bind_root_provider_identity(&root_owner, "same-label", [7; 32])?;
+        assert!(matches!(
+            budget.bind_root_provider_identity(&root_owner, "same-label", [8; 32]),
+            Err(Error::Conflict(_))
+        ));
+        assert!(budget
+            .claim_root_model_step(&root_owner, session, 0, [9; 32], IdempotencyKey::new("step")?)
+            .is_ok());
+        assert!(matches!(
+            budget.bind_root_provider_identity(&root_owner, "same-label", [7; 32]),
+            Err(Error::Conflict(_))
+        ));
+        Ok(())
     }
 
     #[test]
@@ -2459,6 +3820,10 @@ mod tests {
             "local-provider"
         }
 
+        fn source_fingerprint(&self) -> [u8; 32] {
+            [17; 32]
+        }
+
         fn cumulative_usage(
             &self,
             _operation_id: OperationId,
@@ -2470,6 +3835,45 @@ mod tests {
                 .pop()
                 .ok_or_else(|| Error::Storage("measurement source exhausted".into()))
         }
+    }
+
+    #[tokio::test]
+    async fn metered_stream_drop_surfaces_execution_accounting_failure() -> Result<()> {
+        let token = SwarmDispatchToken {
+            operation_id: id(19),
+            parent_operation_id: None,
+            owner: owner(0),
+            completed_boundary_digest: [1; 32],
+            workspace_generation_digest: [2; 32],
+            dispatch_id: Some(IdempotencyKey::new("dispatch-drop")?),
+            resources: SwarmResourceRequest {
+                model_steps: 1,
+                output_bytes: 1,
+                execution_time_ms: 1,
+            },
+        };
+        let context = SwarmDispatchContext::new(
+            token,
+            MeasuredSource {
+                snapshots: Mutex::new(Vec::new()),
+            },
+        )?;
+        let meter = SwarmProviderMeter::new(SwarmProviderBoundary::Child(context));
+        {
+            let _stream = MeteredStream {
+                inner: Box::pin(futures::stream::pending::<Result<crate::model::ModelEvent>>()),
+                meter: meter.clone(),
+                started: Instant::now() - Duration::from_millis(2),
+                charged_ms: 0,
+                deadline: Box::pin(tokio::time::sleep(Duration::from_secs(60))),
+                finished: false,
+            };
+        }
+        assert!(matches!(
+            meter.usage(),
+            Err(Error::Storage(message)) if message.contains("finalization failed")
+        ));
+        Ok(())
     }
 
     #[test]

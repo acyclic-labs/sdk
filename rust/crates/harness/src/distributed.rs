@@ -923,6 +923,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 "swarm owner fence is not bound to the authenticated authority".into(),
             ));
         }
+        let fingerprint = receipt.source_fingerprint();
         let receipt = receipt.into_receipt();
         self.apply_internal(
             session_id,
@@ -933,6 +934,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 fence,
                 usage: receipt.usage,
                 receipt: Some(receipt),
+                fingerprint,
             },
         )
         .await
@@ -1551,6 +1553,7 @@ fn scheduler_event_operation(event: &SchedulerEvent) -> OperationId {
         | SchedulerEvent::SwarmCompleted { operation_id, .. }
         | SchedulerEvent::SwarmCancelled { operation_id, .. } => *operation_id,
         SchedulerEvent::SwarmRootUsageReported { session_id, .. }
+        | SchedulerEvent::SwarmRootProviderBound { session_id, .. }
         | SchedulerEvent::SwarmTakeover { session_id, .. } => *session_id,
     }
 }
