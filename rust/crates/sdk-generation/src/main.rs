@@ -203,6 +203,18 @@ struct ToolSpec {
     script: Option<PathBuf>,
 }
 
+/// A producer recipe is an explicit, source-bound command supplied by the
+/// language owner.  The Rust entrypoint only expands the small placeholder
+/// vocabulary below; it never evaluates a shell string.  Recipes are
+/// optional while a target is being brought up, but a target with a recipe
+/// must produce a staged artifact or the stage fails closed.
+#[derive(Debug, Clone)]
+struct ProducerRecipe {
+    program: String,
+    args: Vec<String>,
+    output: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct RequestEnvelope {
     schema: &'static str,
@@ -2189,11 +2201,10 @@ fn run_product_artifacts(
     })
 }
 
-/// Emit the Rust-owned language producer plan. This is a cheap generation
-/// stage: it binds every catalogued language target to its pinned generator
-/// recipe and the current Rust source identity. It does not claim that a
-/// package was generated or installed; those expensive consumer checks remain
-/// qualification evidence for the individual language.
+/// Emit the Rust-owned language producer plan and, when a target supplies an
+/// explicit staged-output recipe, execute that recipe against the current Rust
+/// authority. The plan never claims package installation or qualification;
+/// those consumer checks remain evidence for the individual language.
 fn run_language_producers(
     root: &Path,
     output: &Path,
@@ -2232,6 +2243,8 @@ fn run_language_producers(
     }
     let mut seen = BTreeSet::new();
     let mut plans = Vec::with_capacity(targets.len());
+    let mut stage_failure = None;
+    let mut stage_pending = false;
     for target in targets {
         let id = target
             .get("id")
@@ -2282,12 +2295,144 @@ fn run_language_producers(
                 )));
             }
         }
+        let recipe = parse_producer_recipe(target, id)?;
+        let mut execution = json!({
+            "status": "pending",
+            "reason": if recipe.is_some() {
+                "recipe is present but has not run"
+            } else {
+                "language owner has not supplied an executable recipe"
+            }
+        });
+        if let Some(recipe) = recipe {
+            if operation == Operation::Drift {
+                execution = json!({
+                    "status": "pending",
+                    "reason": "drift never invokes downstream producers",
+                });
+                stage_pending = true;
+            } else {
+                let target_output = output
+                    .join("language-producers")
+                    .join(id)
+                    .join(&recipe.output);
+                let target_request = output
+                    .join("language-producers/requests")
+                    .join(format!("{id}.json"));
+                fs::create_dir_all(&target_output)?;
+                let target_request_value = json!({
+                    "schema": REQUEST_SCHEMA,
+                    "operation": operation_name(operation),
+                    "tool": "sdk-language-producer",
+                    "target": id,
+                    "source_root": root,
+                    "output": target_output,
+                    "source": source,
+                    "contract_scope": "rust-authority",
+                    "contract_inputs": [
+                        "rust/crates/sdk-contract-wire",
+                        "languages/generation-targets.json"
+                    ]
+                });
+                write_json_value(&target_request, &target_request_value)?;
+                let command = expand_producer_command(
+                    &recipe,
+                    root,
+                    output,
+                    &target_output,
+                    &target_request,
+                    id,
+                    operation,
+                )?;
+                let command_text = command
+                    .iter()
+                    .map(|part| part.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>();
+                let process = Command::new(&command[0])
+                    .args(&command[1..])
+                    .current_dir(root)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .output();
+                let logs = output.join("logs");
+                fs::create_dir_all(&logs)?;
+                match process {
+                    Ok(process) => {
+                        let stdout_path = logs.join(format!("sdk-language-producer-{id}.stdout"));
+                        let stderr_path = logs.join(format!("sdk-language-producer-{id}.stderr"));
+                        fs::write(&stdout_path, &process.stdout)?;
+                        fs::write(&stderr_path, &process.stderr)?;
+                        let stdout_sha256 = hash_bytes(&process.stdout);
+                        let stderr_sha256 = hash_bytes(&process.stderr);
+                        if !process.status.success() {
+                            stage_failure = Some(format!(
+                                "language producer {id} failed with exit code {:?}",
+                                process.status.code()
+                            ));
+                            execution = json!({
+                                "status": "failed",
+                                "command": command_text,
+                                "request": relative_or_absolute(&target_request, output),
+                                "stdout": relative_or_absolute(&stdout_path, output),
+                                "stdout_sha256": stdout_sha256,
+                                "stderr": relative_or_absolute(&stderr_path, output),
+                                "stderr_sha256": stderr_sha256,
+                                "exit_code": process.status.code(),
+                            });
+                        } else if !target_output.is_dir()
+                            || collect_output_files(&target_output, &target_output, &mut Vec::new())
+                                .is_err()
+                        {
+                            stage_failure = Some(format!(
+                                "language producer {id} exited successfully without a valid staged output"
+                            ));
+                            execution = json!({
+                                "status": "failed",
+                                "command": command_text,
+                                "request": relative_or_absolute(&target_request, output),
+                                "stdout": relative_or_absolute(&stdout_path, output),
+                                "stdout_sha256": stdout_sha256,
+                                "stderr": relative_or_absolute(&stderr_path, output),
+                                "stderr_sha256": stderr_sha256,
+                                "exit_code": process.status.code(),
+                            });
+                        } else {
+                            let artifact_digest = directory_digest(&target_output)?;
+                            execution = json!({
+                                "status": "passed",
+                                "command": command_text,
+                                "request": relative_or_absolute(&target_request, output),
+                                "stdout": relative_or_absolute(&stdout_path, output),
+                                "stdout_sha256": stdout_sha256,
+                                "stderr": relative_or_absolute(&stderr_path, output),
+                                "stderr_sha256": stderr_sha256,
+                                "exit_code": process.status.code(),
+                                "output": relative_or_absolute(&target_output, output),
+                                "artifact_digest": artifact_digest,
+                            });
+                        }
+                    }
+                    Err(error) => {
+                        stage_pending = true;
+                        execution = json!({
+                            "status": "pending",
+                            "command": command_text,
+                            "request": relative_or_absolute(&target_request, output),
+                            "reason": format!("producer executable is unavailable: {error}"),
+                        });
+                    }
+                }
+            }
+        } else {
+            stage_pending = true;
+        }
         plans.push(json!({
             "id": id,
             "language_family": family,
             "status": status,
             "generator": generator,
             "package": package,
+            "execution": execution,
             "request": {
                 "schema": REQUEST_SCHEMA,
                 "operation": operation_name(operation),
@@ -2322,9 +2467,29 @@ fn run_language_producers(
     fs::create_dir_all(&logs)?;
     fs::write(logs.join("sdk-language-producers.stdout"), &stdout)?;
     fs::write(logs.join("sdk-language-producers.stderr"), &stderr)?;
+    let stage_status = if stage_failure.is_some() {
+        "failed"
+    } else if stage_pending {
+        "pending"
+    } else {
+        "passed"
+    };
+    let stage_message = if let Some(failure) = stage_failure.clone() {
+        Some(failure)
+    } else if stage_pending {
+        Some(
+            "producer recipes or toolchains remain pending; no package qualification is claimed"
+                .into(),
+        )
+    } else {
+        Some(
+            "all declared language producer recipes executed against staged Rust authority output"
+                .into(),
+        )
+    };
     Ok(ToolResult {
         id: spec.id.into(),
-        status: "passed".into(),
+        status: stage_status.into(),
         required: spec.required,
         command: vec![
             "sdk-generation".into(),
@@ -2337,12 +2502,146 @@ fn run_language_producers(
         request,
         stdout_sha256: Some(hash_bytes(&stdout)),
         stderr_sha256: Some(hash_bytes(&stderr)),
-        exit_code: Some(0),
-        message: Some(
-            "pinned language producer requests emitted; package qualification remains pending"
-                .into(),
-        ),
+        exit_code: if stage_failure.is_some() {
+            Some(1)
+        } else if stage_pending {
+            None
+        } else {
+            Some(0)
+        },
+        message: stage_message,
     })
+}
+
+fn parse_producer_recipe(target: &Value, id: &str) -> Result<Option<ProducerRecipe>, CliError> {
+    let Some(value) = target.get("producer") else {
+        return Ok(None);
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| CliError::new(format!("language target {id} producer must be an object")))?;
+    let program = object
+        .get("program")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CliError::new(format!("language target {id} producer is missing program"))
+        })?;
+    let args = object
+        .get("args")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new(format!("language target {id} producer is missing args")))?
+        .iter()
+        .map(|arg| {
+            arg.as_str().map(str::to_owned).ok_or_else(|| {
+                CliError::new(format!(
+                    "language target {id} producer args must be strings"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output = object
+        .get("output")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::new(format!("language target {id} producer is missing output")))?;
+    if !is_safe_relative_path(output) {
+        return Err(CliError::new(format!(
+            "language target {id} producer output must be a safe relative path"
+        )));
+    }
+    for required in ["{source_root}", "{target_output}", "{request}"] {
+        if !args.iter().any(|arg| arg.contains(required)) {
+            return Err(CliError::new(format!(
+                "language target {id} producer args must bind {required}"
+            )));
+        }
+    }
+    for arg in &args {
+        let mut rest = arg.as_str();
+        while let Some(start) = rest.find('{') {
+            let end = rest[start..]
+                .find('}')
+                .map(|offset| start + offset)
+                .ok_or_else(|| {
+                    CliError::new(format!(
+                        "language target {id} producer has an unterminated placeholder"
+                    ))
+                })?;
+            let placeholder = &rest[start..=end];
+            if !matches!(
+                placeholder,
+                "{source_root}"
+                    | "{output_root}"
+                    | "{target_output}"
+                    | "{wire_root}"
+                    | "{authority_manifest}"
+                    | "{request}"
+                    | "{target_id}"
+                    | "{operation}"
+            ) {
+                return Err(CliError::new(format!(
+                    "language target {id} producer has unknown placeholder {placeholder}"
+                )));
+            }
+            rest = &rest[end + 1..];
+        }
+    }
+    Ok(Some(ProducerRecipe {
+        program: program.to_owned(),
+        args,
+        output: output.to_owned(),
+    }))
+}
+
+fn expand_producer_command(
+    recipe: &ProducerRecipe,
+    root: &Path,
+    output: &Path,
+    target_output: &Path,
+    request: &Path,
+    target_id: &str,
+    operation: Operation,
+) -> Result<Vec<OsString>, CliError> {
+    let authority_manifest = output.join("source-authority.json");
+    let replacements = [
+        ("{source_root}", root.to_string_lossy().into_owned()),
+        ("{output_root}", output.to_string_lossy().into_owned()),
+        (
+            "{target_output}",
+            target_output.to_string_lossy().into_owned(),
+        ),
+        (
+            "{wire_root}",
+            output.join("wire").to_string_lossy().into_owned(),
+        ),
+        (
+            "{authority_manifest}",
+            authority_manifest.to_string_lossy().into_owned(),
+        ),
+        ("{request}", request.to_string_lossy().into_owned()),
+        ("{target_id}", target_id.to_owned()),
+        ("{operation}", operation_name(operation).to_owned()),
+    ];
+    let expand = |value: &str| {
+        replacements
+            .iter()
+            .fold(value.to_owned(), |value, (placeholder, replacement)| {
+                value.replace(placeholder, replacement)
+            })
+    };
+    let mut command = vec![OsString::from(expand(&recipe.program))];
+    command.extend(recipe.args.iter().map(|arg| OsString::from(expand(arg))));
+    Ok(command)
+}
+
+fn is_safe_relative_path(value: &str) -> bool {
+    let path = Path::new(value);
+    !path.is_absolute()
+        && !value.is_empty()
+        && path
+            .components()
+            .all(|component| !matches!(component, std::path::Component::ParentDir))
 }
 
 fn is_language_target_id(value: &str) -> bool {
@@ -4483,7 +4782,7 @@ mod tests {
             Operation::Generate,
         )
         .expect("target catalog is valid");
-        assert_eq!(result.status, "passed");
+        assert_eq!(result.status, "pending");
         let plan: Value = read_json(&output.join("language-producers/plan.json"))
             .expect("language producer plan");
         assert_eq!(
@@ -4502,6 +4801,38 @@ mod tests {
             assert!(ids.contains(id), "missing planned target {id}");
         }
         cleanup(&output);
+    }
+
+    #[test]
+    fn producer_recipe_requires_source_request_and_staged_output_bindings() {
+        let target = json!({
+            "id": "python",
+            "producer": {
+                "program": "python",
+                "args": ["--source-root", "{source_root}", "--request", "{request}"],
+                "output": "generated"
+            }
+        });
+        let error = parse_producer_recipe(&target, "python")
+            .expect_err("an unbound staged output must be rejected");
+        assert!(error.message.contains("{target_output}"));
+
+        let target = json!({
+            "id": "python",
+            "producer": {
+                "program": "python",
+                "args": [
+                    "--source-root", "{source_root}",
+                    "--request", "{request}",
+                    "--output", "{target_output}",
+                    "--unknown", "{ambient_shell}"
+                ],
+                "output": "generated"
+            }
+        });
+        let error = parse_producer_recipe(&target, "python")
+            .expect_err("unknown placeholders must be rejected");
+        assert!(error.message.contains("unknown placeholder"));
     }
 
     #[test]

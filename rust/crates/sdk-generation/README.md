@@ -45,6 +45,36 @@ it does not claim that a language package was built or installed. Per-language
 consumer receipts remain required for qualification, and missing toolchains
 stay pending rather than being converted into a successful package result.
 
+Language owners may add an executable `producer` recipe to a target when the
+producer has a deterministic staged-output interface. The recipe is JSON data,
+not a shell command:
+
+```json
+{
+  "producer": {
+    "program": "<pinned executable>",
+    "args": [
+      "--source-root", "{source_root}",
+      "--authority", "{wire_root}",
+      "--request", "{request}",
+      "--output", "{target_output}"
+    ],
+    "output": "generated"
+  }
+}
+```
+
+The Rust entrypoint expands only the documented placeholders (`source_root`,
+`output_root`, `target_output`, `wire_root`, `authority_manifest`, `request`,
+`target_id`, and `operation`) and invokes the executable directly. Every recipe
+must bind the source root, request, and staged target output. Its stdout,
+stderr, exit code, command, request, and byte-level output digest are retained
+under `language-producers/`; a missing executable is pending and a successful
+command without a staged output fails. `drift` never invokes a producer.
+Recipes whose existing scripts write fixed paths in a checkout need a small
+language-owner adapter before they can be declared here; the orchestrator does
+not mutate a source checkout to accommodate them.
+
 inventory can report pending work. generate and check fail closed when a
 delegated stage fails or remains pending; check also fails on source or
 artifact drift. drift is the fast, non-generating artifact gate: it verifies

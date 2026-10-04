@@ -45,6 +45,7 @@
         "embedded": { "$ref": "#/$defs/embedded" },
         "maturity": { "enum": ["stable", "beta", "experimental", "unknown"] },
         "generator": { "$ref": "#/$defs/tool" },
+        "producer": { "$ref": "#/$defs/producer" },
         "package": { "$ref": "#/$defs/package" },
         "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" }, "minItems": 1 },
         "outstanding": { "type": "array", "items": { "type": "string", "minLength": 1 } }
@@ -82,6 +83,24 @@
         "source": { "type": "string", "format": "uri" },
         "license": { "type": "string", "minLength": 1 },
         "pin": { "type": "string" }
+      }
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "args", "output"],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "output": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!\\\\)(?!.*(?:^|[/\\\\])\\.\\.(?:[/\\\\]|$)).+"
+        }
       }
     },
     "package": {
