@@ -10,8 +10,8 @@
  */
 import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { gunzipSync } from "node:zlib";
 import { dirname, join, relative, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const artifactRoot = resolve(process.argv[2] ?? "");
@@ -34,14 +34,22 @@ const rel = (path) => relative(artifactRoot, path).replaceAll("\\", "/");
 const artifact = (path) => ({ path: rel(path), sha256: sha256(path) });
 const json = (path) => JSON.parse(readFileSync(path, "utf8"));
 
-const listArchive = (path) => {
-  const result = spawnSync("tar", ["-tzf", path], { encoding: "utf8" });
-  if (result.status !== 0) fail(`cannot inspect package archive ${path}: ${result.stderr}`);
-  return result.stdout.split(/\r?\n/).filter(Boolean);
+const tarEntries = (path) => {
+  const bytes = gunzipSync(readFileSync(path));
+  const entries = [];
+  for (let offset = 0; offset + 512 <= bytes.length;) {
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every(byte => byte === 0)) break;
+    const name = header.subarray(0, 100).toString("utf8").replace(/\0.*$/, "");
+    const sizeText = header.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim();
+    const size = Number.parseInt(sizeText || "0", 8);
+    entries.push({ name, bytes: bytes.subarray(offset + 512, offset + 512 + size) });
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return entries;
 };
 const requireArchiveEntry = (archive, entry) => {
-  const names = listArchive(archive);
-  if (!names.some((name) => name === entry || name.endsWith(`/${entry}`))) {
+  if (!tarEntries(archive).some(({ name }) => name === entry || name.endsWith(`/${entry}`))) {
     fail(`package archive ${archive} is missing ${entry}`);
   }
 };
@@ -108,6 +116,43 @@ const harnessCommitPath = requireFile(join(harness, "SOURCE_COMMIT"));
 const harnessRevision = readFileSync(harnessCommitPath, "utf8").trim();
 if (harnessRevision !== sourceRevision) fail(`filesystem and Harness package revisions differ: ${sourceRevision} != ${harnessRevision}`);
 
+const installedReceipt = (directory, family, archivePath, wasmEntry) => {
+  const receiptPath = requireFile(join(directory, "installed-consumer-receipt.json"));
+  const receipt = json(receiptPath);
+  if (receipt.schema !== "acyclic.sdk.installed-package-qualification.v1"
+    || receipt.status !== "passed"
+    || receipt.package !== family
+    || receipt.source_revision !== sourceRevision
+    || receipt.consumer?.status !== "passed"
+    || !Array.isArray(receipt.consumer.checks)
+    || receipt.consumer.checks.length === 0) {
+    fail(`invalid installed ${family} consumer receipt: ${receiptPath}`);
+  }
+  if (receipt.archive?.name !== archivePath.split(/[\\/]/).pop()
+    || receipt.archive?.sha256 !== sha256(archivePath)
+    || receipt.archive?.wasm_entry !== wasmEntry) {
+    fail(`installed ${family} consumer receipt is not bound to its archive: ${receiptPath}`);
+  }
+  const wasm = tarEntries(archivePath).find(({ name }) => name === wasmEntry || name.endsWith(`/${wasmEntry}`));
+  if (!wasm?.bytes?.length || receipt.archive.wasm_sha256 !== sha256Bytes(wasm.bytes)) {
+    fail(`installed ${family} consumer receipt has incorrect packaged WASM evidence: ${receiptPath}`);
+  }
+  return { receipt: artifact(receiptPath), evidence: receipt };
+};
+const sha256Bytes = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+const filesystemConsumer = installedReceipt(
+  filesystem,
+  "filesystem",
+  filesystemArchive,
+  "package/generated/wasm/acyclic_fs_wasm_bg.wasm",
+);
+const harnessConsumer = installedReceipt(
+  harness,
+  "harness",
+  harnessArchive,
+  "package/generated/wasm/acyclic_harness_wasm_bg.wasm",
+);
+
 const manifest = {
   schema: "acyclic.sdk.package.qualification.v1",
   status: "passed",
@@ -142,9 +187,9 @@ const manifest = {
     },
   },
   consumers: {
-    filesystem_js_wasm: { status: "passed", check: "scripts/check-filesystem-package.sh" },
+    filesystem_js_wasm: { ...filesystemConsumer.evidence.consumer, receipt: filesystemConsumer.receipt },
     filesystem_rust_archive: { status: "passed", check: "scripts/check-filesystem-package.sh" },
-    harness_js_wasm: { status: "passed", check: "scripts/check-harness-package.sh" },
+    harness_js_wasm: { ...harnessConsumer.evidence.consumer, receipt: harnessConsumer.receipt },
     harness_rust_archive: { status: "passed", check: "scripts/check-harness-package.sh" },
   },
   embedded: {

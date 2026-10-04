@@ -141,3 +141,8 @@ bash "$root/scripts/check-typescript-packages.sh" \
   "$inference_evidence" \
   "$output/acyclic-fs.tgz" \
   "$package_root/harness/acyclic-harness.tgz"
+
+# Bind the successful installed archive consumer to the exact Rust source
+# revision and executable WASM bytes that this lane packaged.
+bun "$root/scripts/write-installed-package-receipt.mjs" \
+  "$output" filesystem "bun test/node-memory.mjs (installed archive)"
