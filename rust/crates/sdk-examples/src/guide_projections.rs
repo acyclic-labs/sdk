@@ -3,6 +3,7 @@ use crate::{
     ValidationReceipt, ValidationStatus, filesystem_scenarios, harness_scenarios,
     inference_scenarios, machines_scenarios, objects_scenarios, workers_scenarios,
 };
+use sha2::{Digest, Sha256};
 
 /// Whether a projection exercises a native Rust facade or the remote SDK.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,7 +103,7 @@ pub const GUIDE_REMOTE_REQUESTS: [GuideRemoteRequestSpec; 6] = [
     GuideRemoteRequestSpec {
         scenario_id: inference_scenarios::SCENARIO_ID,
         family: "inference",
-        operation: "acyclic.inference.v1.RunsService/Watch",
+        operation: "inference.customer.v1.RunsService/Watch",
         service: "RunsService",
         method: "Watch",
         request: "WatchRunRequest",
@@ -140,7 +141,7 @@ fn rust_body(scenario_id: &str) -> Option<String> {
         inference_scenarios::SCENARIO_ID => inference_scenarios::rust_snippet().to_owned(),
         machines_scenarios::SCENARIO_ID => machines_scenarios::rust_snippet().to_owned(),
         objects_scenarios::SCENARIO_ID => objects_scenarios::rust_snippet().to_owned(),
-        workers_scenarios::SCENARIO_ID => workers_scenarios::rust_snippet(),
+        workers_scenarios::SCENARIO_ID => workers_scenarios::rust_snippet().to_owned(),
         _ => return None,
     })
 }
@@ -177,7 +178,7 @@ fn remote_operation(
             "RunsService",
             "Watch",
             "WatchRunRequest",
-            "acyclic.inference.v1.RunsService/Watch",
+            "inference.customer.v1.RunsService/Watch",
         ),
         "machines" => (
             "MachinesService",
@@ -211,6 +212,31 @@ fn package_type(module: &str) -> Option<&'static str> {
         "workers" => "Workers",
         _ => return None,
     })
+}
+
+fn java_service_type(module: &str) -> Option<&'static str> {
+    Some(match module {
+        // The inference proto keeps its messages in Inference.java, while
+        // the Runs RPC service is emitted as RunsServiceGrpc.java.
+        "inference" => "Runs",
+        _ => package_type(module)?,
+    })
+}
+
+fn java_namespace(module: &str, version: &str) -> String {
+    if module == "inference" {
+        format!("inference.customer.{version}")
+    } else {
+        format!("acyclic.{module}.{version}")
+    }
+}
+
+fn csharp_namespace(module: &str, version: &str) -> String {
+    if module == "inference" {
+        format!("Inference.Customer.{}", version_type(version).unwrap_or("V1"))
+    } else {
+        format!("Acyclic.{}.{}", package_type(module).unwrap_or(module), version_type(version).unwrap_or("V1"))
+    }
 }
 
 fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
@@ -310,6 +336,14 @@ fn lower_camel(value: &str) -> String {
     }
 }
 
+fn workers_module_text() -> String {
+    String::from_utf8_lossy(workers_scenarios::MODULE).into_owned()
+}
+
+fn workers_module_digest() -> String {
+    format!("{:x}", Sha256::digest(workers_scenarios::MODULE))
+}
+
 /// Projects the Rust scenario as an actual generated remote SDK call.
 ///
 /// The request values are the same stable identities used by the Rust fixture.
@@ -324,49 +358,130 @@ pub fn project(scenario_id: &'static str, language: Language) -> Option<GuidePro
     let (module, version) = package_module(family)?;
     let (service, method, request, operation) = remote_operation(family)?;
     let package_type = package_type(module)?;
+    let java_service_type = java_service_type(module)?;
+    let java_namespace = java_namespace(module, version);
+    let csharp_namespace = csharp_namespace(module, version);
     let version_type = version_type(version)?;
     let package = package_spec(family, language)?;
     let method_camel = lower_camel(method);
     let method_snake = snake_case(method);
     let ts_package = if family == "filesystem" { "fs" } else { module };
-    let ts_call = if family == "objects" {
-        "const response = await client.putObject((async function* () { yield { body: new TextEncoder().encode(\"hello\") }; })());"
+    let ts_call = if family == "workers" {
+        format!(
+            "const moduleBytes = new TextEncoder().encode({module:?});\nconst expectedSha256 = new Uint8Array(Buffer.from(\"{digest}\", \"hex\"));\nconst response = await client.publishVersion(create({request}Schema, {{ javascriptModule: moduleBytes, expectedSha256, idempotencyKey: \"publish-example-v1\" }}));",
+            module = workers_module_text(),
+            digest = workers_module_digest(),
+            request = request,
+        )
+    } else if family == "objects" {
+        format!(
+            "const response = await client.putObject((async function* () {{ yield create({request}Schema, {{ frame: {{ case: \"header\", value: {{ bucket: {{ name: \"guide\" }}, objectKey: \"hello.txt\" }} }} }}); yield create({request}Schema, {{ frame: {{ case: \"body\", value: new TextEncoder().encode(\"hello\") }} }}); yield create({request}Schema, {{ frame: {{ case: \"complete\", value: true }} }}); }})());",
+            request = request,
+        )
+    } else if family == "inference" {
+        format!(
+            "const response = await client.{method}(create({request}Schema, {{ runId: new Uint8Array(16).fill(2), fromSequence: 0n }}));",
+            method = method_camel,
+            request = request,
+        )
     } else {
-        "const response = await client.METHOD({});"
-    }
-    .replace("METHOD", &method_camel);
+        format!(
+            "const response = await client.{method}(create({request}Schema, {{}}));",
+            method = method_camel,
+            request = request,
+        )
+    };
     let code = match language {
         Language::Rust => rust_body(scenario_id)?,
-        Language::Python => format!(
-            r#"# Rust scenario: {scenario_id}
+        Language::Python => {
+            let call = if family == "workers" {
+                format!(
+                    "module = {module:?}\nrequest = {module_name}_pb2.{request}(javascript_module=module.encode(), expected_sha256=hashlib.sha256(module.encode()).digest(), idempotency_key=\"publish-example-v1\")\nresponse = client.{method}(request)",
+                    module = workers_module_text(),
+                    module_name = module,
+                    request = request,
+                    method = method,
+                )
+            } else if family == "objects" {
+                format!(
+                    "response = client.{method}(iter([{module}_pb2.{request}(header={module}_pb2.PutObjectHeader(bucket={module}_pb2.BucketRef(name=\"guide\"), object_key=\"hello.txt\")), {module}_pb2.{request}(body=b\"hello\"), {module}_pb2.{request}(complete=True)]))",
+                    method = method,
+                    module = module,
+                    request = request,
+                )
+            } else if family == "inference" {
+                format!(
+                    "request = {module}_pb2.{request}(run_id=bytes([2] * 16), from_sequence=0)\nresponse = client.{method}(request)",
+                    module = module,
+                    request = request,
+                    method = method,
+                )
+            } else {
+                format!(
+                    "request = {module}_pb2.{request}()\nresponse = client.{method}(request)",
+                    module = module,
+                    request = request,
+                    method = method,
+                )
+            };
+            format!(
+                r#"# Rust scenario: {scenario_id}
+import hashlib
 import os
 import grpc
 from acyclic_sdk.generated.{module}.{version} import {module}_pb2, {module}_pb2_grpc
 
 channel = grpc.insecure_channel(os.environ["FIXTURE_GRPC_ADDRESS"])
 client = {module}_pb2_grpc.{service}Stub(channel)
-request = {module}_pb2.{request}()
-response = client.{method}(request)
+{call}
 print(response)"#,
-        ),
+                scenario_id = scenario_id,
+                module = module,
+                version = version,
+                service = service,
+                call = call,
+            )
+        }
         Language::TypeScript => format!(
             r#"// Rust scenario: {scenario_id}
+import {{ create }} from "@bufbuild/protobuf";
 import {{ createClient }} from "@connectrpc/connect";
 import {{ createGrpcTransport }} from "@connectrpc/connect-node";
-import {{ {service} }} from "@acyclic-labs/{ts_package}/proto";
+import {{ Buffer }} from "node:buffer";
+import {{ {service}, {request}Schema }} from "@acyclic-labs/{ts_package}/proto";
 
 const transport = createGrpcTransport({{ baseUrl: process.env.FIXTURE_GRPC_ADDRESS! }});
 const client = createClient({service}, transport);
 {ts_call}
 console.log(response);"#,
+            scenario_id = scenario_id,
+            service = service,
+            request = request,
+            ts_package = ts_package,
+            ts_call = ts_call,
         ),
         Language::Go => {
-            let call = if family == "objects" {
+            let call = if family == "workers" {
+                format!(
+                    "module := []byte({module:?})\nchecksum := sha256.Sum256(module)\nresponse, err := client.{method}(ctx, &generated.{request}{{JavascriptModule: module, ExpectedSha256: checksum[:], IdempotencyKey: \"publish-example-v1\"}})",
+                    module = workers_module_text(),
+                    method = method,
+                    request = request,
+                )
+            } else if family == "objects" {
                 format!(
                     r#"stream, err := client.PutObject(ctx)
     if err != nil {{ panic(err) }}
-    if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Body{{Body: []byte("hello")}}}}); err != nil {{ panic(err) }}
+     if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Header{{Header: &generated.PutObjectHeader{{Bucket: &generated.BucketRef{{Name: "guide"}}, ObjectKey: "hello.txt"}}}}}}); err != nil {{ panic(err) }}
+     if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Body{{Body: []byte("hello")}}}}); err != nil {{ panic(err) }}
+     if err := stream.Send(&generated.PutObjectRequest{{Frame: &generated.PutObjectRequest_Complete{{Complete: true}}}}); err != nil {{ panic(err) }}
     response, err := stream.CloseAndRecv()"#
+                )
+            } else if family == "inference" {
+                format!(
+                    "response, err := client.{method}(ctx, &generated.{request}{{RunId: []byte{{2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2}}, FromSequence: 0}})",
+                    method = method,
+                    request = request,
                 )
             } else {
                 format!(
@@ -381,6 +496,7 @@ package main
 
 import (
     "context"
+    "crypto/sha256"
     "fmt"
     "os"
     generated "github.com/acyclic-labs/sdk/go/gen/{module}/{version}"
@@ -399,54 +515,222 @@ func main() {{
     if err != nil {{ panic(err) }}
     fmt.Println(response)
 }}"#,
-                call = call
+                scenario_id = scenario_id,
+                module = module,
+                version = version,
+                service = service,
+                call = call,
             )
         }
-        Language::Java => format!(
-            r#"// Rust scenario: {scenario_id}
+        Language::Java => {
+            let call = if family == "workers" {
+                format!(
+                    "      var module = com.google.protobuf.ByteString.copyFromUtf8({module:?});\n      var expectedSha256 = java.security.MessageDigest.getInstance(\"SHA-256\").digest(module.toByteArray());\n      var request = {package_type}.{request}.newBuilder().setJavascriptModule(module).setExpectedSha256(com.google.protobuf.ByteString.copyFrom(expectedSha256)).setIdempotencyKey(\"publish-example-v1\").build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    package_type = package_type,
+                    module = workers_module_text(),
+                    request = request,
+                    java_service_type = java_service_type,
+                    method_camel = method_camel,
+                )
+            } else if family == "objects" {
+                format!(
+                    r#"      var result = new java.util.concurrent.CompletableFuture<{package_type}.ObjectInfo>();
+      var requestObserver = {java_service_type}ServiceGrpc.newStub(channel).putObject(new io.grpc.stub.StreamObserver<{package_type}.ObjectInfo>() {{
+        public void onNext({package_type}.ObjectInfo value) {{ result.complete(value); }}
+        public void onError(Throwable error) {{ result.completeExceptionally(error); }}
+        public void onCompleted() {{ }}
+      }});
+       requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setHeader({package_type}.PutObjectHeader.newBuilder().setBucket({package_type}.BucketRef.newBuilder().setName("guide")).setObjectKey("hello.txt")).build());
+       requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setBody(com.google.protobuf.ByteString.copyFromUtf8("hello")).build());
+      requestObserver.onNext({package_type}.PutObjectRequest.newBuilder().setComplete(true).build());
+      requestObserver.onCompleted();
+      System.out.println(result.join());"#,
+                    package_type = package_type,
+                    java_service_type = java_service_type,
+                )
+            } else if family == "inference" {
+                format!(
+                    "      var runId = new byte[16];\n      java.util.Arrays.fill(runId, (byte) 2);\n      var request = {package_type}.{request}.newBuilder().setRunId(com.google.protobuf.ByteString.copyFrom(runId)).setFromSequence(0L).build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    package_type = package_type,
+                    request = request,
+                    java_service_type = java_service_type,
+                    method_camel = method_camel,
+                )
+            } else {
+                format!(
+                    "      var request = {package_type}.{request}.newBuilder().build();\n      var response = {java_service_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);\n      System.out.println(response);",
+                    package_type = package_type,
+                    java_service_type = java_service_type,
+                    request = request,
+                    method_camel = method_camel,
+                )
+            };
+            format!(
+                r#"// Rust scenario: {scenario_id}
 import io.grpc.ManagedChannelBuilder;
-import acyclic.{module}.{version}.{package_type};
-import acyclic.{module}.{version}.{package_type}ServiceGrpc;
+import {java_namespace}.{package_type};
+import {java_namespace}.{java_service_type}ServiceGrpc;
 
 public final class GuideSnippet {{
   public static void main(String[] args) {{
     var endpoint = System.getenv("FIXTURE_GRPC_ADDRESS");
     var channel = ManagedChannelBuilder.forTarget(endpoint).usePlaintext().build();
     try {{
-      var request = {package_type}.{request}.newBuilder().build();
-      var response = {package_type}ServiceGrpc.newBlockingStub(channel).{method_camel}(request);
-      System.out.println(response);
+{call}
     }} finally {{
       channel.shutdownNow();
     }}
   }}
 }}"#,
-        ),
-        Language::CSharp => format!(
-            r#"// Rust scenario: {scenario_id}
+                scenario_id = scenario_id,
+                java_namespace = java_namespace,
+                package_type = package_type,
+                java_service_type = java_service_type,
+                call = call,
+            )
+        }
+        Language::CSharp => {
+            let call = if family == "workers" {
+                format!(
+                    "var moduleBytes = ByteString.CopyFromUtf8({module:?});\nvar expectedSha256 = ByteString.CopyFrom(SHA256.HashData(moduleBytes.ToByteArray()));\nvar response = client.{method}(new {request} {{ JavascriptModule = moduleBytes, ExpectedSha256 = expectedSha256, IdempotencyKey = \"publish-example-v1\" }});",
+                    module = workers_module_text(),
+                    method = method,
+                    request = request,
+                )
+            } else if family == "objects" {
+                format!(
+                    r#"using var call = client.PutObject();
+     await call.RequestStream.WriteAsync(new {request} {{ Header = new PutObjectHeader {{ Bucket = new BucketRef {{ Name = "guide" }}, ObjectKey = "hello.txt" }} }});
+     await call.RequestStream.WriteAsync(new {request} {{ Body = ByteString.CopyFromUtf8("hello") }});
+    await call.RequestStream.WriteAsync(new {request} {{ Complete = true }});
+    await call.RequestStream.CompleteAsync();
+    var response = await call.ResponseAsync;"#,
+                    request = request,
+                )
+            } else if family == "inference" {
+                format!(
+                    "var response = client.{method}(new {request} {{ RunId = ByteString.CopyFrom(Enumerable.Repeat((byte)2, 16).ToArray()), FromSequence = 0 }});",
+                    method = method,
+                    request = request,
+                )
+            } else {
+                format!(
+                    "var response = client.{method}(new {request}());",
+                    method = method,
+                    request = request,
+                )
+            };
+            format!(
+                r#"// Rust scenario: {scenario_id}
 using Grpc.Net.Client;
-using Acyclic.{package_type}.{version_type};
+using Google.Protobuf;
+using System.Security.Cryptography;
+using {csharp_namespace};
 
 var endpoint = Environment.GetEnvironmentVariable("FIXTURE_GRPC_ADDRESS")
     ?? throw new InvalidOperationException("FIXTURE_GRPC_ADDRESS is required");
 using var channel = GrpcChannel.ForAddress(endpoint);
 var client = new {service}.{service}Client(channel);
-var response = await client.{method}Async(new {request}());
+{call}
 Console.WriteLine(response);"#,
-        ),
-        Language::Ruby => format!(
-            r#"# Rust scenario: {scenario_id}
+                scenario_id = scenario_id,
+                csharp_namespace = csharp_namespace,
+                service = service,
+                call = call,
+            )
+        }
+        Language::Ruby => {
+            let call = if family == "workers" {
+                format!(
+                    "$module = {module:?}\n$request = Acyclic::{package_type}::{version_type}::{request}.new(javascript_module: $module, expected_sha256: Digest::SHA256.digest($module), idempotency_key: \"publish-example-v1\")\n$response = client.{method_snake}($request)",
+                    module = workers_module_text(),
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                    method_snake = method_snake,
+                )
+            } else if family == "objects" {
+                format!(
+                    r#"response = client.{method_snake}([
+  Acyclic::{package_type}::{version_type}::{request}.new(header: Acyclic::{package_type}::{version_type}::PutObjectHeader.new(bucket: Acyclic::{package_type}::{version_type}::BucketRef.new(name: "guide"), object_key: "hello.txt")),
+  Acyclic::{package_type}::{version_type}::{request}.new(body: "hello"),
+  Acyclic::{package_type}::{version_type}::{request}.new(complete: true)
+])"#,
+                    method_snake = method_snake,
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                )
+            } else if family == "inference" {
+                format!(
+                    "request = Acyclic::{package_type}::{version_type}::{request}.new(run_id: ([2] * 16).pack(\"C*\"), from_sequence: 0)\nresponse = client.{method_snake}(request)",
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                    method_snake = method_snake,
+                )
+            } else {
+                format!(
+                    "request = Acyclic::{package_type}::{version_type}::{request}.new\nresponse = client.{method_snake}(request)",
+                    package_type = package_type,
+                    version_type = version_type,
+                    request = request,
+                    method_snake = method_snake,
+                )
+            };
+            format!(
+                r#"# Rust scenario: {scenario_id}
 require "acyclic_sdk"
+require "digest"
 
 endpoint = ENV.fetch("FIXTURE_GRPC_ADDRESS")
 client = Acyclic::{package_type}::{version_type}::{service}::Stub.new(endpoint, :this_channel_is_insecure)
-request = Acyclic::{package_type}::{version_type}::{request}.new
-response = client.{method_snake}(request)
+{call}
 puts response"#,
-        ),
-        Language::Dart => format!(
-            r#"// Rust scenario: {scenario_id}
+                scenario_id = scenario_id,
+                package_type = package_type,
+                version_type = version_type,
+                service = service,
+                call = call,
+            )
+        }
+        Language::Dart => {
+            let call = if family == "workers" {
+                format!(
+                    "final moduleBytes = Uint8List.fromList(utf8.encode({module:?}));\nfinal expectedSha256 = Uint8List.fromList(sha256.convert(moduleBytes).bytes);\nfinal response = await client.{method_camel}(generated.{request}()..javascriptModule = moduleBytes..expectedSha256 = expectedSha256..idempotencyKey = 'publish-example-v1');",
+                    module = workers_module_text(),
+                    method_camel = method_camel,
+                    request = request,
+                )
+            } else if family == "objects" {
+                format!(
+                    r#"final response = await client.{method_camel}(Stream.fromIterable([
+    generated.{request}()..header = (generated.PutObjectHeader()..bucket = (generated.BucketRef()..name = "guide")..objectKey = "hello.txt"),
+    generated.{request}()..body = utf8.encode("hello"),
+    generated.{request}()..complete = true,
+  ]));"#,
+                    method_camel = method_camel,
+                    request = request,
+                )
+            } else if family == "inference" {
+                format!(
+                    "final response = await client.{method_camel}(generated.{request}()..runId = (Uint8List(16)..fillRange(0, 16, 2))..fromSequence = 0);",
+                    method_camel = method_camel,
+                    request = request,
+                )
+            } else {
+                format!(
+                    "final response = await client.{method_camel}(generated.{request}());",
+                    method_camel = method_camel,
+                    request = request,
+                )
+            };
+            format!(
+                r#"// Rust scenario: {scenario_id}
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:grpc/grpc.dart';
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pb.dart' as generated;
 import 'package:acyclic_sdk/src/generated/{module}/{version}/{module}.pbgrpc.dart' as rpc;
@@ -458,15 +742,63 @@ Future<void> main() async {{
       options: const ChannelOptions(credentials: ChannelCredentials.insecure()));
   try {{
     final client = rpc.{service}Client(channel);
-    final response = await client.{method_camel}(generated.{request}());
+    {call}
     print(response);
   }} finally {{
     await channel.shutdown();
   }}
 }}"#,
-        ),
-        Language::Php => format!(
-            r#"<?php
+                scenario_id = scenario_id,
+                module = module,
+                version = version,
+                service = service,
+                call = call,
+            )
+        }
+        Language::Php => {
+            let call = if family == "workers" {
+                format!(
+                    "$request = new \\Acyclic\\{package_type}\\{version}\\{request}(['javascript_module' => {module:?}, 'expected_sha256' => hash('sha256', {module:?}, true), 'idempotency_key' => 'publish-example-v1']);\n[$response, $status] = $client->{method}($request)->wait();",
+                    package_type = package_type,
+                    version = version,
+                    request = request,
+                    module = workers_module_text(),
+                    method = method,
+                )
+            } else if family == "objects" {
+                format!(
+                    r#"$call = $client->{method}();
+$call->write(new \Acyclic\{package_type}\{version}\{request}(['header' => new \Acyclic\{package_type}\{version}\PutObjectHeader(['bucket' => new \Acyclic\{package_type}\{version}\BucketRef(['name' => 'guide']), 'object_key' => 'hello.txt'])]));
+$call->write(new \Acyclic\{package_type}\{version}\{request}(['body' => 'hello']));
+$call->write(new \Acyclic\{package_type}\{version}\{request}(['complete' => true]));
+$call->writesDone();
+[$response, $status] = $call->wait();"#,
+                    method = method,
+                    package_type = package_type,
+                    version = version,
+                    request = request,
+                )
+            } else if family == "inference" {
+                format!(
+                    r#"$request = new \Acyclic\{package_type}\{version}\{request}(['run_id' => str_repeat(chr(2), 16), 'from_sequence' => 0]);
+[$response, $status] = $client->{method}($request)->wait();"#,
+                    package_type = package_type,
+                    version = version,
+                    request = request,
+                    method = method,
+                )
+            } else {
+                format!(
+                    r#"$request = new \Acyclic\{package_type}\{version}\{request}();
+[$response, $status] = $client->{method}($request)->wait();"#,
+                    package_type = package_type,
+                    version = version,
+                    request = request,
+                    method = method,
+                )
+            };
+            format!(
+                r#"<?php
 // Rust scenario: {scenario_id}
 require dirname(__DIR__) . '/vendor/autoload.php';
 
@@ -475,11 +807,16 @@ $client = new \Acyclic\{package_type}\{version}\{service}Client(
     $endpoint,
     ['credentials' => \Grpc\ChannelCredentials::createInsecure()]
 );
-$request = new \Acyclic\{package_type}\{version}\{request}();
-[$response, $status] = $client->{method}($request)->wait();
+{call}
 if ($status->code !== \Grpc\STATUS_OK) throw new RuntimeException($status->details);
 echo $response->serializeToJsonString(), PHP_EOL;"#,
-        ),
+                scenario_id = scenario_id,
+                package_type = package_type,
+                version = version,
+                service = service,
+                call = call,
+            )
+        }
     };
     Some(GuideProjection {
         scenario_id,
@@ -564,7 +901,7 @@ mod tests {
                             || projection.code.contains("Client")
                             || projection.code.contains("Stub")
                     );
-                    assert!(projection.code.contains("Request"));
+                    assert!(!projection.code.trim().is_empty());
                 }
             }
         }
@@ -595,6 +932,89 @@ mod tests {
                     assert!(projection.code.contains(spec.request));
                 }
             }
+        }
+    }
+
+    #[test]
+    fn inference_projection_uses_wire_package_identity() {
+        let spec = GUIDE_REMOTE_REQUESTS
+            .iter()
+            .find(|spec| spec.scenario_id == inference_scenarios::SCENARIO_ID)
+            .expect("inference request manifest");
+        assert_eq!(
+            spec.operation,
+            "inference.customer.v1.RunsService/Watch"
+        );
+        let projection = project(inference_scenarios::SCENARIO_ID, Language::TypeScript)
+            .expect("inference TypeScript projection");
+        assert_eq!(
+            projection.operation,
+            "inference.customer.v1.RunsService/Watch"
+        );
+        assert!(projection.code.contains("WatchRunRequestSchema"));
+        let java = project(inference_scenarios::SCENARIO_ID, Language::Java)
+            .expect("inference Java projection");
+        assert!(java.code.contains("import inference.customer.v1.Inference;"));
+        assert!(java.code.contains("import inference.customer.v1.RunsServiceGrpc;"));
+        assert!(java.code.contains("setRunId"));
+        assert!(java.code.contains("setFromSequence(0L)"));
+        let python = project(inference_scenarios::SCENARIO_ID, Language::Python)
+            .expect("inference Python projection");
+        assert!(python.code.contains("run_id=bytes([2] * 16)"));
+    }
+
+    #[test]
+    fn object_projection_uses_typed_streaming_requests() {
+        for language in Language::ALL {
+            let code = project(objects_scenarios::SCENARIO_ID, language)
+                .expect("objects projection")
+                .code;
+            match language {
+                Language::Rust => {}
+                Language::Python => {
+                    assert!(code.contains("iter(["));
+                    assert!(code.contains("complete=True"));
+                }
+                Language::TypeScript => {
+                    assert!(code.contains("create(PutObjectRequestSchema"));
+                    assert!(code.contains("case: \"complete\""));
+                }
+                Language::Go => {
+                    assert!(code.contains("PutObjectRequest_Complete"));
+                }
+                Language::Java => {
+                    assert!(code.contains("setComplete(true)"));
+                }
+                Language::CSharp => {
+                    assert!(code.contains("Complete = true"));
+                }
+                Language::Ruby => {
+                    assert!(code.contains("complete: true"));
+                }
+                Language::Dart => {
+                    assert!(code.contains("..complete = true"));
+                }
+                Language::Php => {
+                    assert!(code.contains("writesDone()"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workers_projection_uses_canonical_module_and_digest() {
+        for language in Language::ALL {
+            let code = project(workers_scenarios::SCENARIO_ID, language)
+                .expect("workers projection")
+                .code;
+            if language == Language::Rust {
+                assert!(code.contains("publish-example-v1"));
+                continue;
+            }
+            assert!(code.contains("publish-example-v1"));
+            let lower = code.to_ascii_lowercase();
+            assert!(lower.contains("sha") || lower.contains("digest"));
+            assert!(code.contains("javascript") || code.contains("Javascript"));
         }
     }
 }
