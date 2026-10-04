@@ -265,3 +265,9 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 [Build provenance](checkpoint-native-distributable-build-2026-10-04.json) records the successful isolated Windows build at root Rust tree `a5f6c3630340c003efc11370d5b7812af5cf8d12` and normal application binary SHA-256 `9046f9a6015404399d54c252629fde10469ada5661a496ba664c122890dc4469`. This is compilation evidence only. Installed-package execution and ConPTY qualification against this exact artifact are assigned and remain pending.
 
+## Installed PTY and integrated conformance follow-up
+
+[Installed package/PTY receipt](checkpoint-installed-package-pty-r2-2026-10-04.json) records fresh package consumption and actual Windows PTY start, activity, messages, approvals, changes, file read, cancellation rejection, and clean quit against the exact earlier-source native binary. Approved effects/writeback/cancellation and native lazy-read observations remain unqualified; the smoke result does not replace them.
+
+[Integrated conformance failure](checkpoint-integrated-conformance-disk-failure-2026-10-04.json) records terminal exit 101 and disk-full archive failure at Rust tree `1e4c159922fed8e88c35c4bdf42dc6af33856c2f`. No passing tests are attributed to that attempt. Its separate Q-drive retry is recorded as started, not passed.
+
