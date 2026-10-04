@@ -290,7 +290,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
             .read_report(&journal, request)
             .await?
             .ok_or_else(|| Error::Conflict("fork preparation report is missing".into()))?;
-        report.validate()?;
         let preparation_digest = *blake3::hash(&encode_record(request, MAX_REQUEST_BYTES)?).as_bytes();
         let original_request_digest = crate::contract::canonical_json_digest(request)?;
         let report_digest = crate::contract::canonical_json_digest(&report)?;

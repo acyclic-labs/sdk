@@ -89,7 +89,7 @@ pub(crate) fn authenticated_inherited_prefix(
     Ok(Some(AuthenticatedInheritedPrefix {
         file: prefix,
         parent: seed.parent.clone(),
-        parent_revision: seed.parent_revision,
+        parent_revision: seed.captured_history_revision()?,
         parent_agent,
         through_sequence: seed.inherited_through_sequence,
         attached_agents: seed.attached_agents.clone(),

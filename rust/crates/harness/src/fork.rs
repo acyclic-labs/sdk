@@ -1562,6 +1562,37 @@ pub struct ForkSeed {
 }
 
 impl ForkSeed {
+    /// Returns the immutable history revision captured for the seed. This is
+    /// distinct from the publication revision, which may advance when a
+    /// prepared report is rebound for a later parent append.
+    pub(crate) fn captured_history_revision(&self) -> Result<u64> {
+        let mut captured = None;
+        for resource in &self.resources {
+            if let ResourceRevision::History(reference) = &resource.source {
+                let ResourceRevision::History(revision) = &resource.revision else {
+                    return Err(Error::Invalid(
+                        "fork history capture has a non-history child revision".into(),
+                    ));
+                };
+                if reference != revision {
+                    return Err(Error::Invalid(
+                        "fork history capture source and child revision differ".into(),
+                    ));
+                }
+                let version = reference
+                    .as_resource()
+                    .version()
+                    .and_then(|version| version.parse::<u64>().ok())
+                    .filter(|version| *version > 0)
+                    .ok_or_else(|| Error::Invalid("fork history capture revision is invalid".into()))?;
+                if captured.replace(version).is_some() {
+                    return Err(Error::Invalid("fork history capture appears twice".into()));
+                }
+            }
+        }
+        captured.ok_or_else(|| Error::Invalid("fork seed has no history capture".into()))
+    }
+
     /// Prevents private-volume inheritance, duplicate singletons, and malformed refs.
     #[allow(
         clippy::too_many_lines,
