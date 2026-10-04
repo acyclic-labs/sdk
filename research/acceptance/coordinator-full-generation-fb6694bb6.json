@@ -84,5 +84,15 @@
     "examples_lock": "31b8591cd0e95cec8f5994462cb4dba1e0f9ad4c",
     "producer_order": "2689c787f",
     "rust_rpc_inventory": "f599f380bf26a2210993cd6d548ed480715ab5ee"
+  },
+  "compiler_cache_reclaimed": {
+    "path": "Q:\\sdk\\work\\rust-generation-full-target-64d4d7a2a",
+    "after_terminal_exit": true,
+    "live_process_path_scan_clear": true,
+    "containment_verified": true,
+    "reparse_points_absent": true,
+    "source_snapshot_preserved": true,
+    "generated_output_preserved": true,
+    "recorded_at": "2026-10-04T07:00:42.686Z"
   }
 }
