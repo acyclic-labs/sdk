@@ -50,6 +50,7 @@ published entry, and retains the Git source command for the other statuses.
 The repository release catalog and this registry manifest are separate inputs:
 each Git tagged release can have an immutable documentation archive even when a
 particular package/version is not present in crates.io.
+
 ## npm trusted-publisher bootstrap
 
 Configure every package in `npm-packages.json` with one GitHub Actions trusted
