@@ -306,7 +306,7 @@ impl LocalSwarmBindings {
     pub fn with_swarm_budget(
         mut self,
         owner: SwarmOwnerFence,
-        limits: SwarmBudgetLimits,
+        _limits: SwarmBudgetLimits,
         usage_source: Arc<dyn SwarmUsageSource + Send + Sync>,
     ) -> Self {
         self.swarm_owner = Some(owner);
