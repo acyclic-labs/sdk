@@ -1,0 +1,32 @@
+{
+  "source_revision": "0952a50e900851c0e8457319bb606b5a84f04ef7",
+  "qualification_commit": "623d7f81416b3f7996ae98637bc384fb730b98d0",
+  "worktree": "C:\\Users\\varun\\.codex\\worktrees\\fork-binding-qualification",
+  "source_tree_listing_sha256": "8DD7D929DE7FA468CB0FE390F780E890D41D028B8E048059EBBE013E26A04974",
+  "source_tree_listing_method": "git ls-tree -r --full-tree 0952a50e900851c0e8457319bb606b5a84f04ef7",
+  "descriptor": {
+    "command": "node_modules/.bin/buf.exe build --path proto/harness/v2/harness.proto -o <temporary>",
+    "bytes": 55025,
+    "sha256": "EAB914F6BE9637BC6B1BB82459D6350AADDCB49E5E14B9D6B2B1A227F5561223"
+  },
+  "suite": {
+    "test": "typescript/packages/harness/test/native-wasm-equivalence.test.ts",
+    "test_sha256": "CA576DBAD11613134115FBBAA739A32E1E93AF52174CA1C153E3EF67293E5FD9",
+    "fixture": "conformance/vectors/harness/native-wasm-event-v2.json",
+    "fixture_sha256": "3500CFD2757D91E8AE961497F1F422635402219ED1654AD679B299CD31CEF79E"
+  },
+  "results": [
+    { "command": "bun install --frozen-lockfile", "source": "0952a50", "exit_code": 1, "reason": "lockfile omitted graphcoder workspace" },
+    { "command": "bun install", "source": "0952a50", "exit_code": 0, "effect": "added only graphcoder workspace lock entries" },
+    { "command": "bun install --frozen-lockfile", "source": "623d7f8", "exit_code": 0, "packages": 177 },
+    { "command": "bun test typescript/packages/harness/test/native-wasm-equivalence.test.ts", "source": "0952a50", "exit_code": 0, "tests": 4, "assertions": 77 },
+    { "command": "bun run check:generated", "source": "0952a50", "exit_code": 0, "scope": "all generated bindings and six WASM packages" }
+  ],
+  "artifacts": {
+    "harness_wasm": { "bytes": 6980005, "sha256": "8B2979C5CBD5A74BF07C49AF731021281812CDD01B158C692281F5F476F595DB" },
+    "harness_js": { "bytes": 75922, "sha256": "14421B3DF5A34BF867441EA4659FED47DC99D071367BA83B816242260234D1EA" },
+    "harness_dts": { "bytes": 43100, "sha256": "489DC650710BD26523244AC4E6FB73CBACA51336A2976B8A357BC49B993A6FC7" },
+    "harness_wasm_dts": { "bytes": 9456, "sha256": "D23595D181315240DA6AA924E1E793B442B8AA63BD01408F2CFC9BCBEC700F0D" }
+  },
+  "boundaries": ["mocked model provider", "no sandbox", "runtime artifacts are ignored and not committed"]
+}
