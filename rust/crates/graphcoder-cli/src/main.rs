@@ -849,7 +849,7 @@ fn activity_event(event: acyclic_harness::core::Event) -> Value {
         "kind": kind,
         "actor_id": Value::Null,
         "text": serde_json::to_string(&event.payload).unwrap_or_else(|_| "{}".to_owned()),
-        "at": "0",
+        "at": Value::Null,
     })
 }
 
@@ -888,9 +888,9 @@ fn approval_value(approval: acyclic_harness::filesystem::LocalSwarmApproval) -> 
         "agent_id": approval.task.to_string(),
         "operation_id": operation_id,
         "action_digest": action_digest,
-        "description": "approval",
+        "description": Value::Null,
         "state": state,
-        "created_at": "0",
+        "created_at": Value::Null,
     })
 }
 
