@@ -35,8 +35,8 @@
     "build_duration_seconds": 254,
     "test_duration_seconds": 0.81,
     "source": {"path": "rust/crates/harness/src/filesystem/local.rs", "sha256": "6bb2332258ed44bd5805f517ab3343af8ea6f6aa300f5986c75c78c79cf3b533"},
-    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "53bf0275844932f523c9d9ebcaad47151d204d3f5c78c0aaff397ab0b36120a7"},
-    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/terminal-uncertainty-claim.log", "sha256": "ce522d5761c2b6a21434b526383529c6aadb1c49b3a9be59d03192856807e448"},
+    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/f2a02e1dc/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "53bf0275844932f523c9d9ebcaad47151d204d3f5c78c0aaff397ab0b36120a7"},
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/checkpoints/f2a02e1dc/terminal-uncertainty-claim.log", "sha256": "ce522d5761c2b6a21434b526383529c6aadb1c49b3a9be59d03192856807e448"},
     "exit_record": "Q:/graphcoder-builds/root-conformance-20261004/terminal-uncertainty-claim.exit"
   },
   "boundaries": [
