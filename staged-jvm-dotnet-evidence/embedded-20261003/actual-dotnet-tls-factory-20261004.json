@@ -1,0 +1,29 @@
+{
+  "schema": "acyclic.sdk.dotnet.tls-factory.v1",
+  "captured_at": "2026-10-04T01:25:00+01:00",
+  "source_commit": "a4c3867ca17d3a76ca8187565b3248c9ae9d3da3",
+  "source": "dotnet/RemoteClientFactory.cs",
+  "change": "Generated .NET factory now accepts Rust-emitted CA/client PEM credentials, validates the server chain against a custom root, and imports RSA or ECDSA private keys with CopyWithPrivateKey without writing credential files.",
+  "compile": {
+    "project": "Q:/sdk/.tmp-dotnet-factory-compile-20261004/FactoryCompile.csproj",
+    "sdk": "Q:/sdk/.tmp-dotnet-sdk-official-8.0.425/dotnet.exe",
+    "result": "passed"
+  },
+  "runtime_fixture": {
+    "source_cwd": "Q:/sdk/work/inference-machines-package-receipt/final-package-2b128ed/fixtures",
+    "mode": "cargo run --locked --offline -- --serve",
+    "inference_endpoint": "https://localhost:52097",
+    "machines_endpoint": "https://localhost:52108",
+    "credential_handling": "PEM records were parsed from the process pipe and passed only through the child process environment; no PEM was logged or persisted.",
+    "source_fixture_status": "refreshed source keeps Inference live in serve mode; Machines endpoint was live for this test"
+  },
+  "installed_consumer": {
+    "project": "Q:/sdk/.tmp-dotnet-factory-live-20261004/Live.csproj",
+    "package_identity": "Acyclic.Sdk.Transport generated sources plus Machines stubs",
+    "operations_attempted": ["InspectMachine", "Events", "Usage"],
+    "result": "blocked during Windows Schannel client credential acquisition before RPC",
+    "error_boundary": "Win32Exception 0x8009030D: The credentials supplied to the package were not recognized",
+    "client_certificate_shape": "self-signed ECDSA certificate with private key imported successfully; Schannel rejected the credential during TLS authentication"
+  },
+  "followup": "The factory path is ready for an RSA-backed Rust fixture run. Do not weaken certificate validation or claim .NET RPC qualification from this ECDSA failure."
+}
