@@ -4,28 +4,32 @@ set -euo pipefail
 language=${1:?language is required}
 source_root=${2:?source root is required}
 output_root=${3:?output root is required}
+product_root=${4:-${RUST_PRODUCTS_ROOT:-}}
+
+hash_file() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
 
 mkdir -p "$output_root"
-proto_root="$source_root/proto"
-proto="$proto_root/actors/v1/actors.proto"
-test -f "$proto"
-
-# This probe is deliberately generated alongside the Rust-owned product.  It
-# exercises the selected ecosystem's streaming facade without inventing a
-# second product contract: the Actors schema remains the serialization input.
-streaming_proto="$output_root/streaming_probe.proto"
-cat >"$streaming_proto" <<'EOF'
-syntax = "proto3";
-package acyclic.qualification.v1;
-
-message ProbeFrame {
-  string payload = 1;
+[[ -n "$product_root" && -d "$product_root" ]] || {
+  echo 'Rust product output is required; pass the generate-products directory as the fourth argument' >&2
+  exit 2
 }
-
-service QualificationStream {
-  rpc Exchange(stream ProbeFrame) returns (stream ProbeFrame);
+proto_root="$product_root"
+proto=$(find "$product_root" -type f -path '*/actors/v1/actors.proto' -print -quit)
+streaming_proto="$product_root/objects/v2/objects.proto"
+[[ -n "$proto" && -f "$streaming_proto" ]] || {
+  echo 'Rust product output is missing Actors or Objects protobuf sources' >&2
+  exit 1
 }
-EOF
+proto_relative=${proto#"$product_root/"}
+source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
+product_manifest="$product_root/rust-authority.json"
+[[ -f "$product_manifest" ]] || { echo 'Rust authority manifest is missing from product output' >&2; exit 1; }
 
 archive_project() {
   local project=$1
@@ -37,9 +41,11 @@ archive_project() {
 write_receipt() {
   local status=$1
   local proto_digest
-  proto_digest=$(sha256sum "$proto" | awk '{print $1}')
+  proto_digest=$(hash_file "$proto")
+  local manifest_digest
+  manifest_digest=$(hash_file "$product_manifest")
   cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"${GITHUB_SHA:-local}","proto":"proto/actors/v1/actors.proto","proto_sha256":"$proto_digest","artifact_root":"$output_root"}
+{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"$source_revision","rust_product_root":"generated-products","rust_authority_manifest_sha256":"$manifest_digest","proto":"$proto_relative","proto_sha256":"$proto_digest","streaming_proto":"objects/v2/objects.proto","artifact_root":"$output_root"}
 EOF
 }
 

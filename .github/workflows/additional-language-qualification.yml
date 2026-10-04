@@ -111,7 +111,8 @@ jobs:
       - name: Build and consume generated package
         run: |
           bash scripts/qualify-additional-language.sh \
-            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}"
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \
+            "$RUNNER_TEMP/rust-products"
 
       - name: Upload qualification receipt
         if: always()

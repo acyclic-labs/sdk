@@ -4,25 +4,21 @@ set -euo pipefail
 source_root=${1:?Rust source root is required}
 output_root=${2:?output root is required}
 product_root=${3:-${RUST_PRODUCTS_ROOT:-}}
+[[ -n "$product_root" && -d "$product_root" ]] || {
+  echo 'Rust product output is required as the third argument' >&2
+  exit 2
+}
 mkdir -p "$output_root"
-proto_root="$source_root/proto"
-input_kind=compatibility-projection
-include_root="$proto_root"
+proto_root="$product_root"
+input_kind=generated-rust-product
+include_root="$product_root"
 extra_scenarios=()
-if [[ -n "$product_root" && -d "$product_root" ]]; then
-  proto=$(find "$product_root" -type f -path '*/actors/v1/actors.proto' -print -quit)
-  [[ -n "$proto" ]] || proto=$(find "$product_root" -type f -name actors.proto -print -quit)
-  [[ -n "$proto" ]] || { echo 'Rust product output has no generated Actors protobuf' >&2; exit 1; }
-  input_kind=generated-rust-product
-  include_root="$product_root"
-  for scenario in stream/v2/stream.proto filesystem/v2/filesystem.proto; do
-    candidate="$product_root/$scenario"
-    if [[ -f "$candidate" ]]; then extra_scenarios+=("$candidate"); fi
-  done
-else
-  proto="$proto_root/actors/v1/actors.proto"
-  [[ -f "$proto" ]] || { echo 'Rust-owned Actors protobuf is missing' >&2; exit 1; }
-fi
+proto=$(find "$product_root" -type f -path '*/actors/v1/actors.proto' -print -quit)
+[[ -n "$proto" ]] || { echo 'Rust product output has no generated Actors protobuf' >&2; exit 1; }
+for scenario in objects/v2/objects.proto stream/v2/stream.proto filesystem/v2/filesystem.proto; do
+  candidate="$product_root/$scenario"
+  if [[ -f "$candidate" ]]; then extra_scenarios+=("$candidate"); fi
+done
 scenario_protos=("$proto")
 scenario_protos+=("${extra_scenarios[@]}")
 
@@ -34,9 +30,14 @@ git -C "$lua_checkout" checkout --detach "$lua_revision"
 license_status=unverified-repository-license
 if find "$lua_checkout" -maxdepth 1 -type f \( -iname 'license*' -o -iname 'copying*' \) -print -quit | grep -q .; then license_status=repository-license-present; fi
 if [[ "$license_status" != repository-license-present ]]; then
-  proto_sha256=$(sha256sum "$proto" | awk '{print $1}')
+  if command -v sha256sum >/dev/null; then
+    proto_sha256=$(sha256sum "$proto" | awk '{print $1}')
+  else
+    proto_sha256=$(shasum -a 256 "$proto" | awk '{print $1}')
+  fi
+  source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
   cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.additional-language-qualification.v1","language":"lua","status":"pending-license","source_revision":"${GITHUB_SHA:-local}","input_kind":"$input_kind","proto_sha256":"$proto_sha256","generator":{"repository":"$lua_repo","revision":"$lua_revision","license_status":"$license_status"},"evidence":["No LICENSE or COPYING file at the pinned revision","No license file appears in reachable repository history"],"artifact_root":"$output_root"}
+{"schema":"acyclic.additional-language-qualification.v1","language":"lua","status":"pending-license","source_revision":"$source_revision","input_kind":"$input_kind","proto_sha256":"$proto_sha256","generator":{"repository":"$lua_repo","revision":"$lua_revision","license_status":"$license_status"},"evidence":["No LICENSE or COPYING file at the pinned revision","No license file appears in reachable repository history"],"artifact_root":"$output_root"}
 EOF
   echo 'Pinned Lua runtime has no repository license grant; refusing package qualification.' >&2
   exit 3
