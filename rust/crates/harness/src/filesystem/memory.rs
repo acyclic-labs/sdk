@@ -166,6 +166,7 @@ impl LocalHarness {
         tools: ToolRegistry,
         capabilities: impl IntoIterator<Item = String>,
     ) -> Result<Self> {
+        provider.admit_model(&model)?;
         let mut builder = storage
             .builder()
             .model(model, provider)

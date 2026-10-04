@@ -777,6 +777,30 @@ fn validate_descriptor(
     Ok(())
 }
 
+/// Validates the model binding published with a child fork before any child
+/// storage or registry admission is performed. The provider policy is applied
+/// to the exact boundary model, and the caller's model must be byte-equal.
+pub(crate) fn validate_published_model_binding(
+    model: &Model,
+    provider: &dyn ModelProvider,
+    seed: &ForkSeed,
+) -> Result<()> {
+    provider.admit_model(model)?;
+    let boundary_model = seed
+        .model_boundary
+        .as_ref()
+        .ok_or_else(|| Error::Conflict("published model fork has no model binding".into()))?
+        .model
+        .clone();
+    if boundary_model != *model {
+        return Err(Error::Conflict(
+            "published model fork model binding differs from the admitted model".into(),
+        ));
+    }
+    provider.admit_model(&boundary_model)?;
+    Ok(())
+}
+
 /// Ready-to-run, reopenable local agent with pinned composition.
 pub struct PersistentLocalHarness {
     storage: DurableHarnessStorage,
@@ -1007,7 +1031,7 @@ impl PersistentLocalHarness {
         extension: LocalHarnessTools,
     ) -> Result<Self> {
         limits.validate()?;
-        provider.admit_model(&model)?;
+        validate_published_model_binding(&model, provider.as_ref(), seed)?;
         let storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
             host.clone(),

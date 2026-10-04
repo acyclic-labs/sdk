@@ -2880,12 +2880,7 @@ impl AgentHarness {
         model: Model,
         provider: Arc<dyn ModelProvider>,
     ) -> Result<Arc<Self>> {
-        Model::new(
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-            model.options.clone(),
-        )?;
+        provider.admit_model(&model)?;
         let mut bound = self.as_ref().clone();
         bound.model = Some(ModelBinding { model, provider });
         Ok(Arc::new(bound))

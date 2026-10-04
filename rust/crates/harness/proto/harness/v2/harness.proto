@@ -666,12 +666,23 @@ message ReferenceGrant {
   FileRef attachment_manifest = 3;
 }
 
+// Provider/model identity admitted for one completed model publication.
+// options_json is canonical JSON containing only provider-registered,
+// model-visible options; host credentials never belong here.
+message ModelBinding {
+  string provider = 1;
+  string name = 2;
+  string revision = 3;
+  string options_json = 4;
+}
+
 message ModelBoundaryReferences {
   OperationIdentity publication = 1;
   bytes publication_digest = 2;
   bytes boundary_digest = 3;
   bytes attestation = 4;
   repeated FileRef files = 5;
+  ModelBinding model = 6;
 }
 
 message ForkSelection {

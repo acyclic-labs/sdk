@@ -2431,6 +2431,41 @@ export declare type ReferenceGrant = Message<"acyclic.harness.v2.ReferenceGrant"
 export declare const ReferenceGrantSchema: GenMessage<ReferenceGrant>;
 
 /**
+ * Provider/model identity admitted for one completed model publication.
+ * options_json is canonical JSON containing only provider-registered,
+ * model-visible options; host credentials never belong here.
+ *
+ * @generated from message acyclic.harness.v2.ModelBinding
+ */
+export declare type ModelBinding = Message<"acyclic.harness.v2.ModelBinding"> & {
+  /**
+   * @generated from field: string provider = 1;
+   */
+  provider: string;
+
+  /**
+   * @generated from field: string name = 2;
+   */
+  name: string;
+
+  /**
+   * @generated from field: string revision = 3;
+   */
+  revision: string;
+
+  /**
+   * @generated from field: string options_json = 4;
+   */
+  optionsJson: string;
+};
+
+/**
+ * Describes the message acyclic.harness.v2.ModelBinding.
+ * Use `create(ModelBindingSchema)` to create a new message.
+ */
+export declare const ModelBindingSchema: GenMessage<ModelBinding>;
+
+/**
  * @generated from message acyclic.harness.v2.ModelBoundaryReferences
  */
 export declare type ModelBoundaryReferences = Message<"acyclic.harness.v2.ModelBoundaryReferences"> & {
@@ -2458,6 +2493,11 @@ export declare type ModelBoundaryReferences = Message<"acyclic.harness.v2.ModelB
    * @generated from field: repeated acyclic.harness.v2.FileRef files = 5;
    */
   files: FileRef[];
+
+  /**
+   * @generated from field: acyclic.harness.v2.ModelBinding model = 6;
+   */
+  model?: ModelBinding | undefined;
 };
 
 /**

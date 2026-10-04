@@ -45,6 +45,7 @@ where
         limits: Limits,
     ) -> Result<crate::bundle::HarnessBuilder> {
         let model = boundary.request.model.clone();
+        provider.admit_model(&model)?;
         let context =
             crate::model_input::InheritedModelContext::new(boundary.clone(), suffix, limits)?;
         let guarded = Arc::new(crate::model_input::PrefixBoundModelProvider::new(
