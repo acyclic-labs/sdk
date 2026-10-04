@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.ruby-php-dart.producer-recipes.v1",
+  "owner": "ruby-php-dart",
+  "adapter": "package-adapter.ps1",
+  "authority": {
+    "source_root_argument": "--source-root",
+    "manifest_argument": "--authority",
+    "request_argument": "--request",
+    "output_argument": "--output",
+    "binding": "authority manifest source_sha256 and descriptor_sha256 values are verified before generation"
+  },
+  "languages": {
+    "ruby": {
+      "runtime_environment": "RUBY",
+      "generator": "ruby/generate.rb",
+      "generator_lock": "grpc-tools 1.82.0",
+      "runtime_lock": "grpc 1.82.0; google-protobuf 4.33.0",
+      "source_output": "ruby/generated"
+    },
+    "php": {
+      "runtime_environment": "PHP",
+      "generator": "php/tools/generate.php",
+      "generator_lock": "grpc_php_plugin 1.82.0",
+      "runtime_lock": "grpc/grpc 1.82.0; google/protobuf 5.36.2",
+      "source_output": "php/src"
+    },
+    "dart": {
+      "runtime_environment": "DART",
+      "generator": "dart/tool/generate.dart",
+      "generator_lock": "protoc_plugin 25.1.0",
+      "runtime_lock": "grpc 5.1.0; protobuf 6.1.0; fixnum 1.1.1",
+      "source_output": "dart/lib/src/generated"
+    }
+  },
+  "qualification_rule": "A generated package is eligible only when the adapter receipt binds the requested authority and the installed runtime executes the package test; constructor-only or unexecuted release environments do not qualify."
+}
