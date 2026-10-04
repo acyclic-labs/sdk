@@ -132,11 +132,13 @@ function Assert-ReceiptPackage([object]$Receipt, [string]$Root) {
 
 function Get-UnifiedArtifactDigest([object]$Artifacts) {
     $canonical = New-Object Text.StringBuilder
-    foreach ($property in ($Artifacts.psobject.Properties | Sort-Object Name)) {
-        [void]$canonical.Append([string]$property.Name)
+    $names = @($Artifacts.psobject.Properties.Name)
+    [Array]::Sort($names, [StringComparer]::Ordinal)
+    foreach ($name in $names) {
+        [void]$canonical.Append([string]$name)
         [void]$canonical.Append([char]0)
         [void]$canonical.Append('sha256:')
-        [void]$canonical.Append(([string]$property.Value).ToLowerInvariant())
+        [void]$canonical.Append(([string]$Artifacts.psobject.Properties[$name].Value).ToLowerInvariant())
         [void]$canonical.Append([char]0)
     }
     $digest = [Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($canonical.ToString()))

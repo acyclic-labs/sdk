@@ -3,7 +3,7 @@
   "language": "cpp",
   "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
   "contract_digest": "sha256:e60273cd4f2bbf6132c67872a411a86328291628a2fbd91e3033725809f2c8a3",
-  "artifact_digest": "sha256:2fee4669e0c2c3069d239a4dbb4f68765a2d350651199b5ed78811543a3747b0",
+  "artifact_digest": "sha256:81d5df80fd3977d50943c4ccecba2d5318c2ae4bc06233e3dad850acfba7e1ed",
   "remote": {
     "status": "pending",
     "tests": ["embedded ABI receipt is intentionally scoped to the Rust native boundary"],

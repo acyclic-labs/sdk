@@ -36,6 +36,8 @@
     "receipt_schema": "research/acceptance/embedded/release-abi-receipt.schema.json",
     "validator": "research/acceptance/embedded/verify-release-abi-receipt.ps1",
     "unified_generation_evidence": "research/acceptance/embedded/release-abi-generation-evidence.json",
+    "central_rust_receipt": "research/acceptance/embedded/central-qualification-20261004.json",
+    "central_rust_command": "cargo run --locked --offline --manifest-path rust/crates/sdk-generation/Cargo.toml --bin sdk-generation -- qualify-embedded --source-root {source_root} --output {report_root} --receipt {source_root}/research/acceptance/embedded/release-abi-20261004.json --evidence {source_root}/research/acceptance/embedded/release-abi-generation-evidence.json --package-root {package_root}",
     "platform_matrix": "research/acceptance/embedded/platform-qualification-20261004.json",
     "artifacts": [
       "include/acyclic_embedded_prototype.h",
