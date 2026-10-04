@@ -100,7 +100,7 @@ def main() -> int:
         "      (unless (zerop (ag-grpc:stream-status stream)) (error \"bidi stream returned a nonzero status\")))))",
         "",
         "(defun run ()",
-        "  (let* ((endpoint (or (first (member \"--endpoint\" sb-ext:*posix-argv* :test #'string= :key #'identity)) \"127.0.0.1:18081\"))",
+        "  (let* ((endpoint (or (sb-ext:posix-getenv \"ACYCLIC_FIXTURE_GRPC_ENDPOINT\") \"127.0.0.1:18081\"))",
         "         (separator (position #\\: endpoint :from-end t))",
         "         (host (subseq endpoint 0 separator))",
         "         (port (parse-integer (subseq endpoint (1+ separator))))",
