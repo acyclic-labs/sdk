@@ -13,9 +13,13 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = true }
+acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
 bytes.workspace = true
 futures.workspace = true
 prost.workspace = true
+prost-reflect = { workspace = true, features = ["serde"] }
+reqwest.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
 rcgen = "0.14.10"
 tonic.workspace = true

@@ -37,6 +37,11 @@ typedef struct { uint32_t status; uint64_t reader; AcyclicRemoteBuffer message; 
 typedef struct { uint32_t status; uint64_t sequence; AcyclicRemoteBuffer value; AcyclicRemoteBuffer message; } AcyclicRemoteNextResult;
 typedef struct { uint32_t status; AcyclicRemoteBuffer response; AcyclicRemoteBuffer message; } AcyclicRemoteWireResult;
 uint32_t acyclic_remote_abi_version(void);
+size_t acyclic_remote_family_count(void);
+AcyclicRemoteBuffer acyclic_remote_family_name(size_t index);
+size_t acyclic_remote_family_operation_count(const uint8_t *family, size_t family_len);
+AcyclicRemoteBuffer acyclic_remote_family_operation_name(const uint8_t *family, size_t family_len, size_t index);
+AcyclicRemoteWireResult acyclic_remote_family_wire_call(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
 size_t acyclic_remote_stream_operation_count(void);
 AcyclicRemoteBuffer acyclic_remote_stream_operation_name(size_t index);
 AcyclicRemoteWireResult acyclic_remote_wire_call(uint64_t client, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
@@ -55,6 +60,24 @@ void acyclic_remote_next_result_release(AcyclicRemoteNextResult result);
 ]]
 local sdk = assert(ffi.load(arg[1]))
 assert(sdk.acyclic_remote_abi_version() == 1)
+local family_count = sdk.acyclic_remote_family_count()
+assert(family_count == 8, "Rust contract family inventory is incomplete")
+local family_operation_total = 0
+for i = 0, family_count - 1 do
+  local family_item = sdk.acyclic_remote_family_name(i)
+  assert(family_item.len > 0, "Rust family inventory contains an empty name")
+  local family = ffi.string(family_item.ptr, family_item.len)
+  sdk.acyclic_remote_buffer_release(family_item)
+  local operation_count = sdk.acyclic_remote_family_operation_count(family, #family)
+  assert(operation_count > 0, "Rust family has no descriptor operation inventory: " .. family)
+  family_operation_total = family_operation_total + operation_count
+  for operation_index = 0, operation_count - 1 do
+    local operation_item = sdk.acyclic_remote_family_operation_name(family, #family, operation_index)
+    assert(operation_item.len > 0, "Rust operation inventory contains an empty name")
+    sdk.acyclic_remote_buffer_release(operation_item)
+  end
+end
+assert(family_operation_total == 106, "Rust product operation inventory changed")
 local expected = {"inspect_idempotency", "append", "tail", "fork", "read", "follow", "children", "children_page", "commit", "read_commit"}
 assert(sdk.acyclic_remote_stream_operation_count() == #expected, "Rust operation inventory is incomplete")
 for i, name in ipairs(expected) do
@@ -69,6 +92,9 @@ ca_file:close()
 local token = "lua-fixture-token"
 local client = sdk.acyclic_remote_client_open(endpoint, #endpoint, token, #token, ca, #ca)
 assert(client ~= 0, "Rust remote client failed to connect")
+local unsupported_family = sdk.acyclic_remote_family_wire_call(client, "machines", 8, "unsupported", 11, nil, 0)
+assert(unsupported_family.status == 4, "Rust ABI did not fail closed for a family without an HTTP projection")
+sdk.acyclic_remote_wire_result_release(unsupported_family)
 local path, payload = "lua-remote-ffi", "rust-owned-remote"
 local appended = sdk.acyclic_remote_append(client, path, #path, payload, #payload)
 assert(appended.status == 0 and appended.end == 1, "remote append failed")
@@ -110,5 +136,5 @@ LuaJIT runtime license: MIT. See https://github.com/LuaJIT/LuaJIT/blob/v2.1/COPY
 EOF
 tar -czf "$output_root/acyclic_sdk_luajit_remote.tar.gz" -C "$output_root" "$library_name" consumer.lua LICENSE-RUST-APACHE-2.0.txt LICENSE-LUAJIT-MIT.txt
 cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote generated Stream operations plus append/read/follow-cancel","rust_operation_inventory":10,"rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz"}
+{"schema":"acyclic.lua.ffi-qualification.v1","language":"lua","status":"passed","scope":"remote-rust-c-abi","source_crate":"rust/crates/sdk-luajit-remote","abi_version":1,"library":"$library_name","library_sha256":"$sha256","consumer":"LuaJIT FFI Rust remote generated Stream operations plus append/read/follow-cancel","rust_family_inventory":8,"rust_product_operation_inventory":106,"rust_operation_inventory":10,"rust_json_dispatch":"Rust-owned HTTP route projections","rust_crate_license":"Apache-2.0","luajit_runtime":"LuaJIT 2.1","luajit_runtime_license":"MIT","archive":"acyclic_sdk_luajit_remote.tar.gz"}
 EOF

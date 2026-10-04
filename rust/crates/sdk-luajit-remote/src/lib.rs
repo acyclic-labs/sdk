@@ -17,10 +17,13 @@ use std::{
     time::Duration,
 };
 
+use acyclic_sdk_contract_wire::{FAMILY_VIEWS, family_view};
 use acyclic_stream::{AppendOutcome, StreamClient, StreamError, grpc};
 use bytes::Bytes;
 use futures::StreamExt as _;
 use prost::Message;
+use prost_reflect::{DescriptorPool, DynamicMessage};
+use reqwest::Url;
 use tokio::{runtime::Runtime, sync::Notify, task::JoinHandle};
 
 const ABI_VERSION: u32 = 1;
@@ -141,6 +144,9 @@ impl Drop for RemoteRuntime {
 struct RemoteClient {
     runtime: RemoteRuntime,
     provider: Arc<grpc::Client>,
+    http: reqwest::Client,
+    endpoint: Url,
+    token: String,
 }
 struct RemoteReader {
     _client: Arc<RemoteClient>,
@@ -353,6 +359,114 @@ fn provider_wire(error: impl ToString) -> AcyclicRemoteWireResult {
         message: message(error.to_string()),
     }
 }
+
+const MAX_HTTP_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+fn family_operation_names(family: &str) -> Vec<String> {
+    let Some(view) = family_view(family) else {
+        return Vec::new();
+    };
+    let Ok(pool) = DescriptorPool::decode(view.model.descriptor().as_slice()) else {
+        return Vec::new();
+    };
+    pool.services()
+        .filter(|service| service.parent_file().package() == view.package())
+        .flat_map(|service| {
+            service.methods().map(|method| {
+                let rpc = format!("{}/{}", service.full_name(), method.name(),);
+                view.routes()
+                    .iter()
+                    .find(|route| route.rpc.ends_with(&rpc))
+                    .map_or_else(
+                        || {
+                            let mut name = method.name().to_owned();
+                            if let Some(first) = name.get_mut(..1) {
+                                first.make_ascii_lowercase();
+                            }
+                            name
+                        },
+                        |route| route.operation_id.to_owned(),
+                    )
+            })
+        })
+        .collect()
+}
+
+async fn http_json_wire_call(
+    client: &RemoteClient,
+    family: &str,
+    operation: &str,
+    request: &[u8],
+) -> Result<Vec<u8>, String> {
+    let view =
+        family_view(family).ok_or_else(|| format!("unknown Rust contract family: {family}"))?;
+    let route = view
+        .routes()
+        .iter()
+        .find(|route| route.operation_id == operation || route.rpc == operation)
+        .ok_or_else(|| {
+            format!("operation {operation} has no Rust-owned HTTP projection for family {family}")
+        })?;
+    let pool = DescriptorPool::decode(view.model.descriptor().as_slice())
+        .map_err(|error| format!("decode {family} descriptor: {error}"))?;
+    let input_descriptor = pool
+        .get_message_by_name(route.request)
+        .ok_or_else(|| format!("missing request descriptor {}", route.request))?;
+    let output_descriptor = pool
+        .get_message_by_name(route.response)
+        .ok_or_else(|| format!("missing response descriptor {}", route.response))?;
+    let message = DynamicMessage::decode(input_descriptor, request)
+        .map_err(|error| format!("decode {family}/{operation} request: {error}"))?;
+    let body = serde_json::to_vec(&message)
+        .map_err(|error| format!("encode {family}/{operation} JSON request: {error}"))?;
+    let url = client
+        .endpoint
+        .join(route.path)
+        .map_err(|error| format!("resolve {family}/{operation} route: {error}"))?;
+    let mut response = client
+        .http
+        .post(url)
+        .bearer_auth(&client.token)
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .map_err(|error| format!("{family}/{operation} transport: {error}"))?;
+    let status = response.status();
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_HTTP_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "{family}/{operation} response exceeds bounded limit"
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("{family}/{operation} response: {error}"))?
+    {
+        if chunk.len() > MAX_HTTP_RESPONSE_BYTES.saturating_sub(bytes.len()) {
+            return Err(format!(
+                "{family}/{operation} response exceeds bounded limit"
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if !status.is_success() {
+        return Err(format!(
+            "{family}/{operation} service returned HTTP {}",
+            status.as_u16()
+        ));
+    }
+    let mut json = serde_json::Deserializer::from_slice(&bytes);
+    let response = DynamicMessage::deserialize(output_descriptor, &mut json)
+        .map_err(|error| format!("decode {family}/{operation} JSON response: {error}"))?;
+    json.end()
+        .map_err(|error| format!("decode {family}/{operation} JSON response: {error}"))?;
+    Ok(response.encode_to_vec())
+}
 fn spawn_reader(
     client: Arc<RemoteClient>,
     path: String,
@@ -408,6 +522,110 @@ fn spawn_reader(
         terminal: AtomicU32::new(NO_TERMINAL),
         wake,
         task: Mutex::new(Some(task)),
+    })
+}
+
+/// Returns the number of Rust-owned contract families in the operation graph.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_count() -> usize {
+    FAMILY_VIEWS.len()
+}
+
+/// Returns an owned name from the Rust-owned contract family inventory.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_name(index: usize) -> AcyclicRemoteBuffer {
+    FAMILY_VIEWS.get(index).map_or_else(empty_buffer, |family| {
+        owned_buffer(family.name.as_bytes().to_vec())
+    })
+}
+
+/// Returns the Rust-owned hosted operation count for one family.
+///
+/// Families without a Rust-owned HTTP projection return zero and remain
+/// explicitly unsupported by the generic remote ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_operation_count(
+    family_ptr: *const u8,
+    family_len: usize,
+) -> usize {
+    let Ok(family) = input_text(family_ptr, family_len) else {
+        return 0;
+    };
+    family_operation_names(family).len()
+}
+
+/// Returns an owned Rust operation ID for one family and route index.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_operation_name(
+    family_ptr: *const u8,
+    family_len: usize,
+    index: usize,
+) -> AcyclicRemoteBuffer {
+    let Ok(family) = input_text(family_ptr, family_len) else {
+        return empty_buffer();
+    };
+    family_operation_names(family)
+        .get(index)
+        .map_or_else(empty_buffer, |operation| {
+            owned_buffer(operation.as_bytes().to_vec())
+        })
+}
+
+/// Executes one Rust-owned hosted operation through its generated JSON
+/// projection. Request and response bytes stay protobuf-native at the ABI
+/// boundary; Rust performs JSON transcoding from the family descriptor.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_wire_call(
+    client: u64,
+    family_ptr: *const u8,
+    family_len: usize,
+    operation_ptr: *const u8,
+    operation_len: usize,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> AcyclicRemoteWireResult {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        if runtime_reentry() {
+            return invalid_wire("synchronous ABI call cannot run from a Tokio runtime");
+        }
+        let Some(client) = client_lookup(client) else {
+            return invalid_wire("client handle is invalid");
+        };
+        let family = match input_text(family_ptr, family_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_wire(error),
+        };
+        let operation = match input_text(operation_ptr, operation_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_wire(error),
+        };
+        let request = match input_bytes(request_ptr, request_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_wire(error),
+        };
+        match client
+            .runtime
+            .block_on(http_json_wire_call(&client, family, operation, request))
+        {
+            Ok(response) => AcyclicRemoteWireResult {
+                status: AcyclicRemoteStatus::Ok,
+                response: owned_buffer(response),
+                message: empty_buffer(),
+            },
+            Err(error) if error.contains("no Rust-owned HTTP projection") => {
+                AcyclicRemoteWireResult {
+                    status: AcyclicRemoteStatus::InvalidArgument,
+                    response: empty_buffer(),
+                    message: message(error),
+                }
+            }
+            Err(error) => provider_wire(error),
+        }
+    }));
+    result.unwrap_or_else(|_| AcyclicRemoteWireResult {
+        status: AcyclicRemoteStatus::Panic,
+        response: empty_buffer(),
+        message: message("panic contained at ABI boundary"),
     })
 }
 
@@ -579,8 +797,37 @@ pub extern "C" fn acyclic_remote_client_open(
             Ok(value) => value,
             Err(_) => return 0,
         };
+        let endpoint = match Url::parse(list[0]) {
+            Ok(endpoint) => endpoint,
+            Err(_) => return 0,
+        };
+        let loopback = matches!(
+            endpoint.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        );
+        if !(endpoint.scheme() == "https" || endpoint.scheme() == "http" && loopback)
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return 0;
+        }
         let runtime = match RemoteRuntime::new() {
             Ok(runtime) => runtime,
+            Err(_) => return 0,
+        };
+        let mut http_builder =
+            reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+        if !ca.is_empty() {
+            let certificate = match reqwest::Certificate::from_pem(ca) {
+                Ok(certificate) => certificate,
+                Err(_) => return 0,
+            };
+            http_builder = http_builder.add_root_certificate(certificate);
+        }
+        let http = match http_builder.build() {
+            Ok(http) => http,
             Err(_) => return 0,
         };
         let provider = match runtime.block_on(async {
@@ -596,6 +843,9 @@ pub extern "C" fn acyclic_remote_client_open(
         let client = Arc::new(RemoteClient {
             runtime,
             provider: Arc::new(provider),
+            http,
+            endpoint,
+            token: token.to_owned(),
         });
         let Some(id) = next_id() else { return 0 };
         if let Ok(mut all) = clients().lock() {
