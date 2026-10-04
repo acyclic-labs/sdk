@@ -1005,7 +1005,7 @@ impl ForkAtBatch {
 
     async fn publish_grandchild(
         &self,
-        storage: &DurableHarnessStorage,
+        parent_storage: &DurableHarnessStorage,
         admission: ModelBatchPublication,
         parent_authority: Authority,
         parent_issuer: AuthorityIssuer,
@@ -1014,10 +1014,10 @@ impl ForkAtBatch {
         inherited: &InheritedModelContext,
     ) -> Result<()> {
         assert!(matches!(
-            storage.verified_model_fork_boundary(&admission, self.limits).await,
+            parent_storage.verified_model_fork_boundary(&admission, self.limits).await,
             Err(Error::Conflict(message)) if message.contains("authoritative conversation")
         ));
-        let verified = storage
+        let verified = parent_storage
             .verified_inherited_model_fork_boundary(&admission, self.limits, inherited)
             .await?;
         let boundary = verified.boundary().clone();
@@ -1130,11 +1130,11 @@ impl ForkAtBatch {
             model_boundary: None,
         };
 
-        let verified_references = storage
+        let verified_references = parent_storage
             .verified_inherited_model_fork_boundary(&admission, self.limits, inherited)
             .await?;
         let mut request = request;
-        storage
+        parent_storage
             .attach_model_fork_references(&verified_references, &mut request)
             .await?;
 
@@ -1245,7 +1245,7 @@ impl ForkAtBatch {
             .files
             .clone();
         for file in &model_files {
-            assert_eq!(storage.read(file).await?, self.storage.read(file).await?);
+            assert_eq!(storage.read(file).await?, parent_storage.read(file).await?);
         }
         let ungranted_scope = grandchild_issuer.root_for_agent(
             grandchild_agent,
@@ -1335,7 +1335,8 @@ impl ForkAtBatch {
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
             result.get("text").and_then(Value::as_str),
-            Some("root request")
+            Some("root request"),
+            "grandchild inherited-file read returned {result}"
         );
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
