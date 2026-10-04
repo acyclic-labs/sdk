@@ -657,8 +657,10 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                             }
                             match capture {
                                 Capture::Captured(resource) => {
-                                    match &resource.revision {
-                                        ResourceRevision::Project { volume, .. } => Some(volume.clone()),
+                                    match &resource.source {
+                                        ResourceRevision::Project { volume, generation } => {
+                                            Some((volume.clone(), generation.clone()))
+                                        }
                                         _ => None,
                                     }
                                 }
@@ -667,13 +669,11 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         })
                 });
             let (source_project, source_generation) = match parent_project {
-                Some(source_project) => {
-                    let project_ref = workspace_ref(
-                        source_project.provider().clone(),
-                        &source_project.storage_name()?,
-                    )?;
-                    let project_head = self.host.resolve(&project_ref).await?;
-                    (source_project, project_head.generation)
+                Some((source_project, source_generation)) => (source_project, source_generation),
+                None if parent_session.parent.is_some() => {
+                    return Err(Error::Conflict(
+                        "recursive fork parent has no pinned project report".into(),
+                    ));
                 }
                 None => {
                     let project_ref = workspace_ref(

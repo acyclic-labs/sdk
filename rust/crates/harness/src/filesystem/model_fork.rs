@@ -38,7 +38,7 @@ fn collect_projected_file_refs(
     }
 }
 
-fn collect_tool_result_file_refs(
+fn collect_tool_content_file_refs(
     content: &crate::model::ModelContent,
     files: &mut Vec<crate::conversation::FileRef>,
 ) {
@@ -48,8 +48,13 @@ fn collect_tool_result_file_refs(
         crate::model::ModelContent::Text(_) => return,
     };
     for part in parts {
-        if let crate::model::ModelContentPart::ToolResult { value, .. } = part {
-            collect_projected_file_refs(value, files);
+        match part {
+            crate::model::ModelContentPart::ToolCall { arguments, .. }
+            | crate::model::ModelContentPart::ToolResult { value: arguments, .. } => {
+                collect_projected_file_refs(arguments, files);
+            }
+            crate::model::ModelContentPart::Text { .. }
+            | crate::model::ModelContentPart::File { .. } => {}
         }
     }
 }
@@ -143,7 +148,7 @@ where
                 }
             }
             let mut projected = Vec::new();
-            collect_tool_result_file_refs(&message.content, &mut projected);
+            collect_tool_content_file_refs(&message.content, &mut projected);
             for file in projected {
                 if unique.insert(file.read_capability()?) {
                     self.content_verifier.verify(&file).await?;
