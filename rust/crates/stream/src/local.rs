@@ -117,6 +117,22 @@ pub struct LocalStreamLimits {
     pub durability: LocalDurability,
 }
 
+/// One observed finite provider read.  This is diagnostic metadata from the
+/// native provider; it contains no record bodies.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalReadObservation {
+    /// Exact stream path requested.
+    pub path: String,
+    /// Inclusive first sequence requested.
+    pub from: u64,
+    /// Maximum number of records requested.
+    pub limit: u32,
+    /// Number of records delivered by the provider.
+    pub records: u32,
+    /// Total opaque record bytes delivered by the provider.
+    pub bytes: u64,
+}
+
 impl Default for LocalStreamLimits {
     fn default() -> Self {
         Self {
@@ -176,6 +192,7 @@ struct LocalInner {
     visibility: RwLock<()>,
     changed: watch::Sender<u64>,
     poisoned: AtomicBool,
+    read_observations: Arc<Mutex<Vec<LocalReadObservation>>>,
 }
 
 #[derive(Clone)]
@@ -441,6 +458,7 @@ impl LocalStream {
         store_clock.start();
         commit_clock.unpin();
         let (changed, _) = watch::channel(0_u64);
+        let read_observations = Arc::new(Mutex::new(Vec::new()));
         Ok(Self {
             inner: Arc::new(LocalInner {
                 provider,
@@ -453,6 +471,7 @@ impl LocalStream {
                 visibility: RwLock::new(()),
                 changed,
                 poisoned: AtomicBool::new(false),
+                read_observations,
             }),
         })
     }
@@ -463,6 +482,18 @@ impl LocalStream {
         } else {
             Ok(())
         }
+    }
+
+    /// Removes and returns provider read observations collected since the
+    /// previous call.  The observations describe ranges and delivered byte
+    /// counts only, so diagnostics cannot expose record content.
+    pub fn take_read_observations(&self) -> Vec<LocalReadObservation> {
+        let mut observations = self
+            .inner
+            .read_observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *observations)
     }
 
     /// Encodes `command`'s frame at the current store time, which it pins
@@ -593,7 +624,45 @@ impl LocalStream {
         self.check_available()?;
         let _visibility = self.inner.visibility.read().await;
         self.check_available()?;
-        self.inner.provider.read(request).await
+        let observation_index = {
+            let mut observations = self
+                .inner
+                .read_observations
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let index = observations.len();
+            observations.push(LocalReadObservation {
+                path: request.path.as_str().to_owned(),
+                from: request.from,
+                limit: request.limit,
+                records: 0,
+                bytes: 0,
+            });
+            index
+        };
+        let observations = Arc::clone(&self.inner.read_observations);
+        let stream = self.inner.provider.read(request).await?;
+        Ok(stream.map(move |result| {
+            if let Ok(record) = &result {
+                let mut entries = observations
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                if let Some(observation) = entries.get_mut(observation_index) {
+                    observation.records = observation.records.saturating_add(1);
+                    observation.bytes = observation
+                        .bytes
+                        .saturating_add(u64::try_from(record.value.len()).unwrap_or(u64::MAX));
+                }
+            }
+            result
+        }).boxed())
+    }
+}
+
+impl crate::StreamClient<LocalStream> {
+    /// Removes native provider read observations from this client.
+    pub fn take_read_observations(&self) -> Vec<LocalReadObservation> {
+        self.provider.take_read_observations()
     }
 }
 
@@ -1714,6 +1783,44 @@ mod tests {
             reopened.append(changed).await,
             Err(StreamError::IdempotencyMismatch)
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_observations_report_native_ranges_and_bytes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let path = StreamPath::new("observed/native")?;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"one"), Bytes::from_static(b"two")],
+                if_tail: Some(0),
+                idempotency_key: None,
+            })
+            .await?;
+        let values = provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 1,
+                limit: 1,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await;
+        assert_eq!(values.into_iter().collect::<Result<Vec<_>, _>>()?.len(), 1);
+        assert_eq!(
+            provider.take_read_observations(),
+            vec![LocalReadObservation {
+                path: "observed/native".into(),
+                from: 1,
+                limit: 1,
+                records: 1,
+                bytes: 3,
+            }]
+        );
+        assert!(provider.take_read_observations().is_empty());
         Ok(())
     }
 

@@ -195,7 +195,7 @@ impl ModelProvider for DeterministicProvider {
                     let swarm = weak
                         .upgrade()
                         .ok_or_else(|| Error::Storage("swarm dropped during dispatch".into()))?;
-                    let sessions = swarm.sessions().await;
+                    let sessions = swarm.sessions().await?;
                     for operation in [expected_a, expected_b] {
                         let task = acyclic_harness::TaskId::from_bytes(operation.into_bytes());
                         let session = sessions
@@ -444,7 +444,7 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         );
     }
 
-    let sessions = swarm.sessions().await;
+    let sessions = swarm.sessions().await?;
     assert_eq!(sessions.len(), 4);
     for operation in [child_a, child_b, grandchild] {
         let task = acyclic_harness::TaskId::from_bytes(operation.into_bytes());
@@ -463,6 +463,10 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         .await;
     assert!(sibling_error.is_err());
     assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
+
+    // Drain reads produced by the initial run so the reopen receipt covers
+    // only cold startup and explicit lazy projections.
+    let _ = host.take_read_observations();
 
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
@@ -486,6 +490,49 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
     )
     .await?;
     provider.bind_swarm(&reopened);
+    let cold_open_reads = reopened.take_provider_read_observations();
+    assert!(!cold_open_reads.is_empty());
+    assert!(cold_open_reads
+        .iter()
+        .all(|observation| !observation.path.contains("swarm/forks")
+            && !observation.path.contains("turns/")
+            && !observation.path.contains("diff")));
+    assert!(cold_open_reads
+        .iter()
+        .all(|observation| observation.records <= observation.limit));
+    let cold_open_files = reopened.take_filesystem_read_observations();
+    assert!(cold_open_files
+        .iter()
+        .all(|observation| !observation.path.contains("swarm/forks")
+            && !observation.path.contains("turns/")
+            && !observation.path.contains("diff")));
+    let dispatches_before_listing = provider.dispatches.load(Ordering::SeqCst);
+    let listed = reopened.sessions().await?;
+    assert_eq!(listed.len(), 4);
+    assert_eq!(
+        provider.dispatches.load(Ordering::SeqCst),
+        dispatches_before_listing
+    );
+    let listing_reads = reopened.take_provider_read_observations();
+    assert!(!listing_reads.is_empty());
+    assert!(listing_reads
+        .iter()
+        .all(|observation| observation.path == "swarm/records"));
+    let listing_files = reopened.take_filesystem_read_observations();
+    assert!(listing_files.is_empty());
+    let root_task = reopened.root_task().await?;
+    let messages = reopened.read_messages(root_task, 0, 4).await?;
+    assert!(!messages.is_empty());
+    let first_body = reopened
+        .read_message_content(root_task, &messages[0])
+        .await?;
+    assert!(!first_body.is_empty());
+    let message_reads = reopened.take_provider_read_observations();
+    assert!(message_reads.iter().any(|observation| observation.path != "swarm/records"));
+    let message_files = reopened.take_filesystem_read_observations();
+    assert!(message_files
+        .iter()
+        .any(|observation| observation.path == format!("/{}", messages[0].content.path())));
     assert_eq!(
         reopened
             .run_root(root_operation, "start recursive local swarm")

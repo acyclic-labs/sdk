@@ -137,6 +137,27 @@ impl MemoryStore {
         bytes: &[u8],
         update_path: bool,
     ) -> Result<FileRef> {
+        self.stage_reference_impl(reference, bytes, update_path, false)
+    }
+
+    /// Retains a trusted host-owned immutable reference without making the
+    /// reserved path available to ordinary model content staging.
+    pub(crate) fn stage_internal_reference(
+        &mut self,
+        reference: &FileRef,
+        bytes: &[u8],
+        update_path: bool,
+    ) -> Result<FileRef> {
+        self.stage_reference_impl(reference, bytes, update_path, true)
+    }
+
+    fn stage_reference_impl(
+        &mut self,
+        reference: &FileRef,
+        bytes: &[u8],
+        update_path: bool,
+        allow_internal: bool,
+    ) -> Result<FileRef> {
         reference.validate()?;
         if reference.volume() != &self.volume {
             return Err(Error::Unauthorized("file belongs to another volume".into()));
@@ -146,7 +167,7 @@ impl MemoryStore {
         if bytes.len() as u64 > self.maximum_file_bytes {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
-        if is_internal_path(path) {
+        if is_internal_path(path) && !allow_internal {
             return Err(Error::Invalid("internal storage paths are reserved".into()));
         }
         if path.len() as u64 > self.maximum_path_bytes {

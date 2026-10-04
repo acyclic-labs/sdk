@@ -3,6 +3,7 @@
 use crate::filesystem::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, InteractionOperatorAuthorizer,
+    InternalContentClass,
 };
 use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
@@ -1486,6 +1487,44 @@ where
             .await
     }
 
+    /// Stages an authenticated host-owned artifact under one reserved class.
+    /// The returned immutable reference uses the same provider publisher and
+    /// in-memory replay index as ordinary content.
+    pub(crate) async fn stage_internal(
+        &self,
+        operation_id: OperationId,
+        path: &str,
+        bytes: &[u8],
+        media_type: &str,
+        display_name: &str,
+        class: InternalContentClass,
+    ) -> Result<FileRef> {
+        let path_digest = blake3::hash(path.as_bytes());
+        let retry = IdempotencyKey::new(format!(
+            "local-internal-upload:{operation_id}:{}",
+            path_digest.to_hex()
+        ))?;
+        let persisted = self
+            .host
+            .put_internal_content(
+                &self.volume,
+                &self.write,
+                path,
+                bytes,
+                media_type,
+                display_name,
+                self.maximum_file_bytes,
+                &retry,
+                class,
+            )
+            .await?;
+        self.memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .stage_internal_reference(&persisted, bytes, true)?;
+        Ok(persisted)
+    }
+
     /// Reads a pinned owner-private version after verifying its descriptor.
     pub async fn read(&self, file: &FileRef) -> Result<Vec<u8>> {
         if let Ok(bytes) = self
@@ -1497,6 +1536,37 @@ where
             return Ok(bytes);
         }
         self.content_verifier.read(file).await
+    }
+
+    /// Reads a host-owned immutable artifact through its authenticated
+    /// internal class. Internal references never enter model content
+    /// admission, but recovery still uses the same pinned FileRef and native
+    /// provider read path after the disposable in-memory store is cold.
+    pub(crate) async fn read_internal(
+        &self,
+        file: &FileRef,
+        class: InternalContentClass,
+    ) -> Result<Vec<u8>> {
+        if let Ok(bytes) = self
+            .memory_store
+            .lock()
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
+            .read(file)
+        {
+            return Ok(bytes);
+        }
+        let grant = self.content_verifier.owner_read_grant(&self.volume)?;
+        Ok(self
+            .host
+            .read_internal_content(
+                file,
+                &self.volume,
+                &grant,
+                class,
+                self.maximum_file_bytes,
+            )
+            .await?
+            .to_vec())
     }
 
     /// Returns the provider-bound verifier for composing host adapters.
