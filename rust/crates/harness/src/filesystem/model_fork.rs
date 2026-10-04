@@ -69,6 +69,12 @@ impl<P> VerifiedModelForkBoundary<P> {
         &self.boundary
     }
 
+    /// Borrow the already verified parent aggregate without reopening or
+    /// reconstructing its authoritative history.
+    pub(crate) fn parent(&self) -> &StreamAggregate<P> {
+        &self.parent
+    }
+
     /// Consume the verification result without regenerating the prefix.
     pub fn into_parts(self) -> (CompletedModelBoundary, StreamAggregate<P>) {
         (self.boundary, self.parent)
@@ -102,7 +108,7 @@ where
     /// existing typed parts. This keeps the immutable model evidence owned by
     /// Harness while allowing Filesystem fork preparation to retain its
     /// established aggregate flow.
-    pub async fn attach_model_fork_references_from_parts(
+    pub(crate) async fn attach_model_fork_references_from_parts(
         &self,
         boundary: &CompletedModelBoundary,
         publication: &ModelBatchPublication,

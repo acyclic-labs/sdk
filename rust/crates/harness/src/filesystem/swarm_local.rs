@@ -15,7 +15,9 @@ use crate::{
     AgentId, Capabilities, Error, InteractionId, OperationId, Result, TaskId,
     batch_publication::ModelBatchPublication,
     communication::{DurableCommunication, MessageRequest, MessageTarget},
-    conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
+    conversation::{
+        ConversationMessage, FileRef, Limits, MessageKind, VolumeClass, VolumeOwner, VolumeRef,
+    },
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
     executor::TurnOutput,
     fork::{
@@ -560,7 +562,8 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                         .await?
                 }
             };
-            let (boundary, parent) = verified.into_parts();
+            let boundary = verified.boundary().clone();
+            let parent = verified.parent();
             let parent_revision = parent.reducer().revision();
             if parent.reducer().authority() != storage.conversation()
                 || parent_revision == 0
@@ -741,12 +744,7 @@ impl LocalModelForkResolver for LocalFilesystemForkResolver {
                 model_boundary: None,
             };
             storage
-                .attach_model_fork_references_from_parts(
-                    &boundary,
-                    &publication,
-                    &parent,
-                    &mut request,
-                )
+                .attach_model_fork_references(&verified, &mut request)
                 .await?;
             let parent_reader = Arc::new(FilesystemContentVerifier::new(
                 self.host.clone(),
@@ -2972,6 +2970,9 @@ impl PersistentLocalSwarm {
                     "local swarm task already completed under another operation".into(),
                 ));
             }
+            if session.parent.is_none() {
+                self.verify_root_prompt(task, prompt).await?;
+            }
             return self.outcome(task).await;
         }
         let mut session = session;
@@ -3045,6 +3046,29 @@ impl PersistentLocalSwarm {
         Ok(output)
     }
 
+    async fn verify_root_prompt(&self, task: TaskId, prompt: &str) -> Result<()> {
+        let harness = self
+            .sessions
+            .lock()
+            .await
+            .get(&task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm root session {task}")))?;
+        let state = harness.conversation_state(self.config.limits).await?;
+        let user = state
+            .messages
+            .iter()
+            .find(|message| message.kind == MessageKind::User)
+            .ok_or_else(|| Error::Conflict("completed root session has no prompt receipt".into()))?;
+        let bytes = harness.storage().read(&user.content).await?;
+        if bytes != prompt.as_bytes() {
+            return Err(Error::Conflict(
+                "local root retry must use its retained prompt".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Rejects the legacy boundary-only fork entry point.
     ///
     /// Production model dispatch must use
@@ -3078,7 +3102,7 @@ impl PersistentLocalSwarm {
     /// typed fork seed. The child harness is created only through
     /// `HarnessStorage::from_published_fork`, so its conversation binding and
     /// inherited reference grants come from the committed seed.
-    pub async fn activate_published_child(
+    pub(crate) async fn activate_published_child(
         &self,
         request: LocalForkRequest,
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -3597,7 +3621,7 @@ impl PersistentLocalSwarm {
 
     /// Publishes a prepared report through the typed parent/child aggregates,
     /// then activates the child from the resulting immutable seed.
-    pub async fn publish_and_activate_child(
+    pub(crate) async fn publish_and_activate_child(
         &self,
         request: LocalForkRequest,
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -3614,7 +3638,7 @@ impl PersistentLocalSwarm {
 
     /// Persists the exact model publication and recursive declaration before
     /// publishing the typed fork, then activates from the resulting seed.
-    pub async fn publish_and_activate_child_with_publication(
+    pub(crate) async fn publish_and_activate_child_with_publication(
         &self,
         request: LocalForkRequest,
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
@@ -4188,7 +4212,7 @@ impl PersistentLocalSwarm {
 
     /// Replays a typed child activation after interruption, preserving the
     /// exact request and published seed recorded in the swarm registry.
-    pub async fn retry_published_child(
+    pub(crate) async fn retry_published_child(
         &self,
         task: TaskId,
         host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,

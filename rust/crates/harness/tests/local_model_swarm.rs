@@ -17,7 +17,7 @@ use acyclic_harness::{
         PersistentLocalSwarm, WorkspaceMutation, workspace_ref,
     },
     model::{
-        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage, ModelProvider,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelProvider,
         ModelRequest, ModelRole,
     },
     resources::ProviderRef,
@@ -93,6 +93,7 @@ struct DeterministicProvider {
     child_read_verified: AtomicBool,
     grandchild_inherited_read: AtomicBool,
     sibling_fork_sent: AtomicBool,
+    active_sibling_attempt: AtomicBool,
     dispatches: AtomicUsize,
     swarm: Mutex<Option<Weak<PersistentLocalSwarm>>>,
     child_a: OperationId,
@@ -110,6 +111,7 @@ impl DeterministicProvider {
             child_read_verified: AtomicBool::new(false),
             grandchild_inherited_read: AtomicBool::new(false),
             sibling_fork_sent: AtomicBool::new(false),
+            active_sibling_attempt: AtomicBool::new(false),
             dispatches: AtomicUsize::new(0),
             swarm: Mutex::new(None),
             child_a,
@@ -120,6 +122,10 @@ impl DeterministicProvider {
 
     fn bind_swarm(&self, swarm: &Arc<PersistentLocalSwarm>) {
         *self.swarm.lock().expect("swarm binding lock") = Some(Arc::downgrade(swarm));
+    }
+
+    fn enable_active_sibling_attempt(&self) {
+        self.active_sibling_attempt.store(true, Ordering::SeqCst);
     }
 
     fn serialized_requests(&self) -> Vec<Vec<u8>> {
@@ -164,6 +170,9 @@ impl ModelProvider for DeterministicProvider {
         let is_child_b = message_contains(&request, "child task: child-b");
         let is_grandchild = message_contains(&request, "child task: grandchild");
         let sibling_fork_attempt = is_child_a && message_contains(&request, "attempt sibling fork");
+        let active_sibling_attempt = is_child_a
+            && self.active_sibling_attempt.load(Ordering::SeqCst)
+            && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
 
         if (is_child_a || is_child_b) && dispatch > 0 {
@@ -178,7 +187,7 @@ impl ModelProvider for DeterministicProvider {
             let first_child_request = !self.grandchild_inherited_read.load(Ordering::SeqCst)
                 && !self.child_read_verified.load(Ordering::SeqCst);
             let barrier = async move {
-                if first_child_request {
+                if first_child_request && !self.active_sibling_attempt.load(Ordering::SeqCst) {
                     let swarm = weak
                         .upgrade()
                         .ok_or_else(|| Error::Storage("swarm dropped during dispatch".into()))?;
@@ -202,7 +211,9 @@ impl ModelProvider for DeterministicProvider {
                 })
             };
             let events =
-                if sibling_fork_attempt && !self.sibling_fork_sent.swap(true, Ordering::SeqCst) {
+                if (sibling_fork_attempt || active_sibling_attempt)
+                    && !self.sibling_fork_sent.swap(true, Ordering::SeqCst)
+                {
                     vec![
                         ModelEvent::ToolCall {
                             call_id: "fork-sibling".into(),
@@ -449,7 +460,6 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         .run(child_a_task, id(0xA2), "attempt sibling fork")
         .await;
     assert!(sibling_error.is_err());
-    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
 
     let dispatches_before_restart = provider.dispatches.load(Ordering::SeqCst);
     let requests_before_restart = provider.serialized_requests();
@@ -497,5 +507,44 @@ async fn local_model_selected_swarm_is_recursive_durable_and_replays_without_dis
         provider.dispatches.load(Ordering::SeqCst),
         dispatches_before_restart
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_active_child_rejects_sibling_fork_before_integration() -> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let (host, stream, project) = local_project(directory.path()).await?;
+    let stream_provider = ProviderRef::new("local", "stream", "2")?;
+    let child_a = id(0xA1);
+    let child_b = id(0xB1);
+    let grandchild = id(0xC1);
+    let provider = DeterministicProvider::new(child_a, child_b, grandchild);
+    provider.enable_active_sibling_attempt();
+    let model = Model::new("mock", "local-model-swarm", "1", json!({}))?;
+    let resolver = Arc::new(
+        LocalFilesystemForkResolver::new(
+            host,
+            stream,
+            stream_provider,
+            project,
+        )?
+        .with_host_secret([0x5A; 32])?,
+    );
+    let bindings = LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver);
+    let swarm = PersistentLocalSwarm::open_shared_with_model_and_bindings(
+        directory.path(),
+        model,
+        provider.clone(),
+        Limits::default(),
+        bindings,
+    )
+    .await?;
+    provider.bind_swarm(&swarm);
+
+    let result = swarm
+        .run_root(id(0x11), "start active sibling rejection")
+        .await;
+    assert!(result.is_err());
+    assert!(provider.sibling_fork_sent.load(Ordering::SeqCst));
     Ok(())
 }

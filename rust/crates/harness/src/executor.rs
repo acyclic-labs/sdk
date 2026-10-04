@@ -793,7 +793,7 @@ impl StockExecutor {
             let Some(mut continuation) = self
                 .provider
                 .reconcile_admitted(
-                    prepared.clone(),
+                    prepared.request().clone(),
                     ModelAttempt {
                         operation_id: input.operation_id,
                         step,
