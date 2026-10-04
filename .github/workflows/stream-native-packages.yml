@@ -365,6 +365,15 @@ jobs:
             --archive "$archive" \
             --output "$RUNNER_TEMP/qualification/typescript-native-wasm.json"
 
+      - name: Qualify Rust-selected remote defaults and bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/qualification"
+          node scripts/qualify-typescript-remote-defaults.mjs \
+            --packages-root "$RUNNER_TEMP/rust-typescript/typescript/packages" \
+            --output "$RUNNER_TEMP/qualification/typescript-remote-defaults.json"
+
       - name: Upload TypeScript native and WASM receipt
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
