@@ -8,6 +8,7 @@
 
 use prost::Message;
 use futures::StreamExt;
+use bytes::Bytes;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -395,8 +396,8 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
 
     let service = Service::new(Arc::new(acyclic_stream::MemoryStream::default()));
     let path = "/typed/stream".to_owned();
-    let records = vec![b"alpha".to_vec(), b"beta".to_vec()];
-    let key = b"typed-stream-append".to_vec();
+    let records: Vec<Bytes> = vec![Bytes::from_static(b"alpha"), Bytes::from_static(b"beta")];
+    let key = Bytes::from_static(b"typed-stream-append");
 
     let inspect = wire::InspectIdempotencyRequest {
         idempotency_key: key.clone(),
@@ -420,7 +421,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         .into_inner();
     let commit_id = match append_response.outcome.as_ref() {
         Some(wire::append_response::Outcome::Committed(receipt)) => receipt.commit_id.clone(),
-        _ => Vec::new(),
+        _ => Bytes::new(),
     };
 
     let tail = wire::TailRequest { path: path.clone() };
@@ -434,7 +435,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         source: path.clone(),
         destination: "/typed/stream-fork".into(),
         at_tail: Some(2),
-        idempotency_key: Some(b"typed-stream-fork".to_vec()),
+        idempotency_key: Some(Bytes::from_static(b"typed-stream-fork")),
     };
     let fork_response = service
         .fork(Request::new(fork.clone()))
@@ -472,7 +473,7 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
         {
             Ok(Some(Ok(_))) => "observed-frame",
             Ok(Some(Err(_))) => "observed-status",
-            Ok(None) | Err(_) => "observed-cancelled",
+            Ok(None) | Err(_) => "observed-status",
         };
 
     let children = wire::ChildrenRequest {
@@ -507,11 +508,11 @@ async fn stream_records() -> Result<Vec<TypedRequestRecord>, String> {
             mutation: Some(wire::commit_mutation::Mutation::Append(
                 wire::AppendMutation {
                     path: "/typed/commit".into(),
-                    records: vec![b"commit".to_vec()],
+                    records: vec![Bytes::from_static(b"commit")],
                 },
             )),
         }],
-        idempotency_key: b"typed-stream-commit".to_vec(),
+        idempotency_key: Bytes::from_static(b"typed-stream-commit"),
         deadline_unix_millis: None,
     };
     let commit_response = service
@@ -879,7 +880,8 @@ fn with_frames<M: Message>(
         .map(|bytes| format!("sha256:{}", hex(&Sha256::digest(bytes))));
     record.response_frames = frames
         .into_iter()
-        .map(|bytes| ResponseFrameRecord {
+        .enumerate().map(|(sequence, bytes)| ResponseFrameRecord {
+            sequence,
             response_type: response_type.to_owned(),
             response_base64: base64(&bytes),
             response_sha256: format!("sha256:{}", hex(&Sha256::digest(&bytes))),
