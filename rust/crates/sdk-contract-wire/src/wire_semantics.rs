@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::collections::BTreeMap;
 use std::fmt;
 
+use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage, FieldDescriptor, MapKey, MessageDescriptor, ReflectMessage, Value};
 
 use crate::family_registry::family_view;
@@ -97,9 +98,71 @@ pub fn compare_family_rpc_message(
 ) -> Result<(), RpcSemanticError> {
     let view = family_view(family)
         .ok_or_else(|| RpcSemanticError::UnknownFamily(family.to_owned()))?;
-    let pool = DescriptorPool::decode(view.model.descriptor().as_slice())
+    // Inference's public model descriptor is intentionally a compact target
+    // file. Its Rust-owned option closure retains the validation extension
+    // definitions and their dependency descriptors; use that closure here so
+    // semantic verification never resolves a custom option through a fake
+    // placeholder file.
+    let model_descriptor = if family == "inference" {
+        crate::inference_descriptor_with_options()
+    } else {
+        view.model.descriptor()
+    };
+    let mut descriptor_set = prost_types::FileDescriptorSet::decode(model_descriptor.as_slice())
+        .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))?;
+    if descriptor_set.file.iter().any(|file| {
+        file.dependency
+            .iter()
+            .any(|dependency| dependency == "google/protobuf/timestamp.proto")
+    }) && !descriptor_set.file.iter().any(|file| {
+        file.name.as_deref() == Some("google/protobuf/timestamp.proto")
+    }) {
+        descriptor_set.file.push(timestamp_descriptor());
+    }
+    if descriptor_set.file.iter().any(|file| {
+        file.dependency
+            .iter()
+            .any(|dependency| dependency == "validation/v1/options.proto")
+    }) && !descriptor_set.file.iter().any(|file| {
+        file.name.as_deref() == Some("validation/v1/options.proto")
+    }) {
+        return Err(RpcSemanticError::UnknownFamily(
+            format!("{family}: Rust-owned validation option descriptor closure is incomplete"),
+        ));
+    }
+    let descriptor_bytes = descriptor_set.encode_to_vec();
+    let pool = DescriptorPool::decode(descriptor_bytes.as_slice())
         .map_err(|error| RpcSemanticError::UnknownFamily(format!("{family}: descriptor decode failed: {error}")))?;
     compare_rpc_message(&pool, full_rpc, direction, expected, observed)
+}
+
+fn timestamp_descriptor() -> prost_types::FileDescriptorProto {
+    prost_types::FileDescriptorProto {
+        name: Some("google/protobuf/timestamp.proto".to_owned()),
+        package: Some("google.protobuf".to_owned()),
+        syntax: Some("proto3".to_owned()),
+        message_type: vec![prost_types::DescriptorProto {
+            name: Some("Timestamp".to_owned()),
+            field: vec![
+                prost_types::FieldDescriptorProto {
+                    name: Some("seconds".to_owned()),
+                    number: Some(1),
+                    label: Some(prost_types::field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(prost_types::field_descriptor_proto::Type::Int64 as i32),
+                    ..Default::default()
+                },
+                prost_types::FieldDescriptorProto {
+                    name: Some("nanos".to_owned()),
+                    number: Some(2),
+                    label: Some(prost_types::field_descriptor_proto::Label::Optional as i32),
+                    r#type: Some(prost_types::field_descriptor_proto::Type::Int32 as i32),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    }
 }
 
 pub fn compare_rpc_message_with_options(
@@ -497,6 +560,77 @@ mod tests {
         )
         .expect_err("receipt cannot select a separately authored family");
         assert!(matches!(unknown, RpcSemanticError::UnknownFamily(_)));
+    }
+
+    #[test]
+    fn inference_semantic_pool_retains_rust_owned_option_closure() {
+        let bytes = crate::inference_descriptor_with_options();
+        let descriptor_set = FileDescriptorSet::decode(bytes.as_slice())
+            .expect("Rust-owned Inference descriptor closure decodes");
+        let options = descriptor_set
+            .file
+            .iter()
+            .find(|file| file.name.as_deref() == Some("validation/v1/options.proto"))
+            .expect("validation option descriptor is included in the closure");
+        assert!(!options.extension.is_empty(), "validation extension definitions are retained");
+        let pool = DescriptorPool::decode(bytes.as_slice())
+            .expect("Rust-owned Inference descriptor closure resolves");
+        assert!(pool
+            .get_service_by_name("inference.customer.v1.RunsService")
+            .is_some());
+    }
+
+    #[test]
+    fn every_rust_registry_rpc_binds_input_and_output_descriptors() {
+        let family_views = crate::family_registry::FAMILY_VIEWS;
+        assert_eq!(family_views.len(), 8, "all Rust-owned families are registered");
+        let mut total_methods = 0;
+        for family in family_views {
+            let descriptor = family.model.descriptor();
+            let descriptor_set = FileDescriptorSet::decode(descriptor.as_slice())
+                .unwrap_or_else(|error| panic!("{} descriptor set decodes: {error}", family.name));
+            let mut family_methods = 0;
+            for file in descriptor_set.file {
+                let package = file.package.as_deref().unwrap_or_default();
+                for service in file.service {
+                    let service_name = if package.is_empty() {
+                        service.name.clone().unwrap_or_default()
+                    } else {
+                        format!("{package}.{}", service.name.as_deref().unwrap_or_default())
+                    };
+                    for method in service.method {
+                        let rpc = format!(
+                            "{service_name}/{}",
+                            method.name.as_deref().unwrap_or_default()
+                        );
+                        compare_family_rpc_message(
+                            family.name,
+                            &rpc,
+                            RpcDirection::Request,
+                            &[],
+                            &[],
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{} request {rpc} binds: {error}", family.name)
+                        });
+                        compare_family_rpc_message(
+                            family.name,
+                            &rpc,
+                            RpcDirection::Response,
+                            &[],
+                            &[],
+                        )
+                        .unwrap_or_else(|error| {
+                            panic!("{} response {rpc} binds: {error}", family.name)
+                        });
+                        family_methods += 1;
+                    }
+                }
+            }
+            assert!(family_methods > 0, "{0} has no descriptor-bound RPCs", family.name);
+            total_methods += family_methods;
+        }
+        assert_eq!(total_methods, 106, "registry descriptor RPC inventory remains complete");
     }
 
     #[test]
