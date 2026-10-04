@@ -472,39 +472,41 @@ impl Runtime {
         let task = task_from_value(params, "session_id")?;
         let (after, limit) = page_bounds_object(params)?;
         let after_sequence = parse_cursor(after, "message cursor")?;
+        let include_body = params
+            .get("include_body")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let messages = self
             .swarm
-            .read_messages(task, after_sequence, limit)
+            .read_inbox(task, after_sequence, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let generation = self
-            .swarm
-            .list_files(task, "", None, None, 1)
-            .await
-            .map_err(DispatchError::from_harness)?
-            .generation;
         let mut items = Vec::with_capacity(messages.len());
         for message in messages {
-            let body = self
-                .swarm
-                .read_file(task, message.content.path(), Some(&generation))
-                .await
-                .map_err(DispatchError::from_harness)
-                .and_then(|(_, bytes)| {
-                    String::from_utf8(bytes).map_err(|_| DispatchError {
-                        code: "transport",
-                        message: "message content is not UTF-8".into(),
-                    })
-                })?;
-            items.push(json!({
-                "id": message.id.to_string(),
+            let mut item = json!({
+                "id": message.message_id,
                 "sequence": message.sequence.to_string(),
                 "session_id": task.to_string(),
-                "sender_id": task.to_string(),
-                "recipient_id": task.to_string(),
-                "body": body,
-                "delivered_at": Value::Null,
-            }));
+                "sender_id": message.sender.to_string(),
+                "recipient_id": message.task_id.to_string(),
+                "content": message.payload.clone(),
+                "delivered_at": message.delivered_at_epoch_ms,
+            });
+            if include_body {
+                let body = self
+                    .swarm
+                    .read_message_body(task, &message.payload)
+                    .await
+                    .map_err(DispatchError::from_harness)
+                    .and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|_| DispatchError {
+                            code: "transport",
+                            message: "message content is not UTF-8".into(),
+                        })
+                    })?;
+                item["body"] = Value::String(body);
+            }
+            items.push(item);
         }
         let next = (items.len() == limit)
             .then(|| messages_last_sequence(&items))

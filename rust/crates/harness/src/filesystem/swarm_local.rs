@@ -8,7 +8,8 @@
 
 use super::{
     FilesystemContentVerifier, FilesystemForkPreparer, FilesystemHost,
-    InteractionApprovalAuthorization, InteractionOperatorAuthorizer,
+    FilesystemSchedulerPayloadStore, InteractionApprovalAuthorization,
+    InteractionOperatorAuthorizer,
     LocalHarnessTools, PersistentLocalHarness, workspace_ref,
 };
 use crate::{
@@ -17,6 +18,8 @@ use crate::{
     communication::{DurableCommunication, MessageRequest, MessageTarget},
     conversation::{ConversationMessage, FileRef, Limits, VolumeClass, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, EffectGuarantee, SchemaRegistry, Scope},
+    distributed::DistributedCoordinator,
+    durable_host::CoordinatorTaskHost,
     executor::TurnOutput,
     fork::{
         Capture, ForkPreparation, ForkReport, ForkRequest, ForkSeed, ForkSelection,
@@ -27,15 +30,21 @@ use crate::{
     model_input::{CompletedModelBoundary, InheritedModelContext},
     registry::ComponentIdentity,
     resources::{GenerationRef, ProviderRef, StreamRef},
-    runtime::TaskRunLimits,
+    runtime::{DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskRegistry, TaskRunLimits},
     store::StreamAggregate,
     tool::{
         ModelToolContext, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection,
         ToolRegistry, ToolResult,
     },
+    workflow::{
+        MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
+    },
 };
 use acyclic_fs::{LocalAuthorityBackend, LocalFs, LocalObjectBackend, LocalOptions};
-use acyclic_stream::{AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError};
+use acyclic_stream::{
+    AppendOutcome, LocalStream, LocalStreamLimits, StreamClient, StreamError,
+    SystemUnixMillisClock,
+};
 use futures::StreamExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -116,6 +125,187 @@ async fn shared_local_filesystem(
     Ok(host)
 }
 
+struct LocalCommunicationMachine {
+    identity: MachineIdentity,
+    schema: Value,
+}
+
+impl LocalCommunicationMachine {
+    fn new() -> Self {
+        Self {
+            identity: MachineIdentity {
+                name: "graphcoder.local.communication".into(),
+                version: "1".into(),
+                digest: [0x47; 32],
+            },
+            schema: json!({"type": "object"}),
+        }
+    }
+}
+
+impl ResumableMachine for LocalCommunicationMachine {
+    fn identity(&self) -> &MachineIdentity {
+        &self.identity
+    }
+    fn state_schema(&self) -> &Value {
+        &self.schema
+    }
+    fn initialize(&self, _input: &Value) -> Result<Value> {
+        Ok(json!({}))
+    }
+    fn transition(&self, state: &Value, _input: &Value) -> Result<MachineTransition> {
+        Ok(MachineTransition {
+            state: state.clone(),
+            commands: Vec::new(),
+            status: MachineStatus::Suspended,
+        })
+    }
+}
+
+trait LocalCommunicationAdmitter: Send + Sync {
+    fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>>;
+}
+
+struct LocalCommunicationComposition {
+    host: Arc<CoordinatorTaskHost<LocalStream>>,
+    task: ComponentIdentity,
+    machine: MachineIdentity,
+    schema: Value,
+    grants: Capabilities,
+    limits: Limits,
+}
+
+impl LocalCommunicationAdmitter for LocalCommunicationComposition {
+    fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let operation_id = OperationId::from_bytes(task.into_bytes());
+            let admission = TaskAdmissionRecord {
+                operation_id,
+                task: self.task.clone(),
+                machine: self.machine.clone(),
+                input: json!({}),
+                input_schema: self.schema.clone(),
+                output_schema: self.schema.clone(),
+                parent,
+                dependencies: BTreeSet::new(),
+                grants: self.grants.clone(),
+                limits: self.limits,
+                run_limits: TaskRunLimits::default(),
+                policy: None,
+                extensions: None,
+                execution: None,
+            };
+            match self.host.admit(admission).await? {
+                crate::Admission::Accepted(_) => Ok(()),
+                crate::Admission::Indeterminate { operation_id } => {
+                    match self.host.reconcile_admission(operation_id).await? {
+                        Some((_, _)) => Ok(()),
+                        None => Err(Error::Indeterminate(operation_id)),
+                    }
+                }
+                crate::Admission::Rejected { reason } => Err(Error::Unauthorized(reason)),
+            }
+        })
+    }
+}
+
+async fn local_communication_bindings(
+    swarm: &Arc<PersistentLocalSwarm>,
+    limits: Limits,
+) -> Result<LocalSwarmBindings> {
+    let root_task = swarm.root_task().await?;
+    let root_harness = swarm.open_session(root_task).await?;
+    let storage = root_harness.storage();
+    let owner = storage.conversation().clone();
+    let issuer = AuthorityIssuer::new("local-harness", root_harness.signing_key(), owner.clone());
+    let machine = Arc::new(LocalCommunicationMachine::new());
+    let mut tasks = TaskRegistry::default();
+    let definition = crate::runtime::TaskDefinition::<Value, Value>::resumable(
+        machine.clone(),
+        machine.schema.clone(),
+        machine.schema.clone(),
+    )?;
+    let task = definition.identity().clone();
+    tasks.register(definition)?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine.clone())?;
+    let mut capabilities = storage
+        .owner_scope()
+        .capabilities()
+        .iter()
+        .map(ToOwned::to_owned)
+        .chain([
+            "operation:declare".to_owned(),
+            "operation:observe".to_owned(),
+            "operation:cancel".to_owned(),
+            "mail:send".to_owned(),
+            "mail:read".to_owned(),
+            "timer:wait".to_owned(),
+            format!("task:spawn:{}@{}", task.name, task.version),
+        ])
+        .collect::<Vec<_>>();
+    capabilities.push(
+        storage
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Read)?,
+    );
+    capabilities.push(
+        storage
+            .volume()
+            .capability(crate::conversation::VolumeOperation::Write)?,
+    );
+    let capabilities = Capabilities::new(capabilities);
+    let owner_agent = storage
+        .owner_scope()
+        .agent()
+        .ok_or_else(|| Error::Unauthorized("local communication owner agent is missing".into()))?;
+    let owner_scope =
+        issuer.root_for_agent(owner_agent, "communication-owner", capabilities.clone());
+    let verifier = issuer.verifier();
+    let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
+        swarm.filesystem_host.clone(),
+        storage.volume().clone(),
+        &verifier,
+        &owner_scope,
+        limits.file_bytes,
+    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(
+        swarm.filesystem_host.clone(),
+        verifier.clone(),
+        owner_scope.clone(),
+        limits.file_bytes,
+    )?);
+    let coordinator = DistributedCoordinator::open(&swarm.conversation_stream, reader.clone())
+        .await?
+        .with_payload_store(payloads.clone());
+    let host = Arc::new(CoordinatorTaskHost::new(
+        coordinator,
+        swarm.conversation_stream.clone(),
+        payloads,
+        reader,
+        owner,
+        owner_scope,
+        verifier,
+        RuntimeScope::new(capabilities.clone(), limits)?,
+        tasks,
+        machines,
+        Arc::new(SystemUnixMillisClock),
+    )?);
+    let admitter = Arc::new(LocalCommunicationComposition {
+        host: host.clone(),
+        task,
+        machine: machine.identity().clone(),
+        schema: machine.schema.clone(),
+        grants: capabilities,
+        limits,
+    });
+    let waits = Arc::new(crate::communication::StreamWaitStore::new_with_clock(
+        swarm.conversation_stream.clone(), host.owner_clock(),
+    ));
+    Ok(LocalSwarmBindings::communication(host, Some(waits), None)
+        .with_communication_admitter(admitter))
+}
+
 /// Configuration for one persistent local swarm.
 #[derive(Clone, Debug)]
 pub struct LocalSwarmConfig {
@@ -156,6 +346,7 @@ pub struct LocalSwarmBindings {
     /// Concrete local provider allocator. When supplied without an explicit
     /// plan index, the swarm builds one durable index around this resolver.
     pub filesystem_fork_resolver: Option<Arc<LocalFilesystemForkResolver>>,
+    communication_admitter: Option<Arc<dyn LocalCommunicationAdmitter>>,
 }
 
 impl LocalSwarmBindings {
@@ -173,6 +364,7 @@ impl LocalSwarmBindings {
             model_batch_publisher: None,
             model_fork_plans: None,
             filesystem_fork_resolver: None,
+            communication_admitter: None,
         }
     }
 
@@ -201,6 +393,14 @@ impl LocalSwarmBindings {
         resolver: Arc<LocalFilesystemForkResolver>,
     ) -> Self {
         self.filesystem_fork_resolver = Some(resolver);
+        self
+    }
+
+    fn with_communication_admitter(
+        mut self,
+        admitter: Arc<dyn LocalCommunicationAdmitter>,
+    ) -> Self {
+        self.communication_admitter = Some(admitter);
         self
     }
 
@@ -2117,6 +2317,11 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
+        if let Some(admitter) = bindings.communication_admitter.as_ref() {
+            for session in sessions.values() {
+                admitter.admit(session.task, session.parent).await?;
+            }
+        }
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -2279,6 +2484,7 @@ impl PersistentLocalSwarm {
         .await?;
         let root_task = base.root_task().await?;
         let host_secret = base.open_session(root_task).await?.signing_key();
+        let communication = local_communication_bindings(&base, limits).await?;
         drop(base);
         let resolver = Arc::new(
             LocalFilesystemForkResolver::new(host, stream, stream_provider, project)?
@@ -2289,7 +2495,7 @@ impl PersistentLocalSwarm {
             model,
             provider,
             limits,
-            LocalSwarmBindings::default().with_filesystem_fork_resolver(resolver),
+            communication.with_filesystem_fork_resolver(resolver),
         )
         .await
     }
@@ -2691,12 +2897,11 @@ impl PersistentLocalSwarm {
             .communication_host
             .clone()
             .ok_or_else(|| Error::Unsupported("durable communication host is not bound".into()))?;
-        // Mail payloads are staged into the recipient's own private volume.
-        // A sender-owned FileRef would require an implicit sibling read grant
-        // and would make an otherwise valid parent/child message unreadable
-        // at inbox time. The owner host performs this copy before publishing
-        // the ref-only inbox event.
-        let harness = self.open_session(recipient).await?;
+        // Mail payloads are staged into the composition-owned root volume so
+        // the shared CoordinatorTaskHost can verify one immutable ref without
+        // widening a child grant to another agent's private volume.
+        let root_task = self.root_task().await?;
+        let harness = self.open_session(root_task).await?;
         let payload = harness
             .storage()
             .stage(
@@ -2722,6 +2927,14 @@ impl PersistentLocalSwarm {
             message_id,
             payload,
         })
+    }
+
+    /// Hydrates one already delivered mailbox payload through the composition
+    /// owner. The caller must first obtain the exact FileRef from read_inbox.
+    pub async fn read_message_body(&self, task: TaskId, payload: &FileRef) -> Result<Vec<u8>> {
+        self.session(task).await?;
+        let root = self.root_task().await?;
+        self.open_session(root).await?.storage().read(payload).await
     }
 
     /// Reads a bounded durable inbox page for a task.
@@ -3211,6 +3424,9 @@ impl PersistentLocalSwarm {
                 })
                 .await?;
             }
+        }
+        if let Some(admitter) = self.bindings.communication_admitter.as_ref() {
+            admitter.admit(child, Some(request.parent)).await?;
         }
         let harness = match PersistentLocalHarness::from_published_fork_with_tools_and_stream_provider(
             self.config.model.clone(),
@@ -4656,6 +4872,97 @@ mod tests {
         assert_eq!(
             waits.completed.lock().expect("wait store lock").as_slice(),
             &[crate::communication::WaitCompletion::Deadline]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recursive_local_composition_delivers_pinned_mail_after_reopen() -> Result<()> {
+        let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+        let swarm = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(0),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let root_task = swarm.root_task().await?;
+        swarm
+            .run_root(
+                OperationId::from_bytes([0x91; 16]),
+                "wait for durable deadline",
+            )
+            .await?;
+        let child = TaskId::from_bytes([0x92; 16]);
+        let child_session = LocalSwarmSession {
+            task: child,
+            parent: Some(root_task),
+            depth: 1,
+            task_description: "communication child".into(),
+            operation: Some(OperationId::from_bytes(child.into_bytes())),
+            phase: LocalSessionPhase::Ready,
+        };
+        let registry = swarm
+            .registry
+            .stream(REGISTRY_STREAM)
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        append_record(&registry, StoredEvent::Session(child_session.into())).await?;
+        swarm.refresh_registry_state().await?;
+        swarm
+            .bindings
+            .communication_admitter
+            .as_ref()
+            .ok_or_else(|| Error::Unsupported("communication admission bridge missing".into()))?
+            .admit(child, Some(root_task))
+            .await?;
+        let message_id = OperationId::from_bytes([0x93; 16]);
+        let receipt = swarm
+            .send_message(root_task, child, message_id, b"pinned-mail")
+            .await?;
+        swarm
+            .send_message(root_task, child, message_id, b"pinned-mail")
+            .await?;
+        let inbox = swarm.read_inbox(child, 0, 8).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(inbox[0].sender, root_task);
+        assert_eq!(
+            swarm.read_message_body(child, &receipt.payload).await?,
+            b"pinned-mail"
+        );
+        swarm
+            .open_session(root_task)
+            .await?
+            .storage()
+            .stage(
+                OperationId::from_bytes([0x94; 16]),
+                &format!("system/swarm/messages/{message_id}.txt"),
+                b"rewritten-mail",
+                "text/plain",
+                "message.txt",
+            )
+            .await?;
+        assert_eq!(
+            swarm.read_message_body(child, &receipt.payload).await?,
+            b"pinned-mail"
+        );
+        drop(swarm);
+
+        let reopened = PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem(
+            root.path(),
+            Model::new("mock", "communication-local", "1", json!({}))?,
+            Arc::new(CommunicationModel {
+                calls: AtomicUsize::new(1),
+            }),
+            Limits::default(),
+        )
+        .await?;
+        let inbox = reopened.read_inbox(child, 0, 8).await?;
+        assert_eq!(inbox.len(), 1);
+        assert_eq!(
+            reopened.read_message_body(child, &inbox[0].payload).await?,
+            b"pinned-mail"
         );
         Ok(())
     }
