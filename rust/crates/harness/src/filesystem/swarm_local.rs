@@ -2384,6 +2384,30 @@ impl PersistentLocalSwarm {
         project: VolumeRef,
         checkout: impl AsRef<Path>,
     ) -> Result<Arc<Self>> {
+        Self::open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
+            root,
+            model,
+            provider,
+            limits,
+            project,
+            checkout,
+            LocalSwarmBindings::default(),
+        )
+        .await
+    }
+
+    /// Opens the recursive composition with an attached native checkout and
+    /// explicit owner services. Policy, cancellation, communication, and
+    /// other bindings are retained through both composition passes.
+    pub async fn open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
+        root: impl AsRef<Path>,
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        project: VolumeRef,
+        checkout: impl AsRef<Path>,
+        bindings: LocalSwarmBindings,
+    ) -> Result<Arc<Self>> {
         let external = LocalExternalProject::new(project, checkout, SourceOptions::default())?;
         Self::open_shared_with_model_and_recursive_filesystem_inner(
             root,
@@ -2391,7 +2415,7 @@ impl PersistentLocalSwarm {
             provider,
             limits,
             Some(external),
-            LocalSwarmBindings::default(),
+            bindings,
         )
         .await
     }

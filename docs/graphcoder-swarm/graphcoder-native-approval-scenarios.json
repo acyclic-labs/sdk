@@ -3,6 +3,8 @@
   "purpose": "Public native GraphCoder JSON-lines qualification for exact tool approval, real staging, cancellation, and reopen",
   "runtime": {
     "executable_env": "GRAPHCODER_NATIVE_RUNTIME",
+    "checkout_env": "GRAPHCODER_NATIVE_CHECKOUT=auto",
+    "project_env": "GRAPHCODER_NATIVE_PROJECT_ID (optional with auto checkout)",
     "fixture": "approval",
     "driver": "scripts/graphcoder-native-approval-e2e.mjs",
     "fixture_policy": "Harness installs a deterministic policy that requires approval for acyclic.stage_file. The fixture provider emits the stage_file call, the approved operation performs the real Harness filesystem effect, and the provider then remains cancellable. No host side effect is implemented by the fixture."

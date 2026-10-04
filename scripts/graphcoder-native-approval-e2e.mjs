@@ -34,8 +34,16 @@ function regularFile(path) {
   if (!metadata?.isFile() || metadata.isSymbolicLink()) fail(`runtime must be a regular file: ${path}`);
 }
 
-async function runScenario(runtime, root) {
-  const child = spawn(runtime, ["--root", root, "--model-fixture", "approval", "--operator-token", "operator-secret"], {
+async function runScenario(runtime, root, checkoutOverride) {
+  const checkout = checkoutOverride ?? process.env.GRAPHCODER_NATIVE_CHECKOUT;
+  const projectId = process.env.GRAPHCODER_NATIVE_PROJECT_ID
+    ?? (process.env.GRAPHCODER_NATIVE_CHECKOUT === "auto"
+      ? "native-approval-checkout"
+      : undefined);
+  if ((checkout && !projectId) || (!checkout && projectId)) fail("GRAPHCODER_NATIVE_CHECKOUT and GRAPHCODER_NATIVE_PROJECT_ID must be supplied together");
+  const args = ["--root", root, "--model-fixture", "approval", "--operator-token", "operator-secret"];
+  if (checkout) args.push("--checkout", resolve(checkout), "--project-id", projectId);
+  const child = spawn(runtime, args, {
     cwd: resolve("."), env: environment(), stdio: ["pipe", "pipe", "pipe"], shell: false, windowsHide: true,
   });
   if (!child.stdin || !child.stdout || !child.stderr) fail("native process did not expose piped stdio");
@@ -163,8 +171,14 @@ async function runScenario(runtime, root) {
 export async function runNativeApprovalScenario({ runtime = required("GRAPHCODER_NATIVE_RUNTIME"), root } = {}) {
   regularFile(runtime);
   const ownedRoot = root === undefined ? mkdtempSync(join(tmpdir(), "graphcoder-native-approval-")) : resolve(root);
-  try { return await runScenario(runtime, ownedRoot); }
-  finally { if (root === undefined) rmSync(ownedRoot, { recursive: true, force: true }); }
+  const ownedCheckout = process.env.GRAPHCODER_NATIVE_CHECKOUT === "auto"
+    ? mkdtempSync(join(tmpdir(), "graphcoder-native-approval-checkout-"))
+    : undefined;
+  try { return await runScenario(runtime, ownedRoot, ownedCheckout); }
+  finally {
+    if (root === undefined) rmSync(ownedRoot, { recursive: true, force: true });
+    if (ownedCheckout !== undefined) rmSync(ownedCheckout, { recursive: true, force: true });
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

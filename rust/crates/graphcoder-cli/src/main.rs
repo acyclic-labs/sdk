@@ -539,13 +539,14 @@ impl Runtime {
                     VolumeClass::Project,
                     VolumeOwner::Project(project_id.clone()),
                 )?;
-                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout(
+                PersistentLocalSwarm::open_shared_with_model_and_recursive_filesystem_at_checkout_with_bindings(
                     &args.root,
                     model,
                     provider,
                     Limits::default(),
                     project,
                     checkout,
+                    bindings,
                 )
                 .await?
             }
@@ -599,7 +600,7 @@ impl Runtime {
                 &request.request_id,
                 "invalid_input",
                 "request_id must be between 1 and 256 bytes",
-            );
+                    );
         }
         let result = match request.method.as_str() {
             "list_sessions" => self.list_sessions(&request.request_id, &request.params).await,
@@ -1950,8 +1951,11 @@ mod tests {
         assert_eq!(declined_file["ok"], false, "declined approval executed an effect: {declined_file}");
 
         let approved_root = tempfile::tempdir().expect("approved root");
+        let approved_checkout = tempfile::tempdir().expect("approved checkout");
         let mut approved_args = runtime_args(approved_root.path().to_owned(), "approval");
         approved_args.operator_token = Some("operator-secret".to_owned());
+        approved_args.checkout = Some(approved_checkout.path().to_owned());
+        approved_args.project_id = Some("approval-checkout-project".to_owned());
         let approved = Arc::new(Runtime::open(&approved_args).await.expect("runtime opens"));
         let listed = exchange(
             approved.clone(),
