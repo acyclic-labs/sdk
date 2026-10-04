@@ -161,6 +161,17 @@ try {
         # archive.
         Copy-Package (Join-Path $repoRoot 'dart') $package
         $dart = if ($env:DART) { $env:DART } else { 'dart' }
+        $dartShim = Join-Path $repoRoot 'dart/.toolchain/protoc-gen-dart-shim.exe'
+        if (-not (Test-Path -LiteralPath $dartShim -PathType Leaf)) {
+            throw "Pinned Dart protoc shim is missing: $dartShim"
+        }
+        $dartPluginEntry = Join-Path $package 'tool/protoc_plugin_entry.dart'
+        if (-not (Test-Path -LiteralPath $dartPluginEntry -PathType Leaf)) {
+            throw "Dart protoc plugin entrypoint is missing: $dartPluginEntry"
+        }
+        $env:DART_EXECUTABLE = $dart
+        $env:PROTOC_GEN_DART = $dartShim
+        $env:PROTOC_DART_SNAPSHOT = $dartPluginEntry
         Run-Checked $dart @('run', 'tool/generate.dart', '--schema-root', $sourceRoot, '--manifest', $authority) $package
         Copy-Package $package (Join-Path $outputParent 'dart')
         $dartLockPath = Join-Path $package 'generator.lock.yaml'
