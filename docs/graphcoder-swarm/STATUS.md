@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Current root real swarm fault verification still passes only 1/5 after the executor fixes. The four required failures remain fork manifest binding, two missing child dispatches, and cancellation never reaching the child provider. See [current source-bound fault results](checkpoint-current-swarm-faults-2026-10-04.json). This replaces the older-source baseline for these five cases; the recursive worker's unintegrated repairs remain separately qualified.
+
 Latest root checkpoint: isolated executor contracts pass 25/25 at `48e079fae`, including repeated rejection occurrences, actual serialized provider input, cold replay, and duplicate preparation refusal. These tests use an in-memory executor journal and do not prove real swarm recovery. The normal native application build finished successfully; [build provenance](checkpoint-native-distributable-build-2026-10-04.json) identifies its exact binary. Installed package and ConPTY execution against that binary are pending.
 
 The provider-level lazy-loading audit found unmet LOAD01/02 behavior: registry listing loads embedded inherited prefixes; session snapshots and message/activity pages open complete conversation aggregates. Summary-only transport tests do not qualify provider laziness. Harness metadata/index and bounded page repairs are assigned separately, with real provider read instrumentation required.

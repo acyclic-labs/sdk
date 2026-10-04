@@ -1,0 +1,26 @@
+{
+  "scope": "Five production LocalStream/LocalFs swarm fault cases on current root Rust source",
+  "source_commit": "866ca7e4436c57dd71abe4c8b689410cd8ba265a",
+  "rust_tree": "a5f6c3630340c003efc11370d5b7812af5cf8d12",
+  "last_rust_implementation_commit": "48e079fae",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test local_swarm_faults --target-dir target/qualification-root-v2 -j2",
+  "process_session": 53733,
+  "result": {"exit_code": 101, "passed": 1, "failed": 4, "ignored": 0, "filtered": 0, "test_duration_seconds": 5.28},
+  "passed": ["before_intent_disconnect_remains_indeterminate_after_real_reopen"],
+  "failures": [
+    {"test": "fork_intent_disconnect_replays_publication_after_cold_restart", "observed": "Invalid: fork manifest is not bound to its command and parent revision"},
+    {"test": "prepared_batch_failure_retries_without_duplicate_child_dispatch", "observed": "child dispatch count 1; required 2"},
+    {"test": "precompletion_disconnect_replays_child_result_without_duplicate_dispatch", "observed": "child dispatch count 1; required 2"},
+    {"test": "cancelled_child_after_publication_cannot_be_reactivated", "observed": "child dispatch never reached provider before explicit fixture timeout"}
+  ],
+  "suite": {"path": "rust/crates/harness/tests/local_swarm_faults.rs", "sha256": "cf6d96e07b89f2400f55793a8ea2433dc2fa610464ce60da7c553eb38fe93f83"},
+  "artifact": {"path": "target/qualification-root-v2/debug/deps/local_swarm_faults-0b7a4b404e774f78.exe", "sha256": "86cf1486b8b4f09186b5dac5e0c532ca49ca5d10aba098cdafa0923566ff48bc"},
+  "log": {"path": "target/qualification-root-v2/local-swarm-faults-2026-10-04.log", "sha256": "62917945f62f3ac5e259b2d4e98ab3fd25283fe874d9f5a7b3ff8f2383fa91ee"},
+  "boundaries": [
+    "Actual Windows execution with deterministic mocked model, real persistent storage and production fork composition",
+    "Dedicated per-root target; current source unchanged during execution",
+    "This failing subset is required evidence, not full fault-matrix qualification",
+    "Earlier process session 32128 lost its result handle; OS process inspection confirmed it was no longer running before this logged rerun",
+    "No result was inferred from the missing handle or artifact existence"
+  ]
+}
