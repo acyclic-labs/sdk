@@ -278,6 +278,20 @@ jobs:
             New-Item -ItemType Directory -Force -Path $destination | Out-Null
             Copy-Item -LiteralPath $asset.FullName -Destination (Join-Path $destination $asset.Name) -Force
           }
+          [ordered]@{
+            schema = 'acyclic.sdk.dotnet.embedded.native-manifest.v1'
+            source_revision = $sourceRevision
+            source_revision_kind = 'git-oid'
+            source_inputs = @($sourceInputs)
+            cargo_manifest = 'rust/crates/sdk-embedded-prototype/Cargo.toml'
+            cargo_lock = 'rust/crates/sdk-embedded-prototype/Cargo.lock'
+            cargo_lock_sha256 = $lockfileHash
+            cargo_command = $cargoCommand
+            assets = @($nativeManifests | ForEach-Object {
+              $manifest = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json
+              @($manifest.assets)
+            })
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $nativeRoot 'native-manifest.json') -Encoding utf8NoBOM
           pwsh -NoLogo -NoProfile -File scripts/build-dotnet-embedded-package.ps1 -Output $env:PACKAGE_ROOT -NativeRoot $nativeRoot -PackageOnly
           $nupkg = Join-Path $env:PACKAGE_ROOT 'packages/Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg'
           if (-not (Test-Path -LiteralPath $nupkg -PathType Leaf)) { throw "Missing package $nupkg" }

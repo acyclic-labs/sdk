@@ -57,6 +57,43 @@ if ($PackageOnly) {
 }
 if ($targets.Count -eq 0) { throw "No Rust target was selected" }
 
+if ($PackageOnly) {
+  $providedManifestPath = Join-Path $nativeRoot 'native-manifest.json'
+  if (-not (Test-Path -LiteralPath $providedManifestPath -PathType Leaf)) {
+    throw "PackageOnly requires the producer native manifest at $providedManifestPath"
+  }
+  $providedManifest = Get-Content -LiteralPath $providedManifestPath -Raw | ConvertFrom-Json
+  if ($providedManifest.schema -ne 'acyclic.sdk.dotnet.embedded.native-manifest.v1' -or
+      $providedManifest.source_revision -ne $sourceRevision -or
+      $providedManifest.cargo_lock_sha256 -ne $lockfileSha256 -or
+      $providedManifest.cargo_command -ne $cargoCommand -or
+      (@($providedManifest.source_inputs) -join '|') -ne (@($sourceInputs) -join '|')) {
+    throw 'PackageOnly native provenance does not match the checked-out Rust source closure.'
+  }
+  $providedRecords = @($providedManifest.assets)
+  if ($providedRecords.Count -ne $targets.Count) {
+    throw "PackageOnly expected $($targets.Count) native provenance records, found $($providedRecords.Count)"
+  }
+  foreach ($targetName in $targets) {
+    $spec = $targetMap[$targetName]
+    $installed = Join-Path (Join-Path $nativeRoot $spec.Rid) $spec.File
+    $record = @($providedRecords | Where-Object {
+      $_.rust_target -eq $targetName -and $_.rid -eq $spec.Rid -and $_.file -eq $spec.File
+    })
+    if ($record.Count -ne 1) { throw "PackageOnly has no unique provenance record for $targetName" }
+    if (-not (Test-Path -LiteralPath $installed -PathType Leaf)) {
+      throw "PackageOnly requires the native asset for $targetName at $installed"
+    }
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $installed).Hash.ToLowerInvariant()
+    if ($actualHash -ne ([string]$record[0].sha256).ToLowerInvariant()) {
+      throw "PackageOnly native asset hash differs from producer provenance for $targetName"
+    }
+    if ((Get-Item -LiteralPath $installed).Length -ne [int64]$record[0].bytes) {
+      throw "PackageOnly native asset size differs from producer provenance for $targetName"
+    }
+  }
+}
+
 function Invoke-EmbeddedRustBuild {
   param(
     [Parameter(Mandatory = $true)][string]$TargetName,
