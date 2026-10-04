@@ -236,7 +236,15 @@ fn package_spec(family: &str, language: Language) -> Option<GuidePackageSpec> {
                 "workers" => "@acyclic-labs/workers",
                 _ => return None,
             },
-            artifact_path: "typescript/packages/*/package.json",
+            artifact_path: match family {
+                "filesystem" => "typescript/packages/filesystem/package.json",
+                "harness" => "typescript/packages/harness/package.json",
+                "inference" => "typescript/packages/inference/package.json",
+                "machines" => "typescript/packages/machines/package.json",
+                "objects" => "typescript/packages/objects/package.json",
+                "workers" => "typescript/packages/workers/package.json",
+                _ => return None,
+            },
         },
         Language::Go => GuidePackageSpec {
             package_manager: "go",
