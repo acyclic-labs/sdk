@@ -1,0 +1,59 @@
+{
+  "schema": "acyclic.sdk.jvm-dotnet.external-tls-fixture.v1",
+  "captured_at": "2026-10-04T01:08:00+01:00",
+  "qualification": "Installed JVM/.NET package consumers against the frozen Rust TLS/mTLS fixture",
+  "handoff": {
+    "path": "Q:/sdk/work/inference-machines-package-receipt/final-package-2b128ed/MULTILANGUAGE_LIVE_HANDOFF.md",
+    "fixture_cwd": "Q:/sdk/work/inference-machines-package-receipt/final-package-2b128ed/fixtures",
+    "executable": "Q:/sdk/work/inference-machines-frozen-consumer-target/debug/installed-fixture-consumer.exe",
+    "sha256": "6B2155E41716BE834FA649D55BE2AAAFE56F718C8599BCCE1617264F1BA4D84D",
+    "source_sha256": "9D5DCAB0DAA613FEC95A8C3EAB6688FC7088C0D1DC5F198DA538AA36E7E8611F",
+    "run": "ACYCLIC_FIXTURE_SECONDS=60 installed-fixture-consumer.exe --serve",
+    "credential_handling": "Connection records were parsed from a process pipe; CA, certificate, and private key stayed in process environment/memory and were never logged or written to the receipt."
+  },
+  "fixture_observation": {
+    "machines_endpoint": "https://localhost:54634",
+    "machines_transport": "authenticated TLS with required client certificate",
+    "inference_record": "emitted by the executable, but this executable stops the Inference listener before starting Machines and then emits both records; external Inference endpoint therefore refused connections in this capture",
+    "service_identity": {
+      "machine_id": "00000000-0000-0000-0000-000000000001",
+      "operation_id": "00000000-0000-0000-0000-000000000002"
+    }
+  },
+  "packages": {
+    "java": {
+      "name": "acyclic-sdk-jvm-transport",
+      "version": "0.2.0-SNAPSHOT",
+      "path": "staged-jvm-dotnet-evidence/jvm/acyclic-sdk-jvm-transport-0.2.0-SNAPSHOT.jar",
+      "sha256": "2E0CF7F1C88A1676F39D158E59E4AE5B623E0AAEE75F4F3A55F109A18AFD7D5F",
+      "consumer": "Q:/sdk/.tmp-java-fixture-consumer-20261004",
+      "runtime": "JDK 17.0.14",
+      "result": "passed; generated Machines gRPC client used Netty TLS trust manager and client key manager from emitted PEM values"
+    },
+    "dotnet": {
+      "name": "Acyclic.Sdk.Transport",
+      "version": "0.2.0-alpha.2",
+      "path": "Q:/sdk/.tmp-dotnet-policy-package-20261003/Acyclic.Sdk.Transport.0.2.0-alpha.2.nupkg",
+      "sha256": "21BBEBC5D9250F818519F31847AED266698E46BDDFC4A4D41EC8057C3657D267",
+      "consumer": "Q:/sdk/.tmp-dotnet-tls-consumer-20261004",
+      "sdk": "Q:/sdk/.tmp-dotnet-sdk-official-8.0.425/dotnet.exe",
+      "runtime": ".NET SDK 8.0.425",
+      "result": "blocked at Windows Schannel client credential acquisition: emitted self-signed ECDSA identity imported with HasPrivateKey=true but TLS failed with credentials supplied to package were not recognized; no .NET operation result claimed"
+    }
+  },
+  "java_operations": {
+    "inspect_machine": "passed; Running",
+    "events": "passed; one event sequence 1",
+    "usage": "passed; receipt [10]",
+    "inspect_operation": "passed; Pending",
+    "cancel": "passed; Cancelled",
+    "watch_operation": "passed; Pending then Succeeded"
+  },
+  "unexecuted": {
+    "java_inference": "not qualified; endpoint unavailable after frozen fixture shutdown ordering",
+    "dotnet_machines": "not qualified; Windows ECDSA client credential loading blocked before RPC",
+    "all_other_machines_methods": "not claimed beyond the six implemented checks",
+    "inference_context_run": "not claimed for external JVM/.NET fixture"
+  },
+  "parity_boundary": "Existing generated Java POST_FAILURE_FALLBACK naming assertion remains reported to the wire owner; this receipt does not relabel or mask it."
+}
