@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using Google.Protobuf;
 
 namespace Acyclic.Sdk.Embedded;
 
@@ -92,6 +93,11 @@ public sealed class EmbeddedStreamEngine : IDisposable
         }
     }
 
+    /// Decodes the generated protobuf response while keeping the operation implementation in Rust.
+    public TResponse CallWire<TResponse>(string operation, IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> =>
+        parser.ParseFrom(CallWire(operation, request.ToByteArray()));
+
     // These named methods are the generated operation surface. The request and response
     // bytes are the corresponding acyclic.stream.v2 protobuf messages; Rust owns encoding
     // validation and execution while the facade owns only the byte lifetime.
@@ -102,6 +108,21 @@ public sealed class EmbeddedStreamEngine : IDisposable
     public byte[] ChildrenPage(ReadOnlySpan<byte> request) => CallWire("children_page", request);
     public byte[] Commit(ReadOnlySpan<byte> request) => CallWire("commit", request);
     public byte[] ReadCommit(ReadOnlySpan<byte> request) => CallWire("read_commit", request);
+
+    public TResponse InspectIdempotency<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("inspect_idempotency", request, parser);
+    public TResponse AppendWire<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("append", request, parser);
+    public TResponse Tail<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("tail", request, parser);
+    public TResponse Fork<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("fork", request, parser);
+    public TResponse ChildrenPage<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("children_page", request, parser);
+    public TResponse Commit<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("commit", request, parser);
+    public TResponse ReadCommit<TResponse>(IMessage request, MessageParser<TResponse> parser)
+        where TResponse : class, IMessage<TResponse> => CallWire("read_commit", request, parser);
 
     public IAsyncEnumerable<EmbeddedRecord> ReadAsync(string path, ulong from, uint limit, CancellationToken cancellationToken = default) =>
         EnumerateAsync(path, from, limit, follow: false, cancellationToken);

@@ -1,0 +1,60 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <PackageId>Acyclic.Sdk.Embedded</PackageId>
+    <Version>0.2.0-alpha.1</Version>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/acyclic-labs/sdk</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <PathMap>$(MSBuildProjectDirectory)=/_/acyclic-sdk-embedded,$(BaseIntermediateOutputPath)=/_/obj</PathMap>
+    <EmbeddedNativeRoot Condition="'$(EmbeddedNativeRoot)' == ''">$(MSBuildThisFileDirectory)..\target\native\sdk-embedded</EmbeddedNativeRoot>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.31.1" />
+    <Compile Include="EmbeddedStream.cs" />
+    <None Include="Embedded.README.md" Pack="true" PackagePath="README.md" />
+    <None Include="$(MSBuildThisFileDirectory)..\LICENSE" Pack="true" PackagePath="LICENSE" />
+    <None Include="$(MSBuildThisFileDirectory)..\NOTICE" Pack="true" PackagePath="NOTICE" />
+    <None Include="$(EmbeddedNativeRoot)\**\acyclic_sdk_embedded_prototype.dll"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(EmbeddedNativeRoot)')" />
+    <None Include="$(EmbeddedNativeRoot)\**\libacyclic_sdk_embedded_prototype.so"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(EmbeddedNativeRoot)')" />
+    <None Include="$(EmbeddedNativeRoot)\**\libacyclic_sdk_embedded_prototype.dylib"
+          Pack="true"
+          PackagePath="runtimes\%(RecursiveDir)native\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest"
+          Condition="Exists('$(EmbeddedNativeRoot)')" />
+  </ItemGroup>
+
+  <Target Name="RequireEmbeddedNativeAssets" BeforeTargets="Pack">
+    <ItemGroup>
+      <EmbeddedNativeFiles Include="$(EmbeddedNativeRoot)\**\acyclic_sdk_embedded_prototype.dll" />
+      <EmbeddedNativeFiles Include="$(EmbeddedNativeRoot)\**\libacyclic_sdk_embedded_prototype.so" />
+      <EmbeddedNativeFiles Include="$(EmbeddedNativeRoot)\**\libacyclic_sdk_embedded_prototype.dylib" />
+    </ItemGroup>
+    <Error Condition="@(EmbeddedNativeFiles) == ''"
+           Text="EmbeddedNativeRoot must contain at least one Rust sdk-embedded-prototype native asset." />
+  </Target>
+
+  <Target Name="NormalizeNupkgForReproducibility" AfterTargets="Pack">
+    <Exec Command="pwsh -NoLogo -NoProfile -File &quot;$(MSBuildProjectDirectory)\reproducible-pack.ps1&quot; -PackagePath &quot;$(PackageOutputPath)\$(PackageId).$(PackageVersion).nupkg&quot;" />
+  </Target>
+</Project>
