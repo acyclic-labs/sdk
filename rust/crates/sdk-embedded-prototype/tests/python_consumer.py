@@ -46,6 +46,8 @@ def bytes_arg(value: bytes):
 
 def main() -> None:
     dll = ctypes.CDLL(sys.argv[1])
+    dll.acyclic_embedded_abi_version.restype = ctypes.c_uint32
+    assert dll.acyclic_embedded_abi_version() == 1
     dll.acyclic_embedded_engine_open.restype = ctypes.c_uint64
     dll.acyclic_embedded_engine_close.argtypes = [ctypes.c_uint64]
     dll.acyclic_embedded_engine_append.argtypes = [
