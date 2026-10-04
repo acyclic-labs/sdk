@@ -26,9 +26,6 @@ use std::{
 /// projection immediately before a model request.
 pub type RootBudgetRefresh = Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SwarmResourceRequest>> + Send + Sync>;
 
-/// Claims a root model step in the durable budget before provider work starts.
-pub type RootBudgetClaim = Arc<dyn Fn(OperationId, u32, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
-
 /// Confirms a child dispatch after its model request has been prepared.
 pub type DispatchConfirmation = Arc<dyn Fn(OperationId, IdempotencyKey, [u8; 32]) -> futures::future::BoxFuture<'static, Result<()>> + Send + Sync>;
 
@@ -1082,7 +1079,6 @@ pub struct MeteredModelProvider<P: ?Sized, S> {
     meter: SwarmProviderMeter<S>,
     root_refresh: Option<RootBudgetRefresh>,
     root_dynamic_limits: Option<Arc<Mutex<SwarmResourceRequest>>>,
-    root_claim: Option<RootBudgetClaim>,
     dispatch_confirmation: Option<DispatchConfirmation>,
     dispatch_permit: Option<DispatchPermitFactory>,
     bound_dispatch_id: Option<IdempotencyKey>,
@@ -1180,7 +1176,6 @@ where
             meter: meter.clone(),
             root_refresh: None,
             root_dynamic_limits: None,
-            root_claim: None,
             dispatch_confirmation: None,
             dispatch_permit: None,
             bound_dispatch_id,
@@ -1199,7 +1194,6 @@ where
             meter: meter.clone(),
             root_refresh: None,
             root_dynamic_limits: None,
-            root_claim: None,
             dispatch_confirmation: None,
             dispatch_permit: None,
             bound_dispatch_id: None,
@@ -1226,7 +1220,6 @@ where
             meter: meter.clone(),
             root_refresh: None,
             root_dynamic_limits: None,
-            root_claim: None,
             dispatch_confirmation: None,
             dispatch_permit: None,
             bound_dispatch_id: None,
@@ -1246,16 +1239,6 @@ where
         Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, None)
     }
 
-    /// Wraps root work with refresh and a durable per-step claim callback.
-    pub(crate) fn new_root_with_refresh_and_claim(
-        provider: Arc<P>,
-        context: SwarmRootDispatchContext<S>,
-        refresh: RootBudgetRefresh,
-        claim: RootBudgetClaim,
-    ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), Some(claim), None)
-    }
-
     /// Wraps root work with refresh and an opaque permit factory. The permit
     /// is committed atomically with the execution journal's model start.
     pub(crate) fn new_root_with_refresh_and_permit(
@@ -1264,14 +1247,13 @@ where
         refresh: RootBudgetRefresh,
         permit: DispatchPermitFactory,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, Some(permit))
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), Some(permit))
     }
 
     fn new_root_with_refresh_and_options(
         provider: Arc<P>,
         context: SwarmRootDispatchContext<S>,
         refresh: Option<RootBudgetRefresh>,
-        claim: Option<RootBudgetClaim>,
         permit: Option<DispatchPermitFactory>,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
         let dynamic_limits = Arc::new(Mutex::new(context.limiter.limits()));
@@ -1286,7 +1268,6 @@ where
             meter: meter.clone(),
             root_refresh: refresh,
             root_dynamic_limits: Some(dynamic_limits),
-            root_claim: claim,
             dispatch_confirmation: None,
             dispatch_permit: permit,
             bound_dispatch_id: None,
@@ -1411,7 +1392,6 @@ where
     ) -> futures::future::BoxFuture<'a, Result<Option<crate::model::ModelDispatchPermit>>> {
         let provider = self.provider.clone();
         let dispatch_permit = self.dispatch_permit.clone();
-        let root_claim = self.root_claim.clone();
         let dispatch_confirmation = self.dispatch_confirmation.clone();
         let bound_dispatch_id = self.bound_dispatch_id.clone();
         Box::pin(async move {
@@ -1423,7 +1403,6 @@ where
                 .await?;
             if inner.is_some()
                 && (dispatch_permit.is_some()
-                    || root_claim.is_some()
                     || dispatch_confirmation.is_some())
             {
                 return Err(Error::Conflict(
@@ -1432,10 +1411,6 @@ where
             }
             if let Some(factory) = dispatch_permit {
                 return factory(operation_id, step, request_digest).await.map(Some);
-            }
-            if let Some(claim) = root_claim {
-                claim(operation_id, step, request_digest).await?;
-                return Ok(None);
             }
             if let Some(confirmation) = dispatch_confirmation {
                 let dispatch_id = bound_dispatch_id.ok_or_else(|| {
@@ -2473,7 +2448,12 @@ impl SwarmBudget {
             return Err(Error::Conflict("swarm agent limit exceeded".into()));
         }
         let limits = state.limits;
-        reserve_resources(&mut state.usage, request.resources, limits)?;
+        // Nested reservations partition their direct parent's existing
+        // session hold. Charging them again against the session ceiling
+        // double-counts recursive work such as parent 8 with children 5+3.
+        if request.parent_operation_id.is_none() {
+            reserve_resources(&mut state.usage, request.resources, limits)?;
+        }
         state.usage.active_agents += 1;
         state.usage.total_agents += 1;
         let reservation = SwarmForkReservation {
@@ -2925,7 +2905,8 @@ impl SwarmBudget {
         if reservation.state == SwarmReservationState::Cancelled {
             return Ok(reservation);
         }
-        release_remaining(&mut state.usage, &reservation)?;
+        let committed = reservation_subtree_usage(&state, operation_id)?;
+        release_remaining(&mut state.usage, &reservation, committed)?;
         state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
         let reservation = state
             .reservations
@@ -3401,7 +3382,13 @@ fn reserve_resources(
 fn release_remaining(
     usage: &mut SwarmBudgetUsage,
     reservation: &SwarmForkReservation,
+    committed: SwarmUsage,
 ) -> Result<()> {
+    // Nested reservations partition their direct parent's session hold and
+    // therefore never own an independent global reservation to release.
+    if reservation.parent_operation_id.is_some() {
+        return Ok(());
+    }
     usage.reserved.model_steps = usage
         .reserved
         .model_steps
@@ -3409,7 +3396,7 @@ fn release_remaining(
             reservation
                 .resources
                 .model_steps
-                .saturating_sub(reservation.usage.model_steps),
+                .saturating_sub(committed.model_steps),
         )
         .ok_or_else(|| Error::Storage("swarm step reservation underflow".into()))?;
     usage.reserved.output_bytes = usage
@@ -3419,7 +3406,7 @@ fn release_remaining(
             reservation
                 .resources
                 .output_bytes
-                .saturating_sub(reservation.usage.output_bytes),
+                .saturating_sub(committed.output_bytes),
         )
         .ok_or_else(|| Error::Storage("swarm output reservation underflow".into()))?;
     usage.reserved.execution_time_ms = usage
@@ -3429,7 +3416,7 @@ fn release_remaining(
             reservation
                 .resources
                 .execution_time_ms
-                .saturating_sub(reservation.usage.execution_time_ms),
+                .saturating_sub(committed.execution_time_ms),
         )
         .ok_or_else(|| Error::Storage("swarm time reservation underflow".into()))?;
     Ok(())
@@ -3516,7 +3503,15 @@ fn update_usage(
         reservation.usage_sequence = receipt.sequence;
     }
     if complete {
-        release_remaining(&mut state.usage, &reservation)?;
+        let descendants = direct_descendant_commitment(
+            state,
+            operation_id,
+            operation_id,
+            usage,
+            true,
+        )?;
+        let committed = add_usage(usage, descendants)?;
+        release_remaining(&mut state.usage, &reservation, committed)?;
         state.usage.active_agents = state.usage.active_agents.saturating_sub(1);
         reservation.state = SwarmReservationState::Completed;
     }
@@ -4278,6 +4273,45 @@ mod tests {
             execution_time_ms: 600,
         };
         assert!(budget.reserve_child(second_request).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn nested_children_partition_parent_hold_without_double_global_reservation() -> Result<()> {
+        let mut limits = limits();
+        limits.max_model_steps = 8;
+        limits.max_output_bytes = 80;
+        limits.max_execution_time_ms = 800;
+        let budget = SwarmBudget::new(id(9), owner(0), limits)?;
+        let mut parent_request = request(1, None);
+        parent_request.resources = SwarmResourceRequest {
+            model_steps: 8,
+            output_bytes: 80,
+            execution_time_ms: 800,
+        };
+        let parent = budget.reserve_child(parent_request)?.reservation;
+        let usage = budget.usage()?;
+        assert_eq!(usage.reserved.model_steps, 8);
+
+        let mut first_request = request(2, Some(parent.operation_id));
+        first_request.resources = SwarmResourceRequest {
+            model_steps: 5,
+            output_bytes: 50,
+            execution_time_ms: 500,
+        };
+        budget.reserve_child(first_request)?;
+        let mut second_request = request(3, Some(parent.operation_id));
+        second_request.resources = SwarmResourceRequest {
+            model_steps: 3,
+            output_bytes: 30,
+            execution_time_ms: 300,
+        };
+        budget.reserve_child(second_request)?;
+
+        let usage = budget.usage()?;
+        assert_eq!(usage.reserved.model_steps, 8);
+        assert_eq!(usage.reserved.output_bytes, 80);
+        assert_eq!(usage.reserved.execution_time_ms, 800);
         Ok(())
     }
 

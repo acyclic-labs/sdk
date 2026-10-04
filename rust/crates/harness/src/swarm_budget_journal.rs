@@ -13,7 +13,7 @@ use crate::{
         ForkPublication, SwarmAdmissionReceipt, SwarmBudget, SwarmBudgetEvent, SwarmBudgetLimits,
         SwarmBudgetUsage, SwarmDispatchContext, SwarmDispatchToken, SwarmForkRequest,
         SwarmForkReservation,
-        RootBudgetClaim, RootBudgetRefresh, SwarmOwnerFence, SwarmResourceRequest,
+        RootBudgetRefresh, SwarmOwnerFence, SwarmResourceRequest,
         SwarmRootDispatchContext, SwarmUsage,
         SwarmUsageReceiptCursor,
         VerifiedForkPublication, VerifiedSwarmUsageReceipt, DispatchConfirmation,
@@ -360,31 +360,6 @@ impl<P: StreamProvider> SwarmBudgetJournal<P> {
         Ok(crate::swarm_budget::MeteredModelProvider::new_root_with_refresh(
             provider, context, refresh,
         ))
-    }
-
-    /// Wraps root work with durable refresh and claim callbacks. A fresh
-    /// model step claims capacity in the same journal CAS sequence as child
-    /// reservations; recovery only refreshes the existing claim.
-    pub fn metered_root_provider_with_refresh_and_claim<M, S>(
-        &self,
-        provider: Arc<M>,
-        source: S,
-        refresh: RootBudgetRefresh,
-        claim: RootBudgetClaim,
-    ) -> Result<(
-        Arc<crate::swarm_budget::MeteredModelProvider<M, S>>,
-        crate::swarm_budget::SwarmProviderMeter<S>,
-    )>
-    where
-        M: crate::model::ModelProvider + ?Sized + 'static,
-        S: crate::swarm_budget::SwarmUsageSource + Send + Sync + 'static,
-    {
-        let context = self.root_usage_context(source)?;
-        Ok(
-            crate::swarm_budget::MeteredModelProvider::new_root_with_refresh_and_claim(
-                provider, context, refresh, claim,
-            ),
-        )
     }
 
     /// Wraps root work with durable refresh and one coordinated dispatch
