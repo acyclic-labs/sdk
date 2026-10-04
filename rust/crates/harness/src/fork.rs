@@ -1607,7 +1607,6 @@ impl ForkSeed {
     /// earlier history boundary.
     pub(crate) fn captured_history_revision(&self) -> Result<u64> {
         let parent_key = self.parent.stream_path()?.into_bytes();
->>>>>>> da1ac8cf0 (Preserve authenticated fork capture history across publication)
         let mut captured = None;
         for resource in &self.resources {
             if let ResourceRevision::History(reference) = &resource.source {
