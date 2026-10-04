@@ -2403,7 +2403,14 @@ impl PersistentLocalSwarm {
                             // the first model dispatch, which would advance
                             // the journal sequence independently of the
                             // provider meter that owns the next receipt.
-                            let measured_changed = cursor.usage.is_some_and(|previous| previous != measured);
+                            // A first dispatch has no durable receipt cursor yet. If its
+                            // provider has already recorded nonzero usage, that usage must
+                            // still be settled before the next root model claim; otherwise
+                            // the in-flight claim remains fenced across a normal multi-step
+                            // turn and across cold-start recovery. Keep the zero/zero case
+                            // unopened so a stale handle cannot manufacture a receipt.
+                            let measured_changed = cursor.usage != Some(measured)
+                                && measured != SwarmUsage::default();
                             if measured_changed {
                                 let mut issuer =
                                     journal.root_usage_receipt_issuer(refresh_source.clone())?;
@@ -3347,16 +3354,30 @@ impl PersistentLocalSwarm {
         ) else {
             return Ok(());
         };
+        let Some(source) = self.budget_usage_source.as_ref().cloned() else {
+            return Err(Error::Unauthorized(
+                "root budget usage source is not configured".into(),
+            ));
+        };
         // A concurrent handle can lose the durable root claim before it ever
         // invokes the provider. Its freshly opened meter has no local usage;
         // emitting a zero receipt from that stale cursor would race the
         // winning handle's receipt and surface a false stale-sequence error.
-        if meter.usage()? == SwarmUsage::default() {
+        let measured = meter.usage()?;
+        if measured == SwarmUsage::default() {
             return Ok(());
         }
-        let receipt = meter.issue_usage_receipt()?;
         let mut journal = journal.lock().await;
         journal.refresh().await?;
+        // The per-step refresh path may already have settled this same
+        // cumulative measurement. Rebuild the issuer from the durable cursor
+        // before issuing so a stale in-memory meter cannot reuse an old
+        // sequence after a normal multi-step turn or restart.
+        if journal.root_usage_cursor()?.usage == Some(measured) {
+            return Ok(());
+        }
+        let mut issuer = journal.root_usage_receipt_issuer(source)?;
+        let receipt = issuer.issue_at_least(measured)?;
         journal
             .report_root_usage_with_receipt(owner, receipt)
             .await?;
