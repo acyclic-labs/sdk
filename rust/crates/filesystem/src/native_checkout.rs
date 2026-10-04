@@ -9,7 +9,8 @@
 
 use crate::native_host::HostRoot;
 use crate::native_mount::{
-    HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeOptions,
+    HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
+    MaterializeOptions,
 };
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, CancellationToken, Fs, Generation, GenerationId,
@@ -61,6 +62,82 @@ pub struct HostCheckoutRestore {
     pub outcomes: Vec<HostPathRestore>,
     /// Additive work performed by all replacements.
     pub work: WorkCounters,
+}
+
+/// Immutable, provider-bound target for one host restore operation.
+///
+/// The request is created by [`HostCheckout::new_restore_request`], so the
+/// source root and identity are observations of the retained provider-owned
+/// capability rather than caller-provided authorization. Harness persistence
+/// should store this request's operation key and fingerprint with its durable
+/// approval record and replay the same request after recovery.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HostRestoreRequest {
+    operation: IdempotencyKey,
+    source_generation: GenerationId,
+    target_generation: GenerationId,
+    source_root: PathBuf,
+    root_identity: crate::NativeRootIdentity,
+    paths: Vec<PathBuf>,
+    replacement: HostPathReplacement,
+    options: MaterializeOptions,
+    fingerprint: crate::Digest,
+}
+
+impl HostRestoreRequest {
+    /// Stable retry identity retained by the durable approval record.
+    #[must_use]
+    pub const fn operation(&self) -> IdempotencyKey {
+        self.operation
+    }
+
+    /// Source generation used as the conditional host baseline.
+    #[must_use]
+    pub const fn source_generation(&self) -> GenerationId {
+        self.source_generation
+    }
+
+    /// Immutable generation selected for publication.
+    #[must_use]
+    pub const fn target_generation(&self) -> GenerationId {
+        self.target_generation
+    }
+
+    /// Provider-owned destination root path captured with the request.
+    #[must_use]
+    pub fn source_root(&self) -> &Path {
+        &self.source_root
+    }
+
+    /// Stable root identity captured with the request.
+    #[must_use]
+    pub const fn root_identity(&self) -> crate::NativeRootIdentity {
+        self.root_identity
+    }
+
+    /// Exact sorted, non-overlapping paths admitted by this request.
+    #[must_use]
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    /// Replacement mode fixed by the request fingerprint.
+    #[must_use]
+    pub const fn replacement(&self) -> HostPathReplacement {
+        self.replacement
+    }
+
+    /// Materialization bounds and destination fixed by the request.
+    #[must_use]
+    pub const fn options(&self) -> &MaterializeOptions {
+        &self.options
+    }
+
+    /// Fingerprint of every operation input, including paths and bounds.
+    #[must_use]
+    pub const fn fingerprint(&self) -> crate::Digest {
+        self.fingerprint
+    }
 }
 
 /// Native checkout handle retaining its provider-owned source binding.
@@ -191,6 +268,87 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         }
     }
 
+    /// Captures an immutable, provider-bound restore target. The returned
+    /// request is the only input Harness should persist for replay; its root
+    /// identity cannot be supplied or substituted by the caller.
+    pub async fn new_restore_request(
+        &self,
+        operation: IdempotencyKey,
+        target_generation: GenerationId,
+        paths: Vec<PathBuf>,
+        replacement: HostPathReplacement,
+        options: MaterializeOptions,
+    ) -> Result<HostRestoreRequest, HostCheckoutError> {
+        let binding = self
+            .prepare_publish(self.source.binding().await.generation_id)
+            .await?;
+        validate_restore_paths(&paths)?;
+        if options.destination != binding.source_root {
+            return Err(HostCheckoutError::DestinationMismatch);
+        }
+        let fingerprint = restore_request_fingerprint(
+            operation,
+            binding.generation_id,
+            target_generation,
+            &binding.source_root,
+            &paths,
+            replacement,
+            &options,
+        );
+        Ok(HostRestoreRequest {
+            operation,
+            source_generation: binding.generation_id,
+            target_generation,
+            source_root: binding.source_root,
+            root_identity: binding.root_identity,
+            paths,
+            replacement,
+            options,
+            fingerprint,
+        })
+    }
+
+    /// Replays one exact typed restore target. A mismatched operation,
+    /// destination, generation, root identity, or fingerprint fails before
+    /// any host mutation; durable journal/recovery state remains Harness's
+    /// responsibility.
+    pub async fn restore_request(
+        &self,
+        generation: &Generation<A, O>,
+        request: &HostRestoreRequest,
+        budget: WorkBudget,
+        cancellation: &CancellationToken,
+    ) -> Result<HostCheckoutRestore, HostCheckoutError> {
+        let binding = self.prepare_publish(request.source_generation).await?;
+        if request.target_generation != generation.id()
+            || request.source_root != binding.source_root
+            || request.root_identity != binding.root_identity
+            || request.options.destination != binding.source_root
+            || request.options.destination != self.root_binding_path().await?
+            || restore_request_fingerprint(
+                request.operation,
+                request.source_generation,
+                request.target_generation,
+                &request.source_root,
+                &request.paths,
+                request.replacement,
+                &request.options,
+            ) != request.fingerprint
+        {
+            return Err(HostCheckoutError::Source(SourceError::BindingMismatch));
+        }
+        self.restore_paths(
+            generation,
+            request.source_generation,
+            &request.paths,
+            request.replacement,
+            &request.options,
+            budget,
+            cancellation,
+        )
+        .await
+    }
+
     /// Materializes an authenticated generation into a caller-owned empty
     /// staging directory. The attached source is not touched.
     pub async fn materialize_to_staging(
@@ -226,12 +384,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         if options.destination != binding.source_root {
             return Err(HostCheckoutError::DestinationMismatch);
         }
-        if paths
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1] || pair[1].starts_with(&pair[0]))
-        {
-            return Err(HostCheckoutError::InvalidPaths);
-        }
+        validate_restore_paths(paths)?;
         if paths.is_empty() {
             return Ok(HostCheckoutRestore {
                 outcomes: Vec::new(),
@@ -272,14 +425,30 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
                 .await?;
             work = work.checked_add(check_work)?;
             let remaining = budget.remaining(work)?;
+            let verify_source = self.source.clone();
+            let verify_path = path.clone();
+            let verify_cancellation = cancellation.clone();
             let receipt = generation
-                .restore_host_path_with_root(
+                .restore_host_path_with_root_and_precondition(
                     path,
                     replacement,
                     options,
                     std::sync::Arc::clone(&self.root),
                     remaining,
                     cancellation,
+                    move |check_budget| async move {
+                        verify_source
+                            .verify_paths(
+                                expected_generation,
+                                std::slice::from_ref(&verify_path),
+                                1,
+                                options.maximum_extent_spans,
+                                check_budget,
+                                &verify_cancellation,
+                            )
+                            .await
+                            .map_err(|error| MaterializeError::Engine(error.to_string()))
+                    },
                 )
                 .await?;
             work = work.checked_add(receipt.work)?;
@@ -288,6 +457,50 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
         self.source.verify_root(&binding.source_root).await?;
         Ok(HostCheckoutRestore { outcomes, work })
     }
+}
+
+impl<A: AsyncAuthorityStore, O: AsyncObjectStore> HostCheckout<A, O> {
+    async fn root_binding_path(&self) -> Result<PathBuf, HostCheckoutError> {
+        Ok(self.source.binding().await.source_root)
+    }
+}
+
+fn validate_restore_paths(paths: &[PathBuf]) -> Result<(), HostCheckoutError> {
+    if paths
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1] || pair[1].starts_with(&pair[0]))
+    {
+        return Err(HostCheckoutError::InvalidPaths);
+    }
+    Ok(())
+}
+
+fn restore_request_fingerprint(
+    operation: IdempotencyKey,
+    source_generation: GenerationId,
+    target_generation: GenerationId,
+    source_root: &Path,
+    paths: &[PathBuf],
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+) -> crate::Digest {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"acyclic-host-restore-v2\0");
+    hasher.update(&operation.into_bytes());
+    hasher.update(source_generation.digest().as_bytes());
+    hasher.update(target_generation.digest().as_bytes());
+    hasher.update(source_root.to_string_lossy().as_bytes());
+    hasher.update(&[replacement as u8]);
+    hasher.update(options.destination.to_string_lossy().as_bytes());
+    hasher.update(&options.maximum_directory_entries.to_le_bytes());
+    hasher.update(&options.maximum_extent_spans.to_le_bytes());
+    hasher.update(&options.transfer_bytes.to_le_bytes());
+    for path in paths {
+        let bytes = path.to_string_lossy();
+        hasher.update(&(bytes.len() as u64).to_le_bytes());
+        hasher.update(bytes.as_bytes());
+    }
+    crate::Digest::from_bytes(*hasher.finalize().as_bytes())
 }
 
 #[cfg(test)]

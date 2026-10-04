@@ -79,7 +79,7 @@ pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
     MaterializeOptions, materialize_checkout, materialize_checkout_host_path,
     materialize_checkout_path, materialize_checkout_paths, restore_checkout_host_path,
-    restore_checkout_host_path_with_root,
+    restore_checkout_host_path_with_root, restore_checkout_host_path_with_root_and_precondition,
 };
 pub(crate) use materialize::{
     MaterializeMode, materialize_checkout_paths_with_mode, materialize_checkout_with_mode,

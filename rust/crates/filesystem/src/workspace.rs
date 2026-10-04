@@ -4958,6 +4958,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError> {
+        self.restore_host_path_with_root_and_precondition(
+            relative,
+            replacement,
+            options,
+            host_root,
+            budget,
+            cancellation,
+            |_| async { Ok(crate::WorkCounters::default()) },
+        )
+        .await
+    }
+
+    /// Restores one path through a held host root after an authenticated
+    /// precondition runs immediately after private staging. The precondition
+    /// receives the remaining work budget and its work is included in the
+    /// returned receipt.
+    #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
+    pub async fn restore_host_path_with_root_and_precondition<F, Fut>(
+        &self,
+        relative: &std::path::Path,
+        replacement: crate::HostPathReplacement,
+        options: &crate::MaterializeOptions,
+        host_root: std::sync::Arc<crate::native_host::HostRoot>,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
+        precondition: F,
+    ) -> Result<crate::OperationReceipt<crate::HostPathRestore>, WorkspaceError>
+    where
+        F: FnOnce(crate::WorkBudget) -> Fut + Send,
+        Fut: std::future::Future<Output = Result<crate::WorkCounters, crate::MaterializeError>>
+            + Send,
+    {
         let checkout = self
             .workspace
             .engine_checkout_measured(
@@ -4968,7 +5000,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             )
             .await?;
         let mut value = checkout.value;
-        let receipt = crate::restore_checkout_host_path_with_root(
+        let receipt = crate::restore_checkout_host_path_with_root_and_precondition(
             &mut value,
             relative,
             replacement,
@@ -4979,6 +5011,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
                 .remaining(budget)
                 .map_err(WorkspaceError::from)?,
             cancellation,
+            precondition,
         )
         .await
         .map_err(|failure| WorkspaceError::engine(failure.error))?;

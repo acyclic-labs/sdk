@@ -285,7 +285,9 @@ pub use native_capture::{
     feature = "native-mount",
     not(target_arch = "wasm32")
 ))]
-pub use native_checkout::{HostCheckout, HostCheckoutError, HostCheckoutRestore};
+pub use native_checkout::{
+    HostCheckout, HostCheckoutError, HostCheckoutRestore, HostRestoreRequest,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub use native_exchange::{
     NativeExchangeError, NativeExchangeJournal, NativeExchangeOutcome, NativeExchangePhase,

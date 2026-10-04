@@ -552,6 +552,42 @@ pub async fn restore_checkout_host_path_with_root<A: AsyncAuthorityStore, O: Asy
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>> {
+    restore_checkout_host_path_with_root_and_precondition(
+        checkout,
+        relative,
+        replacement,
+        options,
+        host_root,
+        budget,
+        cancellation,
+        |_| async { Ok(WorkCounters::default()) },
+    )
+    .await
+}
+
+/// Restores one path after running a caller-supplied authenticated
+/// precondition immediately after private staging and immediately before the
+/// held-directory publication.  The callback receives the remaining work
+/// budget and its work is included in the returned receipt.
+pub async fn restore_checkout_host_path_with_root_and_precondition<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    F,
+    Fut,
+>(
+    checkout: &mut Checkout<A, O>,
+    relative: &Path,
+    replacement: HostPathReplacement,
+    options: &MaterializeOptions,
+    host_root: Arc<HostRoot>,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+    precondition: F,
+) -> Result<OperationReceipt<HostPathRestore>, OperationFailure<MaterializeError>>
+where
+    F: FnOnce(WorkBudget) -> Fut + Send,
+    Fut: std::future::Future<Output = Result<WorkCounters, MaterializeError>> + Send,
+{
     validate_host_relative(relative).map_err(OperationFailure::before_work)?;
     validate_bounds(options).map_err(OperationFailure::before_work)?;
     if cancellation.is_cancelled() {
@@ -585,10 +621,27 @@ pub async fn restore_checkout_host_path_with_root<A: AsyncAuthorityStore, O: Asy
         cancellation,
     )
     .await;
+    let mut precondition = Some(precondition);
     let receipt = match materialized {
         Ok(receipt) => receipt,
         Err(failure) if matches!(failure.error, MaterializeError::MissingPath) => {
-            let work = *failure.work;
+            let mut work = *failure.work;
+            let callback = precondition
+                .take()
+                .expect("restore precondition must run at most once");
+            let check_budget = work
+                .remaining(budget)
+                .map_err(|error| OperationFailure::new(MaterializeError::Work(error), work))?;
+            let check_work = match callback(check_budget).await {
+                Ok(work) => work,
+                Err(error) => {
+                    let _ = tokio::task::spawn_blocking(move || remove_any(&stage_root)).await;
+                    return Err(OperationFailure::new(error, work));
+                }
+            };
+            work = work
+                .checked_add(check_work)
+                .map_err(|error| OperationFailure::new(MaterializeError::Work(error), work))?;
             let host_root = Arc::clone(&host_root);
             tokio::task::spawn_blocking(move || {
                 let parent =
@@ -614,6 +667,29 @@ pub async fn restore_checkout_host_path_with_root<A: AsyncAuthorityStore, O: Asy
             return Err(failure);
         }
     };
+    let callback = precondition
+        .take()
+        .expect("restore precondition must run at most once");
+    let check_budget = receipt
+        .work
+        .remaining(budget)
+        .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?;
+    let check_work = match callback(check_budget).await {
+        Ok(work) => work,
+        Err(error) => {
+            let cleanup_root = stage_root.clone();
+            let work = receipt.work;
+            let _ = tokio::task::spawn_blocking(move || remove_any(&cleanup_root)).await;
+            return Err(OperationFailure::new(error, work));
+        }
+    };
+    let mut receipt = OperationReceipt {
+        value: receipt.value,
+        work: receipt
+            .work
+            .checked_add(check_work)
+            .map_err(|error| OperationFailure::new(MaterializeError::Work(error), receipt.work))?,
+    };
     tokio::task::spawn_blocking(move || {
         publish_restore(
             &destination_root,
@@ -630,10 +706,8 @@ pub async fn restore_checkout_host_path_with_root<A: AsyncAuthorityStore, O: Asy
         OperationFailure::new(MaterializeError::Engine(error.to_string()), receipt.work)
     })?
     .map_err(|error| OperationFailure::new(error, receipt.work))?;
-    Ok(OperationReceipt {
-        value: HostPathRestore::Restored,
-        work: receipt.work,
-    })
+    receipt.value = HostPathRestore::Restored;
+    Ok(receipt)
 }
 
 fn materialize_io_error(error: MaterializeError) -> std::io::Error {
