@@ -9,7 +9,7 @@ use crate::{
     interaction::{Interaction, InteractionOutcome},
     model::{
         Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
-        ModelProvider, ModelRequest, ModelRole,
+        ModelDispatchPermit, ModelProvider, ModelRequest, ModelRole,
     },
     projection::SelectedModelContext,
     registry::ComponentIdentity,
@@ -289,6 +289,28 @@ pub trait ExecutionJournal: Send + Sync {
                 "atomic execution journal append is unavailable".into(),
             ))
         })
+    }
+
+    /// Atomically appends `ModelStarted` with a provider supplied budget
+    /// mutation when the journal is backed by one Stream provider. The
+    /// default preserves the existing single-journal CAS for hosts without a
+    /// coordinated commit implementation.
+    fn append_model_started_with_permit<'a>(
+        &'a self,
+        operation_id: OperationId,
+        expected_tail: u64,
+        claim_id: String,
+        event: ExecutionEvent,
+        permit: Option<ModelDispatchPermit>,
+    ) -> BoxFuture<'a, Result<bool>> {
+        if permit.is_some() {
+            return Box::pin(async {
+                Err(Error::Unsupported(
+                    "atomic budget and execution commit is unavailable".into(),
+                ))
+            });
+        }
+        self.append_if_tail(operation_id, expected_tail, claim_id, event)
     }
 
     /// Stages immutable private bytes before any referring observation is appended.
@@ -685,6 +707,7 @@ impl StockExecutor {
             }
             prepared
         } else {
+            self.provider.before_model_prepare().await?;
             let context = self
                 .context
                 .run_with_rejection_evidence(
@@ -709,6 +732,15 @@ impl StockExecutor {
                     journal.verify_input_file(reference).await?;
                 }
             }
+            let max_output_tokens = self
+                .provider
+                .output_token_limit_for_bytes(self.limits.render_bytes)
+                .ok_or_else(|| {
+                    Error::Invalid(
+                        "provider must declare an exact output-token bound for the admitted byte ceiling"
+                            .into(),
+                    )
+                })?;
             let prepared = crate::model_input::PreparedModelInput::prepare_with_policy(
                 ModelRequest {
                     model: self.model.clone(),
@@ -723,7 +755,7 @@ impl StockExecutor {
                                 .contains(&format!("tool:call:{}", tool.name))
                         })
                         .collect(),
-                    max_output_tokens: None,
+                    max_output_tokens: Some(max_output_tokens),
                 },
                 self.limits,
                 self.provider.model_option_policy(),
@@ -790,6 +822,7 @@ impl StockExecutor {
         let model_events = if replay_completed {
             replayed_model
         } else if started.is_some() {
+            self.provider.before_model_reconcile().await?;
             let Some(mut continuation) = self
                 .provider
                 .reconcile_admitted(
@@ -849,8 +882,19 @@ impl StockExecutor {
                 }
                 return Err(Error::Indeterminate(input.operation_id));
             }
+            // Reserve the durable provider budget before publishing the
+            // execution-journal start marker. A replayed start therefore
+            // cannot bypass root/child admission by looking only at the
+            // execution journal.
+            self.provider
+                .before_model_dispatch(input.operation_id, step)
+                .await?;
+            let dispatch_permit = self
+                .provider
+                .prepare_model_dispatch(input.operation_id, step, request_digest)
+                .await?;
             let claimed = journal
-                .append_if_tail(
+                .append_model_started_with_permit(
                     input.operation_id,
                     current.len() as u64,
                     format!("model:{step}:claim:{}", OperationId::new()),
@@ -858,6 +902,7 @@ impl StockExecutor {
                         step,
                         request_digest,
                     },
+                    dispatch_permit,
                 )
                 .await;
             match claimed {
