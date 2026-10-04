@@ -222,6 +222,13 @@ EOF
       --eval '(format t "generated Common Lisp package loaded~%")'
     test -n "$(rg -i 'stream|upload|put_object' "$project/generated" --glob '*.lisp' | head -n 1)"
     python3 "$source_root/scripts/verify-generated-rpc-coverage.py" "$project/generated" "${contract_protos[@]}"
+    if [[ -n "${ACYCLIC_FIXTURE_GRPC_ENDPOINT:-}" ]]; then
+      python3 "$source_root/scripts/write-common-lisp-runtime-consumer.py" \
+        "$project/generated" "${contract_protos[@]}" "$project/runtime_smoke.lisp"
+      sbcl --non-interactive "${generated_args[@]}" \
+        --load "$project/runtime_smoke.lisp" --eval '(format t "Common Lisp Rust fixture consumer passed~%")'
+      test -s "$project/runtime_smoke.lisp"
+    fi
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
   lua-remote)
