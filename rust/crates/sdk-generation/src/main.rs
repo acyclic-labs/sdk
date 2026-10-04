@@ -36,6 +36,7 @@ const REQUIRED_TOOL_IDS: &[&str] = &[
     "sdk-language-producers",
     "sdk-python",
     "sdk-typescript",
+    "sdk-typescript-rpc-contracts",
 ];
 const OPTIONAL_TOOL_IDS: &[&str] = &[];
 
@@ -2263,6 +2264,12 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             manifest: some_file(root, "rust/crates/sdk-typescript/Cargo.toml"),
             script: None,
         },
+        ToolSpec {
+            id: "sdk-typescript-rpc-contracts",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-typescript/Cargo.toml"),
+            script: None,
+        },
         // Generated packages must exist before examples and docs consume
         // their exact source-bound artifacts.
         ToolSpec {
@@ -3981,10 +3988,11 @@ fn contract_inputs(root: &Path, tool: &str) -> Vec<String> {
                 }
             }
         }
-        "sdk-typescript" => {
+        "sdk-typescript" | "sdk-typescript-rpc-contracts" => {
             for path in [
-                "rust/crates/sdk-contract-wire",
                 "rust/crates/sdk-typescript",
+                "rust/crates/sdk-contract-wire",
+                "compatibility/objects/v1/objects_descriptor.bin",
                 "typescript/packages",
             ] {
                 if root.join(path).exists() {
@@ -4138,6 +4146,23 @@ fn tool_command(
             output.as_os_str().to_os_string(),
             output.join("wire").as_os_str().to_os_string(),
             OsString::from(source.revision.as_str()),
+        ]);
+    }
+    if spec.id == "sdk-typescript-rpc-contracts" {
+        let manifest = spec.manifest.as_ref()?;
+        return Some(vec![
+            cargo_program(),
+            OsString::from("run"),
+            OsString::from("--manifest-path"),
+            manifest.as_os_str().to_os_string(),
+            OsString::from("--locked"),
+            OsString::from("--bin"),
+            OsString::from("sdk-rpc-contracts"),
+            OsString::from("--"),
+            OsString::from("--source-root"),
+            root.as_os_str().to_os_string(),
+            OsString::from("--output"),
+            output.join("typescript/rpc-contracts.json").as_os_str().to_os_string(),
         ]);
     }
     if let Some(script) = &spec.script {
@@ -6421,6 +6446,8 @@ mod tests {
         assert!(index("sdk-openapi-prototype") < index("sdk-language-producers"));
         assert!(index("sdk-language-producers") < index("sdk-python"));
         assert!(index("sdk-python") < index("sdk-typescript"));
+        assert!(index("sdk-typescript") < index("sdk-typescript-rpc-contracts"));
+        assert!(index("sdk-typescript-rpc-contracts") < index("sdk-examples"));
         assert!(index("sdk-typescript") < index("sdk-examples"));
         assert!(index("sdk-examples") < index("sdk-docs"));
     }
@@ -6614,6 +6641,39 @@ mod tests {
             profile["profiles"][0]["packages"][0]["features"],
             json!(["acyclic-objects/grpc", "default", "distributed", "s3-http"])
         );
+    }
+
+    #[test]
+    fn rpc_inventory_command_is_source_and_output_bound() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let output = root.join("target/sdk-generation-rpc-inventory-test");
+        let spec = tool_specs(&root)
+            .into_iter()
+            .find(|spec| spec.id == "sdk-typescript-rpc-contracts")
+            .expect("RPC inventory stage is registered");
+        let source = SourceIdentity {
+            revision: "0123456789012345678901234567890123456789".into(),
+            dirty: false,
+            digest: "sha256:test".into(),
+        };
+        let command = tool_command(
+            &root,
+            &spec,
+            Operation::Generate,
+            &output.join("request.json"),
+            &output,
+            &source,
+        )
+        .expect("RPC inventory binary is registered");
+        let args = command
+            .iter()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(args.iter().any(|argument| argument == "sdk-rpc-contracts"));
+        assert!(args.iter().any(|argument| argument == &root.to_string_lossy()));
+        assert!(args.iter().any(|argument| {
+            argument == &output.join("typescript/rpc-contracts.json").to_string_lossy()
+        }));
     }
 
     #[test]
