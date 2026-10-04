@@ -27,6 +27,8 @@ Earlier passing and failing checkpoints are retained in [EVIDENCE.md](EVIDENCE.m
 
 ## Boundaries
 
+SCOPE-06 is not fully qualified: the original `Q:\sdk` checkout remains on pinned `main` commit `31b9ff52d63c91f2b9bf87e16b78ad682d26546f` with clean tracked and staged diffs, but no pre-task untracked-file inventory was found. A current clean tracked tree does not prove preservation of the original untracked set. Do not claim the required before/after untracked digest audit passed.
+
 Harness owns model inputs, orchestration, forks, communication, admission, effects and recovery. Filesystem owns workspace semantics and its host adapter. GraphCoder stays a composition and terminal wrapper.
 
 Models are mocked. There is no sandbox or cloud implementation. Workspace routing is not process confinement. Host commands require exact approval and exclude inherited credentials. Root writeback requires approval and reconciliation with concurrent user changes. The original checkout remains untouched; work stays on `codex/graphcoder-sdk` without merging.
