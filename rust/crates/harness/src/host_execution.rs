@@ -1004,9 +1004,7 @@ impl ExecutionCancellation {
     }
 
     fn cancellation_fence_is_unknown(&self) -> bool {
-        self.requires_durable_fence
-            && self.is_cancelled()
-            && !self.durable.load(Ordering::Acquire)
+        self.requires_durable_fence && self.is_cancelled() && !self.durable.load(Ordering::Acquire)
     }
 
     /// Requests cancellation of the running operation.
@@ -1787,11 +1785,9 @@ impl NativeExecutionProvider {
                 Ok(Err(error)) => Self::bounded_unknown(format!(
                     "approved process runner failed before its outcome was durable: {error}"
                 )),
-                Ok(Ok(_)) if cancellation.cancellation_fence_is_unknown() => {
-                    Self::bounded_unknown(
-                        "cancellation was signalled without a persisted durable fence",
-                    )
-                }
+                Ok(Ok(_)) if cancellation.cancellation_fence_is_unknown() => Self::bounded_unknown(
+                    "cancellation was signalled without a persisted durable fence",
+                ),
                 Ok(Ok(outcome)) => match Self::enforce_output_limit(&approval.request, outcome) {
                     RunnerOutcome::Exited { stdout, stderr, .. } if cancellation.is_cancelled() => {
                         ExecutionReceipt::Cancelled { stdout, stderr }
@@ -3452,7 +3448,10 @@ mod local_provider_tests {
     struct NoopModel;
 
     impl ModelProvider for NoopModel {
-        fn generate<'a>(&'a self, _: crate::model_input::PreparedModelInput) -> BoxStream<'a, Result<ModelEvent>> {
+        fn generate<'a>(
+            &'a self,
+            _: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
             Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
                 metadata: serde_json::Value::Null,
             })]))
@@ -3645,30 +3644,46 @@ mod local_provider_tests {
     }
 
     impl ExecutionReceiptStore for FailRequestCancelStore {
-        fn claim<'a>(&'a self, key: &'a ExecutionReceiptKey)
-            -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
+        fn claim<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<ExecutionClaim>> {
             self.inner.claim(key)
         }
 
-        fn load<'a>(&'a self, key: &'a ExecutionReceiptKey)
-            -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+        fn load<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
             self.inner.load(key)
         }
 
-        fn load_attempt<'a>(&'a self, attempt_id: EffectAttemptId)
-            -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
+        fn load_attempt<'a>(
+            &'a self,
+            attempt_id: EffectAttemptId,
+        ) -> futures::future::BoxFuture<'a, Result<Option<ExecutionReceiptRecord>>> {
             self.inner.load_attempt(attempt_id)
         }
 
-        fn publish<'a>(&'a self, key: &'a ExecutionReceiptKey,
-            handle: &'a ExecutionClaimHandle, receipt: &'a ExecutionReceipt)
-            -> futures::future::BoxFuture<'a, Result<FileRef>> {
+        fn publish<'a>(
+            &'a self,
+            key: &'a ExecutionReceiptKey,
+            handle: &'a ExecutionClaimHandle,
+            receipt: &'a ExecutionReceipt,
+        ) -> futures::future::BoxFuture<'a, Result<FileRef>> {
             self.inner.publish(key, handle, receipt)
         }
 
-        fn request_cancel<'a>(&'a self, _key: &'a ExecutionReceiptKey)
-            -> futures::future::BoxFuture<'a, Result<()>> {
-            async { Err(Error::Storage("fault injected while persisting cancellation".into())) }.boxed()
+        fn request_cancel<'a>(
+            &'a self,
+            _key: &'a ExecutionReceiptKey,
+        ) -> futures::future::BoxFuture<'a, Result<()>> {
+            async {
+                Err(Error::Storage(
+                    "fault injected while persisting cancellation".into(),
+                ))
+            }
+            .boxed()
         }
     }
 
