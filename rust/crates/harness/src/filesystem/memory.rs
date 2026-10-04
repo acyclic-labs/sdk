@@ -1050,17 +1050,13 @@ where
         self.journal.clone()
     }
 
-    /// Injects a typed load fault for one exact persisted journal reference.
-    ///
-    /// This hidden hook exists only for the persistent local-storage
-    /// integration matrix.  It does not alter grants, references, or the
-    /// underlying LocalFs/LocalStream providers.
-    #[cfg(feature = "filesystem-local")]
-    #[doc(hidden)]
-    pub fn inject_journal_load_fault(
+    /// Injects a typed load fault for one exact persisted journal reference
+    /// from the in-crate persistent-storage regression tests.
+    #[cfg(test)]
+    pub(crate) fn inject_journal_load_fault(
         &self,
         reference: FileRef,
-        fault: crate::filesystem::JournalLoadFault,
+        fault: crate::filesystem::execution_journal::JournalLoadFault,
     ) -> Result<()> {
         self.journal.inject_load_fault(reference, fault)
     }

@@ -50,9 +50,6 @@ pub(crate) fn is_host_owned_internal_path(path: &str) -> bool {
 
 mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
-#[cfg(feature = "filesystem-local")]
-#[doc(hidden)]
-pub use execution_journal::JournalLoadFault;
 mod git_facade;
 pub use git_facade::{
     FilesystemGitFacade, ROOT_WRITEBACK_CAPABILITY, RootWritebackApproval, RootWritebackRequest,
@@ -74,6 +71,9 @@ mod workflow_journal;
 pub use workflow_journal::FilesystemWorkflowJournal;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 mod local;
+#[cfg(all(test, feature = "filesystem-local", not(target_arch = "wasm32")))]
+#[path = "local_model_input_storage_tests.rs"]
+mod local_model_input_storage_tests;
 #[cfg(all(feature = "filesystem-local", not(target_arch = "wasm32")))]
 pub use local::{
     DurableHarnessStorage, FilesystemExecutionReceiptStore, LocalHarnessTools,

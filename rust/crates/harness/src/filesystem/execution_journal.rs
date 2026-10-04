@@ -25,7 +25,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
 
-#[cfg(feature = "filesystem-local")]
+#[cfg(test)]
 use std::sync::Mutex;
 
 const MAX_RECORDS: u64 = 1_000_000;
@@ -41,10 +41,9 @@ struct Observation {
 /// A narrowly scoped fault used by the persistent local-storage regression
 /// tests.  The fault is keyed by one exact, already authenticated `FileRef`,
 /// after the real object provider has loaded and verified its bytes.
-#[cfg(feature = "filesystem-local")]
-#[doc(hidden)]
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum JournalLoadFault {
+pub(crate) enum JournalLoadFault {
     /// Report that the exact journal body cannot be found.
     Missing,
     /// Report that the exact journal body failed its integrity check.
@@ -65,7 +64,7 @@ pub struct FilesystemExecutionJournal<P, A, O> {
     /// Session identity authenticated by the composition that owns this
     /// journal.  A journal without this binding cannot authorize execution.
     session_id: Option<SessionId>,
-    #[cfg(feature = "filesystem-local")]
+    #[cfg(test)]
     load_fault: Arc<Mutex<Option<(FileRef, JournalLoadFault)>>>,
 }
 
@@ -141,21 +140,17 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             input_verifier: None,
             interactions,
             session_id: None,
-            #[cfg(feature = "filesystem-local")]
+            #[cfg(test)]
             load_fault: Arc::new(Mutex::new(None)),
         })
     }
 
-    /// Injects a typed fault for one exact persisted journal reference.
-    ///
-    /// This is intentionally hidden from normal API documentation and is
-    /// compiled only with the persistent local provider.  It lets integration
-    /// tests exercise replay after the real LocalFs/LocalStream composition
-    /// has loaded the pinned bytes, without replacing that composition with an
-    /// in-memory fake or deleting an entire object segment.
-    #[cfg(feature = "filesystem-local")]
-    #[doc(hidden)]
-    pub fn inject_load_fault(
+    /// Injects a typed fault for one exact persisted journal reference in the
+    /// in-crate test build. The real LocalFs/LocalStream composition loads and
+    /// verifies the bytes first; this seam then fails the journal boundary and
+    /// does not model physical object deletion or corruption.
+    #[cfg(test)]
+    pub(crate) fn inject_load_fault(
         &self,
         reference: FileRef,
         fault: JournalLoadFault,
@@ -731,7 +726,7 @@ where
                     .read_content(reference, &grant, self.maximum_payload_bytes)
                     .await?
             };
-            #[cfg(feature = "filesystem-local")]
+            #[cfg(test)]
             let fault = self
                 .load_fault
                 .lock()
@@ -739,7 +734,7 @@ where
                 .as_ref()
                 .filter(|(target, _)| target == reference)
                 .map(|(_, fault)| *fault);
-            #[cfg(feature = "filesystem-local")]
+            #[cfg(test)]
             if let Some(fault) = fault {
                 return Err(match fault {
                     JournalLoadFault::Missing => {
