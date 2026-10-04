@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Cancellation is now distinguished from its durable receipt fence on the root branch. At `f97519f57`, a fault while persisting cancellation leaves a late process success indeterminate and prevents redispatch after reopening real local storage. The full host-execution suite passes 25/26, with the held-descendant-pipe marker failure retained. See [current cancellation evidence](checkpoint-cancellation-persistence-fence-2026-10-04.json); full cleanup remains unqualified.
+
 Latest production execution at `ee7cb5f40` passes 0/1 recursive model swarm cases and 1/5 recovery fault cases. Both test processes are terminal; the four fault failures remain unchanged. [Fresh source-bound evidence](checkpoint-current-production-swarm-2026-10-04.json) supersedes older production baselines for the current root Rust tree. These failures prevent completion.
 
 Current integration decision: isolated fork-rebind checkpoint `f5dd2a108` remains held for a stale-generation replacement race and discarded publication-lookup errors. See [source review](checkpoint-fork-rebind-review-2026-10-04.json). Cross-operation authenticated rejection evidence is being repaired separately. Production recursive swarm, recovery, approved root writeback, and final installed qualification remain open; the source-bound results below are historical checkpoints, not completion claims.
