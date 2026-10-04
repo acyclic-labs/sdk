@@ -6,7 +6,7 @@
   "requirements": [
     {
       "id": "isolation",
-      "evidence": "Original checkout reverified at31b9ff52d63c91f2b9bf87e16b78ad682d26546f with no tracked edits. Three embedded artifact commits accidentally landed on main; all were preserved under codex/embedded-artifact-recovery-a3d0ebede and mixed reset restored main while retaining artifact bytes. Isolated SDK and website branches remain required; no merge/publish/deploy performed.",
+      "evidence": "Original main independently verified31b9ff52d63c91f2b9bf87e16b78ad682d26546f tracked clean. SDK corrupt branch ref/index preserved then restored from valid35045fb971c890e2803e071c760a61c4737dc926 and separate baseline index. No working source reset. Stale empty index lock quarantined after SDK Git writers absent; unrelated Cloud push untouched. Website repository healthy. Original damaged metadata and full source archive retained. No main merge, auto-merge, publishing or production deployment.",
       "state": "verified"
     },
     {
@@ -56,12 +56,12 @@
     },
     {
       "id": "website-presentation",
-      "evidence": "Source/SSR/link checks pass in scoped owner reports. Fresh desktop/mobile interactive proof pending existing browser error state; no blocked-action bypass performed.",
+      "evidence": "Website owner102d021 fixes archived sourceFiles resolution. Healthy repository verified by fsck connectivity, svelte-check0 errors, static history/isolation/bundle tests. Controlled preview session86279: latest/reference and archived source routes200, traversal404. Fresh desktop/mobile rendered proof and current strict bundle import remain pending.",
       "state": "unverified"
     },
     {
       "id": "typescript-removal",
-      "evidence": "Public generate:sdk/check:sdk/drift:sdk/inventory:sdk/qualify:sdk now delegate directly to Rust through a thin Node process launcher; actual inventory passes and missing-manifest drift fails. Legacy generation wrappers and duplicated adapters remain until replacements qualify. Rust Objects limit exports exist but TypeScript adapter consumption/removal is still assigned; complete shared TypeScript removal remains outstanding.",
+      "evidence": "Public SDK commands delegate to Rust through thin launcher; live inventory and drift negative passed. Launcher frozen-source dispatch independently verified36 inventory entries from clean0ef84f162, not36 qualifications. Objects3f0ff4625 removes independent TypeScript frame limits with installed upload/download evidence. Remaining shared behavior and legacy generation wrappers require qualified replacements and removal.",
       "state": "partial"
     },
     {
@@ -73,6 +73,26 @@
       "id": "public-disclaimer-removal",
       "evidence": "Root Inference README041a441e and docs cleanup6b825135b/4f8a17e57 remove public maturity and feature-selection prose. Website disclaimer panels removed. Current full-source audit remains required; immutable historical release source remains exact.",
       "state": "in-progress"
+    },
+    {
+      "id": "oss-research-selection",
+      "state": "partial",
+      "evidence": "Pinned research reports and architecture-selection.md exist for Forge, OpenAPI/protobuf, Rust schema extraction and embedded bindings. Selection remains provisional in current source. Complete working prototype comparison and evidence-based promotion before broad migration remain to verify."
+    },
+    {
+      "id": "generation-provenance-and-reproducibility",
+      "state": "partial",
+      "evidence": "Rust generation entrypoint and source-bound producer request/artifact/log validators exist; isolated snapshot identity and inherited Git environment rejection tested. Two independent clean full generations with matching generated artifacts, pinned generator versions and exact source hashes remain required."
+    },
+    {
+      "id": "rust-change-propagation",
+      "state": "unverified",
+      "evidence": "Must change a Rust API, Rust comment, crate-owned guide and executable scenario in a disposable source checkout, regenerate alone, and observe matching SDK, website navigation/reference, snippets and versioned bundle changes. No complete end-to-end mutation receipt inspected."
+    },
+    {
+      "id": "language-inventory-completion",
+      "state": "partial",
+      "evidence": "Actual frozen0ef84f162 inventory contains36 targets with remote, embedded, installation, docs and snippet dimensions. Catalog inventory alone does not qualify any target. Every viable target must retain successful scoped package/conformance evidence or a concrete supported exclusion; pending viable entries remain outstanding."
     }
   ]
 }

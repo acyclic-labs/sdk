@@ -8,7 +8,14 @@ if (!operation) {
   console.error("Usage: rust-sdk-generation.mjs <generate|check|drift|inventory|qualify> [--source-root PATH] [--output PATH]");
   process.exitCode = 1;
 } else {
-  const sourceArgument = args.indexOf("--source-root");
+  // Resolve caller paths before selecting the source checkout's toolchain.
+  for (let index = 0; index < args.length - 1; index++) {
+    if (args[index] === "--source-root" || args[index] === "--output") {
+      args[index + 1] = resolve(root, args[index + 1]);
+      index++;
+    }
+  }
+  const sourceArgument = args.lastIndexOf("--source-root");
   const sourceRoot = sourceArgument >= 0 && args[sourceArgument + 1]
     ? resolve(root, args[sourceArgument + 1])
     : root;
@@ -20,7 +27,7 @@ if (!operation) {
     "--manifest-path", join(sourceRoot, "rust", "crates", "sdk-generation", "Cargo.toml"),
     "--", ...cliArgs,
   ], {
-    cwd: root,
+    cwd: sourceRoot,
     env: { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(sourceRoot, "target", "sdk-generation-cli") },
     stdio: "inherit",
   });
