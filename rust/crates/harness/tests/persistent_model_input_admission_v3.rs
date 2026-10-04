@@ -887,19 +887,25 @@ async fn persistent_admission_rejects_oversized_context_and_undeclared_options_b
     )?;
     let options_root = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let (policy_provider, policy_requests) = CapturingProvider::with_policy(policy);
-    let policy_session = PersistentLocalHarness::open(
+    let undeclared = PersistentLocalHarness::open(
         options_root.path(),
         model(json!({"mode": "safe", "api_key": "runtime-secret"}))?,
         policy_provider,
         Limits::default(),
     )
-    .await?;
-    let undeclared = policy_session
-        .run(operation(0x44), "valid-sized input")
-        .await;
+    .await;
     assert!(
-        undeclared.is_err(),
-        "undeclared model options must be rejected"
+        matches!(undeclared, Err(Error::Invalid(message)) if message.contains("model options failed validation")),
+        "undeclared model options must be rejected during construction"
+    );
+    assert!(
+        options_root
+            .path()
+            .read_dir()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .next()
+            .is_none(),
+        "option rejection must precede durable session creation"
     );
     assert!(
         captured(&policy_requests).is_empty(),
