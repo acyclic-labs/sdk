@@ -10,6 +10,8 @@ use crate::{
     conversation::{ContentPublisher, ContentResidencyVerifier, FileRef, VolumeRef},
     core::{AuthorityIssuer, EffectGuarantee, EffectStatus, Scope},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
+    fork::{Capture, ForkCaptureProvider, ForkRequest, ForkSelection},
+    resources::{CheckpointRef, ProviderRef, ResourceRevision},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
@@ -934,6 +936,102 @@ pub trait ExecutionReceiptStore: Send + Sync {
             ))
         }
         .boxed()
+    }
+}
+
+/// Read-only fork capture bridge for an admitted native process attempt.
+///
+/// A pending or unknown receipt is represented as [`Capture::InFlight`]. The
+/// bridge never treats a host PID, process handle, or completed execution
+/// receipt as a child checkpoint. A separate Machines provider must publish an
+/// immutable [`CheckpointRef`] before a process can become child-visible.
+pub struct NativeExecutionForkCaptureProvider {
+    store: Arc<dyn ExecutionReceiptStore>,
+    provider: ProviderRef,
+    operation_id: OperationId,
+    attempt_id: EffectAttemptId,
+}
+
+impl NativeExecutionForkCaptureProvider {
+    pub fn new(
+        store: Arc<dyn ExecutionReceiptStore>,
+        provider: ProviderRef,
+        operation_id: OperationId,
+        attempt_id: EffectAttemptId,
+    ) -> Result<Self> {
+        if provider.family() != "machines" {
+            return Err(Error::Invalid(
+                "native process fork capture requires a machines provider".into(),
+            ));
+        }
+        Ok(Self {
+            store,
+            provider,
+            operation_id,
+            attempt_id,
+        })
+    }
+
+    fn matches(&self, selection: &ForkSelection) -> Result<()> {
+        let ResourceRevision::Process(checkpoint) = &selection.revision else {
+            return Err(Error::Invalid(
+                "native process capture requires a process selection".into(),
+            ));
+        };
+        if checkpoint.as_resource().provider() != &self.provider
+            || checkpoint.as_resource().key() != self.identity_key()
+        {
+            return Err(Error::Conflict(
+                "native process capture identity does not match the selected attempt".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Stable opaque selection key for the exact operation and dispatch
+    /// attempt. It carries identity only; it is never a PID or host handle.
+    #[must_use]
+    pub fn identity_key(&self) -> Vec<u8> {
+        let mut key = b"acyclic-native-attempt-v1\0".to_vec();
+        key.extend_from_slice(&self.operation_id.into_bytes());
+        key.extend_from_slice(&self.attempt_id.into_bytes());
+        key
+    }
+
+    async fn observe(&self, selection: &ForkSelection) -> Result<Capture> {
+        self.matches(selection)?;
+        let Some(record) = self.store.load_attempt(self.attempt_id).await? else {
+            return Ok(Capture::InFlight(self.operation_id));
+        };
+        record.validate()?;
+        if matches!(record.receipt, ExecutionReceipt::Unknown { .. }) {
+            return Ok(Capture::Indeterminate(self.operation_id));
+        }
+        Ok(Capture::Unsupported(
+            "native execution has no immutable process checkpoint".into(),
+        ))
+    }
+}
+
+impl ForkCaptureProvider for NativeExecutionForkCaptureProvider {
+    fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
+
+    fn capture<'a>(
+        &'a self,
+        _request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Capture>> {
+        self.observe(selection).boxed()
+    }
+
+    fn reconcile<'a>(
+        &'a self,
+        _request: &'a ForkRequest,
+        selection: &'a ForkSelection,
+    ) -> BoxFuture<'a, Result<Option<Capture>>> {
+        async move { Ok(Some(self.observe(selection).await?)) }.boxed()
     }
 }
 
