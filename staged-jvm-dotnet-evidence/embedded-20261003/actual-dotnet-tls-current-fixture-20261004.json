@@ -1,0 +1,30 @@
+{
+  "schema": "acyclic.sdk.dotnet.current-tls-fixture.v1",
+  "captured_at": "2026-10-04T01:39:00+01:00",
+  "factory_commit": "a4c3867ca17d3a76ca8187565b3248c9ae9d3da3",
+  "fixture": {
+    "handoff": "Q:/sdk/work/inference-machines-package-receipt/final-package-2b128ed/MULTILANGUAGE_LIVE_HANDOFF.md",
+    "cwd": "Q:/sdk/work/inference-machines-package-receipt/final-package-2b128ed/fixtures",
+    "executable": "Q:/sdk/work/inference-machines-frozen-consumer-target/debug/installed-fixture-consumer.exe",
+    "sha256": "5A1078F98F0AC1ED7C3B4A644272A6FB0569247A8D02E8B83C8A1733323B8835",
+    "source_sha256": "D104632DDAFCF4D4EB623B205FEBCB85A72AA5E6B9A4A6B8F5A0FEDEE9B1A5F5",
+    "inference_endpoint": "https://localhost:65127",
+    "machines_endpoint": "https://localhost:65134",
+    "listeners": "both remained live through the bounded serve window",
+    "certificate_generation": "current fixture source still uses rcgen generate_simple_self_signed; emitted identity is ECDSA"
+  },
+  "package": {
+    "name": "Acyclic.Sdk.Transport",
+    "factory_source": "dotnet/RemoteClientFactory.cs",
+    "consumer": "Q:/sdk/.tmp-dotnet-factory-live-20261004",
+    "sdk": "Q:/sdk/.tmp-dotnet-sdk-official-8.0.425/dotnet.exe"
+  },
+  "result": {
+    "attempted": ["Machines.InspectMachine", "Machines.Events", "Machines.Usage"],
+    "status": "blocked before RPC",
+    "boundary": "Windows Schannel rejected the ECDSA client credential with Win32 0x8009030D, credentials supplied to the package were not recognized",
+    "factory_import": "CopyWithPrivateKey imported the emitted ECDSA PEM and retained HasPrivateKey; failure occurred during native TLS credential acquisition",
+    "validation": "custom-root server validation remained enabled; no trust bypass or plaintext fallback"
+  },
+  "next_required_fixture_variant": "RSA-backed Rust fixture certificate, preserving the same CA/client chain and service routes, to distinguish Schannel ECDSA provider support from factory behavior"
+}
