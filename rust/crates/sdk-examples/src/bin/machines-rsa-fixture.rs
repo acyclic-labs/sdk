@@ -1,8 +1,11 @@
 //! Bounded RSA/mTLS Machines fixture for installed language consumers.
 
-use acyclic_sdk_examples::tls_fixture::{RsaTlsMaterial, serve_machines_rsa};
+use acyclic_sdk_examples::tls_fixture::{
+    MACHINES_RPC_METHODS, RsaTlsMaterial, new_method_transcript_log,
+    serve_machines_rsa_with_transcript,
+};
 use serde_json::json;
-use std::env;
+use std::{collections::BTreeSet, env, fs, path::PathBuf};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
@@ -16,10 +19,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
     let material = RsaTlsMaterial::generate()?;
+    let transcript_file = env::var_os("ACYCLIC_FIXTURE_TRANSCRIPT_FILE").map(PathBuf::from);
+    let transcript = new_method_transcript_log();
     let (shutdown, receiver) = oneshot::channel();
     let server_material = material.clone();
-    let server =
-        tokio::spawn(async move { serve_machines_rsa(listener, &server_material, receiver).await });
+    let server_transcript = transcript.clone();
+    let server = tokio::spawn(async move {
+        serve_machines_rsa_with_transcript(listener, &server_material, receiver, server_transcript)
+            .await
+    });
     println!(
         "{}",
         serde_json::to_string(&json!({
@@ -30,7 +38,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             "privateKey": material.client_private_key,
             "machineId": hex::encode(acyclic_sdk_examples::tls_fixture::FIXTURE_MACHINE),
             "operationId": hex::encode(acyclic_sdk_examples::tls_fixture::FIXTURE_OPERATION),
+            "expectedRpcs": MACHINES_RPC_METHODS,
+            "sourceSha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
+            "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
             "seconds": seconds,
+            "transcriptFile": transcript_file.as_ref().map(|path| path.to_string_lossy()),
             "tls": { "keyAlgorithm": "RSA-2048", "mutual": true, "hostname": "localhost" },
             "serviceAvailability": "local_fixture_only",
         }))?
@@ -38,5 +50,44 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::time::sleep(std::time::Duration::from_secs(seconds)).await;
     let _ = shutdown.send(());
     server.await??;
+    if let Some(path) = transcript_file {
+        let mut entries = transcript
+            .lock()
+            .expect("Machines fixture transcript mutex poisoned")
+            .clone();
+        entries.sort_by_key(|entry| entry.rpc);
+        let methods = entries
+            .iter()
+            .map(|entry| {
+                json!({
+                    "rpc": entry.rpc,
+                    "requestBytes": entry.request_bytes,
+                    "requestSha256": entry.request_sha256,
+                    "responseBytes": entry.response_bytes,
+                    "responseSha256": entry.response_sha256,
+                })
+            })
+            .collect::<Vec<_>>();
+        let observed_rpcs = methods
+            .iter()
+            .filter_map(|entry| entry.get("rpc").and_then(|rpc| rpc.as_str()))
+            .collect::<BTreeSet<_>>();
+        let expected_rpcs = MACHINES_RPC_METHODS.iter().copied().collect::<BTreeSet<_>>();
+        let artifact = json!({
+            "schema": "acyclic.sdk.machines-rsa-fixture-transcript.v1",
+            "source": {
+                "path": "rust/crates/sdk-examples",
+                "sha256": option_env!("SDK_EXAMPLES_SOURCE_SHA256"),
+                "buildTarget": option_env!("SDK_EXAMPLES_BUILD_TARGET"),
+            },
+            "expectedRpcs": MACHINES_RPC_METHODS,
+            "observedRpcs": observed_rpcs,
+            "expectedMethodCount": MACHINES_RPC_METHODS.len(),
+            "observedMethodCount": methods.len(),
+            "complete": observed_rpcs == expected_rpcs && methods.len() == MACHINES_RPC_METHODS.len(),
+            "methods": methods,
+        });
+        fs::write(path, serde_json::to_vec_pretty(&artifact)?)?;
+    }
     Ok(())
 }

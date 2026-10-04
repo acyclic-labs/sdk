@@ -1,0 +1,188 @@
+{
+  "complete": true,
+  "expectedMethodCount": 19,
+  "expectedRpcs": [
+    "acyclic.machines.v1.MachinesService/QualifyImage",
+    "acyclic.machines.v1.MachinesService/Create",
+    "acyclic.machines.v1.MachinesService/Checkpoint",
+    "acyclic.machines.v1.MachinesService/Fork",
+    "acyclic.machines.v1.MachinesService/ForkMachine",
+    "acyclic.machines.v1.MachinesService/Suspend",
+    "acyclic.machines.v1.MachinesService/Wake",
+    "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+    "acyclic.machines.v1.MachinesService/DestroyMachine",
+    "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+    "acyclic.machines.v1.MachinesService/Recover",
+    "acyclic.machines.v1.MachinesService/InspectMachine",
+    "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+    "acyclic.machines.v1.MachinesService/ListMachines",
+    "acyclic.machines.v1.MachinesService/Events",
+    "acyclic.machines.v1.MachinesService/Usage",
+    "acyclic.machines.v1.MachinesService/Cancel",
+    "acyclic.machines.v1.MachinesService/InspectOperation",
+    "acyclic.machines.v1.MachinesService/WatchOperation"
+  ],
+  "methods": [
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 2,
+      "responseSha256": "sha256:14016934aaeb3931346dc771e97afbcb3f95d1e132f53d5c068b01479d36af9b",
+      "rpc": "acyclic.machines.v1.MachinesService/Cancel"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 168,
+      "responseSha256": "sha256:37d9d97df62df206b0b9d6669ce6ace3a0ce0b6dbca824e57781bc457df88686",
+      "rpc": "acyclic.machines.v1.MachinesService/Checkpoint"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 76,
+      "responseSha256": "sha256:88e86e479b7a3bbd5debc897b1f88edcc4bccd79c44068fb9153a09925c3583c",
+      "rpc": "acyclic.machines.v1.MachinesService/Create"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 20,
+      "responseSha256": "sha256:6acd828009e809267243d839ebbb439302f8e95168e690daf1aac88363412f6f",
+      "rpc": "acyclic.machines.v1.MachinesService/DestroyCheckpoint"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 20,
+      "responseSha256": "sha256:6acd828009e809267243d839ebbb439302f8e95168e690daf1aac88363412f6f",
+      "rpc": "acyclic.machines.v1.MachinesService/DestroyMachine"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 12,
+      "responseSha256": "sha256:64fec280a84403b0ad4b73474b6d4029659cb2feb5e507798b46ad5317bb1e1b",
+      "rpc": "acyclic.machines.v1.MachinesService/Events"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 188,
+      "responseSha256": "sha256:4da442d4b501d4dd35ea942b2ac8d01d03a01437d5ec0cdf5aa457494e7643c3",
+      "rpc": "acyclic.machines.v1.MachinesService/Fork"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 190,
+      "responseSha256": "sha256:79ab05fd08725b4ec6ad8deb44e6b7b86784dacdbdbb2a06fd3bd754d20fe702",
+      "rpc": "acyclic.machines.v1.MachinesService/ForkMachine"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 152,
+      "responseSha256": "sha256:95baa06da9a97367a2d86163dc6d5ea464f8a9ed5064e29aa28f2b712ad434b7",
+      "rpc": "acyclic.machines.v1.MachinesService/InspectCheckpoint"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 154,
+      "responseSha256": "sha256:58017421ca49895435c2328b8fcfc27be138c60a5b83c7e351f5dda9a4bd35c9",
+      "rpc": "acyclic.machines.v1.MachinesService/InspectMachine"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 2,
+      "responseSha256": "sha256:27c24fcb8474773e2af799d0848495ff053272d33c432dc26277993df45c9276",
+      "rpc": "acyclic.machines.v1.MachinesService/InspectOperation"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 177,
+      "responseSha256": "sha256:51b1adc26de968dc675c24d3ab7b31e105131c6b30a26e282973d4951946474e",
+      "rpc": "acyclic.machines.v1.MachinesService/ListMachines"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 37,
+      "responseSha256": "sha256:6a2f023fbec18ee8e5440c37bb9916dfc5cd70e29147951da0066f66e0f7fedf",
+      "rpc": "acyclic.machines.v1.MachinesService/QualifyImage"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 191,
+      "responseSha256": "sha256:717b8c081d4fba29ba6b813edb0e511d591c8b164a716d19b934c435946b17d2",
+      "rpc": "acyclic.machines.v1.MachinesService/Recover"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 20,
+      "responseSha256": "sha256:0f0b7557e496339d0d194dde8b39be2dc694619a2601b3a0a747df2c90c3f376",
+      "rpc": "acyclic.machines.v1.MachinesService/SetSuspensionPolicy"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 20,
+      "responseSha256": "sha256:6acd828009e809267243d839ebbb439302f8e95168e690daf1aac88363412f6f",
+      "rpc": "acyclic.machines.v1.MachinesService/Suspend"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 45,
+      "responseSha256": "sha256:df6dc30da9f9267f2bb9e9f14c753d0b78c9ea508bee5f152993f07bdd8ee5f1",
+      "rpc": "acyclic.machines.v1.MachinesService/Usage"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 20,
+      "responseSha256": "sha256:6acd828009e809267243d839ebbb439302f8e95168e690daf1aac88363412f6f",
+      "rpc": "acyclic.machines.v1.MachinesService/Wake"
+    },
+    {
+      "requestBytes": 0,
+      "requestSha256": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "responseBytes": 4,
+      "responseSha256": "sha256:b2c885b4ef067058bcadd0822eea4d1519c6fcffcbebf5dd3a1b70e696ba73a5",
+      "rpc": "acyclic.machines.v1.MachinesService/WatchOperation"
+    }
+  ],
+  "observedMethodCount": 19,
+  "observedRpcs": [
+    "acyclic.machines.v1.MachinesService/Cancel",
+    "acyclic.machines.v1.MachinesService/Checkpoint",
+    "acyclic.machines.v1.MachinesService/Create",
+    "acyclic.machines.v1.MachinesService/DestroyCheckpoint",
+    "acyclic.machines.v1.MachinesService/DestroyMachine",
+    "acyclic.machines.v1.MachinesService/Events",
+    "acyclic.machines.v1.MachinesService/Fork",
+    "acyclic.machines.v1.MachinesService/ForkMachine",
+    "acyclic.machines.v1.MachinesService/InspectCheckpoint",
+    "acyclic.machines.v1.MachinesService/InspectMachine",
+    "acyclic.machines.v1.MachinesService/InspectOperation",
+    "acyclic.machines.v1.MachinesService/ListMachines",
+    "acyclic.machines.v1.MachinesService/QualifyImage",
+    "acyclic.machines.v1.MachinesService/Recover",
+    "acyclic.machines.v1.MachinesService/SetSuspensionPolicy",
+    "acyclic.machines.v1.MachinesService/Suspend",
+    "acyclic.machines.v1.MachinesService/Usage",
+    "acyclic.machines.v1.MachinesService/Wake",
+    "acyclic.machines.v1.MachinesService/WatchOperation"
+  ],
+  "schema": "acyclic.sdk.machines-rsa-fixture-transcript.v1",
+  "source": {
+    "buildTarget": "x86_64-pc-windows-msvc",
+    "path": "rust/crates/sdk-examples",
+    "sha256": "sha256:cb0c483d4ad2baca781bc1fa404fd0d27737ef4fe81c23a1aa403072ad9c8d2d"
+  }
+}
