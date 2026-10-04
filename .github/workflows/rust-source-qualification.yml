@@ -58,7 +58,7 @@ jobs:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ inputs.ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
       - name: Verify qualification policy
@@ -86,7 +86,6 @@ jobs:
     timeout-minutes: 20
     env:
       CARGO_TERM_COLOR: always
-      CARGO_TARGET_DIR: ${{ runner.temp }}/rust-source-target
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -95,6 +94,12 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
+
+      - name: Configure per-run Rust target directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'CARGO_TARGET_DIR=%s/rust-source-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Install pinned Rust toolchain
         uses: ./.github/actions/rust-toolchain
@@ -196,7 +201,6 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
-      CARGO_TARGET_DIR: ${{ runner.temp }}/platform-receipt-target
     steps:
       - name: Check out exact source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -205,6 +209,12 @@ jobs:
           fetch-depth: 1
           fetch-tags: false
           persist-credentials: false
+
+      - name: Configure per-run Rust target directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'CARGO_TARGET_DIR=%s/platform-receipt-target\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Provision official pinned package toolchain
         shell: bash
