@@ -12,8 +12,8 @@ use acyclic_machines::wire;
 use futures::{Stream, stream};
 use prost::Message;
 use rcgen::{
-    BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
-    KeyUsagePurpose, PKCS_RSA_SHA256, RsaKeySize,
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
+    Issuer, KeyPair, KeyUsagePurpose, PKCS_RSA_SHA256, RsaKeySize,
 };
 use sha2::{Digest, Sha256};
 use tokio::net::TcpListener;
@@ -37,10 +37,17 @@ pub struct RsaTlsMaterial {
     pub client_private_key: String,
 }
 
+fn fixture_distinguished_name(common_name: &str) -> DistinguishedName {
+    let mut distinguished_name = DistinguishedName::new();
+    distinguished_name.push(DnType::CommonName, common_name);
+    distinguished_name
+}
+
 impl RsaTlsMaterial {
     /// Generates a fresh RSA-2048 CA, server certificate, and client certificate.
     pub fn generate() -> Result<Self, rcgen::Error> {
         let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+        ca_params.distinguished_name = fixture_distinguished_name("Acyclic Fixture RSA CA");
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params.key_usages = vec![
             KeyUsagePurpose::DigitalSignature,
@@ -51,6 +58,7 @@ impl RsaTlsMaterial {
         let issuer = Issuer::new(ca_params, ca_key);
 
         let mut server_params = CertificateParams::new(vec!["localhost".to_owned()])?;
+        server_params.distinguished_name = fixture_distinguished_name("Acyclic Fixture RSA Server");
         server_params.use_authority_key_identifier_extension = true;
         server_params.key_usages = vec![
             KeyUsagePurpose::DigitalSignature,
@@ -61,6 +69,7 @@ impl RsaTlsMaterial {
         let server_certificate = server_params.signed_by(&server_key, &issuer)?;
 
         let mut client_params = CertificateParams::new(Vec::<String>::new())?;
+        client_params.distinguished_name = fixture_distinguished_name("Acyclic Fixture RSA Client");
         client_params.use_authority_key_identifier_extension = true;
         client_params.key_usages = vec![
             KeyUsagePurpose::DigitalSignature,
@@ -113,7 +122,25 @@ pub const MACHINES_RPC_METHODS: &[&str] = &[
     "acyclic.machines.v1.MachinesService/WatchOperation",
 ];
 
-/// Every modeled Inference Runs RPC that the bounded fixture implements.
+/// Every modeled Inference RPC that the bounded fixture implements.
+pub const INFERENCE_RPC_METHODS: &[&str] = &[
+    "inference.customer.v1.ModelsService/List",
+    "inference.customer.v1.ContextsService/Create",
+    "inference.customer.v1.ContextsService/Inspect",
+    "inference.customer.v1.ContextsService/Mutate",
+    "inference.customer.v1.WarmContextsService/Retain",
+    "inference.customer.v1.WarmContextsService/Inspect",
+    "inference.customer.v1.WarmContextsService/Renew",
+    "inference.customer.v1.WarmContextsService/Release",
+    "inference.customer.v1.RunsService/Generate",
+    "inference.customer.v1.RunsService/Inspect",
+    "inference.customer.v1.RunsService/Watch",
+    "inference.customer.v1.RunsService/Cancel",
+    "inference.customer.v1.EvaluationsService/Create",
+    "inference.customer.v1.EvaluationsService/Inspect",
+];
+
+/// The Runs subset retained for callers that qualify streaming separately.
 pub const INFERENCE_RUNS_RPC_METHODS: &[&str] = &[
     "inference.customer.v1.RunsService/Generate",
     "inference.customer.v1.RunsService/Inspect",
@@ -804,6 +831,151 @@ impl acyclic_inference::wire::runs_service_server::RunsService for InferenceRuns
     }
 }
 
+#[tonic::async_trait]
+impl acyclic_inference::wire::models_service_server::ModelsService for InferenceRunsFixture {
+    async fn list(
+        &self,
+        request: Request<acyclic_inference::wire::ListModelsRequest>,
+    ) -> Result<Response<acyclic_inference::wire::ListModelsResponse>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ModelsService/List",
+            &request,
+            acyclic_inference::wire::ListModelsResponse::default(),
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::contexts_service_server::ContextsService for InferenceRunsFixture {
+    async fn create(
+        &self,
+        request: Request<acyclic_inference::wire::CreateContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Create",
+            &request,
+            acyclic_inference::wire::MutationReceipt::default(),
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::ContextView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Inspect",
+            &request,
+            acyclic_inference::wire::ContextView::default(),
+        ))
+    }
+
+    async fn mutate(
+        &self,
+        request: Request<acyclic_inference::wire::MutateContextRequest>,
+    ) -> Result<Response<acyclic_inference::wire::MutationReceipt>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.ContextsService/Mutate",
+            &request,
+            acyclic_inference::wire::MutationReceipt::default(),
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::warm_contexts_service_server::WarmContextsService
+    for InferenceRunsFixture
+{
+    async fn retain(
+        &self,
+        request: Request<acyclic_inference::wire::RetainWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Retain",
+            &request,
+            acyclic_inference::wire::WarmView::default(),
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Inspect",
+            &request,
+            acyclic_inference::wire::WarmView::default(),
+        ))
+    }
+
+    async fn renew(
+        &self,
+        request: Request<acyclic_inference::wire::RenewWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Renew",
+            &request,
+            acyclic_inference::wire::WarmView::default(),
+        ))
+    }
+
+    async fn release(
+        &self,
+        request: Request<acyclic_inference::wire::ReleaseWarmRequest>,
+    ) -> Result<Response<acyclic_inference::wire::WarmView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.WarmContextsService/Release",
+            &request,
+            acyclic_inference::wire::WarmView::default(),
+        ))
+    }
+}
+
+#[tonic::async_trait]
+impl acyclic_inference::wire::evaluations_service_server::EvaluationsService
+    for InferenceRunsFixture
+{
+    async fn create(
+        &self,
+        request: Request<acyclic_inference::wire::CreateEvaluationRequest>,
+    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.EvaluationsService/Create",
+            &request,
+            acyclic_inference::wire::EvaluationView::default(),
+        ))
+    }
+
+    async fn inspect(
+        &self,
+        request: Request<acyclic_inference::wire::InspectEvaluationRequest>,
+    ) -> Result<Response<acyclic_inference::wire::EvaluationView>, Status> {
+        let request = request.into_inner();
+        Ok(traced_response(
+            &self.transcript,
+            "inference.customer.v1.EvaluationsService/Inspect",
+            &request,
+            acyclic_inference::wire::EvaluationView::default(),
+        ))
+    }
+}
 /// Starts a TLS-enabled bounded Inference Runs server on a loopback listener.
 pub async fn serve_inference_runs_rsa_with_transcript(
     listener: TcpListener,
@@ -821,7 +993,27 @@ pub async fn serve_inference_runs_rsa_with_transcript(
                 .client_ca_root(Certificate::from_pem(&material.ca_certificate)),
         )?
         .add_service(
+            acyclic_inference::wire::models_service_server::ModelsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript.clone()),
+            ),
+        )
+        .add_service(
+            acyclic_inference::wire::contexts_service_server::ContextsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript.clone()),
+            ),
+        )
+        .add_service(
+            acyclic_inference::wire::warm_contexts_service_server::WarmContextsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript.clone()),
+            ),
+        )
+        .add_service(
             acyclic_inference::wire::runs_service_server::RunsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript.clone()),
+            ),
+        )
+        .add_service(
+            acyclic_inference::wire::evaluations_service_server::EvaluationsServiceServer::new(
                 InferenceRunsFixture::with_transcript(transcript),
             ),
         )
