@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
   loadManifest,
   runtimeEnvironment,
   safeEnvironment,
+  readLaneReceipt,
   validateManifest,
 } from "./graphcoder-platform-gates.mjs";
 
@@ -44,6 +48,45 @@ test("qualification lanes require real installed drivers and keep mock fixtures 
   const missing = structuredClone(manifest);
   missing.qualification_lanes[0].driver = "scripts/missing-driver.mjs";
   assert.throws(() => validateManifest(missing), /does not exist/u);
+});
+
+test("installed lane receipts cannot claim completion from stale, failed, or empty evidence", () => {
+  const manifest = loadManifest();
+  const lane = manifest.qualification_lanes.find(item => item.id === "installed-native-stage");
+  assert.equal(typeof lane.receipt_environment, "string");
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40) };
+  assert.throws(() => validateManifest({ ...manifest, qualification_lanes: [{ ...lane, receipt_environment: "bad-name" }] }), /receipt environment is invalid/u);
+  assert.equal(source.commit.length, 40);
+});
+
+test("lane receipt validation rejects missing, skipped, flaky, empty, and cross-source evidence", () => {
+  const root = mkdtempSync(join(tmpdir(), "graphcoder-lane-receipt-"));
+  const lane = loadManifest().qualification_lanes.find(item => item.id === "installed-native-stage");
+  const source = { commit: "a".repeat(40), tree: "b".repeat(40) };
+  assert.throws(() => readLaneReceipt(join(root, "missing.json"), lane, "native", source, "windows"), /receipt is missing/u);
+  const descriptorPath = join(root, "descriptor.json");
+  const baseDescriptor = {
+    protocol: "acyclic.graphcoder.suite-descriptor.v1",
+    source_commit: source.commit,
+    source_tree: source.tree,
+    command: { executable: "node", args: [lane.driver] },
+  };
+  writeFileSync(descriptorPath, `${JSON.stringify(baseDescriptor)}\n`);
+  const makeReceipt = (status, artifacts = [{ source_commit: source.commit, source_tree: source.tree, fresh: true }]) => ({
+    suite: { status, execution_kind: "native", platform: "windows", id: "native-stage" , descriptor_path: descriptorPath },
+    artifacts,
+  });
+  for (const status of ["skipped", "flaky", "failed"]) {
+    const path = join(root, `${status}.json`);
+    writeFileSync(path, `${JSON.stringify(makeReceipt(status))}\n`);
+    assert.throws(() => readLaneReceipt(path, lane, "native", source, "windows"), /receipt is not passed/u);
+  }
+  const emptyPath = join(root, "empty.json");
+  writeFileSync(emptyPath, `${JSON.stringify(makeReceipt("passed", []))}\n`);
+  assert.throws(() => readLaneReceipt(emptyPath, lane, "native", source, "windows"), /no artifact evidence/u);
+  const stalePath = join(root, "stale.json");
+  writeFileSync(stalePath, `${JSON.stringify(makeReceipt("passed", [{ source_commit: "c".repeat(40), source_tree: source.tree, fresh: true }]))}\n`);
+  assert.throws(() => readLaneReceipt(stalePath, lane, "native", source, "windows"), /provenance is stale/u);
 });
 
 test("platform manifest rejects artifact paths that escape the worktree", () => {
