@@ -98,6 +98,9 @@ const embedded = embeddedCandidates
 const sourceCommitPath = requireFile(join(filesystem, "SOURCE_COMMIT"));
 const sourceRevision = readFileSync(sourceCommitPath, "utf8").trim();
 if (!/^[0-9a-f]{40}$/i.test(sourceRevision)) fail(`invalid filesystem SOURCE_COMMIT: ${sourceRevision}`);
+const harnessCommitPath = requireFile(join(harness, "SOURCE_COMMIT"));
+const harnessRevision = readFileSync(harnessCommitPath, "utf8").trim();
+if (harnessRevision !== sourceRevision) fail(`filesystem and Harness package revisions differ: ${sourceRevision} != ${harnessRevision}`);
 
 const manifest = {
   schema: "acyclic.sdk.package.qualification.v1",
@@ -123,6 +126,7 @@ const manifest = {
       archive: artifact(harnessArchive),
       checksums: harnessChecksums,
       conformance: artifact(requireFile(join(harness, "CONFORMANCE-EVIDENCE.json"))),
+      rust_source_commit: artifact(harnessCommitPath),
       wasm: {
         archive_entries: [
           "package/generated/wasm/acyclic_harness_wasm_bg.wasm",
