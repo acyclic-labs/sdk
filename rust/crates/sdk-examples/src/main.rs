@@ -1474,7 +1474,6 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
         .map_err(|error| format!("read package entries: {error}"))?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
-        let entry = entry.map_err(|error| format!("read package entry: {error}"))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         let kind = fs::symlink_metadata(&source_path)
@@ -2232,6 +2231,20 @@ fn check_bundle(output: &Path, manifest: &Value) -> Result<(), String> {
 }
 
 fn git_revision(root: &Path) -> String {
+    let root = match fs::canonicalize(root) {
+        Ok(root) => root,
+        Err(_) => return "working-tree".to_owned(),
+    };
+    let repository = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| fs::canonicalize(String::from_utf8_lossy(&output.stdout).trim()).ok());
+    if repository.as_deref() != Some(root.as_path()) {
+        return "working-tree".to_owned();
+    }
     Command::new("git")
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
