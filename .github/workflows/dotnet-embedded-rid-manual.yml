@@ -206,3 +206,119 @@ jobs:
           path: ${{ runner.temp }}/dotnet-embedded-package
           if-no-files-found: error
           retention-days: 14
+
+  consumer:
+    name: installed consumer ${{ matrix.rid }}
+    if: inputs.target == 'all'
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: blacksmith-4vcpu-windows-2025
+            kind: dotnet
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+            kind: dotnet
+          - rid: linux-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: dotnet
+          - rid: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: dotnet
+          - rid: linux-musl-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452
+          - rid: linux-musl-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            kind: musl
+            musl_image: rust:1.98.1-alpine3.22@sha256:8c8136ecbaef3c248920e564a832a5217ff95819fa351984b48d39def57db223
+          - rid: osx-x64
+            runner: blacksmith-6vcpu-macos-15
+            kind: dotnet
+          - rid: osx-arm64
+            runner: blacksmith-6vcpu-macos-15
+            kind: dotnet
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+
+      - name: Install pinned .NET SDK
+        if: matrix.kind == 'dotnet'
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d214f3edc00 # v4.3.1
+        with:
+          dotnet-version: 8.0.425
+
+      - name: Download assembled package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dotnet-embedded-package
+          path: ${{ runner.temp }}/dotnet-embedded-package
+
+      - name: Run installed Rust-backed .NET consumer
+        if: matrix.kind == 'dotnet'
+        shell: pwsh
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
+          TEST_ROOT: ${{ runner.temp }}/dotnet-embedded-consumer
+          RID: ${{ matrix.rid }}
+        run: |
+          $package = Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Filter '*.nupkg' -File -Recurse | Select-Object -First 1
+          if (-not $package) { throw "The assembled embedded package was not downloaded." }
+          $project = $env:TEST_ROOT
+          dotnet new console --framework net8.0 --output $project --force --no-restore | Out-Host
+          $source = $package.DirectoryName
+          dotnet add $project package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source $source | Out-Host
+          @'
+          using Acyclic.Sdk.Embedded;
+          using System.Linq;
+          using System.Runtime.InteropServices;
+
+          using var engine = new EmbeddedStreamEngine();
+          var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x52, 0x49, 0x44 };
+          var appended = engine.Append("installed-consumer", value);
+          var count = 0;
+          await foreach (var item in engine.ReadAsync("installed-consumer", appended.Start, 1))
+          {
+              if (!item.Value.SequenceEqual(value))
+                  throw new InvalidOperationException("Rust value did not round-trip through the installed package.");
+              count++;
+          }
+          if (count != 1)
+              throw new InvalidOperationException($"Expected one Rust record, received {count}.");
+          Console.WriteLine($"Installed RID consumer passed: {RuntimeInformation.RuntimeIdentifier}");
+          '@ | Set-Content -LiteralPath (Join-Path $project 'Program.cs') -Encoding utf8NoBOM
+          dotnet run --project $project --configuration Release
+
+      - name: Run installed Rust-backed musl consumer
+        if: matrix.kind == 'musl'
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/dotnet-embedded-package
+          RID: ${{ matrix.rid }}
+          ALPINE_IMAGE: ${{ matrix.musl_image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$PACKAGE_ROOT:/pkg" \
+            --workdir /src \
+            --env RID="$RID" \
+            "$ALPINE_IMAGE" sh -euxc '
+              apk add --no-cache python3 unzip
+              mkdir -p /tmp/embedded-package
+              package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
+              test -n "$package"
+              unzip -q "$package" -d /tmp/embedded-package
+              runtime="/tmp/embedded-package/runtimes/$RID/native/libacyclic_sdk_embedded_prototype.so"
+              test -f "$runtime"
+              python3 rust/crates/sdk-embedded-prototype/tests/python_consumer.py "$runtime"
+            '
