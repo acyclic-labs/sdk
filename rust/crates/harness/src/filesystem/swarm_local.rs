@@ -1341,13 +1341,33 @@ impl crate::batch_publication::ModelBatchPublisher for LocalModelForkPublisher {
                 {
                     continue;
                 }
+                // A retry may arrive after the parent publication succeeded
+                // but before child binding. Reuse the exact seed retained by
+                // the durable admission only when the parent aggregate proves
+                // that publication already exists; otherwise continue through
+                // the rebind intent below.
+                if let Ok(existing_seed) = swarm.published_seed(child).await {
+                    if parent.reducer().fork(&existing_seed.child) == Some(&existing_seed) {
+                        prepared.push((plan, existing_seed));
+                        continue;
+                    }
+                }
                 // Multiple children selected by one completed batch publish
                 // sequentially on the same parent stream. Their immutable
                 // captures remain stable, while each seed pins the parent's
                 // current stream revision before its append.
                 let current_revision = parent.reducer().revision();
                 if plan.report.request.parent_revision != current_revision {
+                    let old_seed = plan.report.clone().into_seed()?;
                     rebind_report_history(&mut plan.report, current_revision)?;
+                    let rebound_seed = plan.report.clone().into_seed()?;
+                    // Persist an authenticated rebind intent before changing
+                    // either allocation journal, so a crash between report
+                    // publication and seed mutation can be replayed without
+                    // inventing a new allocation.
+                    plan.host
+                        .rebind_fork_seed(&old_seed, &rebound_seed)
+                        .await?;
                 }
                 let seed = swarm
                     .publish_child_seed_with_publication(
@@ -3851,7 +3871,8 @@ impl PersistentLocalSwarm {
             .conversation_aggregate(self.config.limits)
             .await?;
         let seed = self.published_seed(task).await?;
-        if let Ok(report) = self.prepared_report(task).await {
+        if parent.reducer().fork(&seed.child) != Some(&seed) {
+            let report = self.prepared_report(task).await?;
             let mut child = StreamAggregate::open(
                 &stream,
                 seed.child.clone(),
