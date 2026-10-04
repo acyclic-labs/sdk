@@ -8,6 +8,7 @@ into the same receipt shape used by the Elixir and Erlang lanes.
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import re
 import sys
@@ -25,7 +26,9 @@ def metadata(path: Path) -> dict[str, object]:
     execution = re.search(r":execution\s+\"([^\"]+)\"", text)
     status = re.search(r":status\s+(-?\d+|NIL)", text, re.IGNORECASE)
     value: object = None if not status or status.group(1).upper() == "NIL" else int(status.group(1))
-    return {"rpc": rpc.group(1) if rpc else None, "shape": shape.group(1) if shape else None, "execution": execution.group(1) if execution else None, "status": value}
+    execution_value = execution.group(1) if execution else None
+    terminal_status = "deferred" if execution_value == "deferred-rust-scenario" else "ok" if value == 0 else "error" if isinstance(value, int) else "unknown"
+    return {"rpc": rpc.group(1) if rpc else None, "shape": shape.group(1) if shape else None, "execution": execution_value, "status": value, "terminal_status": terminal_status, "terminal_code": value}
 
 
 def main() -> int:
@@ -47,14 +50,18 @@ def main() -> int:
         responses = sorted(observation_dir.glob(f"{prefix}.response.*.bin"))
         item = {
             "request_file": request.name,
+            "request_base64": base64.b64encode(request.read_bytes()).decode("ascii"),
             "request_sha256": digest(request),
             "response_files": [response.name for response in responses],
+            "response_frame_base64": [base64.b64encode(response.read_bytes()).decode("ascii") for response in responses],
             "response_sha256": [digest(response) for response in responses],
-            "response_frames": len(responses),
+            "response_frame_count": len(responses),
         }
         meta = observation_dir / f"{prefix}.meta.sexp"
         if meta.exists():
             item.update(metadata(meta))
+        if item.get("rpc"):
+            item["family"] = item["rpc"].split(".", 1)[0]
         observations.append(item)
     payload = {
         "schema": "acyclic.runtime-consumer-receipt.v1",

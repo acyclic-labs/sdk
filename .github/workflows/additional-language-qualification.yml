@@ -124,10 +124,18 @@ jobs:
           cargo run --locked --bin sdk-contract-wire -- generate-products \
             --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
 
+      - name: Generate Rust-owned executable typed request manifest
+        if: matrix.language != 'lua-remote'
+        run: |
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml \
+            --bin typed-request-manifest > "$RUNNER_TEMP/rust-typed-request-manifest.json"
+          test -s "$RUNNER_TEMP/rust-typed-request-manifest.json"
+
       - name: Build and consume generated package
         if: matrix.language != 'lua-remote'
         env:
           ACYCLIC_FIXTURE_GRPC_ENDPOINT: 127.0.0.1:18081
+          ACYCLIC_RUST_TYPED_REQUEST_MANIFEST: ${{ runner.temp }}/rust-typed-request-manifest.json
         run: |
           bash scripts/qualify-additional-language.sh \
             '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \

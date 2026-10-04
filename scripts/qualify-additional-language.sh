@@ -93,6 +93,22 @@ require_stream_completion() {
   fi
 }
 
+verify_rust_wire_semantics() {
+  local receipt=$1
+  local output=$2
+  [[ -n "${ACYCLIC_RUST_TYPED_REQUEST_MANIFEST:-}" && -s "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" ]] || {
+    echo 'Rust executable typed-request manifest is required for semantic qualification' >&2
+    return 1
+  }
+  cargo run --locked --manifest-path "$source_root/rust/crates/sdk-contract-wire/Cargo.toml" \
+    --bin verify-observations -- \
+    --manifest "$ACYCLIC_RUST_TYPED_REQUEST_MANIFEST" \
+    --observed "$receipt" \
+    --source-git-sha "$source_revision" \
+    --output "$output"
+  test -s "$output"
+}
+
 case "$language" in
   elixir)
     project="$output_root/elixir"
@@ -133,6 +149,7 @@ PY
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
+      verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi
     module=$(sed -n 's/^defmodule \([^ ]*\).*/\1/p' lib/generated/*_pb.ex | head -n 1)
     test -n "$module"
@@ -184,6 +201,7 @@ EOF
       rg -q '"source_revision":"[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count":106' "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
+      verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi
     module=$(basename "$(find src -type f -name 'actors_pb.erl' -print -quit)" .erl)
     test -n "$module"
@@ -262,6 +280,7 @@ EOF
       rg -q '"source_revision": "[0-9a-f]{40}"' "$project/runtime-consumer-receipt.json"
       rg -q '"rpc_count": 106' "$project/runtime-consumer-receipt.json"
       require_stream_completion "$project/runtime-consumer-receipt.json"
+      verify_rust_wire_semantics "$project/runtime-consumer-receipt.json" "$output_root/rust-wire-semantic-verification.json"
     fi
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
