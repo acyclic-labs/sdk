@@ -37,6 +37,8 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::Mutex;
 
+/// Version-one mailbox envelope. The explicit field makes old unversioned
+/// records fail closed instead of being silently reinterpreted.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {

@@ -508,6 +508,38 @@ async fn local_wait_store_and_host_share_injected_clock_across_reopen() -> Resul
 }
 
 #[tokio::test]
+async fn local_wait_rejects_mismatched_owner_and_store_clocks() -> Result<()> {
+    let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
+    let fixture = Fixture::open(directory.path()).await?;
+    let host = fixture
+        .host_with_clock(Arc::new(FixedClock(20_000)))
+        .await?;
+    let waits = Arc::new(StreamWaitStore::new_with_clock(
+        fixture.stream.clone(),
+        Arc::new(FixedClock(19_999)),
+    ));
+    let request = WaitRequest {
+        operation_id: OperationId::from_bytes([23; 16]),
+        waiter: TaskId::from_bytes([24; 16]),
+        target: WaitTarget::Messages {
+            task_id: TaskId::from_bytes([24; 16]),
+            after: 0,
+            limit: 1,
+        },
+        timeout_epoch_ms: None,
+        cancellation_id: None,
+    };
+    assert!(matches!(
+        DurableCommunication::new(host)
+            .with_wait_store(waits)
+            .wait(request, None)
+            .await,
+        Err(Error::Conflict(message)) if message.contains("clock")
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn local_wait_timeout_and_cancellation_are_typed() -> Result<()> {
     let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
     let fixture = Fixture::open(directory.path()).await?;
