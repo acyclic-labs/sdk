@@ -178,10 +178,33 @@ struct LocalCommunicationComposition {
     cancellation: Arc<LocalTaskCancellationSource>,
 }
 
+fn cleanup_admission_failure(
+    cancellation: &LocalTaskCancellationSource,
+    task: TaskId,
+    owns_scope: bool,
+    error: Error,
+) -> Error {
+    if !owns_scope {
+        return error;
+    }
+    match cancellation.remove(task) {
+        Ok(()) => error,
+        Err(cleanup) => Error::Storage(format!(
+            "admission failed ({error}); cancellation cleanup failed ({cleanup})"
+        )),
+    }
+}
+
+impl LocalCommunicationComposition {
+    fn admission_failure(&self, task: TaskId, owns_scope: bool, error: Error) -> Error {
+        cleanup_admission_failure(&self.cancellation, task, owns_scope, error)
+    }
+}
+
 impl LocalCommunicationAdmitter for LocalCommunicationComposition {
     fn admit<'a>(&'a self, task: TaskId, parent: Option<TaskId>) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            self.cancellation.register(task)?;
+            let owns_scope = self.cancellation.register_if_absent(task)?;
             let operation_id = OperationId::from_bytes(task.into_bytes());
             let admission = TaskAdmissionRecord {
                 operation_id,
@@ -207,22 +230,22 @@ impl LocalCommunicationAdmitter for LocalCommunicationComposition {
             match result {
                 Ok(crate::Admission::Accepted(_)) => Ok(()),
                 Ok(crate::Admission::Indeterminate { operation_id }) => {
-                    match self.host.reconcile_admission(operation_id).await? {
-                        Some((_, _)) => Ok(()),
-                        None => {
-                            self.cancellation.remove(task)?;
-                            Err(Error::Indeterminate(operation_id))
-                        }
+                    match self.host.reconcile_admission(operation_id).await {
+                        Ok(Some((_, _))) => Ok(()),
+                        Ok(None) => Err(self.admission_failure(
+                            task,
+                            owns_scope,
+                            Error::Indeterminate(operation_id),
+                        )),
+                        Err(error) => Err(self.admission_failure(task, owns_scope, error)),
                     }
                 }
-                Ok(crate::Admission::Rejected { reason }) => {
-                    self.cancellation.remove(task)?;
-                    Err(Error::Unauthorized(reason))
-                }
-                Err(error) => {
-                    self.cancellation.remove(task)?;
-                    Err(error)
-                }
+                Ok(crate::Admission::Rejected { reason }) => Err(self.admission_failure(
+                    task,
+                    owns_scope,
+                    Error::Unauthorized(reason),
+                )),
+                Err(error) => Err(self.admission_failure(task, owns_scope, error)),
             }
         })
     }
@@ -4734,6 +4757,7 @@ fn apply_record(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::communication_tools::WaitCancellationSource;
     use crate::interaction::Interaction;
     use crate::model::{ModelAttempt, ModelEvent, ModelRequest};
     use futures::{future::BoxFuture, stream::BoxStream};
@@ -4746,6 +4770,44 @@ mod tests {
     struct MockModel {
         calls: AtomicUsize,
         requests: Mutex<Vec<ModelRequest>>,
+    }
+
+    #[test]
+    fn admission_failure_cleanup_covers_rejected_failed_reconcile_and_unknown() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let failures = [
+            Error::Unauthorized("rejected".into()),
+            Error::Conflict("failed".into()),
+            Error::Storage("reconcile failed".into()),
+            Error::Indeterminate(OperationId::from_bytes([44; 16])),
+        ];
+        for (index, failure) in failures.into_iter().enumerate() {
+            let task_id = TaskId::from_bytes([40 + index as u8; 16]);
+            assert!(source.register_if_absent(task_id)?);
+            assert_eq!(
+                cleanup_admission_failure(&source, task_id, true, failure.clone()),
+                failure
+            );
+            assert!(source.receiver(task_id).is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn admission_retry_does_not_remove_existing_task_scope() -> Result<()> {
+        let source = LocalTaskCancellationSource::default();
+        let task_id = TaskId::from_bytes([49; 16]);
+        assert!(source.register_if_absent(task_id)?);
+        // A concurrent retry observes the existing registration and therefore
+        // cannot clean up the scope owned by the first admission.
+        assert!(!source.register_if_absent(task_id)?);
+        let failure = Error::Unauthorized("retry rejected".into());
+        assert_eq!(
+            cleanup_admission_failure(&source, task_id, false, failure.clone()),
+            failure
+        );
+        assert!(source.receiver(task_id).is_some());
+        Ok(())
     }
 
     struct RecordingCommunicationHost {
