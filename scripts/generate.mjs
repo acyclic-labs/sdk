@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { generatedDescriptors, rustAuthorityBufTemplate, rustAuthorityExport } from "./generated-bindings.mjs";
 import { filesystemDescriptorDigestSource } from "./filesystem-descriptor-digest.mjs";
@@ -17,7 +18,16 @@ const run = (args, cwd = root) => {
 const authority = rustAuthorityExport();
 authorityCargoEnv = { ...process.env, CARGO_TARGET_DIR: authority.cargoTargetDir };
 const authorityInput = authority.inputRoot ?? authority.root;
-run(["generate", "--template", rustAuthorityBufTemplate(authority), "--output", root, authorityInput]);
+const generatedOutput = mkdtempSync(join(tmpdir(), "acyclic-sdk-generation-"));
+run([
+  "generate",
+  "--template",
+  rustAuthorityBufTemplate(authority),
+  "--output",
+  generatedOutput,
+  authorityInput,
+]);
+cpSync(join(generatedOutput, "generated"), join(root, "generated"), { recursive: true });
 const authorityFor = source => {
   const normalized = source
     .replaceAll("\\", "/")

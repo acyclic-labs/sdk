@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import {
   existsSync,
   cpSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -90,10 +91,10 @@ export function rustAuthorityExport() {
   // Objects v1 is a retired compatibility fixture still covered by Buf's
   // package-output checks. It is copied into a throwaway Buf input overlay;
   // it never participates in the Rust authority manifest.
-  const input = configured
-    ? mkdtempSync(join(tmpdir(), "acyclic-rust-authority-input-"))
-    : output;
-  if (configured) cpSync(output, input, { recursive: true });
+  const inputParent = join(root, ".tmp-rust-authority");
+  mkdirSync(inputParent, { recursive: true });
+  const input = mkdtempSync(join(inputParent, "input-"));
+  cpSync(output, input, { recursive: true });
   const historicalObjects = join(root, "proto/objects/v1");
   if (existsSync(historicalObjects)) {
     cpSync(historicalObjects, join(input, "objects/v1"), { recursive: true });
