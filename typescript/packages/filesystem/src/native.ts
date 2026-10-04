@@ -86,6 +86,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   copyGenerationDiff, copyNamedAttributePage, copyNamedAttributeResult, copyStatResult } from "./binding-results.js";
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
+import { createNativeProcessOwner, type NativeProcessOwner } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";
@@ -201,6 +202,18 @@ export async function openNativeFs(options: NativeFsOptions): Promise<NativeFsEn
       maximumWaitersPerObject: options.objectCache.maximumWaitersPerObject,
     }),
   );
+}
+
+/**
+ * Opens the optional native process owner without starting a worker.
+ *
+ * The companion owns the platform Job/process-group handle. A filesystem
+ * companion built without that capability fails explicitly; callers must then
+ * choose the bounded Node owner or another host policy themselves.
+ */
+export async function openNativeProcessOwner(): Promise<NativeProcessOwner> {
+  const binding = await bindings();
+  return createNativeProcessOwner((binding as NativeBindings & { readonly nativeProcessOwner?: unknown }).nativeProcessOwner);
 }
 
 /** Opens the durable Git-shaped compatibility state machine without invoking system Git. */

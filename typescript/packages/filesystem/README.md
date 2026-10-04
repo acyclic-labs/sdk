@@ -25,4 +25,12 @@ console.log(fork.name);
 
 `/browser` (also the default export) uses the browser's storage capabilities and bundled WebAssembly; `/memory` is process-local; `/hosted` connects to a service; `/native` uses the native companion. Choose the entry point explicitly when moving between environments. Workspace generations are immutable identities; transactions and forks make changes without rewriting old generations. Durability, isolation, and mount behavior depend on the chosen provider.
 
+Node hosts that need platform-owned child processes may import
+`openNativeProcessOwner` from `/native` and pass the returned owner to their
+process bridge. Loading is lazy and capability-checked: a companion without
+the versioned native process-owner capability fails explicitly, so a host never
+mistakes ordinary Node process groups for Windows Job ownership. The owner
+returns typed termination outcomes and keeps uncertain cleanup visible to the
+caller.
+
 See the [browser example](https://github.com/acyclic-labs/sdk/blob/main/typescript/packages/filesystem/examples/browser.mjs), [API source](https://github.com/acyclic-labs/sdk/tree/main/typescript/packages/filesystem/src), and [Filesystem protocol](https://github.com/acyclic-labs/sdk/tree/main/proto/filesystem).

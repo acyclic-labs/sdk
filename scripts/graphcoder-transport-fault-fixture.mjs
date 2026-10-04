@@ -19,7 +19,10 @@ lines.on("line", line => {
   }
   if (mode === "descendant") {
     const detached = process.platform === "win32";
-    const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+    const guardian = process.env.GRAPHCODER_GUARDIAN;
+    const done = process.env.GRAPHCODER_GUARDIAN_DONE;
+    if (typeof guardian !== "string" || guardian === "" || typeof done !== "string" || done === "") process.exit(2);
+    const descendant = spawn(process.execPath, ["-e", "const fs = require('node:fs'); const guardian = process.argv[1]; const done = process.argv[2]; setInterval(() => { if (!fs.existsSync(guardian)) { fs.writeFileSync(done, 'exited\\n'); process.exit(0); } }, 20);", guardian, done], {
       detached,
       stdio: ["ignore", "inherit", "inherit"],
       windowsHide: true,

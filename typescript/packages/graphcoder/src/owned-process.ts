@@ -72,6 +72,7 @@ export function retryOwnedProcessTermination(child: ChildProcess, graceMs = 250)
     return Promise.reject(new RangeError("process cleanup grace must be a nonnegative safe integer"));
   }
   const existing = terminations.get(child);
+  if (existing !== undefined && existing.outcome === undefined) return existing.promise;
   if (existing === undefined || existing.outcome?.kind === "terminated") {
     return terminateOwnedProcess(child, graceMs);
   }
@@ -93,7 +94,15 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
   if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) {
     return { kind: "unknown", pid: -1, reason: "owned process did not expose a valid PID" };
   }
-  track(child);
+  const state = track(child);
+
+  // Once the direct child has closed, Node no longer gives us a historical
+  // process handle. A PID or process-group lookup can now describe a reused
+  // owner, so the fallback must retain uncertainty until a native owner
+  // supplies a real handle.
+  if (state.closed || state.errored) {
+    return { kind: "unknown", pid, reason: "owned process root exited before cleanup could prove ownership" };
+  }
 
   if (process.platform === "win32") {
     // Node exposes only the PID, not the process handle needed to prove that
@@ -105,11 +114,12 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
     }
     const command = await terminateWindowsProcessTree(pid, child, Math.max(graceMs, 1_000));
     if (command.kind !== "terminated") {
-      try { if (isAlive(child)) child.kill(); } catch { /* retain the typed unknown outcome */ }
+      // The root handle is still owned by this ChildProcess even when the
+      // descendant tree result is uncertain. Closing that root is a bounded
+      // local cleanup step; it never upgrades the typed tree outcome.
+      try { child.kill(); } catch { /* retain the command's uncertainty */ }
+      await waitForClose(child, graceMs);
       return command;
-    }
-    if (isAlive(child)) {
-      try { child.kill(); } catch { /* close remains authoritative */ }
     }
     const pipeWait = await waitForClose(child, graceMs);
     if (pipeWait === "closed") return { kind: "terminated", pid };
@@ -118,10 +128,16 @@ async function terminateOwnedProcessOnce(child: ChildProcess, graceMs: number): 
   }
 
   const softSignal = signalProcessGroup(pid, "SIGTERM", child);
+  if (softSignal === "absent") {
+    return { kind: "unknown", pid, reason: "owned process group disappeared before cleanup could prove ownership" };
+  }
   const softWait = await waitForProcessGroupGone(pid, graceMs);
   if (softWait === "gone") return { kind: "terminated", pid };
   if (softWait === "error") return { kind: "unknown", pid, reason: "owned process group state became unavailable" };
   const hardSignal = signalProcessGroup(pid, "SIGKILL", child);
+  if (hardSignal === "absent") {
+    return { kind: "unknown", pid, reason: "owned process group disappeared during cleanup" };
+  }
   const hardWait = await waitForProcessGroupGone(pid, graceMs);
   if (hardWait === "gone") return { kind: "terminated", pid };
   if (hardWait === "error") return { kind: "unknown", pid, reason: "owned process group state became unavailable" };
@@ -143,10 +159,7 @@ function signalProcessGroup(pid: number, signal: NodeJS.Signals, child: ChildPro
     return "sent";
   } catch {
     if (!isAlive(child)) return "absent";
-    try {
-      child.kill(signal);
-      return "sent";
-    } catch { return "error"; }
+    return "error";
   }
 }
 
@@ -167,15 +180,19 @@ function waitForClose(child: ChildProcess, timeoutMs: number): Promise<ProcessWa
   if (timeoutMs === 0) return Promise.resolve("timeout");
   return new Promise(resolve => {
     let settled = false;
+    const onClose = (): void => finish("closed");
+    const onError = (): void => finish("error");
     const finish = (result: ProcessWait): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      child.removeListener("close", onClose);
+      child.removeListener("error", onError);
       resolve(result);
     };
     const timer = setTimeout(() => finish("timeout"), timeoutMs);
-    child.once("close", () => finish("closed"));
-    child.once("error", () => finish("error"));
+    child.once("close", onClose);
+    child.once("error", onError);
   });
 }
 
@@ -229,13 +246,10 @@ async function terminateWindowsProcessTree(pid: number, child: ChildProcess, tim
     };
     const timer = setTimeout(() => {
       try { killer.kill(); } catch { /* timeout remains authoritative */ }
-      void Promise.all([waitForClose(killer, timeoutMs), waitForClose(child, timeoutMs)]).then(([killerResult, childResult]) => {
-        if (killerResult !== "closed") {
-          complete({ kind: "timeout" });
-          return;
-        }
-        complete(childResult === "closed" ? { kind: "closed", code: null } : { kind: "timeout" });
-      });
+      // Do not add another wait after the bounded command deadline. The
+      // target's state is still uncertain and is reported as timeout; a
+      // later owner reconciliation may retry with stronger evidence.
+      complete({ kind: "timeout" });
     }, timeoutMs);
     killer.once("error", error => complete({ kind: "error", message: error.message }));
     killer.once("close", code => complete({ kind: "closed", code }));

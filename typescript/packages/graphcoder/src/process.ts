@@ -298,8 +298,6 @@ export class JsonLineGraphCoderBridge implements GraphCoderBridge {
     if (this.#termination !== undefined) return;
     this.#terminationDone = false;
     this.#termination = this.#processOwner.terminate(this.#child).catch(error => {
-      try { this.#child.kill(); }
-      catch { /* The close event remains the authoritative termination signal. */ }
       return {
         kind: "unknown",
         pid: this.#child.pid ?? -1,

@@ -6,7 +6,9 @@
 
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
+import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -62,59 +64,68 @@ async function runCase({ Bridge, packageRoot, fixture, mode, requestId, expected
   }
 }
 
-function processIsAlive(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function waitForProcessExit(pid, label) {
+async function waitForGuardianExit(path, label) {
   return deadline(new Promise(resolvePromise => {
     const check = () => {
-      if (!processIsAlive(pid)) resolvePromise();
-      else setTimeout(check, 10);
+      access(path).then(() => resolvePromise(), () => setTimeout(check, 10));
     };
     check();
   }), label);
 }
 
+async function removeTree(path) {
+  let lastError;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (!(error instanceof Error) || !["ENOTEMPTY", "EPERM", "EBUSY"].includes(error.code)) throw error;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+  throw lastError;
+}
+
 async function runDescendantCase({ Bridge, packageRoot, fixture }) {
   const diagnostics = [];
+  const guardianRoot = await mkdtemp(join(tmpdir(), "graphcoder-transport-guardian-"));
+  const guardian = join(guardianRoot, "owned.token");
+  const guardianDone = join(guardianRoot, "done.marker");
+  await writeFile(guardian, "graphcoder-transport-fault-fixture-v1\n", "utf8");
   const bridge = new Bridge({
     executable: process.execPath,
     args: [fixture, "descendant"],
     cwd: resolve("."),
-    env: { PATH: process.env.PATH ?? "" },
+    env: { PATH: process.env.PATH ?? "", GRAPHCODER_GUARDIAN: guardian, GRAPHCODER_GUARDIAN_DONE: guardianDone },
     onDiagnostic: event => diagnostics.push(event),
   });
   let descendantPid;
+  let guardianRecovery = false;
   try {
-    const response = await deadline(bridge.request({ request_id: "fault-descendant", method: "list_sessions", params: {} }), "descendant request");
-    if (response.ok !== true || !Number.isInteger(response.result?.descendant_pid)) fail("descendant fixture did not return its child pid");
-    descendantPid = response.result.descendant_pid;
-  } finally {
-    bridge.close("qualification descendant cleanup");
-    const termination = await waitForDiagnostic(diagnostics, event => event.kind === "termination", "descendant process cleanup outcome");
-    if (termination.outcome?.kind === "unknown") {
-      // The Node bridge cannot prove a Windows descendant's ownership after
-      // the root has exited. Resolve this exact fixture PID explicitly before
-      // awaiting the bridge's close proof; this is recovery, not confinement.
-      try { process.kill(descendantPid); } catch { /* fixture may have exited */ }
+    try {
+      const response = await deadline(bridge.request({ request_id: "fault-descendant", method: "list_sessions", params: {} }), "descendant request");
+      if (response.ok !== true || !Number.isInteger(response.result?.descendant_pid)) fail("descendant fixture did not return its child pid");
+      descendantPid = response.result.descendant_pid;
+    } finally {
+      bridge.close("qualification descendant cleanup");
+      const termination = await waitForDiagnostic(diagnostics, event => event.kind === "termination", "descendant process cleanup outcome");
+      if (termination.outcome?.kind === "unknown") {
+        // The Node bridge cannot prove a Windows descendant's ownership after
+        // the root has exited. Resolve this fixture through its unique guardian
+        // token; no PID-only recovery or cleanup claim is made here.
+        guardianRecovery = true;
+        await rm(guardian, { force: true });
+      }
+      await waitForDiagnostic(diagnostics, event => event.kind === "exit", "descendant process exit");
     }
-    await waitForDiagnostic(diagnostics, event => event.kind === "exit", "descendant process exit");
+    if (descendantPid === undefined) fail("descendant fixture omitted its child pid");
+    if (guardianRecovery) await waitForGuardianExit(guardianDone, "descendant process cleanup");
+    return { mode: "descendant", descendant_pid: descendantPid, descendant_exited: true, recovery: guardianRecovery ? "guardian-token" : "native-owner" };
+  } finally {
+    await removeTree(guardianRoot);
   }
-  if (descendantPid === undefined) fail("descendant fixture omitted its child pid");
-  try {
-    await waitForProcessExit(descendantPid, "descendant process cleanup");
-  } catch (error) {
-    // Never leave a fixture descendant behind when this qualification fails.
-    try { process.kill(descendantPid); } catch { /* cleanup remains bounded */ }
-    throw error;
-  }
-  return { mode: "descendant", descendant_pid: descendantPid, descendant_exited: true };
 }
 
 async function assertRejected(promise, mode) {

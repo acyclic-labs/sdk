@@ -40,7 +40,24 @@ function env(): NodeJS.ProcessEnv {
   return { PATH: process.env.PATH ?? "" };
 }
 
+function testRuntimeExecutable(): string {
+  // Run bridge fixtures under Node on Windows. Bun's child wrapper can leave
+  // the taskkill result without an exit code, which is not a stable fixture
+  // for ordinary owner cleanup.
+  return process.platform === "win32" ? "node" : process.execPath;
+}
+
 const activeBridges = new Set<JsonLineGraphCoderBridge>();
+
+function longRunningCommand(): { readonly executable: string; readonly args: readonly string[] } {
+  if (process.platform === "win32") {
+    return {
+      executable: process.env.ComSpec ?? "cmd.exe",
+      args: ["/d", "/s", "/c", "ping -t 127.0.0.1 > NUL"],
+    };
+  }
+  return { executable: testRuntimeExecutable(), args: ["-e", "setInterval(() => {}, 100000)"] };
+}
 
 function ownBridge(options: GraphCoderProcessBridgeOptions): JsonLineGraphCoderBridge {
   const bridge = new JsonLineGraphCoderBridge(options);
@@ -117,10 +134,23 @@ async function waitForStableSize(path: string, stableMs = 150, maximumMs = 1_000
 
 async function waitForChildClose(child: ReturnType<typeof spawnOwnedProcess>, timeoutMs: number): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  await Promise.race([
-    new Promise<void>(resolve => child.once("close", resolve)),
-    new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
-  ]);
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => finish(new Error("timed out waiting for fixture child close")), timeoutMs);
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.removeListener("close", onClose);
+      child.removeListener("error", onError);
+      if (error === undefined) resolve();
+      else reject(error);
+    };
+    const onClose = (): void => finish();
+    const onError = (error: Error): void => finish(error);
+    child.once("close", onClose);
+    child.once("error", onError);
+  });
 }
 
 describe("JSON-lines process bridge", () => {
@@ -137,7 +167,7 @@ describe("JSON-lines process bridge", () => {
     let terminationResolve: ((outcome: OwnedProcessTermination) => void) | undefined;
     const terminationObserved = new Promise<OwnedProcessTermination>(resolve => { terminationResolve = resolve; });
     let descendantPid: number | undefined;
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") { outcomes.push(event.outcome); terminationResolve?.(event.outcome); } } });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", owner, marker, pidFile], env: env(), onDiagnostic: event => { if (event.kind === "termination") { outcomes.push(event.outcome); terminationResolve?.(event.outcome); } } });
     try {
       for (let attempt = 0; attempt < 50 && (await stat(marker)).size === 0; attempt += 1) {
         await new Promise<void>(resolve => setTimeout(resolve, 20));
@@ -171,12 +201,17 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("shares one bounded cleanup operation across repeated termination requests", async () => {
-    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    // Bun's Windows child wrapper does not expose the native process handle
+    // needed to classify taskkill's result. The installed Node lane covers
+    // the Windows terminated outcome; this unit test covers the Unix owner.
+    if (process.platform === "win32") return;
+    const command = longRunningCommand();
+    const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     try {
       const first = terminateOwnedProcess(child, 50);
       expect(terminateOwnedProcess(child, 50)).toBe(first);
       const outcome = await first;
-      expect(["terminated", "timeout", "unknown"]).toContain(outcome.kind);
+      expect(outcome.kind).toBe("terminated");
     } finally {
       if (child.exitCode === null && child.signalCode === null) {
         try { child.kill(); } catch { /* cleanup remains bounded */ }
@@ -187,7 +222,8 @@ describe("JSON-lines process bridge", () => {
 
   test("reports a failed Windows tree command without claiming cleanup", async () => {
     if (process.platform !== "win32") return;
-    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    const command = longRunningCommand();
+    const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     const previousSystemRoot = process.env.SystemRoot;
     process.env.SystemRoot = join(tmpdir(), "graphcoder-missing-system-root");
     try {
@@ -201,13 +237,15 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("does not cache invalid cleanup input and keeps terminal outcomes reusable", async () => {
-    const child = spawnOwnedProcess(process.execPath, ["-e", "setInterval(() => {}, 100000)"], { env: env(), stdio: "ignore" });
+    if (process.platform === "win32") return;
+    const command = longRunningCommand();
+    const child = spawnOwnedProcess(command.executable, command.args, { env: env(), stdio: "ignore" });
     try {
       await expect(terminateOwnedProcess(child, -1)).rejects.toThrow("nonnegative safe integer");
       const first = await terminateOwnedProcess(child, 50);
-      expect(["terminated", "timeout", "unknown"]).toContain(first.kind);
+      expect(first.kind).toBe("terminated");
       const second = await retryOwnedProcessTermination(child, 50);
-      expect(["terminated", "timeout", "unknown"]).toContain(second.kind);
+      expect(second.kind).toBe("terminated");
     } finally {
       try { if (child.exitCode === null && child.signalCode === null) child.kill(); } catch { /* cleanup remains bounded */ }
       await waitForChildClose(child, 1_000);
@@ -231,8 +269,10 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("delegates runtime ownership to one injected native boundary", async () => {
+    if (process.platform === "win32") return;
     let spawned = 0;
     let terminated = 0;
+    const command = longRunningCommand();
     const processOwner = {
       spawn(executable: string, args: readonly string[], options: Parameters<typeof spawnOwnedProcess>[2]) {
         spawned += 1;
@@ -243,7 +283,7 @@ describe("JSON-lines process bridge", () => {
         return terminateOwnedProcess(child, graceMs);
       },
     };
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", "setInterval(() => {}, 100000)"], env: env(), processOwner });
+    const bridge = ownBridge({ executable: command.executable, args: command.args, env: env(), processOwner });
     bridge.close("native owner delegation");
     await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
     expect(spawned).toBe(1);
@@ -252,7 +292,7 @@ describe("JSON-lines process bridge", () => {
 
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
-    const connection = ownConnection({ executable: process.execPath, args: ["-e", script], env: env() });
+    const connection = ownConnection({ executable: testRuntimeExecutable(), args: ["-e", script], env: env() });
     const page = await connection.transport.listSessions();
     expect(page.items).toEqual([]);
     connection.bridge.close();
@@ -262,7 +302,7 @@ describe("JSON-lines process bridge", () => {
   test("runs headless terminal lifecycle through the owned runtime process", async () => {
     const lines: string[] = [];
     const output = { write(value: string, callback?: (error?: Error | null) => void): boolean { lines.push(value); callback?.(); return true; } } as unknown as NodeJS.WritableStream;
-    const connection = ownConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
+    const connection = ownConnection({ executable: testRuntimeExecutable(), args: ["-e", runtimeScript], env: env() });
     const terminal = new GraphCoderTerminal(connection.transport, { output });
     const status = await terminal.headless([
       "start op-runtime inspect",
@@ -286,7 +326,7 @@ describe("JSON-lines process bridge", () => {
     const output = new PassThrough();
     const lines: string[] = [];
     output.on("data", chunk => lines.push(String(chunk)));
-    const connection = ownConnection({ executable: process.execPath, args: ["-e", runtimeScript], env: env() });
+    const connection = ownConnection({ executable: testRuntimeExecutable(), args: ["-e", runtimeScript], env: env() });
     const terminal = new GraphCoderTerminal(connection.transport, { input, output });
     const running = terminal.interactive();
     input.write("start op-interactive inspect\n");
@@ -306,7 +346,7 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("correlates concurrent responses and preserves explicit parameters", async () => {
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env() });
     const [slow, fast] = await Promise.all([bridge.request(request("slow", 40)), bridge.request(request("fast"))]);
     expect(slow).toMatchObject({ request_id: "slow", ok: true, result: { query: { after: "40" } } });
     expect(fast).toMatchObject({ request_id: "fast", ok: true, result: { query: {} } });
@@ -315,7 +355,7 @@ describe("JSON-lines process bridge", () => {
 
   test("cancels one pending request while keeping the process available", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => ({ request_id: `${requestId}:cancel`, method: "cancel_session", params: {} }) });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => ({ request_id: `${requestId}:cancel`, method: "cancel_session", params: {} }) });
     const pending = bridge.request(request("cancel", 100));
     expect(bridge.cancel("cancel", "user cancelled")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport", message: "user cancelled" });
@@ -331,7 +371,7 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("retires a cancelled request id until its late response is consumed", async () => {
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env() });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env() });
     const pending = bridge.request(request("reused", 50));
     expect(bridge.cancel("reused")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -342,7 +382,7 @@ describe("JSON-lines process bridge", () => {
 
   test("rejects a cancel control that collides with the retired request id", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => request(requestId) });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env(), onDiagnostic: event => diagnostics.push(event), cancelMessage: requestId => request(requestId) });
     const pending = bridge.request(request("collision", 20));
     expect(bridge.cancel("collision")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -351,7 +391,7 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("retains a cancellation control id after its response", async () => {
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), cancelMessage: () => request("control") });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env(), cancelMessage: () => request("control") });
     const pending = bridge.request(request("original", 20));
     expect(bridge.cancel("original")).toBe(true);
     await expect(pending).rejects.toMatchObject({ code: "transport" });
@@ -361,18 +401,18 @@ describe("JSON-lines process bridge", () => {
   });
 
   test("rejects pending calls on clean EOF and reports malformed output", async () => {
-    const eof = ownBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env() });
+    const eof = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", "process.exit(0)"], env: env() });
     await expect(eof.request(request("eof"))).rejects.toMatchObject({ code: "transport" });
     expect(await eof.waitForExit(2_000)).toMatchObject({ kind: "closed", code: 0 });
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
-    const malformed = ownBridge({ executable: process.execPath, args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
+    const malformed = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", "console.log('malformed')"], env: env(), onDiagnostic: event => diagnostics.push(event), maximumLineBytes: 128 });
     await expect(malformed.request(request("malformed"))).rejects.toMatchObject({ code: "transport" });
     expect(diagnostics.some(event => event.kind === "malformed_line")).toBe(true);
     expect(await malformed.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("keeps exit cleanup authoritative when diagnostics throw", async () => {
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", "process.exit(0)"], env: env(), onDiagnostic: () => { throw new Error("diagnostic observer failed"); } });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", "process.exit(0)"], env: env(), onDiagnostic: () => { throw new Error("diagnostic observer failed"); } });
     await expect(bridge.request(request("diagnostic-observer"))).rejects.toMatchObject({ code: "transport" });
     expect(await bridge.waitForExit(2_000)).toMatchObject({ kind: "closed", code: 0 });
   });
@@ -393,24 +433,24 @@ process.stdin.on("data", chunk => {
   }
 });
 `;
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", script], env: env() });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", script], env: env() });
     await expect(bridge.operatorApprove({ approvalId: "approval-1", approved: true, sessionId: "session-1" })).resolves.toBeUndefined();
     bridge.close();
     expect(await bridge.waitForExit(2_000)).toMatchObject({ kind: "closed" });
   });
 
   test("rejects output with invalid UTF-8 before JSON decoding", async () => {
-    const malformed = ownBridge({ executable: process.execPath, args: ["-e", "process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]))"], env: env() });
+    const malformed = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", "process.stdout.write(Buffer.from([0xc3, 0x28, 0x0a]))"], env: env() });
     await expect(malformed.request(request("invalid-utf8"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bounds a response line before parsing it", async () => {
-    const oversized = ownBridge({ executable: process.execPath, args: ["-e", "process.stdout.write('x'.repeat(512) + '\\n')"], env: env(), maximumLineBytes: 256 });
+    const oversized = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", "process.stdout.write('x'.repeat(512) + '\\n')"], env: env(), maximumLineBytes: 256 });
     await expect(oversized.request(request("oversized"))).rejects.toMatchObject({ code: "transport" });
   });
 
   test("bounds pending requests and applies the 256 UTF-8 byte request-id limit", async () => {
-    const bridge = ownBridge({ executable: process.execPath, args: ["-e", childScript], env: env(), maximumPendingRequests: 1 });
+    const bridge = ownBridge({ executable: testRuntimeExecutable(), args: ["-e", childScript], env: env(), maximumPendingRequests: 1 });
     const first = bridge.request(request("first", 30));
     await expect(bridge.request(request("second"))).rejects.toMatchObject({ code: "transport" });
     await expect(first).resolves.toMatchObject({ request_id: "first", ok: true });
@@ -422,7 +462,7 @@ process.stdin.on("data", chunk => {
   test("rejects every pending call when an otherwise valid response has no matching request", async () => {
     const diagnostics: GraphCoderProcessDiagnostic[] = [];
     const bridge = ownBridge({
-      executable: process.execPath,
+      executable: testRuntimeExecutable(),
       args: ["-e", "process.stdout.write(JSON.stringify({ request_id: 'wrong', ok: true, result: {} }) + '\\n')"],
       env: env(),
       onDiagnostic: event => diagnostics.push(event),
