@@ -2725,34 +2725,59 @@ mod tests {
     #[cfg(all(windows, not(feature = "native-process-tree")))]
     #[test]
     fn native_runner_reports_unknown_for_hidden_descendant_held_pipe() -> Result<()> {
-        let marker = std::env::temp_dir().join(format!(
-            "graphcoder-held-pipe-{}.marker",
-            OperationId::new()
-        ));
+        let temporary = tempfile::tempdir()
+            .map_err(|error| Error::Storage(format!("failed creating held-pipe fixture: {error}")))?;
+        let marker = temporary.path().join("parent-started.marker");
+        let done = temporary.path().join("descendant-finished.marker");
+        let parent_script = temporary.path().join("parent.cmd");
+        let descendant_script = temporary.path().join("descendant.cmd");
+        let system_root = std::env::var_os("SystemRoot")
+            .ok_or_else(|| Error::Storage("SystemRoot is unavailable".into()))?;
+        let command_shell = Path::new(&system_root).join("System32").join("cmd.exe");
+        let ping = Path::new(&system_root).join("System32").join("ping.exe");
+        std::fs::write(
+            &descendant_script,
+            format!(
+                "@echo off\r\n\"{ping}\" -n 4 127.0.0.1 >NUL\r\necho done>\"{done}\"\r\n",
+                ping = ping.display(),
+                done = done.display(),
+            ),
+        )
+        .map_err(|error| Error::Storage(format!("failed writing descendant fixture: {error}")))?;
+        std::fs::write(
+            &parent_script,
+            format!(
+                "@echo off\r\necho marker>\"{marker}\"\r\nstart \"\" /B \"{command_shell}\" /D /C \"\"{descendant_script}\"\"\r\n",
+                marker = marker.display(),
+                command_shell = command_shell.display(),
+                descendant_script = descendant_script.display(),
+            ),
+        )
+        .map_err(|error| Error::Storage(format!("failed writing parent fixture: {error}")))?;
         let mut request = spec();
         request.timeout_ms = Some(10_000);
-        request.executable =
-            std::env::var("ComSpec").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into());
+        request.executable = command_shell.to_string_lossy().into_owned();
         request.arguments = vec![
             "/D".into(),
-            "/S".into(),
             "/C".into(),
-            format!(
-                r#"echo marker>>"{}" & start "" /B powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "Start-Sleep -Seconds 3""#,
-                marker.display()
-            ),
+            parent_script.to_string_lossy().into_owned(),
         ];
         let outcome = NativeExecutionRunner.run(&request)?;
         assert!(matches!(
-            outcome,
-            RunnerOutcome::Unknown { ref reason }
+            &outcome,
+            RunnerOutcome::Unknown { reason }
                 if {
                     let reason = reason.to_ascii_lowercase();
                     reason.contains("descendant")
                         && (reason.contains("handle") || reason.contains("termination"))
                 }
         ));
-        std::thread::sleep(Duration::from_secs(4));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done.exists() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(marker.exists(), "parent marker was not written");
+        assert!(done.exists(), "descendant did not reach its terminal marker");
         let markers = std::fs::read_to_string(&marker).map_err(|error| {
             Error::Storage(format!("held-pipe marker was not written: {error}"))
         })?;
