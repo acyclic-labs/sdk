@@ -4760,6 +4760,92 @@ mod tests {
         requests: Mutex<Vec<ModelRequest>>,
     }
 
+    struct ForkSelectingModel {
+        child_operation: OperationId,
+        calls: AtomicUsize,
+    }
+
+    impl ModelProvider for ForkSelectingModel {
+        fn generate<'a>(
+            &'a self,
+            _prepared: crate::model_input::PreparedModelInput,
+        ) -> BoxStream<'a, Result<ModelEvent>> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Box::pin(futures::stream::iter([
+                    Ok(ModelEvent::ToolCall {
+                        call_id: "fork-call".into(),
+                        name: "acyclic.fork_child".into(),
+                        arguments: json!({
+                            "child_operation": self.child_operation.to_string(),
+                            "task": "write the child project",
+                            "prompt": "make a child project change"
+                        }),
+                    }),
+                    Ok(ModelEvent::Completed {
+                        metadata: Value::Null,
+                    }),
+                ]))
+            } else {
+                Box::pin(futures::stream::iter([Ok(ModelEvent::Completed {
+                    metadata: Value::Null,
+                })]))
+            }
+        }
+
+        fn reconcile<'a>(
+            &'a self,
+            _: ModelAttempt,
+        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    async fn approved_handle_for(
+        swarm: &PersistentLocalSwarm,
+        task: TaskId,
+        target_project: &VolumeRef,
+        child: Authority,
+        child_project: &VolumeRef,
+        operation: OperationId,
+        source: GenerationRef,
+        target: GenerationRef,
+    ) -> Result<LocalApprovedRootWriteback> {
+        let digest = root_writeback_child_action_digest(
+            target_project,
+            child_project,
+            &child,
+            operation,
+            &source,
+            &target,
+        )?;
+        let interaction = InteractionId::new();
+        swarm
+            .open_session(task)
+            .await?
+            .storage()
+            .open_interaction(
+                interaction,
+                Interaction::approval("approve exact root writeback", operation, digest)?,
+            )
+            .await?;
+        swarm.record_operator_approval(task, interaction, true).await?;
+        swarm
+            .resolve_recorded_operator_approval(task, interaction, true)
+            .await?;
+        swarm
+            .issue_approved_root_writeback(
+                task,
+                interaction,
+                target_project,
+                child,
+                child_project,
+                source,
+                target,
+            )
+            .await
+    }
+
     struct RecordingCommunicationHost {
         observed: Mutex<Vec<TaskId>>,
     }
@@ -5296,6 +5382,201 @@ mod tests {
             .await,
             Err(Error::Unauthorized(_))
         ));
+        let changed_generation = GenerationRef::new(root_project.provider().clone(), [0x76; 32], None)?;
+        let changed_result = swarm
+            .issue_approved_root_writeback(
+                root_task,
+                interaction,
+                &root_project,
+                child.clone(),
+                &child_project,
+                changed_generation,
+                target.clone(),
+            )
+            .await;
+        assert!(matches!(changed_result, Err(Error::Conflict(_))));
+        let approved = swarm
+            .issue_approved_root_writeback(
+                root_task,
+                interaction,
+                &root_project,
+                child.clone(),
+                &child_project,
+                source,
+                target,
+            )
+            .await?;
+        let plan = approved.prepare_merge_plan().await?;
+        let outcome = approved.apply_with_recovery(&plan, notice.clone()).await?;
+        let receipt = match outcome {
+            crate::merge::ProjectJoinOutcome::Applied(receipt)
+            | crate::merge::ProjectJoinOutcome::AlreadyApplied(receipt) => receipt,
+            _ => return Err(Error::Conflict("expected applied root writeback".into())),
+        };
+        assert_eq!(
+            approved.apply_with_receipt(&plan, notice.clone()).await?,
+            receipt
+        );
+        let root_workspace = workspace_ref(
+            root_project.provider().clone(),
+            &root_project.storage_name()?,
+        )?;
+        assert_eq!(
+            swarm
+                .filesystem_host
+                .read(&root_workspace, None, "/child.txt", 1_024)
+                .await?,
+            b"child change"
+        );
+        let recovery = ProjectMergeRecovery::new(context.journal.as_ref(), operation);
+        let entry = recovery
+            .reopen()
+            .await?
+            .ok_or_else(|| Error::Storage("root writeback recovery entry was not retained".into()))?;
+        assert_eq!(entry.receipt.as_ref(), Some(&receipt));
+
+        let other_operation = OperationId::from_bytes([0x77; 16]);
+        let other_digest = root_writeback_child_action_digest(
+            &root_project,
+            &child_project,
+            &child,
+            other_operation,
+            &entry.intent.source_generation,
+            &entry.intent.expected_target_generation,
+        )?;
+        let other_interaction = InteractionId::new();
+        swarm
+            .open_session(root_task)
+            .await?
+            .storage()
+            .open_interaction(
+                other_interaction,
+                Interaction::approval("other root writeback", other_operation, other_digest)?,
+            )
+            .await?;
+        swarm.record_operator_approval(root_task, other_interaction, true).await?;
+        swarm
+            .resolve_recorded_operator_approval(root_task, other_interaction, true)
+            .await?;
+        let other_handle = swarm
+            .issue_approved_root_writeback(
+                root_task,
+                other_interaction,
+                &root_project,
+                child.clone(),
+                &child_project,
+                entry.intent.source_generation.clone(),
+                entry.intent.expected_target_generation.clone(),
+            )
+            .await?;
+        let mismatched_recovery = other_handle.recover_receipt(&entry).await;
+        assert!(matches!(
+            mismatched_recovery,
+            Err(Error::Unauthorized(_)) | Err(Error::Conflict(_))
+        ));
+
+        let wrong_child = Authority {
+            kind: AggregateKind::Conversation,
+            id: "local-child-wrong-authority".into(),
+        };
+        let wrong_child_handle = approved_handle_for(
+            &swarm,
+            root_task,
+            &root_project,
+            wrong_child,
+            &child_project,
+            OperationId::from_bytes([0x78; 16]),
+            entry.intent.source_generation.clone(),
+            entry.intent.expected_target_generation.clone(),
+        )
+        .await?;
+        assert!(matches!(
+            wrong_child_handle.recover_receipt(&entry).await,
+            Err(Error::Unauthorized(_)) | Err(Error::Conflict(_))
+        ));
+
+        let wrong_project = VolumeRef::new(
+            root_project.provider().clone(),
+            "local-project-wrong-source",
+            VolumeClass::Project,
+            VolumeOwner::Project("local-swarm".into()),
+        )?;
+        let wrong_project_handle = approved_handle_for(
+            &swarm,
+            root_task,
+            &root_project,
+            child.clone(),
+            &wrong_project,
+            OperationId::from_bytes([0x79; 16]),
+            entry.intent.source_generation.clone(),
+            entry.intent.expected_target_generation.clone(),
+        )
+        .await?;
+        assert!(matches!(
+            wrong_project_handle.recover_receipt(&entry).await,
+            Err(Error::Unauthorized(_)) | Err(Error::Conflict(_))
+        ));
+
+        let wrong_source = GenerationRef::new(root_project.provider().clone(), [0x7A; 32], None)?;
+        let wrong_source_handle = approved_handle_for(
+            &swarm,
+            root_task,
+            &root_project,
+            child.clone(),
+            &child_project,
+            OperationId::from_bytes([0x7B; 16]),
+            wrong_source,
+            entry.intent.expected_target_generation.clone(),
+        )
+        .await?;
+        assert!(matches!(
+            wrong_source_handle.recover_receipt(&entry).await,
+            Err(Error::Unauthorized(_)) | Err(Error::Conflict(_))
+        ));
+
+        let wrong_target = GenerationRef::new(root_project.provider().clone(), [0x7C; 32], None)?;
+        let wrong_target_handle = approved_handle_for(
+            &swarm,
+            root_task,
+            &root_project,
+            child.clone(),
+            &child_project,
+            OperationId::from_bytes([0x7D; 16]),
+            entry.intent.source_generation.clone(),
+            wrong_target,
+        )
+        .await?;
+        assert!(matches!(
+            wrong_target_handle.recover_receipt(&entry).await,
+            Err(Error::Unauthorized(_)) | Err(Error::Conflict(_))
+        ));
+        let wrong_root_project = VolumeRef::new(
+            root_project.provider().clone(),
+            "local-project-wrong-root",
+            VolumeClass::Project,
+            VolumeOwner::Project("local-swarm".into()),
+        )?;
+        let wrong_root_result = approved_handle_for(
+            &swarm,
+            root_task,
+            &wrong_root_project,
+            child.clone(),
+            &child_project,
+            OperationId::from_bytes([0x7E; 16]),
+            entry.intent.source_generation.clone(),
+            entry.intent.expected_target_generation.clone(),
+        )
+        .await;
+        assert!(matches!(wrong_root_result, Err(Error::Unauthorized(_))));
+        drop(approved);
+        drop(other_handle);
+        drop(wrong_child_handle);
+        drop(wrong_project_handle);
+        drop(wrong_source_handle);
+        drop(wrong_target_handle);
+        drop(context);
+        drop(swarm);
+
         let reopened = PersistentLocalSwarm::open_shared_with_bindings(
             root.path(),
             LocalSwarmConfig::new(model, Limits::default())?,
