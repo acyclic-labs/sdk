@@ -31,7 +31,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 const FILESYSTEM_JOIN_PROOF_FORMAT: &str = "acyclic.filesystem.join-commit.v2";
@@ -919,6 +919,7 @@ pub(crate) enum InternalContentClass {
     Interaction,
     Workflow,
     Execution,
+    SwarmFork,
 }
 
 impl InternalContentClass {
@@ -927,14 +928,31 @@ impl InternalContentClass {
             Self::Interaction => ".system/interactions/",
             Self::Workflow => ".system/workflows/",
             Self::Execution => ".system/execution/",
+            Self::SwarmFork => ".system/swarm/forks/",
         }
     }
+}
+
+/// One observed bounded read from a Filesystem provider.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FilesystemReadObservation {
+    /// Provider workspace key requested by the host adapter.
+    pub workspace: String,
+    /// Immutable generation key, when the read was generation pinned.
+    pub generation: Option<String>,
+    /// Logical path requested from the provider.
+    pub path: String,
+    /// Maximum bytes admitted for this provider read.
+    pub maximum_bytes: u64,
+    /// Opaque bytes delivered by the provider.
+    pub bytes: u64,
 }
 
 /// Adapter over any embedded, local, or distributed Filesystem provider pair.
 pub struct FilesystemHost<A, O> {
     filesystem: Fs<A, O>,
     provider: ProviderRef,
+    read_observations: Arc<Mutex<Vec<FilesystemReadObservation>>>,
 }
 
 impl<A, O> Clone for FilesystemHost<A, O> {
@@ -942,6 +960,7 @@ impl<A, O> Clone for FilesystemHost<A, O> {
         Self {
             filesystem: self.filesystem.clone(),
             provider: self.provider.clone(),
+            read_observations: Arc::clone(&self.read_observations),
         }
     }
 }
@@ -1685,7 +1704,18 @@ impl<A, O> FilesystemHost<A, O> {
         Ok(Self {
             filesystem,
             provider,
+            read_observations: Arc::new(Mutex::new(Vec::new())),
         })
+    }
+
+    /// Removes and returns native provider read observations collected by all
+    /// clones of this host. Bodies are represented only by byte counts.
+    pub fn take_read_observations(&self) -> Vec<FilesystemReadObservation> {
+        let mut observations = self
+            .read_observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        std::mem::take(&mut *observations)
     }
 }
 
@@ -2326,7 +2356,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         maximum_bytes: u64,
     ) -> Result<Bytes> {
         let workspace = self.open(workspace).await?;
-        match generation {
+        let workspace_key = workspace.name().as_str().to_owned();
+        let generation_key = generation.map(|reference| hex::encode(reference.as_resource().key()));
+        let bytes = match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
                 .await?
@@ -2334,7 +2366,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await
                 .map_err(map_error),
             None => workspace.read(path, maximum_bytes).await.map_err(map_error),
-        }
+        }?;
+        self.read_observations
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(FilesystemReadObservation {
+                workspace: workspace_key,
+                generation: generation_key,
+                path: path.to_owned(),
+                maximum_bytes,
+                bytes: u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            });
+        Ok(bytes)
     }
 
     /// Stats one path at the current head or an exact generation.

@@ -39,7 +39,8 @@ pub mod wire {
 pub const FILE_DESCRIPTOR_SET: &[u8] = include_bytes!("../proto/stream/v2/stream_descriptor.bin");
 #[cfg(feature = "local")]
 pub use local::{
-    LocalDurability, LocalStream, LocalStreamError, LocalStreamLimits, deferring_durability,
+    LocalDurability, LocalReadObservation, LocalStream, LocalStreamError, LocalStreamLimits,
+    deferring_durability,
 };
 pub use memory::{MemoryLimits, MemoryStream};
 
@@ -587,6 +588,14 @@ impl<P: StreamProvider> StreamClient<P> {
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
         Self { provider }
+    }
+
+    /// Returns whether two clients are bound to the same authenticated
+    /// provider instance.  Callers use this to reject substituting a client
+    /// from another stream domain at an authority-sensitive boundary.
+    #[must_use]
+    pub fn same_provider(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.provider, &other.provider)
     }
 
     /// Observes the exact replay window without guessing from a failed read.
