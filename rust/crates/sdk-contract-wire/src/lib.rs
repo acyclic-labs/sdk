@@ -22,6 +22,7 @@ pub mod protocol;
 pub mod semantic_oracle;
 pub mod stream;
 pub mod transport;
+pub mod transport_control;
 pub mod wire_semantics;
 pub mod workers;
 
