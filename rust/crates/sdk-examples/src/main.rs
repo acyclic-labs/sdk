@@ -190,6 +190,20 @@ fn write_qualification_receipt(
     }
     let rpc_scenarios_bytes = serde_json::to_vec(&rpc_scenarios)
         .map_err(|error| format!("encode RPC scenario evidence: {error}"))?;
+    let seed_graph = fixtures
+        .get("qualification")
+        .and_then(|qualification| qualification.get("seed_graph"))
+        .cloned()
+        .ok_or("fixture manifest is missing Rust-owned semantic seed graph")?;
+    let seed_graph_count = seed_graph
+        .get("count")
+        .and_then(Value::as_u64)
+        .ok_or("Rust-owned semantic seed graph is missing count")?;
+    if seed_graph_count != rpc_scenario_count {
+        return Err("Rust-owned semantic seed graph count differs from RPC scenarios".to_owned());
+    }
+    let seed_graph_bytes = serde_json::to_vec(&seed_graph)
+        .map_err(|error| format!("encode semantic seed graph evidence: {error}"))?;
     let status = if [(&snippets, &snippets_bytes), (&fixtures, &fixtures_bytes)]
         .into_iter()
         .all(|(manifest, _)| manifest_status(manifest) == "passed")
@@ -244,6 +258,15 @@ fn write_qualification_receipt(
                 "schema": "acyclic.sdk.rust-rpc-scenarios.v1",
                 "count": rpc_scenario_count,
                 "sha256": hash(&rpc_scenarios_bytes),
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            },
+            {
+                "id": "rust-semantic-seed-graph",
+                "kind": "semantic-seed-graph",
+                "status": "passed",
+                "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
+                "count": seed_graph_count,
+                "sha256": hash(&seed_graph_bytes),
                 "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
             },
             {
@@ -432,17 +455,7 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
             "code_sha256": hash(snippet.code.as_bytes()),
         }));
     }
-    let rpc_scenarios = qualification_scenarios()
-        .map(|scenario| {
-            json!({
-                "family": scenario.family,
-                "operation": scenario.operation,
-                "input": scenario.input,
-                "expected": scenario.expected,
-                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
-            })
-        })
-        .collect::<Vec<_>>();
+    let rpc_scenarios = rust_rpc_scenarios();
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.examples.bundle.v1",
@@ -458,6 +471,25 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
         "snippets": entries,
         "files": files.keys().collect::<Vec<_>>(),
     }))
+}
+
+
+fn rust_rpc_scenarios() -> Vec<Value> {
+    qualification_scenarios()
+        .map(|scenario| {
+            json!({
+                "family": scenario.family,
+                "operation": scenario.operation,
+                "input": scenario.input,
+                "expected": scenario.expected,
+                "order": scenario.order,
+                "seed": scenario.seed,
+                "depends_on": scenario.depends_on,
+                "known_output": scenario.known_output,
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            })
+        })
+        .collect()
 }
 
 fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result<Value, String> {
@@ -511,6 +543,19 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         &build_recipe_sha256,
     );
     let vector_bytes = json_bytes(&vectors);
+    let rpc_scenarios = rust_rpc_scenarios();
+    let seed_graph = json!({
+        "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
+        "count": rpc_scenarios.len(),
+        "steps": rpc_scenarios.iter().map(|scenario| json!({
+            "order": scenario["order"],
+            "family": scenario["family"],
+            "operation": scenario["operation"],
+            "seed": scenario["seed"],
+            "depends_on": scenario["depends_on"],
+            "known_output": scenario["known_output"],
+        })).collect::<Vec<_>>(),
+    });
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.transport-fixtures.v1",
@@ -540,6 +585,7 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
                 "count": rpc_scenarios.len(),
                 "scenarios": rpc_scenarios,
             },
+            "seed_graph": seed_graph,
             "fixture_server": {
                 "command": "cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 0",
                 "bind": "127.0.0.1",

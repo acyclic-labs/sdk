@@ -1,40 +1,41 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://sdk.acyclic.dev/schemas/rust-rpc-scenarios.v1.json",
-  "title": "Rust-owned RPC semantic scenarios",
+  "$id": "https://sdk.acyclic.dev/schemas/rust-semantic-seed-graph.v1.json",
+  "title": "Rust-owned ordered semantic seed graph",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
     "count",
-    "scenarios"
+    "steps"
   ],
   "properties": {
     "schema": {
-      "const": "acyclic.sdk.rust-rpc-scenarios.v1"
+      "const": "acyclic.sdk.rust-semantic-seed-graph.v1"
     },
     "count": {
       "type": "integer",
       "minimum": 1
     },
-    "scenarios": {
+    "steps": {
       "type": "array",
       "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
+          "order",
           "family",
           "operation",
-          "input",
-          "expected",
-          "source",
-          "order",
           "seed",
           "depends_on",
           "known_output"
         ],
         "properties": {
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
           "family": {
             "enum": [
               "filesystem",
@@ -44,21 +45,6 @@
           "operation": {
             "type": "string",
             "minLength": 1
-          },
-          "input": {
-            "type": "string",
-            "minLength": 1
-          },
-          "expected": {
-            "type": "string",
-            "minLength": 1
-          },
-          "source": {
-            "const": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs"
-          },
-          "order": {
-            "type": "integer",
-            "minimum": 1
           },
           "seed": {
             "type": "string",
