@@ -1183,9 +1183,47 @@ impl PersistentLocalHarness {
         extension: LocalHarnessTools,
         stream_provider: ProviderRef,
     ) -> Result<Self> {
+        Self::from_published_fork_with_tools_and_stream_provider_and_authority(
+            model,
+            provider,
+            limits,
+            host,
+            stream,
+            issuer,
+            parent,
+            seed,
+            extension,
+            stream_provider,
+            None,
+        )
+        .await
+    }
+
+    /// Composes a published child with the swarm's pinned external operator
+    /// authority. The child still receives its own internal conversation
+    /// issuer; the external verifier is only used for host operator routes.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn from_published_fork_with_tools_and_stream_provider_and_authority(
+        model: Model,
+        provider: Arc<dyn ModelProvider>,
+        limits: Limits,
+        host: Arc<FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>>,
+        stream: StreamClient<LocalStream>,
+        issuer: AuthorityIssuer,
+        parent: &StreamAggregate<LocalStream>,
+        seed: &ForkSeed,
+        extension: LocalHarnessTools,
+        stream_provider: ProviderRef,
+        authority: Option<AuthorityVerifier>,
+    ) -> Result<Self> {
         limits.validate()?;
         crate::model::validate_model_options(&model.options, provider.model_option_policy())?;
-        let storage = DurableHarnessStorage::from_published_fork(
+        let execution_authority = issuer.verifier();
+        let interaction_issuer = issuer.clone();
+        let mut storage = DurableHarnessStorage::from_published_fork(
+        let execution_authority = issuer.verifier();
+        let interaction_issuer = issuer.clone();
+        let mut storage = DurableHarnessStorage::from_published_fork(
             limits.file_bytes,
             host.clone(),
             stream,
@@ -1199,6 +1237,12 @@ impl PersistentLocalHarness {
             stream_provider,
             limits.file_bytes,
         )?);
+        let execution_authority = if let Some(authority) = authority {
+            storage = storage.with_operator_authority(authority.clone(), interaction_issuer)?;
+            authority
+        } else {
+            execution_authority
+        };
         let bundle = default_local_bundle(&storage, model, provider, limits, extension)?;
         Ok(Self { storage, bundle })
     }
