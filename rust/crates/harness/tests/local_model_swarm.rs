@@ -60,6 +60,23 @@ fn message_contains(request: &ModelRequest, needle: &str) -> bool {
         })
 }
 
+fn latest_declared_child_task(request: &ModelRequest) -> Option<&str> {
+    request.messages.iter().rev().find_map(|message| {
+        let text = match &message.content {
+            ModelContent::Text(text) => text.as_str(),
+            ModelContent::Part(ModelContentPart::Text { text }) => text.as_str(),
+            ModelContent::Parts(parts) => parts.iter().find_map(|part| match part {
+                ModelContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })?,
+            _ => return None,
+        };
+        text.strip_prefix("child task: ")
+            .and_then(|text| text.split_once("; parent:"))
+            .map(|(task, _)| task)
+    })
+}
+
 fn staged_file(request: &ModelRequest) -> Option<Value> {
     request.messages.iter().find_map(|message| {
         let ModelContent::Part(ModelContentPart::ToolResult { name, value, .. }) = &message.content
@@ -173,13 +190,19 @@ impl ModelProvider for DeterministicProvider {
             .push(request.clone());
         self.requests.lock().expect("request lock").push(bytes);
         let dispatch = self.dispatches.fetch_add(1, Ordering::SeqCst);
-        let is_child_a = message_contains(&request, "child task: child-a");
-        let is_child_b = message_contains(&request, "child task: child-b");
-        let is_grandchild = message_contains(&request, "child task: grandchild");
-        let sibling_fork_attempt = is_child_a && message_contains(&request, "attempt sibling fork");
+        let declared_task = latest_declared_child_task(&request);
+        let is_child_a = declared_task == Some("child-a");
+        let is_child_b = declared_task == Some("child-b");
+        let is_grandchild = declared_task == Some("grandchild");
+        let sibling_fork_attempt = dispatch == 6
+            && self.child_read_verified.load(Ordering::SeqCst)
+            && !self.sibling_fork_sent.load(Ordering::SeqCst);
         let root = !is_child_a && !is_child_b && !is_grandchild;
+        if is_grandchild && has_read_result(&request) {
+            self.grandchild_inherited_read.store(true, Ordering::SeqCst);
+        }
 
-        if (is_child_a || is_child_b) && dispatch > 0 {
+        if (is_child_a || is_child_b || sibling_fork_attempt) && dispatch > 0 {
             let expected_a = self.child_a;
             let expected_b = self.child_b;
             let weak = self
@@ -260,9 +283,6 @@ impl ModelProvider for DeterministicProvider {
                 } else {
                     if is_child_a && has_read_result(&request) {
                         self.child_read_verified.store(true, Ordering::SeqCst);
-                    }
-                    if is_grandchild && has_read_result(&request) {
-                        self.grandchild_inherited_read.store(true, Ordering::SeqCst);
                     }
                     Self::ordinary()
                 };
