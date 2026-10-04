@@ -50,12 +50,26 @@ EXPLICIT_ENVIRONMENT = {
     "GRAPHCODER_REQUIRE_PACKAGE_IDENTITY",
     "GRAPHCODER_LAZY_OBSERVATION_PATH",
     "GRAPHCODER_REQUIRE_LAZY_COUNTERS",
+    "GRAPHCODER_PTY_FIXTURE_MODE",
 }
 ANSI = re.compile(r"(?:\x1b\][^\x07]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~])")
 
 
 def fail(message: str) -> None:
     raise RuntimeError(f"graphcoder-production-pty-winpty: {message}")
+
+
+def prompt_timeout_seconds() -> float:
+    value = os.environ.get("GRAPHCODER_PTY_PROMPT_TIMEOUT_SECONDS")
+    if value is None or value.strip() == "":
+        return PROMPT_TIMEOUT_SECONDS
+    try:
+        timeout = float(value)
+    except ValueError as error:
+        fail(f"GRAPHCODER_PTY_PROMPT_TIMEOUT_SECONDS is invalid: {error}")
+    if timeout <= 0:
+        fail("GRAPHCODER_PTY_PROMPT_TIMEOUT_SECONDS must be positive")
+    return timeout
 
 
 def clean(value: str) -> str:
@@ -68,14 +82,7 @@ def prompt_count(value: str) -> int:
 
 def context(transcript: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for raw_line in clean(transcript).splitlines():
-        start = raw_line.find("{")
-        if start < 0:
-            continue
-        try:
-            value = json.loads(raw_line[start:])
-        except json.JSONDecodeError:
-            continue
+    for value in terminal_records(transcript):
         payload = value.get("value") if isinstance(value, dict) else None
         if not isinstance(payload, (dict, list)):
             continue
@@ -119,17 +126,42 @@ def expand(command: str, transcript: str) -> str:
 
 
 def terminal_records(transcript: str) -> list[dict[str, object]]:
+    """Decode complete terminal JSON frames across PTY line wrapping."""
     records: list[dict[str, object]] = []
-    for raw_line in clean(transcript).splitlines():
-        start = raw_line.find("{")
-        if start < 0:
-            continue
-        try:
-            value = json.loads(raw_line[start:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict) and isinstance(value.get("ok"), bool):
-            records.append(value)
+    value = clean(transcript)
+    starts = [match.start() for match in re.finditer(r'\{"ok":', value)]
+    for start in starts:
+        depth = 0
+        in_string = False
+        escaped = False
+        for index in range(start, len(value)):
+            character = value[index]
+            if character in "\r\n":
+                continue
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                continue
+            if character == '"':
+                in_string = True
+            elif character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth != 0:
+                    continue
+                candidate = value[start:index + 1].replace("\r", "").replace("\n", "")
+                try:
+                    decoded = json.loads(candidate)
+                except json.JSONDecodeError:
+                    break
+                if isinstance(decoded, dict) and isinstance(decoded.get("ok"), bool):
+                    records.append(decoded)
+                break
     return records
 
 
@@ -141,6 +173,19 @@ def json_record_count(transcript: str) -> int:
     terminal result still begins with this stable framed prefix.
     """
     return clean(transcript).count('{"ok":')
+
+
+def command_expectations(commands: list[str]) -> list[str | None]:
+    value = os.environ.get("GRAPHCODER_PTY_COMMAND_EXPECTATIONS_JSON")
+    if value is None or value.strip() == "":
+        return [None] * len(commands)
+    try:
+        expected = json.loads(value)
+    except json.JSONDecodeError as error:
+        fail(f"GRAPHCODER_PTY_COMMAND_EXPECTATIONS_JSON is invalid: {error}")
+    if not isinstance(expected, list) or len(expected) != len(commands) or any(item is not None and (not isinstance(item, str) or item == "") for item in expected):
+        fail("GRAPHCODER_PTY_COMMAND_EXPECTATIONS_JSON must be a same-length array of strings or null")
+    return expected
 
 
 def assert_typed_records(transcript: str) -> None:
@@ -216,8 +261,24 @@ def write_lifecycle(path_name: str | None, lifecycle: dict[str, object]) -> None
     path.write_text(f"{json.dumps(lifecycle, indent=2, sort_keys=True)}\n", encoding="utf-8")
 
 
+def close_winpty_sockets(process: PtyProcess) -> None:
+    """Close both Python socket objects even when winpty already marked closed."""
+    for name in ("fileobj", "_server"):
+        socket_object = getattr(process, name, None)
+        if socket_object is None:
+            continue
+        try:
+            socket_object.shutdown(socket.SHUT_RDWR)
+        except (OSError, ValueError):
+            pass
+        try:
+            socket_object.close()
+        except (OSError, ValueError):
+            pass
+
+
 def wait_for_prompt(process: PtyProcess, output: list[str], previous: int) -> None:
-    deadline = time.monotonic() + PROMPT_TIMEOUT_SECONDS
+    deadline = time.monotonic() + prompt_timeout_seconds()
     while prompt_count("".join(output)) <= previous:
         if not process.isalive():
             fail("PTY process closed before the next framed prompt")
@@ -226,15 +287,18 @@ def wait_for_prompt(process: PtyProcess, output: list[str], previous: int) -> No
         time.sleep(0.05)
 
 
-def wait_for_record(process: PtyProcess, output: list[str], previous: int) -> None:
+def wait_for_record(process: PtyProcess, output: list[str], previous: int, expected_marker: str | None = None) -> None:
     """Wait for the command's JSON result, since readline redraws prompts eagerly.
 
     GraphCoder intentionally prints a fresh prompt while an interactive command
     is still awaiting its owner. Prompt count therefore cannot establish that a
     command completed; the typed terminal record is the completion boundary.
     """
-    deadline = time.monotonic() + PROMPT_TIMEOUT_SECONDS
-    while json_record_count("".join(output)) <= previous:
+    before = clean("".join(output))
+    previous_marker_count = before.count(expected_marker) if expected_marker is not None else 0
+    deadline = time.monotonic() + prompt_timeout_seconds()
+    while (json_record_count("".join(output)) <= previous
+           or (expected_marker is not None and clean("".join(output)).count(expected_marker) <= previous_marker_count)):
         if not process.isalive():
             fail("PTY process closed before the command result")
         if time.monotonic() >= deadline:
@@ -244,7 +308,7 @@ def wait_for_record(process: PtyProcess, output: list[str], previous: int) -> No
 
 def wait_for_exit_record(output: list[str]) -> None:
     """Allow the reader to drain the final typed quit receipt after EOF."""
-    deadline = time.monotonic() + 2.0
+    deadline = time.monotonic() + min(2.0, prompt_timeout_seconds())
     while '"exited":true' not in clean("".join(output)):
         if time.monotonic() >= deadline:
             fail("PTY transcript omitted the typed exit record after process exit")
@@ -258,7 +322,15 @@ def run(commands: list[str], smoke: bool = False) -> int:
         fail("at least one terminal command is required")
     sdk_root = Path(__file__).resolve().parents[1]
     node = os.environ.get("GRAPHCODER_NODE", sys.executable.replace("python.exe", "node.exe"))
-    entrypoint = sdk_root / "scripts" / "graphcoder-production-entrypoint.mjs"
+    fixture_entrypoint = os.environ.get("GRAPHCODER_PTY_ENTRYPOINT")
+    if fixture_entrypoint is not None:
+        if os.environ.get("GRAPHCODER_PTY_ALLOW_FIXTURE") != "1":
+            fail("GRAPHCODER_PTY_ENTRYPOINT requires GRAPHCODER_PTY_ALLOW_FIXTURE=1")
+        entrypoint = Path(fixture_entrypoint).resolve()
+    else:
+        entrypoint = sdk_root / "scripts" / "graphcoder-production-entrypoint.mjs"
+    if not entrypoint.is_file() or entrypoint.is_symlink():
+        fail(f"PTY entrypoint is not a regular file: {entrypoint}")
     process = PtyProcess.spawn([node, str(entrypoint)], cwd=str(sdk_root), env=explicit_environment())
     # winpty's reader socket is blocking by default. A bounded timeout lets
     # the owned reader observe the stop event after close instead of leaving a
@@ -291,15 +363,16 @@ def run(commands: list[str], smoke: bool = False) -> int:
 
     reader = threading.Thread(target=drain, daemon=True)
     reader.start()
+    expectations = command_expectations(commands)
     try:
         wait_for_prompt(process, output, 0)
-        for raw_command in commands:
+        for command_index, raw_command in enumerate(commands):
             previous = json_record_count("".join(output))
             process.write(expand(raw_command, "".join(output)) + "\r")
-            wait_for_record(process, output, previous)
+            wait_for_record(process, output, previous, expectations[command_index])
         process.write("quit\r")
         lifecycle["quit_sent"] = True
-        deadline = time.monotonic() + PROMPT_TIMEOUT_SECONDS
+        deadline = time.monotonic() + prompt_timeout_seconds()
         while process.isalive() and time.monotonic() < deadline:
             time.sleep(0.05)
         if process.isalive():
@@ -344,7 +417,7 @@ def run(commands: list[str], smoke: bool = False) -> int:
                 try:
                     process.kill()
                     lifecycle["forced_kill"] = True
-                except (OSError, PermissionError):
+                except (OSError, PermissionError, TypeError):
                     pass
         deadline = time.monotonic() + 2.0
         while process.isalive() and time.monotonic() < deadline:
@@ -359,6 +432,8 @@ def run(commands: list[str], smoke: bool = False) -> int:
             lifecycle["close_error"] = str(error)
         reader.join(timeout=2)
         lifecycle["reader_alive_after_join"] = reader.is_alive()
+        close_winpty_sockets(process)
+        lifecycle["sockets_closed"] = True
         transcript_path = os.environ.get("GRAPHCODER_PTY_TRANSCRIPT_PATH")
         if transcript_path:
             Path(transcript_path).write_text("".join(output), encoding="utf-8")

@@ -41,7 +41,15 @@
     },
     "pty_runner": {
       "path": "scripts/graphcoder-production-pty-winpty.py",
-      "sha256": "709b5bce362f52044478e8ad0ed4aa72936383622741a588b10aaa84da9cdd2b"
+      "sha256": "255592102a5ef04e684d463cb21fd7060aba51d54485eb70b67bdeaec4186d10"
+    },
+    "pty_negative_fixture": {
+      "path": "scripts/fixtures/graphcoder-production-pty-negative.mjs",
+      "sha256": "cfdd422ed3175e1e4ae823ecdf8d3dcde42b93384f1917070165b1753a468301"
+    },
+    "pty_focused_tests": {
+      "path": "scripts/graphcoder-production-pty-winpty.test.py",
+      "sha256": "99a83e071424837bbe6f9c459cc4c75731f7dbf13cbd0f1318f944bb419a4c93"
     }
   },
   "results": {
@@ -61,11 +69,24 @@
     },
     "causal_cleanup": {
       "status": "pass",
-      "transcript": "target/qualification-installed-20261004-r2/pty-winpty-transcript-r2-final2.txt",
-      "transcript_sha256": "84572677424352ecd76976f4a6168161b818cad0a960ec4bc3ba973a4cc75822",
-      "lifecycle_receipt": "target/qualification-installed-20261004-r2/pty-winpty-lifecycle-r2-final2.json",
-      "lifecycle_sha256": "e0cae0672b3ffd0beed62a8ae743498a2add8e038d628c5c25b28da9868bb74a",
-      "observed": "The child exited naturally after the typed quit receipt; winpty's socket was closed, the reader thread joined, no forced kill was used, and alive_after_cleanup was false."
+      "transcript": "target/qualification-installed-20261004-r2/pty-winpty-transcript-r2-final3.txt",
+      "transcript_sha256": "b29fc6e961e110e2c9e166e8544aaaba92b5ccd22af42e7dcb20f7ad7599b20d",
+      "lifecycle_receipt": "target/qualification-installed-20261004-r2/pty-winpty-lifecycle-r2-final3.json",
+      "lifecycle_sha256": "2db9c76f137e946c559d446a4e418aab26490565de8d559ef7bc2d0183712791",
+      "observed": "The child exited naturally after the typed quit receipt; winpty's socket was closed, the reader thread joined, no forced kill was used, sockets_closed was true, and alive_after_cleanup was false."
+    },
+    "negative_fixture_matrix": {
+      "status": "pass",
+      "command": "python scripts/graphcoder-production-pty-winpty.test.py -v",
+      "cases": [
+        "missing result",
+        "truncated result",
+        "wrong result",
+        "timeout",
+        "bridge crash",
+        "successful completion"
+      ],
+      "observed": "All six cases passed. Every failure was rejected before being treated as a completed command, and every case verified child, socket, and reader cleanup."
     },
     "strict_pty_full_flow": {
       "status": "unmet",
