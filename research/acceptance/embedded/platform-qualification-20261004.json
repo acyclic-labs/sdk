@@ -16,6 +16,16 @@
       "command": "cargo build --locked --offline --release --target x86_64-unknown-linux-musl",
       "observed": "Rust target is installed, but ring cannot find x86_64-linux-musl-gcc; no artifact was promoted"
     },
+    "linux-aarch64-musl": {
+      "status": "pending-toolchain",
+      "target": "aarch64-unknown-linux-musl",
+      "observed": "Release runner matrix defines the target, but no local ARM64 musl linker or executed consumer is available"
+    },
+    "windows-aarch64-msvc": {
+      "status": "pending-runner",
+      "target": "aarch64-pc-windows-msvc",
+      "observed": "Release runner matrix defines the target, but no local ARM64 MSVC/LLVM linker or executed consumer is available"
+    },
     "macos-x86_64": {
       "status": "pending-runner",
       "target": "x86_64-apple-darwin",

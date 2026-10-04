@@ -16,6 +16,8 @@
     "rust/crates/sdk-embedded-prototype/Cargo.lock",
     "rust/crates/sdk-embedded-prototype/build.rs",
     "rust/crates/sdk-embedded-prototype/src/lib.rs",
+    "rust/crates/sdk-embedded-prototype/tests/c_consumer.c",
+    "rust/crates/sdk-embedded-prototype/tests/python_consumer.py",
     "cpp/embedded-consumer/CMakeLists.txt",
     "cpp/embedded-consumer/AcyclicEmbeddedConfig.cmake.in",
     "cpp/embedded-consumer/include/acyclic/embedded.hpp",
@@ -46,7 +48,10 @@
       "lib/acyclic_sdk_embedded_prototype.dll.lib",
       "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfig.cmake",
       "lib/cmake/AcyclicEmbedded/AcyclicEmbeddedConfigVersion.cmake"
-    ]
+    ],
+    "unix_entrypoint": "cpp/embedded-consumer/portable-package-test.sh",
+    "unix_command": "bash {source_root}/cpp/embedded-consumer/portable-package-test.sh",
+    "platform_receipt": "{output_root}/platform-package.json"
   },
   "consumer_receipts": {
     "rust": "receipt.foreign_consumers.rust_unit_tests",
@@ -81,6 +86,18 @@
       "status": "pending-toolchain",
       "required_target": "x86_64-unknown-linux-musl",
       "required_tools": ["x86_64-linux-musl-gcc", "musl linker"],
+      "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
+    },
+    "linux-aarch64-musl": {
+      "status": "pending-toolchain",
+      "required_target": "aarch64-unknown-linux-musl",
+      "required_tools": ["musl-gcc", "aarch64-linux-musl-gcc", "C++ linker"],
+      "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
+    },
+    "windows-aarch64-msvc": {
+      "status": "pending-runner",
+      "required_target": "aarch64-pc-windows-msvc",
+      "required_tools": ["MSVC or pinned LLVM ARM64 linker"],
       "receipt": "research/acceptance/embedded/platform-qualification-20261004.json"
     },
     "macos": {

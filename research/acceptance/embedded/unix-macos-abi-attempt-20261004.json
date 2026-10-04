@@ -2,6 +2,8 @@
   "schema": "acyclic.sdk.embedded.platform-attempt.v1",
   "status": "not-qualified",
   "source_revision": "37822fd23090c2b44de9bfc0eddd8368f62ed95d",
+  "recipe": "cpp/embedded-consumer/portable-package-test.sh",
+  "recipe_contract": ["Rust target selected by release matrix", "CMake C++ consumer", "CTest", "clean installed-prefix consumer", "artifact hashes"],
   "available_toolchains": {
     "rust_targets": [
       "aarch64-pc-windows-msvc",
