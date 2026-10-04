@@ -1478,6 +1478,47 @@ mod tests {
         }
     }
 
+    #[test]
+    fn lazy_observation_binds_runtime_and_list_request() {
+        let directory = tempfile::tempdir().expect("observation directory");
+        let path = directory.path().join("lazy-observation.json");
+        let observation = LazyObservation {
+            path: Some(path.clone()),
+            executable: Some(std::env::current_exe().expect("test executable")),
+            active: AtomicBool::new(false),
+            counters: LazyCounters::default(),
+        };
+        observation.begin();
+        observation.finish("list-1", "list_sessions").expect("observation writes");
+        let value: Value = serde_json::from_slice(
+            &std::fs::read(path).expect("observation reads"),
+        )
+        .expect("observation JSON");
+        assert_eq!(value["schema"], "graphcoder.lazy-observation.v1");
+        assert_eq!(value["request"]["request_id"], "list-1");
+        assert_eq!(value["request"]["method"], "list_sessions");
+        assert!(value["runtime"]["pid"].as_u64().is_some_and(|pid| pid > 0));
+        assert_eq!(value["during_list_sessions"]["worker_starts"], 0);
+        assert_eq!(value["during_list_sessions"]["workspace_reads"], 0);
+        assert_eq!(value["during_list_sessions"]["model_dispatches"], 0);
+    }
+
+    #[tokio::test]
+    async fn listing_does_not_touch_an_unavailable_external_checkout() {
+        let root = tempfile::tempdir().expect("temporary root");
+        let mut args = runtime_args(root.path().to_owned(), "echo");
+        args.checkout = Some(root.path().join("checkout-does-not-exist"));
+        args.project_id = Some("lazy-list-project".into());
+        let runtime = Arc::new(Runtime::open(&args).await.expect("runtime opens lazily"));
+        let listed = exchange(
+            runtime,
+            json!({"request_id":"list-lazy","method":"list_sessions","params":{}}),
+        )
+        .await;
+        assert_eq!(listed["ok"], true);
+        assert_eq!(listed["result"]["items"].as_array().map(Vec::len), Some(1));
+    }
+
     #[tokio::test]
     async fn json_lines_lists_lazily_then_runs_echo_fixture() {
         let root = tempfile::tempdir().expect("temporary root");
