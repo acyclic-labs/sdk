@@ -219,3 +219,290 @@ jobs:
             ${{ github.workspace }}/target/jvm-embedded
           if-no-files-found: error
           retention-days: 14
+
+  dotnet-installed-consumer:
+    name: Installed .NET consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: blacksmith-4vcpu-windows-2025
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+          - rid: linux-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - rid: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - rid: osx-x64
+            runner: macos-15-intel
+          - rid: osx-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install pinned .NET SDK
+        uses: actions/setup-dotnet@d4c94342e560b34958eacfc5d055d214f3edc00 # v4.3.1
+        with:
+          dotnet-version: 8.0.425
+      - name: Download aggregate package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Install package and execute Rust-backed consumer
+        shell: pwsh
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          TEST_ROOT: ${{ runner.temp }}/embedded-dotnet-consumer
+          RID: ${{ matrix.rid }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $package = Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Filter '*.nupkg' -File -Recurse | Select-Object -First 1
+          if (-not $package) { throw 'Aggregate NuGet package is missing.' }
+          dotnet new console --framework net8.0 --output $env:TEST_ROOT --force --no-restore | Out-Host
+          dotnet add $env:TEST_ROOT package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source $package.DirectoryName | Out-Host
+          $projectFile = Join-Path $env:TEST_ROOT 'embedded-dotnet-consumer.csproj'
+          $projectXml = Get-Content -LiteralPath $projectFile -Raw
+          $projectXml = $projectXml.Replace('</Project>', "  <PropertyGroup><RuntimeIdentifier>$env:RID</RuntimeIdentifier></PropertyGroup>`n</Project>")
+          Set-Content -LiteralPath $projectFile -Value $projectXml -Encoding utf8NoBOM
+          dotnet restore $env:TEST_ROOT --force --no-cache | Out-Host
+          @'
+          using Acyclic.Sdk.Embedded;
+          using System;
+          using System.Linq;
+          using System.Threading.Tasks;
+          using var engine = new EmbeddedStreamEngine();
+          var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x52, 0x49, 0x44 };
+          var appended = engine.Append("installed-rid", value);
+          var count = 0;
+          await foreach (var item in engine.ReadAsync("installed-rid", appended.Start, 1))
+          {
+              if (!item.Value.SequenceEqual(value)) throw new InvalidOperationException("Rust value did not round-trip.");
+              count++;
+          }
+          if (count != 1) throw new InvalidOperationException($"Expected one record, received {count}.");
+          Console.WriteLine("Installed Rust-backed .NET consumer passed.");
+          '@ | Set-Content -LiteralPath (Join-Path $env:TEST_ROOT 'Program.cs') -Encoding utf8NoBOM
+          dotnet run --project $env:TEST_ROOT --configuration Release
+
+  dotnet-installed-consumer-musl:
+    name: Installed musl .NET consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-musl-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+            image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
+          - rid: linux-musl-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+            image: mcr.microsoft.com/dotnet/sdk@sha256:566b0dd501284d96c6e2fef35e1bd23c4f53e6699d1b76b9f7d7da56af723287
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download aggregate package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Install package and execute musl Rust-backed consumer
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          RID: ${{ matrix.rid }}
+          DOTNET_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$PACKAGE_ROOT:/pkg" \
+            --env RID="$RID" \
+            "$DOTNET_IMAGE" sh -euxc '
+              apk add --no-cache git
+              package="$(find /pkg -name "Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg" -type f -print -quit)"
+              test -n "$package"
+              dotnet new console --framework net8.0 --output /tmp/embedded-dotnet-consumer --force --no-restore
+              dotnet add /tmp/embedded-dotnet-consumer package Acyclic.Sdk.Embedded --version 0.2.0-alpha.1 --source "$(dirname "$package")"
+              sed -i "s#</Project>#  <PropertyGroup><RuntimeIdentifier>$RID</RuntimeIdentifier></PropertyGroup></Project>#" /tmp/embedded-dotnet-consumer/embedded-dotnet-consumer.csproj
+              dotnet restore /tmp/embedded-dotnet-consumer --force --no-cache
+              cat >/tmp/embedded-dotnet-consumer/Program.cs <<"CS"
+              using Acyclic.Sdk.Embedded;
+              using System;
+              using System.Linq;
+              using var engine = new EmbeddedStreamEngine();
+              var value = new byte[] { 0x52, 0x75, 0x73, 0x74, 0x2D, 0x4D, 0x55, 0x53, 0x4C };
+              var appended = engine.Append("installed-musl", value);
+              var count = 0;
+              await foreach (var item in engine.ReadAsync("installed-musl", appended.Start, 1))
+              { if (!item.Value.SequenceEqual(value)) throw new InvalidOperationException("Rust value did not round-trip."); count++; }
+              if (count != 1) throw new InvalidOperationException("Expected one Rust record.");
+              CS
+              dotnet run --project /tmp/embedded-dotnet-consumer --configuration Release
+            '
+
+  jvm-installed-consumer:
+    name: Installed JVM consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            runner: blacksmith-4vcpu-windows-2025
+          - rid: win-arm64
+            runner: windows-11-vs2026-arm
+          - rid: linux-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - rid: linux-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+          - rid: osx-x64
+            runner: macos-15-intel
+          - rid: osx-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install pinned Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17.0.14'
+          cache: maven
+      - name: Download aggregate package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Load installed JVM package and execute Rust-backed consumer
+        shell: pwsh
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          TEST_ROOT: ${{ runner.temp }}/embedded-jvm-consumer
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $jar = Get-ChildItem -LiteralPath $env:PACKAGE_ROOT -Filter 'acyclic-embedded-jna-0.1.0.jar' -File -Recurse | Select-Object -First 1
+          if (-not $jar) { throw 'Aggregate JVM package is missing.' }
+          $m2 = Join-Path $env:TEST_ROOT 'm2'
+          New-Item -ItemType Directory -Force -Path $env:TEST_ROOT,$m2 | Out-Null
+          $cpFile = Join-Path $env:TEST_ROOT 'classpath.txt'
+          & mvn -q -f (Join-Path $env:GITHUB_WORKSPACE 'jvm/embedded/pom.xml') "-Dmaven.repo.local=$m2" "-Dmdep.outputFile=$cpFile" dependency:build-classpath
+          if ($LASTEXITCODE -ne 0) { throw 'Maven dependency classpath resolution failed.' }
+          $cp = (Get-Content -LiteralPath $cpFile -Raw).Trim()
+          @'
+          import dev.acyclic.embedded.RustEmbedded;
+          import java.nio.charset.StandardCharsets;
+          public final class InstalledConsumer {
+            public static void main(String[] args) throws Exception {
+              try (RustEmbedded engine = new RustEmbedded()) {
+                if (engine.abiVersion() != RustEmbedded.ABI_VERSION) throw new IllegalStateException("ABI mismatch");
+                byte[] value = "rust-jvm-rid".getBytes(StandardCharsets.UTF_8);
+                var appended = engine.append("installed-jvm", value);
+                try (RustEmbedded.Reader reader = engine.openReader("installed-jvm", appended.start(), 1, false)) {
+                  var item = reader.next();
+                  if (item.status() != RustEmbedded.OK || !java.util.Arrays.equals(item.value(), value)) throw new IllegalStateException("Rust value did not round-trip");
+                }
+              }
+            }
+          }
+          '@ | Set-Content -LiteralPath (Join-Path $env:TEST_ROOT 'InstalledConsumer.java') -Encoding utf8NoBOM
+          $sep = [IO.Path]::PathSeparator
+          & javac '-cp' ("$($jar.FullName)$sep$cp") '-d' $env:TEST_ROOT (Join-Path $env:TEST_ROOT 'InstalledConsumer.java')
+          if ($LASTEXITCODE -ne 0) { throw 'JVM installed consumer compilation failed.' }
+          & java '-cp' ("$($env:TEST_ROOT)$sep$($jar.FullName)$sep$cp") InstalledConsumer
+          if ($LASTEXITCODE -ne 0) { throw 'JVM installed consumer execution failed.' }
+
+  jvm-installed-consumer-musl:
+    name: Installed musl JVM consumer ${{ matrix.rid }}
+    needs: aggregate-and-package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-musl-x64
+            runner: blacksmith-4vcpu-ubuntu-2404
+          - rid: linux-musl-arm64
+            runner: blacksmith-4vcpu-ubuntu-2404-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_revision || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Download aggregate package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/embedded-native-packages
+      - name: Load installed JVM package and execute musl consumer
+        shell: bash
+        env:
+          PACKAGE_ROOT: ${{ runner.temp }}/embedded-native-packages
+          RID: ${{ matrix.rid }}
+        run: |
+          set -euo pipefail
+          docker run --rm --user 0 \
+            --volume "$GITHUB_WORKSPACE:/src" \
+            --volume "$PACKAGE_ROOT:/pkg" \
+            --env RID="$RID" \
+            rust:1.98.1-alpine3.22@sha256:df2234c615138222413254f45937ae45d284aad971644fe564e4250609abe452 sh -euxc '
+              apk add --no-cache openjdk17 maven
+              jar="$(find /pkg -name "acyclic-embedded-jna-0.1.0.jar" -type f -print -quit)"
+              test -n "$jar"
+              mkdir -p /tmp/consumer/m2
+              mvn -q -f /src/jvm/embedded/pom.xml -Dmaven.repo.local=/tmp/consumer/m2 -Dmdep.outputFile=/tmp/consumer/classpath.txt dependency:build-classpath
+              cp="$(cat /tmp/consumer/classpath.txt)"
+              cat >/tmp/consumer/InstalledConsumer.java <<"JAVA"
+              import dev.acyclic.embedded.RustEmbedded;
+              import java.nio.charset.StandardCharsets;
+              public final class InstalledConsumer { public static void main(String[] a) throws Exception { try (RustEmbedded e = new RustEmbedded()) { byte[] v = "rust-jvm-musl".getBytes(StandardCharsets.UTF_8); var x=e.append("installed-musl",v); try (var r=e.openReader("installed-musl",x.start(),1,false)) { var i=r.next(); if(i.status()!=RustEmbedded.OK || !java.util.Arrays.equals(i.value(),v)) throw new IllegalStateException("Rust value did not round-trip"); } } } }
+              JAVA
+              javac -cp "$jar:$cp" -d /tmp/consumer /tmp/consumer/InstalledConsumer.java
+              java -cp "/tmp/consumer:$jar:$cp" InstalledConsumer
+            '
+
+  platform-runtime-proof:
+    name: All embedded package runtime proofs
+    if: always()
+    needs:
+      - dotnet-installed-consumer
+      - dotnet-installed-consumer-musl
+      - jvm-installed-consumer
+      - jvm-installed-consumer-musl
+    runs-on: blacksmith-4vcpu-windows-2025
+    steps:
+      - name: Require every installed consumer matrix to pass
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $results = @{
+            dotnet = '${{ needs.dotnet-installed-consumer.result }}'
+            dotnet_musl = '${{ needs.dotnet-installed-consumer-musl.result }}'
+            jvm = '${{ needs.jvm-installed-consumer.result }}'
+            jvm_musl = '${{ needs.jvm-installed-consumer-musl.result }}'
+          }
+          foreach ($entry in $results.GetEnumerator()) {
+            if ($entry.Value -ne 'success') { throw "Installed consumer lane $($entry.Key) finished with $($entry.Value)." }
+          }
+          Write-Output 'All eight RID package runtime proofs passed.'

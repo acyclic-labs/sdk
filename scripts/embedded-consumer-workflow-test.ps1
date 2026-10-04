@@ -33,18 +33,16 @@ foreach ($rid in $rids) {
 }
 
 foreach ($needle in @(
-  'name: acyclic-embedded-packages',
-  'name: acyclic-embedded-native-aggregate',
-  'EXPECTED_SOURCE:',
-  'native aggregate source revision',
-  'acyclic-embedded-jna-*.jar',
-  'Acyclic.Sdk.Embedded.*.nupkg',
-  'alpine:3.21',
-  'apk add --no-cache dotnet8-sdk',
+  'name: embedded-native-packages-${{ github.run_id }}-${{ github.run_attempt }}',
+  'name: Embedded native packages',
+  'source_revision',
+  'acyclic-embedded-jna-0.1.0.jar',
+  'Acyclic.Sdk.Embedded.0.2.0-alpha.1.nupkg',
+  'rust:1.98.1-alpine3.22@sha256:',
+  'mcr.microsoft.com/dotnet/sdk@sha256:',
   'apk add --no-cache openjdk17 maven',
-  'acyclic.sdk.embedded.platform-proof-status.v2',
-  'installed-consumer-runtime',
-  'proven_rids'
+  'Installed Rust-backed .NET consumer passed.',
+  'Rust value did not round-trip'
 )) {
   if ($text.IndexOf($needle, [StringComparison]::Ordinal) -lt 0) {
     throw "installed consumer workflow lost required check or package boundary: $needle"
