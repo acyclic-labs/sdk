@@ -176,6 +176,20 @@ fn write_qualification_receipt(
         .map_err(|error| format!("encode snippets evidence: {error}"))?;
     let fixtures_bytes = serde_json::to_vec(&fixtures)
         .map_err(|error| format!("encode fixtures evidence: {error}"))?;
+    let rpc_scenarios = fixtures
+        .get("qualification")
+        .and_then(|qualification| qualification.get("rpc_scenarios"))
+        .cloned()
+        .ok_or("fixture manifest is missing Rust-owned RPC scenarios")?;
+    let rpc_scenario_count = rpc_scenarios
+        .get("count")
+        .and_then(Value::as_u64)
+        .ok_or("Rust-owned RPC scenario set is missing count")?;
+    if rpc_scenario_count != 35 {
+        return Err(format!("Rust-owned RPC scenario set has {rpc_scenario_count} entries; expected 35"));
+    }
+    let rpc_scenarios_bytes = serde_json::to_vec(&rpc_scenarios)
+        .map_err(|error| format!("encode RPC scenario evidence: {error}"))?;
     let status = if [(&snippets, &snippets_bytes), (&fixtures, &fixtures_bytes)]
         .into_iter()
         .all(|(manifest, _)| manifest_status(manifest) == "passed")
@@ -222,6 +236,15 @@ fn write_qualification_receipt(
                 "status": manifest_status(&fixtures),
                 "schema": "acyclic.sdk.transport-fixtures.v1",
                 "sha256": hash(&fixtures_bytes),
+            },
+            {
+                "id": "rust-rpc-scenarios",
+                "kind": "semantic-scenario-set",
+                "status": "passed",
+                "schema": "acyclic.sdk.rust-rpc-scenarios.v1",
+                "count": rpc_scenario_count,
+                "sha256": hash(&rpc_scenarios_bytes),
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
             },
             {
                 "id": "rust-canonical-vectors",
