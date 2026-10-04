@@ -317,4 +317,5 @@ These receipts qualify only their stated source and scope. They do not constitut
 
 - [Dedicated native fixture stack](checkpoint-context-dedicated-stack-2026-10-04.json): 024e26e34 executes all cases without global stack configuration, passes2/3, preserves recursive private-journal authority failure. Production stack semantics unchanged.
 
-- [Current model boundary contracts](checkpoint-model-boundary-contracts-current-2026-10-04.json): 6ebee3fd3 passes20/20 native request/policy regressions; generated audit awaiting D: run. Preserved historical journal runtime; recursive authority gate remains unmet.
+- [Current model boundary contracts](checkpoint-model-boundary-contracts-current-2026-10-04.json): 6ebee3fd3 passes20/20 native request/policy regressions; generated audit fails during D: WASM rebuild with disk-full OS112; native artifact archived on C:. Preserved historical journal runtime; recursive authority gate remains unmet.
+
