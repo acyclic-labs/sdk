@@ -6,7 +6,7 @@
 //! the host verifier proves that the referenced bytes are still present and
 //! match their pinned descriptor.
 
-#![cfg(all(feature = "filesystem-local", feature = "test-support"))]
+#![cfg(feature = "filesystem-local")]
 
 use acyclic_harness::{
     Error, Result,
@@ -22,6 +22,7 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use serde::Deserialize;
 use std::sync::Arc;
 
+#[cfg(feature = "test-support")]
 use acyclic_fs::test_support::{
     corrupt_segment_body_for_test, delete_segment_for_test, locate_segment_body_for_test,
 };
@@ -178,13 +179,14 @@ async fn local_storage_rejects_missing_corrupt_and_stale_file_references() -> Re
     Ok(())
 }
 
+#[cfg(feature = "test-support")]
 #[tokio::test]
 async fn local_storage_rejects_physical_corruption_and_deletion_after_restart() -> Result<()> {
     let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let model = Model::new("mock", "residency", "1", serde_json::json!({}))?;
     // Bodies larger than the Objects inline threshold are persisted in an
-    // authenticated immutable segment, which lets this test target the exact
-    // physical record for the requested FileRef.
+    // authenticated immutable segment. This fixture stages one occurrence of
+    // the body; the owning probe rejects ambiguous physical duplicates.
     let original_bytes = vec![b'p'; 64 * 1_024 + 1];
     let session = PersistentLocalHarness::open(
         root.path(),

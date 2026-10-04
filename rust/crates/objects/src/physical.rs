@@ -1,10 +1,12 @@
 //! Private authenticated immutable segments and journal body reads.
 use crate::body::{BodyError, LocalBodyLocation, LocalBodyReference};
 use crate::{LocalDurability, LocalObjectsGarbageCollection};
+#[cfg(feature = "test-support")]
+use std::io;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, File, OpenOptions},
-    io::{self, Read, Seek, Write},
+    io::{Read, Seek, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -601,7 +603,12 @@ pub struct SegmentBody {
     digest: [u8; 32],
 }
 
-/// Resolve the authenticated segment record for `expected_digest` and bytes.
+/// Resolve the unique authenticated segment record for body digest and bytes.
+///
+/// This probes physical content only; it does not traverse a logical object's
+/// generation graph. Callers that need a logical identity must first resolve
+/// that identity and provide its authenticated body digest. Ambiguous physical
+/// locations are rejected rather than selecting an arbitrary copy.
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub fn locate_segment_body_for_test(
@@ -694,7 +701,8 @@ pub fn corrupt_segment_body_for_test(body: &SegmentBody, replacement: &[u8]) -> 
     fs::write(&body.path, physical)
 }
 
-/// Delete the segment containing one already-resolved body for fault injection.
+/// Delete the entire segment containing one already-resolved body for fault
+/// injection. Any co-resident body records are deleted with that segment.
 #[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub fn delete_segment_for_test(body: SegmentBody) -> io::Result<()> {
@@ -780,5 +788,38 @@ mod tests {
             .unwrap_or_else(|_| unreachable!());
         assert_eq!(again, first);
         assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn test_support_rejects_ambiguous_body_locations() {
+        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
+        fs::create_dir_all(root.path().join("segments")).unwrap_or_else(|_| unreachable!());
+        let body = bytes::Bytes::from(vec![7_u8; 1_024]);
+        let digest = *blake3::hash(&body).as_bytes();
+        let first_other = bytes::Bytes::from(vec![8_u8; 1_024]);
+        let second_other = bytes::Bytes::from(vec![9_u8; 1_024]);
+        persist_segment(
+            root.path(),
+            &[
+                (digest, body.clone()),
+                (*blake3::hash(&first_other).as_bytes(), first_other),
+            ],
+            LocalDurability::FullFlush,
+        )
+        .unwrap_or_else(|_| unreachable!());
+        persist_segment(
+            root.path(),
+            &[
+                (digest, body.clone()),
+                (*blake3::hash(&second_other).as_bytes(), second_other),
+            ],
+            LocalDurability::FullFlush,
+        )
+        .unwrap_or_else(|_| unreachable!());
+
+        let error = locate_segment_body_for_test(root.path(), &digest, &body)
+            .expect_err("two valid segment locations must remain ambiguous");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 }
