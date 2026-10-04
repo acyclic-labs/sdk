@@ -285,49 +285,77 @@ const HARNESS_NATIVE: &[TransportOption] = &[GRPC];
 /// Transport policy for a family with a native gRPC client and HTTP JSON
 /// projection whose operations are unary.
 pub const ACTORS_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: ACTORS_NATIVE },
-    browser: RuntimeTransportPolicy { options: ACTORS_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: ACTORS_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: ACTORS_BROWSER,
+    },
 };
 
 /// Transport policy for Workers.
 pub const WORKERS_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: WORKERS_NATIVE },
-    browser: RuntimeTransportPolicy { options: WORKERS_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: WORKERS_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: WORKERS_BROWSER,
+    },
 };
 
 /// Transport policy for Objects.
 pub const OBJECTS_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: OBJECTS_NATIVE },
-    browser: RuntimeTransportPolicy { options: OBJECTS_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: OBJECTS_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: OBJECTS_BROWSER,
+    },
 };
 
 /// Transport policy for Stream.
 pub const STREAM_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: STREAM_NATIVE },
-    browser: RuntimeTransportPolicy { options: STREAM_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: STREAM_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: STREAM_BROWSER,
+    },
 };
 
 /// Transport policy for Inference.
 pub const INFERENCE_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: INFERENCE_NATIVE },
-    browser: RuntimeTransportPolicy { options: INFERENCE_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: INFERENCE_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: INFERENCE_BROWSER,
+    },
 };
 
 /// Transport policy for Machines. No canonical browser transport is claimed.
 pub const MACHINES_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: MACHINES_NATIVE },
+    native: RuntimeTransportPolicy {
+        options: MACHINES_NATIVE,
+    },
     browser: RuntimeTransportPolicy { options: &[] },
 };
 
 /// Transport policy for Filesystem's hosted gRPC and browser gRPC-Web clients.
 pub const FILESYSTEM_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: FILESYSTEM_NATIVE },
-    browser: RuntimeTransportPolicy { options: FILESYSTEM_BROWSER },
+    native: RuntimeTransportPolicy {
+        options: FILESYSTEM_NATIVE,
+    },
+    browser: RuntimeTransportPolicy {
+        options: FILESYSTEM_BROWSER,
+    },
 };
 
 /// Transport policy for Harness's canonical native gRPC service.
 pub const HARNESS_TRANSPORT: FamilyTransportPolicy = FamilyTransportPolicy {
-    native: RuntimeTransportPolicy { options: HARNESS_NATIVE },
+    native: RuntimeTransportPolicy {
+        options: HARNESS_NATIVE,
+    },
     browser: RuntimeTransportPolicy { options: &[] },
 };
 
@@ -455,16 +483,19 @@ mod tests {
             Err(TransportSelectionError::NoCompatibleTransport)
         );
         assert_eq!(
-            select_transport_by_name("inference", TransportSelectionRequest {
-                runtime: ClientRuntime::Browser,
-                requirements: TransportRequirements {
-                    streaming: true,
-                    bearer_auth: true,
-                },
-                installed: TransportAvailability::ALL,
-                endpoint: TransportAvailability::ALL,
-                override_kind: None,
-            })
+            select_transport_by_name(
+                "inference",
+                TransportSelectionRequest {
+                    runtime: ClientRuntime::Browser,
+                    requirements: TransportRequirements {
+                        streaming: true,
+                        bearer_auth: true,
+                    },
+                    installed: TransportAvailability::ALL,
+                    endpoint: TransportAvailability::ALL,
+                    override_kind: None,
+                }
+            )
             .unwrap()
             .kind,
             TransportKind::HttpJson
@@ -487,20 +518,24 @@ mod tests {
                 "{} must expose a native transport option",
                 family.name
             );
-            assert!(family
-                .transport
-                .browser
-                .options
-                .iter()
-                .all(|option| option.kind != TransportKind::Grpc));
-            assert!(family
-                .transport
-                .native
-                .options
-                .iter()
-                .chain(family.transport.browser.options.iter())
-                .filter(|option| option.kind == TransportKind::HttpJson)
-                .all(|_| family.has_http_projection()));
+            assert!(
+                family
+                    .transport
+                    .browser
+                    .options
+                    .iter()
+                    .all(|option| option.kind != TransportKind::Grpc)
+            );
+            assert!(
+                family
+                    .transport
+                    .native
+                    .options
+                    .iter()
+                    .chain(family.transport.browser.options.iter())
+                    .filter(|option| option.kind == TransportKind::HttpJson)
+                    .all(|_| family.has_http_projection())
+            );
         }
     }
 
@@ -513,9 +548,12 @@ mod tests {
             let streaming_rpcs = spec
                 .services
                 .iter()
-                .flat_map(|service| service.methods.iter().filter(|method| {
-                    method.client_streaming || method.server_streaming
-                }))
+                .flat_map(|service| {
+                    service
+                        .methods
+                        .iter()
+                        .filter(|method| method.client_streaming || method.server_streaming)
+                })
                 .count();
             let options = family
                 .transport
@@ -531,7 +569,9 @@ mod tests {
             for policy in family.operation_policies {
                 let method_streams = spec.services.iter().any(|service| {
                     service.methods.iter().any(|method| {
-                        policy.rpc.ends_with(&format!("/{}/{}", service.name, method.name))
+                        policy
+                            .rpc
+                            .ends_with(&format!("/{}/{}", service.name, method.name))
                             && (method.client_streaming || method.server_streaming)
                     })
                 });

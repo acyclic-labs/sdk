@@ -30,9 +30,9 @@ pub use bindings::{
 pub use credential::{BEARER_NO_CRLF, CredentialPolicy};
 
 pub use facades::{
-    all_facade_operations, facade_operations, generate_remote_facade, generate_remote_facades,
-    CancellationKind, FacadeLanguage, FacadeOperationPolicy, FacadeOutput, FacadeSelectionPolicy,
-    FACADE_SELECTION_POLICY,
+    CancellationKind, FACADE_SELECTION_POLICY, FacadeLanguage, FacadeOperationPolicy, FacadeOutput,
+    FacadeSelectionPolicy, all_facade_operations, facade_operations, generate_remote_facade,
+    generate_remote_facades,
 };
 pub use family_registry::{
     FAMILY_VIEWS, FamilyModel, FamilyView, HttpProjection, NativeMethodBoundary,

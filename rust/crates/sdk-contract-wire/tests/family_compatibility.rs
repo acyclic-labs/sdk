@@ -1,14 +1,15 @@
-use acyclic_sdk_contract_validation::{compare_bytes, DifferenceKind};
+use acyclic_sdk_contract_validation::{DifferenceKind, compare_bytes};
 use acyclic_sdk_contract_wire::{
-    actors_descriptor, explicit_http_family_views, family_view, filesystem::filesystem_descriptor,
-    filesystem::filesystem_file_descriptor, filesystem::FILESYSTEM, harness::harness_descriptor,
-    harness::harness_file_descriptor, harness::HARNESS, inference::inference_descriptor,
+    ACTORS, ContractSpec, FAMILY_VIEWS, FamilyModel, HttpProjection, INFERENCE, MACHINES,
+    OBJECTS_V2, STREAM, WORKERS, actors_descriptor, explicit_http_family_views, family_view,
+    filesystem::FILESYSTEM, filesystem::filesystem_descriptor,
+    filesystem::filesystem_file_descriptor, harness::HARNESS, harness::harness_descriptor,
+    harness::harness_file_descriptor, inference::inference_descriptor,
     machines::machines_descriptor, objects::objects_descriptor, stream::stream_descriptor,
-    workers::workers_descriptor, ContractSpec, FamilyModel, HttpProjection, ACTORS, FAMILY_VIEWS,
-    INFERENCE, MACHINES, OBJECTS_V2, STREAM, WORKERS,
+    workers::workers_descriptor,
 };
 use prost::Message;
-use prost_types::{field_descriptor_proto, FileDescriptorSet};
+use prost_types::{FileDescriptorSet, field_descriptor_proto};
 use std::collections::BTreeSet;
 
 fn fixture(path: &str) -> &'static [u8] {
@@ -67,10 +68,12 @@ fn explicit_http_inventory_is_derived_from_the_family_registry() {
                 .iter()
                 .all(|policy| !policy.rpc.is_empty())
     }));
-    assert!(FAMILY_VIEWS
-        .iter()
-        .filter(|family| !family.has_http_projection())
-        .all(|family| family.routes().is_empty()));
+    assert!(
+        FAMILY_VIEWS
+            .iter()
+            .filter(|family| !family.has_http_projection())
+            .all(|family| family.routes().is_empty())
+    );
 }
 
 fn without_source_info(bytes: &[u8]) -> FileDescriptorSet {
@@ -456,10 +459,12 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
     message.field[0].number = Some(message.field[0].number.expect("field number") + 1000);
     let report = compare_bytes(&baseline, &field_tag.encode_to_vec()).expect("field-tag report");
     assert!(!report.semantic_compatible);
-    assert!(report
-        .differences
-        .iter()
-        .any(|difference| { difference.kind == DifferenceKind::FieldTag }));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| { difference.kind == DifferenceKind::FieldTag })
+    );
 
     let mut json_name = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
     let actors_file = json_name
@@ -493,10 +498,12 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
         !report.semantic_compatible,
         "file option drift was accepted"
     );
-    assert!(report
-        .differences
-        .iter()
-        .any(|difference| { difference.kind == DifferenceKind::CustomOption }));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| { difference.kind == DifferenceKind::CustomOption })
+    );
 
     let mut presence =
         FileDescriptorSet::decode(objects_descriptor().as_slice()).expect("Objects descriptor");
@@ -537,10 +544,12 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
         Some(enumeration.value[0].number.expect("enum value number") + 1000);
     let report = compare_bytes(&baseline, &enum_value.encode_to_vec()).expect("enum report");
     assert!(!report.semantic_compatible);
-    assert!(report
-        .differences
-        .iter()
-        .any(|difference| { difference.kind == DifferenceKind::EnumValue }));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| { difference.kind == DifferenceKind::EnumValue })
+    );
 
     let mut method = FileDescriptorSet::decode(baseline.as_slice()).expect("Actors descriptor");
     let actors_file = method
@@ -559,11 +568,14 @@ fn semantic_validation_rejects_wire_and_handshake_identity_mutations() {
         !report.semantic_compatible,
         "RPC streaming drift was accepted"
     );
-    assert!(report
-        .differences
-        .iter()
-        .any(|difference| { difference.kind == DifferenceKind::ServiceStreaming }));
+    assert!(
+        report
+            .differences
+            .iter()
+            .any(|difference| { difference.kind == DifferenceKind::ServiceStreaming })
+    );
 }
+
 
 #[test]
 fn inference_signed_fields_and_semantic_edits_are_wire_distinct() {

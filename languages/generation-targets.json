@@ -1204,8 +1204,8 @@
         "level": "http-projection",
         "streaming": [],
         "wire": "json-http",
-        "notes": "OAG Julia client is beta; no maintained gRPC generator selected.",
-        "qualification": "unqualified"
+        "notes": "Rust-owned five-family HTTP projection is qualified by the Julia receipt; no maintained Julia gRPC generator is selected.",
+        "qualification": "qualified"
       },
       "embedded": {
         "level": "none",
@@ -1223,8 +1223,27 @@
       "package": {
         "ecosystem": "Julia General registry",
         "artifact": "AcyclicSDK",
-        "installable": false,
-        "notes": "Requires Julia/Pkg qualification."
+        "installable": true,
+        "notes": "Rust-produced local package installs with official Julia 1.13.1; registry publication is not claimed."
+      },
+      "producer": {
+        "program": "pwsh",
+        "args": [
+          "-NoProfile",
+          "-File",
+          "{source_root}/research/additional-languages/openapi-targets/produce-julia.ps1",
+          "-SourceRoot",
+          "{source_root}",
+          "-AuthorityManifest",
+          "{authority_manifest}",
+          "-OutputRoot",
+          "{output_root}",
+          "-TargetOutput",
+          "{target_output}",
+          "-Request",
+          "{request}"
+        ],
+        "output": "package"
       },
       "evidence": [
         {
@@ -1233,7 +1252,7 @@
         }
       ],
       "outstanding": [
-        "Qualify Julia package registry layout and JSON numeric/presence behavior."
+        "Native Julia gRPC remains unqualified; keep this target scoped to the recorded five-family HTTP projection."
       ]
     },
     {
