@@ -33,8 +33,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,6 +40,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.google.protobuf.Message;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -435,37 +437,112 @@ final class RpcScenarioEvidenceTest {
 
   private static Map<String, ResponseExpectation> authorityExpectations() throws IOException {
     String manifest = authorityManifest();
-    Pattern method = Pattern.compile(
-        "\\{\\\"rpc\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
-            + "\\\"shape\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
-            + "\\\"request\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
-            + "\\\"response\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"\\s*,\\s*"
-            + "\\\"response_fields\\\"\\s*:\\s*\\[([^]]*)\\]\\s*,\\s*"
-            + "\\\"allow_empty_response\\\"\\s*:\\s*(true|false)\\s*,\\s*"
-            + "\\\"validations\\\"\\s*:\\s*\\[([^]]*)\\]\\s*,\\s*"
-            + "\\\"response_rules\\\"\\s*:\\s*\\[([^]]*)\\]\\s*\\}",
-        Pattern.DOTALL);
-    Matcher matcher = method.matcher(manifest);
+    final JsonObject root;
+    try {
+      root = JsonParser.parseString(manifest).getAsJsonObject();
+    } catch (RuntimeException error) {
+      throw new IOException("Rust authority manifest is not valid JSON", error);
+    }
     Map<String, ResponseExpectation> expectations = new LinkedHashMap<>();
-    while (matcher.find()) {
-      String rpc = matcher.group(1);
-      ResponseExpectation expectation = new ResponseExpectation(
-          rpc,
-          matcher.group(2),
-          matcher.group(3),
-          matcher.group(4),
-          quotedValues(matcher.group(5)),
-          Boolean.parseBoolean(matcher.group(6)),
-          quotedValues(matcher.group(7)),
-          quotedValues(matcher.group(8)));
-      if (expectations.put(rpc, expectation) != null) {
-        throw new IOException("duplicate Rust authority RPC " + rpc);
+    for (JsonElement familyElement : requiredArray(root, "families")) {
+      JsonObject family = familyElement.getAsJsonObject();
+      for (JsonElement methodElement : requiredArray(family, "rpc_methods")) {
+        JsonObject method = methodElement.getAsJsonObject();
+        String rpc = requiredString(method, "rpc");
+        ResponseExpectation expectation = new ResponseExpectation(
+            rpc,
+            requiredString(method, "shape"),
+            requiredString(method, "request"),
+            requiredString(method, "response"),
+            stringArray(method, "response_fields"),
+            requiredBoolean(method, "allow_empty_response"),
+            stringArray(method, "validations"),
+            stringArray(method, "response_rules"),
+            semanticExpectations(method));
+        if (expectations.put(rpc, expectation) != null) {
+          throw new IOException("duplicate Rust authority RPC " + rpc);
+        }
       }
     }
     if (expectations.isEmpty()) {
       throw new IOException("Rust authority manifest has no semantic RPC expectations");
     }
     return expectations;
+  }
+
+  private static JsonArray requiredArray(JsonObject object, String name) throws IOException {
+    JsonElement value = object.get(name);
+    if (value == null || !value.isJsonArray()) {
+      throw new IOException("Rust authority field is not an array: " + name);
+    }
+    return value.getAsJsonArray();
+  }
+
+  private static String requiredString(JsonObject object, String name) throws IOException {
+    JsonElement value = object.get(name);
+    if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+      throw new IOException("Rust authority field is not a string: " + name);
+    }
+    return value.getAsString();
+  }
+
+  private static boolean requiredBoolean(JsonObject object, String name) throws IOException {
+    JsonElement value = object.get(name);
+    if (value == null || !value.isJsonPrimitive() || !value.getAsJsonPrimitive().isBoolean()) {
+      throw new IOException("Rust authority field is not a boolean: " + name);
+    }
+    return value.getAsBoolean();
+  }
+
+  private static List<String> stringArray(JsonObject object, String name) throws IOException {
+    JsonArray values = requiredArray(object, name);
+    List<String> result = new ArrayList<>();
+    for (JsonElement value : values) {
+      if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isString()) {
+        throw new IOException("Rust authority array contains a non-string: " + name);
+      }
+      result.add(value.getAsString());
+    }
+    return result;
+  }
+
+  private static SemanticExpectations semanticExpectations(JsonObject method) throws IOException {
+    JsonElement value = method.get("semantic_expectations");
+    if (value == null || value.isJsonNull()) return SemanticExpectations.EMPTY;
+    if (!value.isJsonObject()) {
+      throw new IOException("Rust authority semantic_expectations is not an object");
+    }
+    JsonObject object = value.getAsJsonObject();
+    List<IdentityExpectation> identityPairs = new ArrayList<>();
+    for (JsonElement pairElement : requiredArray(object, "identity_pairs")) {
+      JsonObject pair = pairElement.getAsJsonObject();
+      identityPairs.add(new IdentityExpectation(
+          requiredString(pair, "field"), requiredString(pair, "request"),
+          requiredString(pair, "response")));
+    }
+    List<Long> cursorTrace = longArray(object, "cursor_trace");
+    List<Long> revisionTrace = longArray(object, "revision_trace");
+    List<String> statusTrace = stringArray(object, "status_trace");
+    List<TransitionExpectation> transitions = new ArrayList<>();
+    for (JsonElement transitionElement : requiredArray(object, "transitions")) {
+      JsonObject transition = transitionElement.getAsJsonObject();
+      transitions.add(new TransitionExpectation(
+          requiredString(transition, "kind"), requiredString(transition, "before"),
+          requiredString(transition, "after")));
+    }
+    return new SemanticExpectations(identityPairs, cursorTrace, revisionTrace, statusTrace, transitions);
+  }
+
+  private static List<Long> longArray(JsonObject object, String name) throws IOException {
+    JsonArray values = requiredArray(object, name);
+    List<Long> result = new ArrayList<>();
+    for (JsonElement value : values) {
+      if (!value.isJsonPrimitive() || !value.getAsJsonPrimitive().isNumber()) {
+        throw new IOException("Rust authority array contains a non-number: " + name);
+      }
+      result.add(value.getAsLong());
+    }
+    return result;
   }
 
   private static String authorityManifest() throws IOException {
@@ -482,16 +559,19 @@ final class RpcScenarioEvidenceTest {
     }
   }
 
-  private static List<String> quotedValues(String values) {
-    Matcher matcher = Pattern.compile("\\\"([^\\\"]*)\\\"").matcher(values);
-    List<String> result = new ArrayList<>();
-    while (matcher.find()) result.add(matcher.group(1));
-    return result;
-  }
-
   private record ResponseExpectation(String rpc, String shape, String request, String response,
       List<String> responseFields, boolean allowEmptyResponse, List<String> validations,
-      List<String> responseRules) {}
+      List<String> responseRules, SemanticExpectations semanticExpectations) {}
+
+  private record SemanticExpectations(List<IdentityExpectation> identityPairs, List<Long> cursorTrace,
+      List<Long> revisionTrace, List<String> statusTrace, List<TransitionExpectation> transitions) {
+    private static final SemanticExpectations EMPTY = new SemanticExpectations(
+        List.of(), List.of(), List.of(), List.of(), List.of());
+  }
+
+  private record IdentityExpectation(String field, String request, String response) {}
+
+  private record TransitionExpectation(String kind, String before, String after) {}
 
   private record InvocationResult(int responseCount, ResponseObservation semantic) {}
 
