@@ -71,6 +71,15 @@ class Credentials:
         )
 
 
+@dataclass(frozen=True)
+class InferenceServices:
+    models: inference_pb2_grpc.ModelsServiceStub
+    contexts: inference_pb2_grpc.ContextsServiceStub
+    warm_contexts: inference_pb2_grpc.WarmContextsServiceStub
+    runs: inference_pb2_grpc.RunsServiceStub
+    evaluations: inference_pb2_grpc.EvaluationsServiceStub
+
+
 def _target(endpoint: str) -> tuple[str, bool]:
     value = str(endpoint).strip()
     if not value:
@@ -129,7 +138,13 @@ class Client:
         self.workers = workers_pb2_grpc.WorkersServiceStub(self._channel)
         self.filesystem = filesystem_pb2_grpc.FilesystemServiceStub(self._channel)
         self.harness = harness_pb2_grpc.HarnessServiceStub(self._channel)
-        self.inference = inference_pb2_grpc.InferenceServiceStub(self._channel)
+        self.inference = InferenceServices(
+            models=inference_pb2_grpc.ModelsServiceStub(self._channel),
+            contexts=inference_pb2_grpc.ContextsServiceStub(self._channel),
+            warm_contexts=inference_pb2_grpc.WarmContextsServiceStub(self._channel),
+            runs=inference_pb2_grpc.RunsServiceStub(self._channel),
+            evaluations=inference_pb2_grpc.EvaluationsServiceStub(self._channel),
+        )
         self.machines = machines_pb2_grpc.MachinesServiceStub(self._channel)
 
     async def close(self) -> None:
@@ -142,7 +157,7 @@ class Client:
         await self.close()
 
 
-__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "OPERATIONS", "SOURCE_BINDING"]
+__all__ = ["BEST_TRANSPORT", "Client", "Credentials", "InferenceServices", "OPERATIONS", "SOURCE_BINDING"]
 
 
 OPERATIONS = {
@@ -203,6 +218,14 @@ type Credentials struct {
     ServerName string
 }
 
+type InferenceServices struct {
+    Models inferencev1.ModelsServiceClient
+    Contexts inferencev1.ContextsServiceClient
+    WarmContexts inferencev1.WarmContextsServiceClient
+    Runs inferencev1.RunsServiceClient
+    Evaluations inferencev1.EvaluationsServiceClient
+}
+
 type Client struct {
     conn *grpc.ClientConn
     Actors actorsv1.ActorsServiceClient
@@ -212,7 +235,7 @@ type Client struct {
     Workers workersv1.WorkersServiceClient
     Filesystem filesystemv2.FilesystemServiceClient
     Harness harnessv2.HarnessServiceClient
-    Inference inferencev1.InferenceServiceClient
+    Inference InferenceServices
     Machines machinesv1.MachinesServiceClient
 }
 
@@ -284,7 +307,13 @@ func NewClient(ctx context.Context, endpoint string, c Credentials) (*Client, er
         Workers: workersv1.NewWorkersServiceClient(conn),
         Filesystem: filesystemv2.NewFilesystemServiceClient(conn),
         Harness: harnessv2.NewHarnessServiceClient(conn),
-        Inference: inferencev1.NewInferenceServiceClient(conn),
+        Inference: InferenceServices{
+            Models: inferencev1.NewModelsServiceClient(conn),
+            Contexts: inferencev1.NewContextsServiceClient(conn),
+            WarmContexts: inferencev1.NewWarmContextsServiceClient(conn),
+            Runs: inferencev1.NewRunsServiceClient(conn),
+            Evaluations: inferencev1.NewEvaluationsServiceClient(conn),
+        },
         Machines: machinesv1.NewMachinesServiceClient(conn),
     }, nil
 }
