@@ -3943,6 +3943,15 @@ impl PersistentLocalSwarm {
                 output,
             });
         }
+        // The caller may hold a parent aggregate opened before another
+        // process published this seed. Refresh the authenticated parent
+        // projection before deciding whether publication must be reconciled;
+        // a stale reducer would republish an already-admitted child.
+        *parent = self
+            .open_session(request.parent)
+            .await?
+            .conversation_aggregate(self.config.limits)
+            .await?;
         let seed = self.published_seed(task).await?;
         if parent.reducer().fork(&seed.child) != Some(&seed) {
             let report = self.prepared_report(task).await?;
