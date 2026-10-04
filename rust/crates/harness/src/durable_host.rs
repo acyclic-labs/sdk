@@ -1048,7 +1048,13 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 ));
             }
             recipient_admission.limits.validate_file(&payload)?;
-            if !read_granted(&recipient_admission.grants, &payload)? {
+            // Delivery admission is separate from generic file reading. A
+            // recipient with mail:receive may receive the owner-retained ref;
+            // the model can hydrate it only through the authenticated mail
+            // API, which proves its exact retained message identity.
+            if !read_granted(&recipient_admission.grants, &payload)?
+                && !recipient_admission.grants.contains("mail:receive")
+            {
                 return Err(Error::Unauthorized(
                     "recipient cannot read the mailed file".into(),
                 ));
@@ -1115,7 +1121,9 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 event.validate_for(task_id)?;
                 recipient_admission.limits.validate_file(&event.payload)?;
-                if !read_granted(&recipient_admission.grants, &event.payload)? {
+                if !read_granted(&recipient_admission.grants, &event.payload)?
+                    && !recipient_admission.grants.contains("mail:receive")
+                {
                     return Err(Error::Unauthorized(
                         "mail history contains an unreadable payload".into(),
                     ));

@@ -300,6 +300,7 @@ async fn local_communication_bindings(
             "operation:cancel".to_owned(),
             "mail:send".to_owned(),
             "mail:read".to_owned(),
+            "mail:receive".to_owned(),
             "timer:wait".to_owned(),
             format!("task:spawn:{}@{}", task.name, task.version),
         ])
@@ -316,23 +317,21 @@ async fn local_communication_bindings(
     );
     root_capabilities.push(storage.volume().directory_read_capability("messages")?);
     let root_capabilities = Capabilities::new(root_capabilities);
-    let mut child_capabilities = vec![
+    let child_capabilities = vec![
         "operation:declare".to_owned(),
         "operation:observe".to_owned(),
         "operation:cancel".to_owned(),
         "mail:send".to_owned(),
         "mail:read".to_owned(),
+        "mail:receive".to_owned(),
         "timer:wait".to_owned(),
         format!("task:spawn:{}@{}", task.name, task.version),
     ];
-    // Mail payloads are staged in a dedicated public subdirectory of the
-    // owner volume. Children receive only its directory read capability;
-    // they never receive the root private-volume read capability.
-    child_capabilities.push(
-        storage
-            .volume()
-            .directory_read_capability("messages")?,
-    );
+    // Mail payloads remain private to the composition owner. A child can
+    // hydrate one only through `read_message_body`, which first proves that
+    // the exact message id and FileRef were retained in that child's inbox.
+    // Do not delegate the messages directory: a generic file read has no
+    // recipient identity and would let siblings probe one another's mail.
     let child_capabilities = Capabilities::new(child_capabilities);
     let owner_agent = storage
         .owner_scope()
@@ -5415,9 +5414,9 @@ mod tests {
         assert!(!child_admission
             .grants
             .contains(&root_volume.capability(crate::conversation::VolumeOperation::Read)?));
-        assert!(child_admission.grants.contains(
-            &root_volume.directory_read_capability("messages")?
-        ));
+        assert!(!child_admission
+            .grants
+            .contains(&root_volume.directory_read_capability("messages")?));
         assert!(matches!(
             swarm
                 .send_message(sibling, child, OperationId::from_bytes([0x97; 16]), b"sibling")
@@ -5470,6 +5469,15 @@ mod tests {
                 .await,
             Err(Error::Unauthorized(_))
         ));
+        assert!(matches!(
+            swarm
+                .open_session(sibling)
+                .await?
+                .storage()
+                .read(&receipt.payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         swarm
             .open_session(root_task)
             .await?
@@ -5512,6 +5520,15 @@ mod tests {
                 .await?,
             b"pinned-mail"
         );
+        assert!(matches!(
+            reopened
+                .open_session(sibling)
+                .await?
+                .storage()
+                .read(&receipt.payload)
+                .await,
+            Err(Error::Unauthorized(_))
+        ));
         Ok(())
     }
 
