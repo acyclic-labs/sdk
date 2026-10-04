@@ -203,6 +203,7 @@ impl ToolDefinition {
 const MAX_DECLARED_FILE_REF_DEPTH: usize = 32;
 const MAX_DECLARED_FILE_REFS: usize = 256;
 const MAX_REFERENCE_SCHEMA_DEPTH: usize = 32;
+const MAX_REFERENCE_UNION_BRANCHES: usize = 32;
 
 const UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS: &[&str] = &[
     "$ref",
@@ -225,6 +226,39 @@ const UNSUPPORTED_REFERENCE_SCHEMA_KEYWORDS: &[&str] = &[
     "$defs",
     "definitions",
 ];
+
+/// Reference-bearing unions must have closed, disjoint `kind` tags. Selecting
+/// the validated branch must never discover references in an inactive branch.
+fn reference_union_branches(schema: &Value, depth: usize) -> Result<Option<&[Value]>> {
+    let Some(union) = schema.get("oneOf") else { return Ok(None); };
+    if !schema_contains_file_ref_annotation(union, depth + 1)? {
+        return Ok(None);
+    }
+    let invalid = || Error::Invalid(
+        "reference-bearing oneOf requires bounded closed branches with distinct required kind constants".into(),
+    );
+    let branches = union.as_array().ok_or_else(invalid)?;
+    if branches.is_empty() || branches.len() > MAX_REFERENCE_UNION_BRANCHES {
+        return Err(invalid());
+    }
+    let mut tags = BTreeMap::new();
+    for branch in branches {
+        if branch.get("type").and_then(Value::as_str) != Some("object")
+            || branch.get("additionalProperties") != Some(&Value::Bool(false))
+            || !branch.get("required").and_then(Value::as_array)
+                .is_some_and(|required| required.iter().any(|name| name.as_str() == Some("kind")))
+        {
+            return Err(invalid());
+        }
+        let tag = branch.get("properties").and_then(|properties| properties.get("kind"))
+            .and_then(|kind| kind.get("const")).and_then(Value::as_str)
+            .ok_or_else(invalid)?;
+        if tags.insert(tag, ()).is_some() {
+            return Err(invalid());
+        }
+    }
+    Ok(Some(branches))
+}
 
 fn schema_contains_file_ref_annotation(schema: &Value, depth: usize) -> Result<bool> {
     if depth > MAX_REFERENCE_SCHEMA_DEPTH {
@@ -325,6 +359,14 @@ fn validate_model_output_reference_schema(schema: &Value, depth: usize) -> Resul
             schema_contains_file_ref_annotation(value, depth + 1)?
         };
         if local_annotation || contains_annotation {
+            if *keyword == "oneOf" && !local_annotation {
+                let branches = reference_union_branches(schema, depth)?
+                    .ok_or_else(|| Error::Invalid("missing reference-bearing oneOf branches".into()))?;
+                for branch in branches {
+                    validate_model_output_reference_schema(branch, depth + 1)?;
+                }
+                continue;
+            }
             return Err(Error::Invalid(format!(
                 "unsupported model-output reference schema keyword {keyword}"
             )));
@@ -377,6 +419,15 @@ fn collect_declared_file_refs(
         }
         refs.push(reference);
         return Ok(());
+    }
+    if let Some(branches) = reference_union_branches(schema, depth)? {
+        let kind = value.get("kind").and_then(Value::as_str)
+            .ok_or_else(|| Error::Invalid("reference-bearing oneOf result is missing kind".into()))?;
+        let branch = branches.iter().find(|branch| {
+            branch.get("properties").and_then(|properties| properties.get("kind"))
+                .and_then(|tag| tag.get("const")).and_then(Value::as_str) == Some(kind)
+        }).ok_or_else(|| Error::Invalid("reference-bearing oneOf result has an unknown kind".into()))?;
+        collect_declared_file_refs(branch, value, refs, depth + 1)?;
     }
     if let Some(properties) = schema_object.get("properties").and_then(Value::as_object) {
         if let Some(object) = value.as_object() {
@@ -783,6 +834,71 @@ mod tests {
             output_schema: json!({"type": "object"}),
             model_output_schema: schema,
         }
+    }
+
+    #[test]
+    fn model_output_reference_union_selects_only_the_validated_kind() -> Result<()> {
+        let reference = FileRef::new(
+            crate::conversation::VolumeRef::new(
+                crate::resources::ProviderRef::new("test", "filesystem", "2")?,
+                "inbox", crate::conversation::VolumeClass::Project,
+                crate::conversation::VolumeOwner::Project("test".into()),
+            )?,
+            "message.txt", "generation-1",
+            crate::conversation::FileDescriptor::from_bytes(b"explicit message", "text/plain")?,
+            "message.txt",
+        )?;
+        let messages = json!({
+            "type":"object", "additionalProperties":false,
+            "required":["kind","payload"],
+            "properties":{
+                "kind":{"const":"messages"},
+                "payload":{"type":"object", "x-acyclic-file-ref":true}
+            }
+        });
+        let literal = json!({
+            "type":"object", "additionalProperties":false,
+            "required":["kind","payload"],
+            "properties":{"kind":{"const":"literal"}, "payload":{}}
+        });
+        let definition = reference_definition(json!({"oneOf":[messages, literal]}));
+        let encoded = serde_json::to_value(&reference)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(definition.model_output_file_refs(
+            &json!({"kind":"messages", "payload":encoded}),
+        )?, vec![reference]);
+        // A reference-shaped literal in an inactive declaration is not content
+        // authorization. Only the selected branch declares the reference.
+        assert!(definition.model_output_file_refs(
+            &json!({"kind":"literal", "payload":encoded}),
+        )?.is_empty());
+        for invalid in [
+            json!({"kind":"messages"}),
+            json!({"kind":"messages", "payload":{"path":"forged"}}),
+            json!({"kind":"unknown", "payload":encoded}),
+            json!({"kind":"messages", "payload":encoded, "hidden":true}),
+        ] {
+            assert!(matches!(definition.model_output_file_refs(&invalid), Err(Error::Invalid(_))));
+        }
+        let mut duplicate = definition.clone();
+        duplicate.model_output_schema["oneOf"][1]["properties"]["kind"]["const"] = json!("messages");
+        assert!(duplicate.validate().is_err());
+        let mut open = definition.clone();
+        open.model_output_schema["oneOf"][0]["additionalProperties"] = json!(true);
+        assert!(open.validate().is_err());
+        let mut optional_tag = definition.clone();
+        optional_tag.model_output_schema["oneOf"][0]["required"] = json!(["payload"]);
+        assert!(optional_tag.validate().is_err());
+        let mut too_many = definition.clone();
+        too_many.model_output_schema["oneOf"] = Value::Array(
+            (0..=MAX_REFERENCE_UNION_BRANCHES).map(|index| {
+                let mut branch = messages.clone();
+                branch["properties"]["kind"]["const"] = json!(format!("kind-{index}"));
+                branch
+            }).collect(),
+        );
+        assert!(too_many.validate().is_err());
+        Ok(())
     }
 
     #[test]
