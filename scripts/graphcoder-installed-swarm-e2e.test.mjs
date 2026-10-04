@@ -16,6 +16,13 @@ test("installed swarm scenario requires exact recursive/effect evidence", () => 
   assert.match(driver, /operator_approve/u);
   assert.match(driver, /action_digest/u);
   assert.match(driver, /concurrent_user_edit_preserved/u);
+  assert.match(driver, /before_sha256/u);
+  assert.match(driver, /after_sha256/u);
+  assert.match(driver, /pending\.executable !== expectedCommand\.executable/u);
+  assert.match(driver, /pending\.operation_id !== expectedApproval\.operation_id/u);
+  assert.match(driver, /beforeFiles\[path\] !== expectation\.before_sha256/u);
+  assert.match(driver, /digest !== expectation\.after_sha256/u);
+  assert.match(driver, /concurrent_user_edit_preserved !== true/u);
   assert.match(driver, /cleanup_verified: true/u);
 });
 
@@ -23,5 +30,6 @@ test("installed swarm driver rejects ambient bridge configuration and unsupporte
   assert.match(driver, /required\("GRAPHCODER_BRIDGE_CWD"\)/u);
   assert.match(driver, /contains an undeclared key/u);
   assert.match(driver, /list_changes is not available/u);
+  assert.match(driver, /read_change is not available/u);
   assert.doesNotMatch(driver, /responseError\(/u);
 });
