@@ -11,7 +11,7 @@ use crate::{
     core::{AuthorityIssuer, EffectGuarantee, EffectStatus, Scope},
     effects::{EffectDispatch, EffectObservation, EffectProvider},
     fork::{Capture, ForkCaptureProvider, ForkRequest, ForkSelection, ResourceRevision},
-    resources::ProviderRef,
+    resources::{CheckpointRef, ProviderRef},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
@@ -1052,6 +1052,12 @@ impl NativeExecutionForkCaptureProvider {
         Ok(Capture::Unsupported(
             "native execution has no immutable process checkpoint".into(),
         ))
+    }
+
+    /// Observes one explicitly selected process resource through the same
+    /// production receipt path used by fork preparation.
+    pub async fn capture_selection(&self, selection: &ForkSelection) -> Result<Capture> {
+        self.observe(selection).await
     }
 }
 
@@ -4689,6 +4695,126 @@ mod local_provider_tests {
                 .map_err(|error| Error::Storage(error.to_string()))?;
             assert_eq!(replayed_marker, first_marker);
         }
+        std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn native_process_fork_capture_uses_only_the_exact_journal_attempt() -> Result<()> {
+        let root = std::env::temp_dir().join(format!(
+            "harness-native-fork-capture-{}",
+            OperationId::new()
+        ));
+        let model = Model::new(
+            "mock",
+            "execution-native-fork-capture",
+            "1",
+            serde_json::Value::Null,
+        )?;
+        let operation = OperationId::from_bytes([131; 16]);
+        let attempt = EffectAttemptId::from_bytes([132; 16]);
+        let interaction_id = InteractionId::from_bytes([133; 16]);
+        let mut request = local_spec();
+        request.working_directory = root.to_string_lossy().into_owned();
+        request.arguments = if cfg!(windows) {
+            vec!["/C".into(), "echo native-fork>>marker.txt".into()]
+        } else {
+            vec!["-c".into(), "printf native-fork >> marker.txt".into()]
+        };
+        let session = PersistentLocalHarness::open(
+            &root,
+            model,
+            Arc::new(NoopModel),
+            Limits::default(),
+        )
+        .await?;
+        let dispatch = approved_dispatch(
+            &session,
+            operation,
+            interaction_id,
+            request,
+            "requests/native-fork-capture.json",
+            attempt,
+        )
+        .await?;
+        let provider = NativeExecutionProvider::new_with_receipt_store(
+            session.storage().content_verifier(),
+            session.execution_receipt_store()?,
+            Arc::new(NativeExitThenFaultRunner),
+            session.storage().execution_approval_verifier(),
+        )?;
+        let observation = provider.dispatch(dispatch).await?;
+        assert_eq!(observation.status, EffectStatus::Indeterminate);
+        drop(provider);
+        drop(session);
+        let session = PersistentLocalHarness::open(
+            &root,
+            Model::new(
+                "mock",
+                "execution-native-fork-capture",
+                "1",
+                serde_json::Value::Null,
+            )?,
+            Arc::new(NoopModel),
+            Limits::default(),
+        )
+        .await?;
+
+        let machine = ProviderRef::new("acyclic", "machines", "1")?;
+        let capture = NativeExecutionForkCaptureProvider::new(
+            session.execution_receipt_store()?,
+            machine.clone(),
+            operation,
+            attempt,
+        )?;
+        let selected = ForkSelection {
+            required: true,
+            revision: ResourceRevision::Process(CheckpointRef::new(
+                machine.clone(),
+                capture.identity_key(),
+                None,
+            )?),
+        };
+        let observed = capture.capture_selection(&selected).await?;
+        assert!(matches!(observed, Capture::InFlight(value) if value == operation));
+
+        let pending_operation = OperationId::from_bytes([134; 16]);
+        let pending_attempt = EffectAttemptId::from_bytes([135; 16]);
+        let pending_capture = NativeExecutionForkCaptureProvider::new(
+            session.execution_receipt_store()?,
+            machine.clone(),
+            pending_operation,
+            pending_attempt,
+        )?;
+        let pending_selection = ForkSelection {
+            required: true,
+            revision: ResourceRevision::Process(CheckpointRef::new(
+                machine.clone(),
+                pending_capture.identity_key(),
+                None,
+            )?),
+        };
+        assert!(matches!(
+            pending_capture.capture_selection(&pending_selection).await?,
+            Capture::InFlight(value) if value == pending_operation
+        ));
+
+        let forged_selection = ForkSelection {
+            required: true,
+            revision: ResourceRevision::Process(CheckpointRef::new(
+                machine,
+                b"acyclic-native-attempt-v1\0".iter()
+                    .copied()
+                    .chain([9; 16])
+                    .chain(attempt.into_bytes())
+                    .collect::<Vec<_>>(),
+                None,
+            )?),
+        };
+        assert!(matches!(
+            capture.capture_selection(&forged_selection).await,
+            Err(Error::Conflict(_))
+        ));
         std::fs::remove_dir_all(root).map_err(|error| Error::Storage(error.to_string()))?;
         Ok(())
     }
