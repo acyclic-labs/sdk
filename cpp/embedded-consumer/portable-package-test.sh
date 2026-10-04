@@ -85,6 +85,20 @@ if [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]]; then
   C_CONSUMER_PLATFORM_ARGS+=("-arch" "$CMAKE_OSX_ARCHITECTURES")
 fi
 
+assert_darwin_architecture() {
+  [[ -n "${CMAKE_OSX_ARCHITECTURES:-}" ]] || return 0
+  command -v lipo >/dev/null || {
+    echo "lipo is required to verify the Darwin package architecture" >&2
+    exit 2
+  }
+  local actual
+  actual="$(lipo -archs "$1")"
+  if [[ "$actual" != *"$CMAKE_OSX_ARCHITECTURES"* ]]; then
+    echo "Darwin runtime architecture mismatch: expected $CMAKE_OSX_ARCHITECTURES, got '$actual' for $1" >&2
+    exit 2
+  fi
+}
+
 mkdir -p "$BUILD_DIRECTORY"
 command -v cargo >/dev/null
 command -v rustc >/dev/null
@@ -109,6 +123,7 @@ RUNTIME="$RELEASE_DIRECTORY/$RUNTIME_NAME"
 HEADER="$(find "$RELEASE_DIRECTORY/build" -type f -name acyclic_embedded_prototype.h -print -quit)"
 test -f "$RUNTIME"
 test -n "$HEADER"
+assert_darwin_architecture "$RUNTIME"
 if (( MUSL_DYNAMIC )); then
   command -v readelf >/dev/null || {
     echo "readelf is required to verify the dynamic musl ABI" >&2
@@ -143,6 +158,7 @@ INSTALLED_RUNTIME="$(find "$PREFIX" -type f -name "$RUNTIME_NAME" -print -quit)"
 INSTALLED_HEADER="$PREFIX/include/acyclic_embedded_prototype.h"
 test -f "$INSTALLED_RUNTIME"
 test -f "$INSTALLED_HEADER"
+assert_darwin_architecture "$INSTALLED_RUNTIME"
 python3 - "$PREFIX" "$RUNTIME_NAME" <<'PY'
 import pathlib
 import sys
