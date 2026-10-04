@@ -84,8 +84,8 @@ pub use swarm_local::{
     LocalForkIntent, LocalForkOutcome, LocalForkRequest, LocalInheritedModelDeclaration,
     LocalFilesystemForkResolver, LocalModelForkPlan, LocalModelForkPlans, LocalModelForkPublisher,
     LocalModelForkResolver,
-    LocalSessionPhase, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
-    LocalSwarmMessage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
+    LocalSessionPhase, LocalSwarmAgent, LocalSwarmApproval, LocalSwarmBindings, LocalSwarmConfig,
+    LocalSwarmMessage, LocalSwarmPage, LocalSwarmSession, LocalSwarmSnapshot, PersistentLocalSwarm,
 };
 
 mod memory;

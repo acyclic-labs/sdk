@@ -47,6 +47,11 @@ use std::{
 };
 use tokio::sync::Mutex;
 
+#[path = "swarm_read_projection.rs"]
+mod read_projection;
+pub use read_projection::{LocalSwarmAgent, LocalSwarmPage};
+use read_projection::{page_by_cursor, page_from_sorted, recursive_agent_tree as project_recursive_agent_tree};
+
 const REGISTRY_STREAM: &str = "swarm/records";
 // The issuer-binding event gained a child-operation key and is no longer
 // safely decodable as the original single-fork record. Keep recovery
@@ -2410,6 +2415,32 @@ impl PersistentLocalSwarm {
         self.records.lock().await.values().cloned().collect()
     }
 
+    /// Reads one bounded, refreshed page of canonical session descriptors.
+    /// The registry is refreshed before projection so another host handle's
+    /// durable updates are visible without retaining a second read cache.
+    pub async fn sessions_page(
+        &self,
+        after: Option<&str>,
+        maximum_entries: usize,
+    ) -> Result<LocalSwarmPage<LocalSwarmSession>> {
+        self.refresh_registry_state().await?;
+        let records = self.records.lock().await;
+        page_from_sorted(
+            records.values().cloned(),
+            after,
+            maximum_entries,
+            |session| session.task.to_string(),
+            "session",
+        )
+    }
+
+    /// Reads the refreshed recursive registry subtree rooted at one task.
+    /// No child journal, filesystem volume, or model worker is opened.
+    pub async fn recursive_agent_tree(&self, task: TaskId) -> Result<Vec<LocalSwarmAgent>> {
+        self.refresh_registry_state().await?;
+        project_recursive_agent_tree(self.sessions().await, task)
+    }
+
     /// Reads one descriptor without opening its local journal or filesystem.
     pub async fn session(&self, task: TaskId) -> Result<LocalSwarmSession> {
         self.records
@@ -2424,6 +2455,7 @@ impl PersistentLocalSwarm {
     /// authoritative local providers. This method never starts a model turn
     /// or eagerly opens child sessions.
     pub async fn session_snapshot(&self, task: TaskId) -> Result<LocalSwarmSnapshot> {
+        self.refresh_registry_state().await?;
         let session = self.session(task).await?;
         let children = self
             .records
@@ -2521,6 +2553,23 @@ impl PersistentLocalSwarm {
     ) -> Result<(FileRef, Vec<u8>)> {
         let harness = self.open_session(task).await?;
         harness.read_private_path(path, expected_generation).await
+    }
+
+    /// Reconstructs the durable approval journal and projects one bounded page.
+    pub async fn approvals_page(
+        &self,
+        task: TaskId,
+        after: Option<&str>,
+        maximum_entries: usize,
+    ) -> Result<LocalSwarmPage<LocalSwarmApproval>> {
+        self.refresh_registry_state().await?;
+        page_by_cursor(
+            self.list_approvals(task).await?,
+            after,
+            maximum_entries,
+            |approval| approval.ticket.id.to_string(),
+            "approval",
+        )
     }
 
     /// Lists durable approval requests retained in one task conversation.
