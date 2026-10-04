@@ -12,7 +12,7 @@ use crate::{
     effects::{EffectDispatch, EffectObservation, EffectProvider},
 };
 #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
+use acyclic_native_runtime::{ProcessTree, ProcessTreeSpawnError, spawn_process_tree_owned};
 use futures::FutureExt as _;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -1189,8 +1189,12 @@ impl ManagedChild {
     fn spawn(command: Command) -> std::io::Result<Self> {
         #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
         {
-            return spawn_process_tree_owned(command).map(Self::Tree);
+            return spawn_process_tree_owned(command)
+                .map(Self::Tree)
+                .map_err(recover_spawn_error);
         }
+        #[cfg(not(all(feature = "native-process-tree", not(target_arch = "wasm32"))))]
+        let mut command = command;
         #[allow(unreachable_code)]
         command.spawn().map(Self::Direct)
     }
@@ -1248,6 +1252,22 @@ impl ManagedChild {
             #[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
             Self::Tree(_) => true,
         }
+    }
+}
+
+#[cfg(all(feature = "native-process-tree", not(target_arch = "wasm32")))]
+fn recover_spawn_error(error: ProcessTreeSpawnError) -> std::io::Error {
+    let (source, recovery) = error.into_parts();
+    let Some(mut recovery) = recovery else {
+        return source;
+    };
+    match recovery.terminate() {
+        Ok(()) => std::io::Error::other(format!(
+            "{source}; retained native owner was reconciled before returning the launch failure"
+        )),
+        Err(cleanup) => std::io::Error::other(format!(
+            "{source}; retained native owner cleanup is uncertain: {cleanup}"
+        )),
     }
 }
 

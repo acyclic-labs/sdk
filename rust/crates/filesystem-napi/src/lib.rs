@@ -44,7 +44,7 @@ use acyclic_fs::{
 };
 use acyclic_fs::{Mount as WorkspaceMount, MountOptions, MountPublication};
 use acyclic_fs::{ReconcileOutcome, SourceMode, SourceOptions, SourceState};
-use acyclic_native_runtime::{ProcessTree, spawn_process_tree_owned};
+use acyclic_native_runtime::{ProcessTree, ProcessTreeSpawnError, spawn_process_tree_owned};
 use napi::bindgen_prelude::{Array, AsyncTask, BigInt, Buffer, Error, PromiseRaw, Result, Status};
 use napi::{Env, Task};
 use napi_derive::napi;
@@ -285,6 +285,26 @@ impl NativeProcessOwner {
         }
     }
 
+    fn retain_failed_launch(&self, error: ProcessTreeSpawnError) -> Error {
+        let (source, recovery) = error.into_parts();
+        let Some(tree) = recovery else {
+            return napi_error(source);
+        };
+        let pid = tree.id();
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        let entry = NativeProcessEntry::with_io(tree);
+        let Ok(mut trees) = self.trees.lock() else {
+            return napi_error(format!(
+                "{source}; failed to retain native recovery owner in the process registry"
+            ));
+        };
+        trees.insert(token, entry);
+        napi_error(format!(
+            "{source}; native recovery owner retained under token {token} (pid={})",
+            pid.map_or_else(|| "unknown".to_owned(), |value| value.to_string())
+        ))
+    }
+
     /// Spawns an explicitly described process inside a native ownership
     /// boundary before it is resumed. Environment inheritance is disabled;
     /// callers must provide every variable the process may receive.
@@ -327,7 +347,10 @@ impl NativeProcessOwner {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let tree = spawn_process_tree_owned(command).map_err(napi_error)?;
+        let tree = match spawn_process_tree_owned(command) {
+            Ok(tree) => tree,
+            Err(error) => return Err(self.retain_failed_launch(error)),
+        };
         let pid = tree
             .id()
             .ok_or_else(|| napi_error("native process did not expose a PID"))?;

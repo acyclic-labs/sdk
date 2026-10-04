@@ -343,7 +343,7 @@ mod process_tree;
 #[cfg(windows)]
 mod windows;
 
-pub use process_tree::ProcessTree;
+pub use process_tree::{ProcessTree, ProcessTreeSpawnError};
 
 /// Whether a native operation may still have an unresolved kernel completion.
 ///
@@ -840,13 +840,17 @@ pub fn spawn_service_process(executable: &Path) -> io::Result<ServiceReadiness> 
 /// returned guard, or explicitly terminating it, kills that containment. Unix
 /// descendants can deliberately escape by creating another group or session,
 /// so independently durable services require their own lifecycle ownership.
-pub fn spawn_process_tree(command: &mut std::process::Command) -> io::Result<ProcessTree> {
+pub fn spawn_process_tree(
+    command: &mut std::process::Command,
+) -> Result<ProcessTree, ProcessTreeSpawnError> {
     ProcessTree::spawn(command)
 }
 
 /// Starts a one-use command with the strongest available native ownership
 /// handoff. The command is consumed so platform launch hooks cannot be reused.
-pub fn spawn_process_tree_owned(command: std::process::Command) -> io::Result<ProcessTree> {
+pub fn spawn_process_tree_owned(
+    command: std::process::Command,
+) -> Result<ProcessTree, ProcessTreeSpawnError> {
     ProcessTree::spawn_owned(command)
 }
 

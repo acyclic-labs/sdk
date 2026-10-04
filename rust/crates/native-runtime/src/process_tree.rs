@@ -3,6 +3,17 @@
 use std::io;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
 
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+static FORCE_LAUNCH_FAILURE: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+fn force_launch_failure() -> bool {
+    FORCE_LAUNCH_FAILURE.load(Ordering::Acquire)
+}
+
 /// One child and descendants that remain in its operating-system containment.
 ///
 /// Windows uses a Job object. Unix uses a process group, or an explicitly
@@ -14,8 +25,86 @@ pub struct ProcessTree {
     guard: platform::Guard,
 }
 
+/// A native launch failure that retains the process-tree owner when launch
+/// initialization or cleanup became uncertain. Callers must transfer the
+/// recovery owner to their durable uncertainty registry before dropping this
+/// error; converting it to a string alone loses the authority to reconcile.
+pub struct ProcessTreeSpawnError {
+    source: io::Error,
+    recovery: Option<ProcessTree>,
+}
+
+impl ProcessTreeSpawnError {
+    fn source(source: io::Error) -> Self {
+        Self {
+            source,
+            recovery: None,
+        }
+    }
+
+    fn with_recovery(source: io::Error, recovery: ProcessTree) -> Self {
+        Self {
+            source,
+            recovery: Some(recovery),
+        }
+    }
+
+    /// Returns the owner that must be persisted and reconciled, if cleanup
+    /// could not prove that the launch left no live descendants.
+    pub fn into_recovery(mut self) -> Option<ProcessTree> {
+        self.recovery.take()
+    }
+
+    /// Converts this launch failure for a caller that cannot retain native
+    /// ownership. Callers that can recover must consume [`Self::into_recovery`]
+    /// before taking this error.
+    pub fn into_error(self) -> io::Error {
+        self.source
+    }
+
+    /// Transfers both the launch diagnostic and any retained native owner to
+    /// a caller-owned recovery registry.
+    pub fn into_parts(self) -> (io::Error, Option<ProcessTree>) {
+        (self.source, self.recovery)
+    }
+
+    /// Returns the original launch or cleanup failure without discarding the
+    /// recovery owner first.
+    pub fn error(&self) -> &io::Error {
+        &self.source
+    }
+}
+
+impl std::fmt::Display for ProcessTreeSpawnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::fmt::Debug for ProcessTreeSpawnError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProcessTreeSpawnError")
+            .field("source", &self.source)
+            .field("has_recovery_owner", &self.recovery.is_some())
+            .finish()
+    }
+}
+
+impl std::error::Error for ProcessTreeSpawnError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl From<io::Error> for ProcessTreeSpawnError {
+    fn from(source: io::Error) -> Self {
+        Self::source(source)
+    }
+}
+
 impl ProcessTree {
-    pub(crate) fn spawn(command: &mut Command) -> io::Result<Self> {
+    pub(crate) fn spawn(command: &mut Command) -> Result<Self, ProcessTreeSpawnError> {
         let (child, guard) = platform::spawn(command, false)?;
         Ok(Self {
             child: Some(child),
@@ -26,7 +115,7 @@ impl ProcessTree {
     /// Starts a one-use command through the atomic Linux cgroup handoff.
     /// Consuming the command makes reuse of a pre-exec ownership hook
     /// impossible by construction.
-    pub(crate) fn spawn_owned(mut command: Command) -> io::Result<Self> {
+    pub(crate) fn spawn_owned(mut command: Command) -> Result<Self, ProcessTreeSpawnError> {
         let (child, guard) = platform::spawn(&mut command, true)?;
         Ok(Self {
             child: Some(child),
@@ -150,6 +239,7 @@ impl Drop for ProcessTree {
 
 #[cfg(unix)]
 mod platform {
+    use super::{ProcessTree, ProcessTreeSpawnError};
     #[cfg(target_os = "linux")]
     use std::ffi::CString;
     use std::io;
@@ -172,7 +262,10 @@ mod platform {
         cgroup: Option<Cgroup>,
     }
 
-    pub(super) fn spawn(command: &mut Command, allow_cgroup: bool) -> io::Result<(Child, Guard)> {
+    pub(super) fn spawn(
+        command: &mut Command,
+        allow_cgroup: bool,
+    ) -> Result<(Child, Guard), ProcessTreeSpawnError> {
         command.process_group(0);
         #[cfg(target_os = "linux")]
         let configured = if allow_cgroup {
@@ -188,7 +281,7 @@ mod platform {
                     Ok(path) => path,
                     Err(error) => {
                         value.discard();
-                        return Err(error);
+                        return Err(error.into());
                     }
                 };
                 // The child has not executed user code when this hook runs.
@@ -201,14 +294,14 @@ mod platform {
             }
             None => None,
         };
-        let mut child = match command.spawn() {
+        let child = match command.spawn() {
             Ok(value) => value,
             Err(error) => {
                 #[cfg(target_os = "linux")]
                 if let Some(value) = &cgroup {
                     value.discard();
                 }
-                return Err(error);
+                return Err(error.into());
             }
         };
         let process_group = libc::pid_t::try_from(child.id())
@@ -217,28 +310,29 @@ mod platform {
             Ok(value) => value,
             Err(error) => {
                 #[cfg(target_os = "linux")]
-                if let Err(cleanup_error) = cleanup_failed_launch(&mut child, cgroup.as_ref()) {
-                    return Err(io::Error::other(format!(
-                        "{error}; launch cleanup is uncertain: {cleanup_error}"
-                    )));
-                }
+                return Err(cleanup_failed_launch(child, cgroup, error));
                 #[cfg(not(target_os = "linux"))]
-                stop_child(&mut child);
-                return Err(error);
+                {
+                    stop_child(child);
+                    return Err(ProcessTreeSpawnError::source(error));
+                }
             }
         };
         #[cfg(target_os = "linux")]
         let root_start_time = match process_start_time(child.id()) {
             Ok(value) => Some(value),
             Err(error) => {
-                if let Err(cleanup_error) = cleanup_failed_launch(&mut child, cgroup.as_ref()) {
-                    return Err(io::Error::other(format!(
-                        "{error}; launch cleanup is uncertain: {cleanup_error}"
-                    )));
-                }
-                return Err(error);
+                return Err(cleanup_failed_launch(child, cgroup, error));
             }
         };
+        #[cfg(test)]
+        if super::force_launch_failure() {
+            return Err(cleanup_failed_launch(
+                child,
+                cgroup,
+                io::Error::other("forced launch initialization failure"),
+            ));
+        }
         Ok((
             child,
             Guard {
@@ -311,7 +405,7 @@ mod platform {
             .map_err(|_| io::Error::other("process identity start time is malformed"))
     }
 
-    fn stop_child(child: &mut Child) {
+    fn stop_child(mut child: Child) {
         let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
         let _ = child.wait();
     }
@@ -335,45 +429,158 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn cleanup_failed_launch(child: &mut Child, cgroup: Option<&Cgroup>) -> io::Result<()> {
-        let Some(cgroup) = cgroup else {
-            let pid = child.id() as libc::pid_t;
-            let signal_result = unsafe { libc::kill(-pid, libc::SIGKILL) };
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            loop {
-                if child.try_wait()?.is_some() {
-                    break;
-                }
-                if std::time::Instant::now() >= deadline {
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "native process-group cleanup did not finish after launch initialization failure",
-                    ));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
+    fn cleanup_failed_launch(
+        mut child: Child,
+        cgroup: Option<Cgroup>,
+        launch_error: io::Error,
+    ) -> ProcessTreeSpawnError {
+        let process_group = match libc::pid_t::try_from(child.id()) {
+            Ok(value) => value,
+            Err(error) => {
+                stop_child(child);
+                return ProcessTreeSpawnError::source(io::Error::other(error.to_string()));
             }
-            return Err(io::Error::other(format!(
-                "native process-group cleanup cannot prove escaped descendant ownership (signal result: {signal_result:?})"
-            )));
+        };
+        let root_start_time = process_start_time(child.id()).ok();
+        #[cfg(test)]
+        if super::force_launch_failure() {
+            return ProcessTreeSpawnError::with_recovery(
+                io::Error::other(format!(
+                    "{launch_error}; forced cleanup failure retained native ownership"
+                )),
+                ProcessTree {
+                    child: Some(child),
+                    guard: Guard {
+                        process_group,
+                        active: true,
+                        root_start_time,
+                        cgroup,
+                    },
+                },
+            );
+        }
+        let Some(cgroup) = cgroup else {
+            let signal_result = unsafe { libc::kill(-process_group, libc::SIGKILL) };
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let mut wait_error = None;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if std::time::Instant::now() < deadline => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                    Ok(None) => {
+                        wait_error = Some(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "native process-group cleanup did not finish after launch initialization failure",
+                        ));
+                        break;
+                    }
+                    Err(error) => {
+                        wait_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            let detail = wait_error
+                .map(|error| format!("direct root cleanup: {error}"))
+                .unwrap_or_else(|| {
+                    format!(
+                        "native process-group cleanup cannot prove escaped descendant ownership (signal result: {signal_result:?})"
+                    )
+                });
+            return ProcessTreeSpawnError::with_recovery(
+                io::Error::other(format!("{launch_error}; {detail}")),
+                ProcessTree {
+                    child: Some(child),
+                    guard: Guard {
+                        process_group,
+                        active: true,
+                        root_start_time,
+                        cgroup: None,
+                    },
+                },
+            );
         };
         if let Err(error) = cgroup.terminate() {
-            let direct_cleanup = stop_child_bounded(child);
-            return Err(io::Error::other(format!(
-                "native cgroup cleanup failed after launch initialization error: {error}; direct root cleanup: {direct_cleanup:?}; descendants remain uncertain"
-            )));
+            let direct_cleanup = stop_child_bounded(&mut child);
+            return ProcessTreeSpawnError::with_recovery(
+                io::Error::other(format!(
+                    "{launch_error}; native cgroup cleanup failed after launch initialization error: {error}; direct root cleanup: {direct_cleanup:?}; descendants remain uncertain"
+                )),
+                ProcessTree {
+                    child: Some(child),
+                    guard: Guard {
+                        process_group,
+                        active: true,
+                        root_start_time,
+                        cgroup: Some(cgroup),
+                    },
+                },
+            );
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
-            let root_exited = child.try_wait()?.is_some();
-            if root_exited && cgroup.complete()? {
+            let root_exited = match child.try_wait() {
+                Ok(value) => value.is_some(),
+                Err(error) => {
+                    return ProcessTreeSpawnError::with_recovery(
+                        io::Error::other(format!(
+                            "{launch_error}; failed waiting for launch cleanup: {error}"
+                        )),
+                        ProcessTree {
+                            child: Some(child),
+                            guard: Guard {
+                                process_group,
+                                active: true,
+                                root_start_time,
+                                cgroup: Some(cgroup),
+                            },
+                        },
+                    );
+                }
+            };
+            let complete = match cgroup.complete() {
+                Ok(value) => value,
+                Err(error) => {
+                    return ProcessTreeSpawnError::with_recovery(
+                        io::Error::other(format!(
+                            "{launch_error}; failed observing launch cleanup: {error}"
+                        )),
+                        ProcessTree {
+                            child: Some(child),
+                            guard: Guard {
+                                process_group,
+                                active: true,
+                                root_start_time,
+                                cgroup: Some(cgroup),
+                            },
+                        },
+                    );
+                }
+            };
+            if root_exited && complete {
                 cgroup.discard();
-                return Ok(());
+                return ProcessTreeSpawnError::source(launch_error);
             }
             if std::time::Instant::now() >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "native cgroup descendants remained after launch initialization failure",
-                ));
+                return ProcessTreeSpawnError::with_recovery(
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        format!(
+                            "{launch_error}; native cgroup descendants remained after launch initialization failure"
+                        ),
+                    ),
+                    ProcessTree {
+                        child: Some(child),
+                        guard: Guard {
+                            process_group,
+                            active: true,
+                            root_start_time,
+                            cgroup: Some(cgroup),
+                        },
+                    },
+                );
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -541,13 +748,14 @@ mod platform {
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
-    use super::ProcessTree;
+    use super::{FORCE_LAUNCH_FAILURE, ProcessTree};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::process::CommandExt as _;
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
+    use std::sync::atomic::Ordering;
 
     const MODE: &str = "ACYCLIC_PROCESS_TREE_TEST_MODE";
     const ROOT: &str = "ACYCLIC_PROCESS_TREE_TEST_ROOT";
@@ -621,6 +829,31 @@ mod tests {
         tree.terminate().expect("terminate process tree");
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
+    }
+
+    #[test]
+    fn failed_launch_retains_recovery_owner_until_explicit_cleanup() {
+        let previous = FORCE_LAUNCH_FAILURE.swap(true, Ordering::AcqRel);
+        let temporary = tempfile::tempdir().expect("temporary process-tree directory");
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command
+            .args(["--exact", "process_tree::tests::process_tree_helper"])
+            .env(MODE, "grandchild")
+            .env(ROOT, temporary.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let result = ProcessTree::spawn_owned(command);
+        FORCE_LAUNCH_FAILURE.store(previous, Ordering::Release);
+        let error = match result {
+            Ok(_) => panic!("forced launch failure"),
+            Err(error) => error,
+        };
+        let mut recovery = error
+            .into_recovery()
+            .expect("launch failure must retain a native recovery owner");
+        assert!(recovery.id().is_some());
+        recovery.terminate().expect("recover forced launch owner");
     }
 
     #[test]
@@ -713,6 +946,7 @@ mod tests {
 
 #[cfg(windows)]
 mod platform {
+    use super::{ProcessTree, ProcessTreeSpawnError};
     use std::io;
     use std::mem::{size_of, zeroed};
     use std::os::windows::io::AsRawHandle as _;
@@ -743,26 +977,79 @@ mod platform {
     pub(super) fn spawn(
         command: &mut Command,
         _allow_cgroup: bool,
-    ) -> io::Result<(Child, Guard)> {
-        let mut guard = Guard::new()?;
+    ) -> Result<(Child, Guard), ProcessTreeSpawnError> {
+        let guard = Guard::new()?;
         command.creation_flags(CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW);
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         // SAFETY: the Job and Child each own live handles for the duration of
         // this call. The suspended child cannot create descendants before it
         // has been assigned to the kill-on-close Job.
         if unsafe { AssignProcessToJobObject(guard.job, child.as_raw_handle().cast()) } == 0 {
             let error = io::Error::last_os_error();
-            let _ = guard.terminate();
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
+            return Err(cleanup_failed_launch(child, guard, error));
+        }
+        #[cfg(test)]
+        if super::force_launch_failure() {
+            return Err(ProcessTreeSpawnError::with_recovery(
+                io::Error::other("forced launch initialization failure"),
+                ProcessTree {
+                    child: Some(child),
+                    guard,
+                },
+            ));
         }
         if let Err(error) = resume_process(child.id()) {
-            let _ = guard.terminate();
-            let _ = child.wait();
-            return Err(error);
+            return Err(cleanup_failed_launch(child, guard, error));
         }
         Ok((child, guard))
+    }
+
+    fn cleanup_failed_launch(
+        mut child: Child,
+        mut guard: Guard,
+        launch_error: io::Error,
+    ) -> ProcessTreeSpawnError {
+        let mut cleanup_errors = Vec::new();
+        if let Err(error) = guard.terminate() {
+            cleanup_errors.push(format!("job termination: {error}"));
+        }
+        if let Err(error) = child.kill() {
+            cleanup_errors.push(format!("direct root termination: {error}"));
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    cleanup_errors.push("direct root termination timed out".to_owned());
+                    break;
+                }
+                Err(error) => {
+                    cleanup_errors.push(format!("direct root observation: {error}"));
+                    break;
+                }
+            }
+        }
+        match guard.termination_complete() {
+            Ok(true) if cleanup_errors.is_empty() => ProcessTreeSpawnError::source(launch_error),
+            Ok(true) | Ok(false) | Err(_) => {
+                let cleanup = if cleanup_errors.is_empty() {
+                    "job ownership remains unresolved".to_owned()
+                } else {
+                    cleanup_errors.join("; ")
+                };
+                ProcessTreeSpawnError::with_recovery(
+                    io::Error::other(format!("{launch_error}; {cleanup}")),
+                    ProcessTree {
+                        child: Some(child),
+                        guard,
+                    },
+                )
+            }
+        }
     }
 
     pub(super) fn adopt(pid: u32) -> io::Result<Guard> {
