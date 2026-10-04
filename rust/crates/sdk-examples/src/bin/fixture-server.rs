@@ -8,6 +8,7 @@ use acyclic_actors::{FILE_DESCRIPTOR_SET, validate_create, wire as actors_wire};
 use acyclic_fs::wire::filesystem::v2 as fs_wire;
 use acyclic_harness::{grpc::HarnessGrpcService, wire as harness_wire, wire_api::HarnessWireApi};
 use acyclic_objects::wire as objects_wire;
+use acyclic_sdk_examples::fixtures::filesystem_harness::{filesystem_server, harness_server};
 use acyclic_sdk_examples::transport_fixtures;
 use acyclic_sdk_examples::tls_fixture::{
     AllRoutesMachinesFixture, InferenceMetadataFixture, InferenceRunsFixture,
@@ -765,13 +766,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             interceptor.clone(),
         );
         let harness = tonic::service::interceptor::InterceptedService::new(
-            HarnessGrpcService::new(Arc::new(HarnessFixtureApi)).into_server(),
+            harness_server(),
             interceptor.clone(),
         );
         let filesystem = tonic::service::interceptor::InterceptedService::new(
-            fs_wire::filesystem_service_server::FilesystemServiceServer::new(FilesystemFixture)
-                .max_decoding_message_size(MAX_BODY_BYTES)
-                .max_encoding_message_size(MAX_BODY_BYTES),
+            filesystem_server().expect('canonical filesystem fixture service'),
             interceptor.clone(),
         );
         let streams = tonic::service::interceptor::InterceptedService::new(
