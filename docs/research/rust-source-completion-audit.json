@@ -94,5 +94,51 @@
       "state": "partial",
       "evidence": "Canonical catalog c77499b95 preserves java/csharp IDs and jvm/dotnet package aliases; CLI alias normalization remains assigned. Prior inventory34 entries contained32 languages and2 tooling categories. Producer adapter recipes and all viable target remote/embedded/docs/snippet/install qualifications remain incomplete. Catalog rows or install smoke alone cannot qualify complete behavior."
     }
-  ]
+  ],
+  "latest_coordinator_iteration": {
+    "observed_at": "2026-10-04T08:50:46.8994991Z",
+    "status": "incomplete",
+    "authorization": "User explicitly authorized PR and merge only when absolutely confident. Root alone may merge after every completion requirement passes; no auto-merge, registry publication or production deployment.",
+    "pr": "https://github.com/acyclic-labs/sdk/pull/241",
+    "hosted_run": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099",
+    "hosted_source_revision": "74a9049a660c80447e43394e67e78f50d8cb8772",
+    "hosted_conclusion": "failure",
+    "successful_embedded_jobs": [
+      "macos-arm64",
+      "windows-x64-msvc",
+      "windows-arm64-msvc"
+    ],
+    "hosted_receipt": "research/acceptance/coordinator-hosted-qualification-37188978099.json",
+    "verified_local_checks": [
+      {
+        "scope": "nominal RPC qualification receipt rejection",
+        "passed": 4,
+        "failed": 0
+      },
+      {
+        "scope": "fast CI lane policy",
+        "passed": 16,
+        "failed": 0,
+        "test_duration_ms": 25.444
+      }
+    ],
+    "resolved": [
+      "Actual CI observation retained with no qualification claim",
+      "Signed isolated commits verified against repository allowed signers",
+      "Stream invalid LLVM action pin corrected by owner",
+      "Accidental provenance removal restored without reverting later work"
+    ],
+    "next_required": [
+      "Complete and exercise actual full Rust fixture with successful method responses",
+      "Fresh clean generation and negative drift checks",
+      "Installed language packages with remote nominal success for every RPC",
+      "Native platform artifacts and runtime receipts",
+      "Complete Rustdoc graph and executable snippets",
+      "Every released docs version and rendered desktop/mobile website verification",
+      "All inventoried viable language targets and replaced TypeScript removal",
+      "Full PR signature range integrity"
+    ],
+    "merge_performed": false,
+    "goal_completed": false
+  }
 }
