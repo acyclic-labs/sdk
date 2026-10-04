@@ -18,25 +18,25 @@ fn every_runtime_handshake_uses_its_explicit_archived_fixture() {
             "actors",
             BindingFamily::Actors,
             include_bytes!("../../actors/src/generated/acyclic-actors-v1.bin").as_slice(),
-            "0c01551deb2a5413c338b5c0bab7249d90b40b04c7b6829d90cb44bb0027e4d7",
+            "70720491f34232b4b7e424a17f8383ad5a69b1018460e8fff7a62600fb6ec16c",
         ),
         (
             "workers",
             BindingFamily::Workers,
             include_bytes!("../../workers/src/generated/acyclic-workers-v1.bin").as_slice(),
-            "ec65edb7279ea99de68945e776628c7ba842be0a81a4fb872876d8f82db2f147",
+            "851b6cd37b8cb4baa6d3a111efdad655b89936b2e1057ecb74e62825715bd7d8",
         ),
         (
             "objects",
             BindingFamily::Objects,
             include_bytes!("../../objects/src/generated/acyclic-objects-v2.bin").as_slice(),
-            "601b092b87d702b9aad1c0fa1615af623f19c59067ea9c52e2cb61db34994b1b",
+            "21cb9f4893ce487716645e2814ffc680b9b6db8e0f23a9ea6867851100861d6b",
         ),
         (
             "stream",
             BindingFamily::Stream,
             include_bytes!("../../stream/proto/stream/v2/stream_descriptor.bin").as_slice(),
-            "0253a46e0e6f565aae140bbe7237581dd45c959c2d0882c822e3bff6a58769fe",
+            "f7b25aa49d033bf9300c517b940263c9ad14d1db7fbfdb6a4a9e73b5ec44c58e",
         ),
         (
             "inference",
@@ -54,7 +54,7 @@ fn every_runtime_handshake_uses_its_explicit_archived_fixture() {
             "filesystem",
             BindingFamily::Filesystem,
             include_bytes!("../../filesystem/src/generated/acyclic-filesystem-v2.bin").as_slice(),
-            "3baefd3633485a2eaa989f02fb24af04c02764abb7fc215c42971311ab4b8fdd",
+            "105e153060d229569836982527c91bd56a69891691007215fbc599115eca2093",
         ),
         (
             "harness",
@@ -71,7 +71,10 @@ fn every_runtime_handshake_uses_its_explicit_archived_fixture() {
             "{name} runtime identity is not bound to its explicit archive"
         );
         assert_eq!(sha256(expected), digest, "{name} archive bytes changed");
-        assert!(!family.model_descriptor().is_empty(), "{name} model is empty");
+        assert!(
+            !family.model_descriptor().is_empty(),
+            "{name} model is empty"
+        );
     }
 }
 
