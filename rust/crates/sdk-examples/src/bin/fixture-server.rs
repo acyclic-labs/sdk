@@ -8,7 +8,7 @@ use acyclic_actors::{FILE_DESCRIPTOR_SET, validate_create, wire as actors_wire};
 use acyclic_fs::wire::filesystem::v2 as fs_wire;
 use acyclic_harness::{wire as harness_wire, wire_api::HarnessWireApi};
 use acyclic_objects::wire as objects_wire;
-use acyclic_sdk_contract_wire::{BindingFamily, transport_control};
+use acyclic_sdk_contract_wire::{BEARER_NO_CRLF, BindingFamily, credential, transport_control};
 use acyclic_sdk_examples::fixtures::objects_server::ObjectsFixture;
 use acyclic_sdk_examples::tls_fixture::{
     AllRoutesMachinesFixture, InferenceMetadataFixture, InferenceRunsFixture,
@@ -90,6 +90,7 @@ struct Options {
 struct HttpRequest {
     method: String,
     path: String,
+    authorization: Option<String>,
     content_type: String,
     body: Vec<u8>,
 }
@@ -202,9 +203,12 @@ fn authorized_control_family<T>(request: &Request<T>) -> Result<BindingFamily, S
         .copied()
         .find(|candidate| candidate.name() == family)
         .ok_or_else(|| Status::permission_denied("requested SDK family is not registered"))?;
-    if !matches!(family, BindingFamily::Actors | BindingFamily::Workers) {
+    if !matches!(
+        family,
+        BindingFamily::Actors | BindingFamily::Workers | BindingFamily::Objects
+    ) {
         return Err(Status::permission_denied(
-            "fixture control endpoint authorizes Actors and Workers only",
+            "fixture control endpoint authorizes registered remote SDK families only",
         ));
     }
     Ok(family)
@@ -1067,7 +1071,7 @@ async fn handle_connection(mut stream: TcpStream, app: App) -> Result<bool, io::
             "status": "shutdown",
         }))
     } else if is_control_handshake {
-        control_handshake_http(&request.path)
+        control_handshake_http(&request.path, request.authorization.as_deref())
     } else {
         dispatch(&app, &request).await
     };
@@ -1134,7 +1138,16 @@ async fn dispatch(app: &App, request: &HttpRequest) -> Result<Value, HttpError> 
     }
 }
 
-fn control_handshake_http(path: &str) -> Result<Value, HttpError> {
+fn control_handshake_http(path: &str, authorization: Option<&str>) -> Result<Value, HttpError> {
+    if !authorization
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|token| credential::validate(BEARER_NO_CRLF, token))
+    {
+        return Err(HttpError {
+            status: 401,
+            message: "control handshake requires a valid bearer token".to_owned(),
+        });
+    }
     let family_name = path
         .strip_prefix("/v1/sdk/")
         .and_then(|path| path.strip_suffix("/handshake"))
@@ -1146,7 +1159,12 @@ fn control_handshake_http(path: &str) -> Result<Value, HttpError> {
                 .copied()
                 .find(|family| family.name() == name)
         })
-        .filter(|family| matches!(family, BindingFamily::Actors | BindingFamily::Workers))
+        .filter(|family| {
+            matches!(
+                family,
+                BindingFamily::Actors | BindingFamily::Workers | BindingFamily::Objects
+            )
+        })
         .ok_or_else(|| HttpError {
             status: 404,
             message: "unknown SDK control family".to_owned(),
@@ -1672,6 +1690,11 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> 
         });
     }
     let header_lines = lines.collect::<Vec<_>>();
+    let authorization = header_lines.iter().find_map(|line| {
+        line.split_once(':')
+            .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+            .map(|(_, value)| value.trim().to_owned())
+    });
     let content_type = header_lines
         .iter()
         .find_map(|line| {
@@ -1712,6 +1735,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> 
     Ok(HttpRequest {
         method,
         path,
+        authorization,
         content_type,
         body: bytes[header_end..header_end + content_length].to_vec(),
     })
@@ -1722,6 +1746,7 @@ async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> io::Re
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
+        401 => "Unauthorized",
         405 => "Method Not Allowed",
         413 => "Payload Too Large",
         429 => "Too Many Requests",
@@ -1901,13 +1926,36 @@ mod tests {
     #[test]
     fn http_control_handshake_uses_the_registered_family_route() {
         let response =
-            control_handshake_http("/v1/sdk/workers/handshake").expect("Workers control route");
+            control_handshake_http(
+                "/v1/sdk/workers/handshake",
+                Some("Bearer fixture-token"),
+            )
+            .expect("Workers control route");
         assert_eq!(response["family"], "workers");
         assert_eq!(response["rpc"], transport_control::HANDSHAKE_RPC_PATH);
         assert_eq!(
             response["protocol"]["version"],
             BindingFamily::Workers.package()
         );
-        assert!(control_handshake_http("/v1/sdk/objects/handshake").is_err());
+        let response = control_handshake_http(
+            "/v1/sdk/objects/handshake",
+            Some("Bearer fixture-token"),
+        )
+        .expect("Objects control route");
+        assert_eq!(response["family"], "objects");
+        assert_eq!(
+            response["protocol"]["version"],
+            BindingFamily::Objects.package()
+        );
+    }
+
+    #[test]
+    fn http_control_handshake_requires_bearer_authorization() {
+        let error = control_handshake_http("/v1/sdk/workers/handshake", None)
+            .expect_err("unauthenticated control route");
+        assert_eq!(error.status, 401);
+        let error = control_handshake_http("/v1/sdk/workers/handshake", Some("Bearer \r\n"))
+            .expect_err("malformed bearer control route");
+        assert_eq!(error.status, 401);
     }
 }
