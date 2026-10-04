@@ -564,7 +564,7 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
         "original λ🦀\n  message".as_bytes(), "text/plain", "message.txt").await?;
     let current = storage.stage(operation(0xC2), "inbox/message.txt",
         b"later mutable path content", "text/plain", "message.txt").await?;
-    assert_ne!(payload.version, current.version);
+    assert_ne!(payload.version(), current.version());
     assert_eq!(storage.read(&payload).await?, "original λ🦀\n  message".as_bytes());
     let result = json!({"kind":"messages", "items":[{
         "sequence":1, "message_id":"explicit-message-1", "sender":"explicit-sender",
@@ -579,16 +579,31 @@ async fn persistent_wait_projection_pins_delivered_reference_in_serialized_provi
     let bundle = storage.builder().model(model(json!({}))?, provider.clone())
         .tools(tools).grant("model:generate").grant("tool:call:swarm.wait")
         .limits(limits).build()?;
-    storage.run_prompt(&bundle, "observe the explicitly returned message reference").await?;
+    let turn = operation(0xC4);
+    let prompt = storage.stage(operation(0xC3), "prompts/wait.txt",
+        b"observe the explicitly returned message reference", "text/plain", "wait.txt").await?;
+    storage.run_conversation(&bundle, turn, prompt, Vec::new(), 4).await?;
     let bytes = captured(&requests);
     assert_eq!(bytes.len(), 2);
     let request: ModelRequest = serde_json::from_slice(&bytes[1])
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
     assert_eq!(prepared.bytes(), bytes[1]);
+    let journal = storage.journal();
+    let records = journal.replay(turn).await?;
+    let (manifest_ref, request_ref) = records.iter().find_map(|record| match &record.event {
+        ExecutionEvent::ModelInputPrepared { step: 1, manifest, request } =>
+            Some((manifest.clone(), request.clone())),
+        _ => None,
+    }).ok_or_else(|| Error::Storage("wait-result request evidence is missing".into()))?;
+    assert_eq!(journal.load(&request_ref).await?, bytes[1]);
+    let manifest: ModelInputManifest = serde_json::from_slice(&journal.load(&manifest_ref).await?)
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    assert_eq!(&manifest, prepared.manifest());
+    assert_eq!(manifest.request_digest, *blake3::hash(&bytes[1]).as_bytes());
     assert!(request.tools.iter().any(|tool| tool == &definition));
     let mut observed_results = 0;
-    for (message, entry) in request.messages.iter().zip(&prepared.manifest().messages) {
+    for (message, entry) in request.messages.iter().zip(&manifest.messages) {
         let parts = match &message.content {
             ModelContent::Text(_) => &[][..],
             ModelContent::Part(part) => std::slice::from_ref(part),
