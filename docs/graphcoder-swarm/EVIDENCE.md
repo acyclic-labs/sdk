@@ -2,6 +2,8 @@
 
 These are checkpoint results, not final product qualification.
 
+[checkpoint-frozen-input-types-2026-10-04.json](checkpoint-frozen-input-types-2026-10-04.json) records strict TypeScript verification and 30 repeated WASM assertions after repairing the frozen-vector test's types. Byte expectations remain unchanged; native equivalence remains pending.
+
 [checkpoint-cold-conflict-pass-2026-10-03.json](checkpoint-cold-conflict-pass-2026-10-03.json) records two passing recursive native workspace cases, including actual cold provider reopening after a typed conflict and replay of the same immutable merge operation. [checkpoint-cold-replay-communication-2026-10-03.json](checkpoint-cold-replay-communication-2026-10-03.json) records completed-turn replay without dispatch and two durable local communication cases. [checkpoint-model-wait-cold-conflict-2026-10-03.json](checkpoint-model-wait-cold-conflict-2026-10-03.json) separately records the passing production model-invoked wait and the earlier retained-handle conflict failure, subsequently repaired.
 
 [checkpoint-central-manifest-wasm-2026-10-03.json](checkpoint-central-manifest-wasm-2026-10-03.json) records the fresh Rust-owned manifest validator build and generated declarations: TypeScript source and test types pass, with 239 runtime tests and 1,196 assertions passing. TypeScript no longer duplicates the manifest validation rules.

@@ -9,8 +9,8 @@ const vector = JSON.parse(readFileSync(
   "utf8",
 )) as {
   version: number;
-  limits: Record<string, number>;
-  policy: { identity: { name: string; version: string; digest: number[] }; schema: unknown };
+  limits: { [Key in keyof NativeLimitsWire]: number };
+  policy: { identity: { name: string; version: string; digest: number[] }; schema: NativeModelOptionPolicyWire["schema"] };
   root: Case;
   children: Case[];
   grandchild: Case;
@@ -19,7 +19,7 @@ const vector = JSON.parse(readFileSync(
 interface Case {
   name?: string;
   prefix_message_count: number;
-  request: Record<string, unknown>;
+  request: WasmModelRequestWire;
   expected: Expected;
 }
 
@@ -38,9 +38,16 @@ const bytesEqual = (left: readonly number[] | Uint8Array, right: readonly number
 test("TypeScript consumes the native frozen model-input vector exactly", async () => {
   expect(vector.version).toBe(3);
   const contracts = await NativeContracts.create();
-  const limits: NativeLimitsWire = Object.fromEntries(
-    Object.entries(vector.limits).map(([key, value]) => [key, BigInt(value)]),
-  ) as NativeLimitsWire;
+  const limits: NativeLimitsWire = {
+    file_bytes: BigInt(vector.limits.file_bytes),
+    path_bytes: BigInt(vector.limits.path_bytes),
+    attachments: BigInt(vector.limits.attachments),
+    render_bytes: BigInt(vector.limits.render_bytes),
+    model_steps: BigInt(vector.limits.model_steps),
+    model_events_per_step: BigInt(vector.limits.model_events_per_step),
+    tool_calls_per_step: BigInt(vector.limits.tool_calls_per_step),
+    context_messages: BigInt(vector.limits.context_messages),
+  };
   const policy: NativeModelOptionPolicyWire = {
     name: vector.policy.identity.name,
     version: vector.policy.identity.version,
@@ -48,7 +55,7 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
     schema: vector.policy.schema,
   };
   const admit = (entry: Case) => {
-    const evidence = contracts.prepareModelRequest(entry.request as WasmModelRequestWire, limits, policy);
+    const evidence = contracts.prepareModelRequest(entry.request, limits, policy);
     expect(evidence.requestJson).toBe(entry.expected.request_json);
     expect(evidence.manifestJson).toBe(entry.expected.manifest_json);
     expect(evidence.requestDigest).toEqual(entry.expected.request_digest);
@@ -70,11 +77,15 @@ test("TypeScript consumes the native frozen model-input vector exactly", async (
     expect(child.request.messages.slice(0, vector.root.prefix_message_count))
       .toEqual(root.request.messages.slice(0, vector.root.prefix_message_count));
   }
-  expect(children[0].request.messages.slice(vector.root.prefix_message_count))
-    .not.toEqual(children[1].request.messages.slice(vector.root.prefix_message_count));
+  const [firstChild, secondChild] = children;
+  if (children.length !== 2 || firstChild === undefined || secondChild === undefined) {
+    throw new Error("Frozen vector must contain exactly two children");
+  }
+  expect(firstChild.request.messages.slice(vector.root.prefix_message_count))
+    .not.toEqual(secondChild.request.messages.slice(vector.root.prefix_message_count));
   const grandchild = admit(vector.grandchild);
   expect(grandchild.request.messages.slice(0, vector.grandchild.prefix_message_count))
-    .toEqual(children[0].request.messages.slice(0, vector.grandchild.prefix_message_count));
+    .toEqual(firstChild.request.messages.slice(0, vector.grandchild.prefix_message_count));
 
   // The provider-facing body is the exact admitted request JSON. A transport
   // adapter may attach metadata around it, but cannot change these bytes.
