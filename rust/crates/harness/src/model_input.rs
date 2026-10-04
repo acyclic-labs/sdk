@@ -149,6 +149,14 @@ impl PreparedModelInput {
     pub fn manifest(&self) -> &ModelInputManifest {
         &self.manifest
     }
+    /// Exact canonical bytes of the durable input manifest.
+    ///
+    /// The bytes are derived from the already admitted manifest and are useful
+    /// to durable journals and qualification tools that must retain the exact
+    /// serialized evidence alongside the provider request.
+    pub fn manifest_bytes(&self) -> Result<Vec<u8>> {
+        crate::contract::canonical_json_bytes(&self.manifest)
+    }
     /// Attaches authenticated rejection evidence to the durable manifest.
     /// Evidence is checked against the exact request before it can be staged.
     pub fn with_rejection_evidence(

@@ -89,6 +89,10 @@ export const packagedRustBindings = [
 ];
 
 export const nativeWasmVector = "conformance/vectors/harness/native-wasm-event-v2.json";
+// The model-input vector is consumed by both the native Rust qualification
+// target and the TypeScript WASM consumer. Keep its packaged crate copy bound
+// through the same generated-source drift check as the other Harness vectors.
+export const modelInputVector = "conformance/vectors/harness/model-input-v3.json";
 export const packagedSourceCopies = [
   ...[
     "conversation-message", "conversation-kinds", "file-ref", "file-ref-security-cases", "private-directory-page", "task-outcome",
@@ -99,6 +103,7 @@ export const packagedSourceCopies = [
   ["proto/protocol/v1/protocol.proto", "rust/crates/harness/proto/protocol/v1/protocol.proto"],
   [compatibilityArtifacts.harness.conformanceDigest, "rust/crates/conformance/vectors/harness.json"],
   [nativeWasmVector, "rust/crates/harness/conformance/native-wasm-event-v2.json"],
+  [modelInputVector, "rust/crates/harness/conformance/model-input-v3.json"],
   ["conformance/vectors/stream.json", "rust/crates/stream/conformance/stream.json"],
   ["conformance/vectors/stream.json", "rust/crates/conformance/vectors/stream.json"],
   ["conformance/vectors/objects.json", "rust/crates/conformance/vectors/objects.json"],
