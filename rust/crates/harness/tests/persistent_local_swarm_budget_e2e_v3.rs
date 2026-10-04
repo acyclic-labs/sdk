@@ -771,6 +771,40 @@ async fn persistent_local_budget_cancels_before_release_for_non_storage_provider
 }
 
 #[tokio::test]
+async fn persistent_local_budget_retains_active_reservation_after_storage_provider_error()
+-> Result<()> {
+    let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let budget = limits(2, 3, 1);
+    let owner =
+        acyclic_harness::swarm_budget::SwarmOwnerFence::new("budget-storage-error-owner", 0)?;
+    let source = Arc::new(RecordingUsageSource::default());
+    let provider = BudgetProvider::new(ProviderMode::StorageFailureForChild);
+    let swarm = open_swarm(
+        directory.path(),
+        provider,
+        ProviderMode::StorageFailureForChild,
+        budget,
+        owner,
+        source,
+    )
+    .await?;
+
+    let _ = swarm
+        .run_root(operation(0x07), "retain after provider storage error")
+        .await;
+    let usage = swarm.budget_usage().await?.expect("budget projection");
+    assert_eq!(usage.active_agents, 2);
+    let child = swarm
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session.task == task(0xA1))
+        .ok_or_else(|| Error::NotFound("storage-failed child session".into()))?;
+    assert!(matches!(child.phase, LocalSessionPhase::Activating));
+    Ok(())
+}
+
+#[tokio::test]
 async fn persistent_local_budget_recursive_reopen_does_not_charge_grandchild_again() -> Result<()> {
     let directory = tempdir().map_err(|error| Error::Storage(error.to_string()))?;
     let budget = limits(4, 4, 2);
