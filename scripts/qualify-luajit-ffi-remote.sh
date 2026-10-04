@@ -34,6 +34,7 @@ ffi.cdef[[
 typedef struct { uint64_t id; uint8_t *ptr; size_t len; size_t capacity; } AcyclicRemoteBuffer;
 typedef struct { uint32_t status; uint64_t start; uint64_t end; uint64_t tail; AcyclicRemoteBuffer message; } AcyclicRemoteAppendResult;
 typedef struct { uint32_t status; uint64_t reader; AcyclicRemoteBuffer message; } AcyclicRemoteOpenResult;
+typedef struct { uint32_t status; uint64_t reader; uint64_t writer; AcyclicRemoteBuffer message; } AcyclicRemoteDuplexOpenResult;
 typedef struct { uint32_t status; uint64_t sequence; AcyclicRemoteBuffer value; AcyclicRemoteBuffer message; } AcyclicRemoteNextResult;
 typedef struct { uint32_t status; AcyclicRemoteBuffer response; AcyclicRemoteBuffer message; } AcyclicRemoteWireResult;
 uint32_t acyclic_remote_abi_version(void);
@@ -43,6 +44,11 @@ size_t acyclic_remote_family_operation_count(const uint8_t *family, size_t famil
 AcyclicRemoteBuffer acyclic_remote_family_operation_name(const uint8_t *family, size_t family_len, size_t index);
 AcyclicRemoteWireResult acyclic_remote_family_wire_call(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
 AcyclicRemoteOpenResult acyclic_remote_family_stream_open(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
+AcyclicRemoteDuplexOpenResult acyclic_remote_family_duplex_open(uint64_t client, const uint8_t *family, size_t family_len, const uint8_t *operation, size_t operation_len);
+uint32_t acyclic_remote_stream_write(uint64_t writer, const uint8_t *request, size_t request_len);
+uint32_t acyclic_remote_stream_finish(uint64_t writer);
+uint32_t acyclic_remote_stream_cancel(uint64_t writer);
+void acyclic_remote_stream_close(uint64_t writer);
 size_t acyclic_remote_stream_operation_count(void);
 AcyclicRemoteBuffer acyclic_remote_stream_operation_name(size_t index);
 AcyclicRemoteWireResult acyclic_remote_wire_call(uint64_t client, const uint8_t *operation, size_t operation_len, const uint8_t *request, size_t request_len);
@@ -57,6 +63,7 @@ void acyclic_remote_reader_close(uint64_t reader);
 uint32_t acyclic_remote_buffer_release(AcyclicRemoteBuffer buffer);
 void acyclic_remote_append_result_release(AcyclicRemoteAppendResult result);
 void acyclic_remote_open_result_release(AcyclicRemoteOpenResult result);
+void acyclic_remote_duplex_open_result_release(AcyclicRemoteDuplexOpenResult result);
 void acyclic_remote_next_result_release(AcyclicRemoteNextResult result);
 ]]
 local sdk = assert(ffi.load(arg[1]))

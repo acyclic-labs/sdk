@@ -98,6 +98,19 @@ pub struct AcyclicRemoteOpenResult {
     pub message: AcyclicRemoteBuffer,
 }
 
+/// Result of opening a Rust-owned client or bidirectional streaming call.
+#[repr(C)]
+pub struct AcyclicRemoteDuplexOpenResult {
+    /// Result category.
+    pub status: AcyclicRemoteStatus,
+    /// Reader handle for response messages.
+    pub reader: u64,
+    /// Writer handle for request messages.
+    pub writer: u64,
+    /// Diagnostic text, if any.
+    pub message: AcyclicRemoteBuffer,
+}
+
 /// Result of pulling one remote record.
 #[repr(C)]
 pub struct AcyclicRemoteNextResult {
@@ -211,6 +224,13 @@ struct RemoteReader {
     terminal: AtomicU32,
     wake: Arc<Notify>,
     task: Mutex<Option<JoinHandle<()>>>,
+    input: Option<Arc<RemoteWriter>>,
+}
+
+struct RemoteWriter {
+    sender: Mutex<Option<tokio::sync::mpsc::Sender<DynamicMessage>>>,
+    input: prost_reflect::MessageDescriptor,
+    finished: AtomicBool,
 }
 enum ReaderMessage {
     Record(acyclic_stream::Record),
@@ -228,12 +248,16 @@ struct Allocation {
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 static CLIENTS: OnceLock<Mutex<HashMap<u64, Arc<RemoteClient>>>> = OnceLock::new();
 static READERS: OnceLock<Mutex<HashMap<u64, Arc<RemoteReader>>>> = OnceLock::new();
+static WRITERS: OnceLock<Mutex<HashMap<u64, Arc<RemoteWriter>>>> = OnceLock::new();
 static BUFFERS: OnceLock<Mutex<HashMap<u64, Allocation>>> = OnceLock::new();
 fn clients() -> &'static Mutex<HashMap<u64, Arc<RemoteClient>>> {
     CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn readers() -> &'static Mutex<HashMap<u64, Arc<RemoteReader>>> {
     READERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn writers() -> &'static Mutex<HashMap<u64, Arc<RemoteWriter>>> {
+    WRITERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn buffers() -> &'static Mutex<HashMap<u64, Allocation>> {
     BUFFERS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -260,6 +284,9 @@ fn client_lookup(id: u64) -> Option<Arc<RemoteClient>> {
 }
 fn reader_lookup(id: u64) -> Option<Arc<RemoteReader>> {
     readers().lock().ok()?.get(&id).cloned()
+}
+fn writer_lookup(id: u64) -> Option<Arc<RemoteWriter>> {
+    writers().lock().ok()?.get(&id).cloned()
 }
 fn empty_buffer() -> AcyclicRemoteBuffer {
     AcyclicRemoteBuffer {
@@ -382,6 +409,9 @@ fn cancel_reader(reader: &RemoteReader) {
     if reader.cancelled.swap(true, Ordering::AcqRel) {
         return;
     }
+    if let Some(input) = reader.input.as_ref() {
+        cancel_writer(input);
+    }
     let _ = reader.terminal.compare_exchange(
         NO_TERMINAL,
         AcyclicRemoteStatus::Cancelled as u32,
@@ -414,6 +444,55 @@ fn provider_wire(error: impl ToString) -> AcyclicRemoteWireResult {
         status: AcyclicRemoteStatus::ProviderError,
         response: empty_buffer(),
         message: message(error.to_string()),
+    }
+}
+
+fn invalid_duplex(text: &'static str) -> AcyclicRemoteDuplexOpenResult {
+    AcyclicRemoteDuplexOpenResult {
+        status: AcyclicRemoteStatus::InvalidArgument,
+        reader: 0,
+        writer: 0,
+        message: message(text),
+    }
+}
+
+fn provider_duplex(error: impl ToString) -> AcyclicRemoteDuplexOpenResult {
+    AcyclicRemoteDuplexOpenResult {
+        status: AcyclicRemoteStatus::ProviderError,
+        reader: 0,
+        writer: 0,
+        message: message(error.to_string()),
+    }
+}
+
+fn cancel_writer(writer: &RemoteWriter) {
+    writer.finished.store(true, Ordering::Release);
+    if let Ok(mut sender) = writer.sender.lock() {
+        sender.take();
+    }
+}
+
+fn write_writer(writer: &RemoteWriter, payload: &[u8]) -> AcyclicRemoteStatus {
+    if writer.finished.load(Ordering::Acquire) {
+        return AcyclicRemoteStatus::InvalidArgument;
+    }
+    let message = match DynamicMessage::decode(writer.input.clone(), payload) {
+        Ok(message) => message,
+        Err(_) => return AcyclicRemoteStatus::InvalidArgument,
+    };
+    let sender = match writer.sender.lock() {
+        Ok(sender) => sender,
+        Err(_) => return AcyclicRemoteStatus::Panic,
+    };
+    let Some(sender) = sender.as_ref() else {
+        return AcyclicRemoteStatus::InvalidArgument;
+    };
+    match sender.try_send(message) {
+        Ok(()) => AcyclicRemoteStatus::Ok,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => AcyclicRemoteStatus::Pending,
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            AcyclicRemoteStatus::ProviderError
+        }
     }
 }
 
@@ -677,8 +756,125 @@ fn open_grpc_family_stream(
         terminal: AtomicU32::new(NO_TERMINAL),
         wake,
         task: Mutex::new(Some(task)),
+        input: None,
     })
 }
+
+fn open_grpc_family_duplex(
+    client: Arc<RemoteClient>,
+    family: &str,
+    operation: &str,
+) -> Result<(RemoteReader, Arc<RemoteWriter>), StreamError> {
+    if runtime_reentry() {
+        return Err(StreamError::InvalidArgument);
+    }
+    let (method, path) =
+        family_method(family, operation).map_err(|_| StreamError::InvalidArgument)?;
+    if !method.is_client_streaming() {
+        return Err(StreamError::Unsupported);
+    }
+    let input = method.input();
+    let output = method.output();
+    let server_streaming = method.is_server_streaming();
+    let path = PathAndQuery::try_from(path).map_err(|_| StreamError::InvalidArgument)?;
+    let authorization = MetadataValue::try_from(format!("Bearer {}", client.token))
+        .map_err(|_| StreamError::InvalidArgument)?;
+    let (sender, receiver) = tokio::sync::mpsc::channel(64);
+    let writer = Arc::new(RemoteWriter {
+        sender: Mutex::new(Some(sender)),
+        input,
+        finished: AtomicBool::new(false),
+    });
+    let (response_sender, response_receiver) = std::sync::mpsc::sync_channel(64);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let wake = Arc::new(Notify::new());
+    let task_cancelled = Arc::clone(&cancelled);
+    let task_wake = Arc::clone(&wake);
+    let channel = client.grpc_channel.clone();
+    let task = client.runtime.spawn(async move {
+        let request = Request::new(tokio_stream::wrappers::ReceiverStream::new(receiver));
+        let mut grpc = tonic::client::Grpc::new(channel);
+        if grpc.ready().await.is_err() {
+            let _ = response_sender.send(ReaderMessage::Error(StreamError::Unavailable));
+            return;
+        }
+        if server_streaming {
+            let response = tokio::select! {
+                _ = task_wake.notified() => return,
+                result = grpc.streaming(
+                    request,
+                    path,
+                    DynamicCodec { output },
+                ) => result,
+            };
+            let response = match response {
+                Ok(response) => response,
+                Err(_) => {
+                    let _ = response_sender.send(ReaderMessage::Error(StreamError::Unavailable));
+                    return;
+                }
+            };
+            let mut stream = response.into_inner();
+            loop {
+                if task_cancelled.load(Ordering::Acquire) {
+                    return;
+                }
+                let next = tokio::select! {
+                    _ = task_wake.notified() => return,
+                    item = stream.message() => item,
+                };
+                match next {
+                    Ok(Some(value)) => {
+                        if response_sender
+                            .send(ReaderMessage::Wire(value.encode_to_vec()))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = response_sender.send(ReaderMessage::End);
+                        return;
+                    }
+                    Err(_) => {
+                        let _ =
+                            response_sender.send(ReaderMessage::Error(StreamError::Unavailable));
+                        return;
+                    }
+                }
+            }
+        }
+        let response = tokio::select! {
+            _ = task_wake.notified() => return,
+            result = grpc.client_streaming(
+                request,
+                path,
+                DynamicCodec { output },
+            ) => result,
+        };
+        match response {
+            Ok(response) => {
+                let _ = response_sender
+                    .send(ReaderMessage::Wire(response.into_inner().encode_to_vec()));
+                let _ = response_sender.send(ReaderMessage::End);
+            }
+            Err(_) => {
+                let _ = response_sender.send(ReaderMessage::Error(StreamError::Unavailable));
+            }
+        }
+    });
+    let reader = RemoteReader {
+        _client: client,
+        receiver: Mutex::new(response_receiver),
+        cancelled,
+        terminal: AtomicU32::new(NO_TERMINAL),
+        wake,
+        task: Mutex::new(Some(task)),
+        input: Some(Arc::clone(&writer)),
+    };
+    Ok((reader, writer))
+}
+
 fn spawn_reader(
     client: Arc<RemoteClient>,
     path: String,
@@ -734,6 +930,7 @@ fn spawn_reader(
         terminal: AtomicU32::new(NO_TERMINAL),
         wake,
         task: Mutex::new(Some(task)),
+        input: None,
     })
 }
 
@@ -897,6 +1094,138 @@ pub extern "C" fn acyclic_remote_family_stream_open(
         reader: 0,
         message: message("panic contained at ABI boundary"),
     })
+}
+
+/// Opens a Rust-owned client or bidirectional stream. Request messages are
+/// submitted with `acyclic_remote_stream_write`; bounded backpressure returns
+/// `Pending` and `acyclic_remote_stream_finish` closes the request side.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_family_duplex_open(
+    client: u64,
+    family_ptr: *const u8,
+    family_len: usize,
+    operation_ptr: *const u8,
+    operation_len: usize,
+) -> AcyclicRemoteDuplexOpenResult {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(client) = client_lookup(client) else {
+            return invalid_duplex("client handle is invalid");
+        };
+        let family = match input_text(family_ptr, family_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_duplex(error),
+        };
+        let operation = match input_text(operation_ptr, operation_len) {
+            Ok(value) => value,
+            Err(error) => return invalid_duplex(error),
+        };
+        match open_grpc_family_duplex(Arc::clone(&client), family, operation) {
+            Ok((reader, writer)) => {
+                let (Some(reader_id), Some(writer_id)) = (next_id(), next_id()) else {
+                    cancel_writer(&writer);
+                    return invalid_duplex("stream handle ID exhausted");
+                };
+                let reader = Arc::new(reader);
+                if let Ok(mut all) = readers().lock() {
+                    all.insert(reader_id, reader);
+                } else {
+                    cancel_writer(&writer);
+                    return invalid_duplex("reader mutex unavailable");
+                }
+                if let Ok(mut all) = writers().lock() {
+                    all.insert(writer_id, Arc::clone(&writer));
+                    AcyclicRemoteDuplexOpenResult {
+                        status: AcyclicRemoteStatus::Ok,
+                        reader: reader_id,
+                        writer: writer_id,
+                        message: empty_buffer(),
+                    }
+                } else {
+                    if let Ok(mut all) = readers().lock() {
+                        all.remove(&reader_id);
+                    }
+                    cancel_writer(&writer);
+                    invalid_duplex("writer mutex unavailable")
+                }
+            }
+            Err(StreamError::Unsupported) => {
+                invalid_duplex("operation is not client or bidirectional streaming")
+            }
+            Err(error) => provider_duplex(error),
+        }
+    }));
+    result.unwrap_or_else(|_| AcyclicRemoteDuplexOpenResult {
+        status: AcyclicRemoteStatus::Panic,
+        reader: 0,
+        writer: 0,
+        message: message("panic contained at ABI boundary"),
+    })
+}
+
+/// Attempts to enqueue one encoded protobuf request message. A full bounded
+/// queue returns `Pending`, allowing a synchronous FFI consumer to retry.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_stream_write(
+    writer: u64,
+    request_ptr: *const u8,
+    request_len: usize,
+) -> AcyclicRemoteStatus {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(writer) = writer_lookup(writer) else {
+            return AcyclicRemoteStatus::InvalidArgument;
+        };
+        let request = match input_bytes(request_ptr, request_len) {
+            Ok(value) => value,
+            Err(_) => return AcyclicRemoteStatus::InvalidArgument,
+        };
+        write_writer(&writer, request)
+    }));
+    result.unwrap_or(AcyclicRemoteStatus::Panic)
+}
+
+/// Closes the request side of a client or bidirectional stream.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_stream_finish(writer: u64) -> AcyclicRemoteStatus {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(writer) = writer_lookup(writer) else {
+            return AcyclicRemoteStatus::InvalidArgument;
+        };
+        if writer.finished.swap(true, Ordering::AcqRel) {
+            return AcyclicRemoteStatus::Ok;
+        }
+        if let Ok(mut sender) = writer.sender.lock() {
+            sender.take();
+            AcyclicRemoteStatus::Ok
+        } else {
+            AcyclicRemoteStatus::Panic
+        }
+    }));
+    result.unwrap_or(AcyclicRemoteStatus::Panic)
+}
+
+/// Cancels a request stream and drops any queued request messages.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_stream_cancel(writer: u64) -> AcyclicRemoteStatus {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let Some(writer) = writer_lookup(writer) else {
+            return AcyclicRemoteStatus::InvalidArgument;
+        };
+        cancel_writer(&writer);
+        AcyclicRemoteStatus::Cancelled
+    }));
+    result.unwrap_or(AcyclicRemoteStatus::Panic)
+}
+
+/// Closes and removes a request stream handle.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_stream_close(writer: u64) {
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        if let Ok(mut all) = writers().lock() {
+            if let Some(writer) = all.remove(&writer) {
+                cancel_writer(&writer);
+            }
+        }
+    }));
 }
 
 /// Executes one canonical unary Stream protobuf operation through Rust.
@@ -1379,6 +1708,19 @@ pub extern "C" fn acyclic_remote_open_result_release(result: AcyclicRemoteOpenRe
         acyclic_remote_reader_close(result.reader);
     }
 }
+
+/// Releases an open client or bidirectional stream result and both handles.
+#[unsafe(no_mangle)]
+pub extern "C" fn acyclic_remote_duplex_open_result_release(result: AcyclicRemoteDuplexOpenResult) {
+    let _ = acyclic_remote_buffer_release(result.message);
+    if result.reader != 0 {
+        acyclic_remote_reader_close(result.reader);
+    }
+    if result.writer != 0 {
+        acyclic_remote_stream_close(result.writer);
+    }
+}
+
 /// Releases a next result's value and diagnostic buffers.
 #[unsafe(no_mangle)]
 pub extern "C" fn acyclic_remote_next_result_release(result: AcyclicRemoteNextResult) {
