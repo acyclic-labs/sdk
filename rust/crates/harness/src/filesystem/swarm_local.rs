@@ -2794,12 +2794,28 @@ impl PersistentLocalSwarm {
     /// or eagerly opens child sessions.
     pub async fn session_snapshot(&self, task: TaskId) -> Result<LocalSwarmSnapshot> {
         self.refresh_registry_state().await?;
-        let session = self.session(task).await?;
-        let children = self
+        let sessions = self
             .records
             .lock()
             .await
             .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        self.snapshot_from_sessions(task, &sessions).await
+    }
+
+    async fn snapshot_from_sessions(
+        &self,
+        task: TaskId,
+        sessions: &[LocalSwarmSession],
+    ) -> Result<LocalSwarmSnapshot> {
+        let session = sessions
+            .iter()
+            .find(|candidate| candidate.task == task)
+            .cloned()
+            .ok_or_else(|| Error::NotFound(format!("local swarm task {task}")))?;
+        let children = sessions
+            .iter()
             .filter(|candidate| candidate.parent == Some(task))
             .cloned()
             .collect();
@@ -2815,6 +2831,29 @@ impl PersistentLocalSwarm {
         };
         self.observe(LocalSwarmObservation::SessionSnapshot { task });
         Ok(snapshot)
+    }
+
+    /// Reads one metadata-only snapshot and its recursive registry subtree in
+    /// one owner-index refresh. No child journal, filesystem volume, or model
+    /// worker is opened.
+    pub async fn session_snapshot_with_agents(
+        &self,
+        task: TaskId,
+    ) -> Result<(LocalSwarmSnapshot, Vec<LocalSwarmAgent>)> {
+        self.refresh_registry_state().await?;
+        let sessions = self
+            .records
+            .lock()
+            .await
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let snapshot = self.snapshot_from_sessions(task, &sessions).await?;
+        let agents = project_recursive_agent_tree(sessions, task)?;
+        Ok((
+            snapshot,
+            agents,
+        ))
     }
 
     /// Finds an already-authenticated descriptor for metadata projection. A
@@ -5707,10 +5746,12 @@ mod tests {
             }),
         )
         .await?;
-        let snapshot = swarm.session_snapshot(child).await?;
+        let (snapshot, agents) = swarm.session_snapshot_with_agents(child).await?;
         assert_eq!(snapshot.session.task, child);
         assert_eq!(snapshot.conversation_revision, 0);
         assert_eq!(snapshot.workspace_generation, None);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].session.task, child);
         assert!(!swarm.sessions.lock().await.contains_key(&child));
         Ok(())
     }

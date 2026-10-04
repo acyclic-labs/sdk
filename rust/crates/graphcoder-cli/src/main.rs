@@ -441,13 +441,14 @@ impl Runtime {
     async fn open_session(&self, params: &Value, resume: bool) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let session = if resume {
+        let task = if resume {
             self.swarm.resume(task).await
         } else {
             self.swarm.session(task).await
         }
-        .map_err(DispatchError::from_harness)?;
-        self.snapshot_from_session(session).await
+        .map_err(DispatchError::from_harness)?
+        .task;
+        self.snapshot(task).await
     }
 
     async fn read_activity(&self, params: &Value) -> Result<Value, DispatchError> {
@@ -623,12 +624,11 @@ impl Runtime {
     async fn cancel_session(&self, params: &Value) -> Result<Value, DispatchError> {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
-        let session = self
-            .swarm
+        self.swarm
             .cancel(task)
             .await
             .map_err(DispatchError::from_harness)?;
-        self.snapshot_from_session(session).await
+        self.snapshot(task).await
     }
 
     async fn read_file(&self, params: &Value) -> Result<Value, DispatchError> {
@@ -663,23 +663,13 @@ impl Runtime {
     }
 
     async fn snapshot(&self, task: TaskId) -> Result<Value, DispatchError> {
-        let session = self
+        let (snapshot, agents) = self
             .swarm
-            .session(task)
+            .session_snapshot_with_agents(task)
             .await
             .map_err(DispatchError::from_harness)?;
-        self.snapshot_from_session(session).await
-    }
-
-    async fn snapshot_from_session(
-        &self,
-        session: acyclic_harness::filesystem::LocalSwarmSession,
-    ) -> Result<Value, DispatchError> {
-        let agents = self
-            .swarm
-            .recursive_agent_tree(session.task)
-            .await
-            .map_err(DispatchError::from_harness)?
+        let session = snapshot.session.clone();
+        let agents = agents
             .into_iter()
             .map(|item| {
                 json!({
@@ -695,11 +685,7 @@ impl Runtime {
         Ok(json!({
             "summary": session_summary(session.clone()),
             "agents": agents,
-            "workspace_generation": self
-                .swarm
-                .session_snapshot(session.task)
-                .await
-                .map_err(DispatchError::from_harness)?
+            "workspace_generation": snapshot
                 .workspace_generation
                 .as_ref()
                 .map(generation_token),
