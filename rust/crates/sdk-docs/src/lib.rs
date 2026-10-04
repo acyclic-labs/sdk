@@ -215,6 +215,28 @@ pub struct AnalysisProfile {
     /// Package-specific compiler inputs. A profile may contain native and
     /// target-only binding packages with different feature sets.
     pub packages: Vec<ProfilePackage>,
+    /// Rust-owned qualification scope. Release-family profiles qualify only
+    /// the named package/version; `all-pkgs` keeps the complete workspace
+    /// graph requirement used by current previews.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ProfileScope>,
+}
+
+/// Scope that binds a compiler profile to one immutable release family or to
+/// the complete publishable package set.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProfileScope {
+    /// `release-family` or `all-pkgs`.
+    pub kind: String,
+    /// Family encoded by the immutable release tag, such as `stream`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    /// Exact Cargo package qualified by this release profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub package: Option<String>,
+    /// Exact package version qualified by this release profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// One package entry in a rustdoc target/feature profile.
@@ -566,6 +588,8 @@ pub struct RustdocProfileReceipt {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustdocProfileReceiptEntry {
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<ProfileScope>,
     pub packages: Vec<RustdocProfilePackageReceipt>,
 }
 
@@ -760,24 +784,6 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         }
     }
     crates.sort_by(|left, right| left.package_name.cmp(&right.package_name));
-    if options.require_rustdoc_json
-        && crates.iter().any(|crate_bundle| {
-            // Cargo packages such as the historical CLI can be published as
-            // binaries without a library target. They have no rustdoc graph
-            // to qualify; strictness still applies to every package that can
-            // expose a public Rust library.
-            let crate_dir = options.repository_root.join(&crate_bundle.path);
-            crate_bundle.publish
-                && crate_has_library_target(&crate_dir)
-                && (crate_bundle.analysis_mode != "rustdoc-json"
-                    || crate_bundle.public_items.is_empty())
-        })
-    {
-        return Err(Error::Strict(
-            "one or more publishable crates lack a matching compiled rustdoc JSON artifact or resolved public graph".to_owned(),
-        ));
-    }
-
     let profile_manifest = options.profile_manifest.clone().or_else(|| {
         let candidate = options.repository_root.join("docs/rustdoc-profiles.json");
         candidate.is_file().then_some(candidate)
@@ -797,6 +803,31 @@ pub fn build_bundle(options: &BuildOptions) -> Result<DocsBundle, Error> {
         return Err(Error::Strict(
             "one or more required rustdoc feature/target profiles have missing or unresolved packages".to_owned(),
         ));
+    }
+    if options.require_rustdoc_json {
+        let required_packages = required_strict_packages(
+            profile_definitions.as_deref().unwrap_or_default(),
+            release.as_ref(),
+            &crates,
+            &options.repository_root,
+        )?;
+        if crates.iter().any(|crate_bundle| {
+            // Cargo packages such as the historical CLI can be published as
+            // binaries without a library target. They have no rustdoc graph
+            // to qualify. Release-family profiles narrow this check to the
+            // exact package/version that the immutable release exposes;
+            // all-pkgs and unscoped profiles retain the full workspace gate.
+            let crate_dir = options.repository_root.join(&crate_bundle.path);
+            required_packages.contains(&crate_bundle.package_name)
+                && crate_bundle.publish
+                && crate_has_library_target(&crate_dir)
+                && (crate_bundle.analysis_mode != "rustdoc-json"
+                    || crate_bundle.public_items.is_empty())
+        }) {
+            return Err(Error::Strict(
+                "one or more required publishable crates lack a matching compiled rustdoc JSON artifact or resolved public graph".to_owned(),
+            ));
+        }
     }
 
     let scenario_bundle = options
@@ -1134,6 +1165,7 @@ pub fn write_rustdoc_profile(
         }
         receipt_profiles.push(RustdocProfileReceiptEntry {
             name: profile.name,
+            scope: profile.scope,
             packages,
         });
     }
@@ -3168,6 +3200,7 @@ fn load_profile_manifest_bytes(
                 profile.name
             )));
         }
+        validate_profile_scope(profile)?;
         let mut packages = HashSet::new();
         for package in &profile.packages {
             if package.package.trim().is_empty() || package.target.trim().is_empty() {
@@ -3185,6 +3218,160 @@ fn load_profile_manifest_bytes(
         }
     }
     Ok(manifest.profiles)
+}
+
+fn validate_profile_scope(profile: &AnalysisProfile) -> Result<(), Error> {
+    let Some(scope) = profile.scope.as_ref() else {
+        return Ok(());
+    };
+    match scope.kind.as_str() {
+        "all-pkgs" => {
+            if scope.family.is_some() || scope.package.is_some() || scope.version.is_some() {
+                return Err(Error::Strict(format!(
+                    "all-pkgs scope for profile {} cannot carry family, package, or version",
+                    profile.name
+                )));
+            }
+        }
+        "release-family" => {
+            let family = scope.family.as_deref().filter(|value| !value.trim().is_empty());
+            let package = scope.package.as_deref().filter(|value| !value.trim().is_empty());
+            let version = scope.version.as_deref().filter(|value| !value.trim().is_empty());
+            if family.is_none() || package.is_none() || version.is_none() {
+                return Err(Error::Strict(format!(
+                    "release-family scope for profile {} requires family, package, and version",
+                    profile.name
+                )));
+            }
+            if !profile
+                .packages
+                .iter()
+                .any(|entry| Some(entry.package.as_str()) == package)
+            {
+                return Err(Error::Strict(format!(
+                    "release-family scope for profile {} must name one of its package entries",
+                    profile.name
+                )));
+            }
+        }
+        other => {
+            return Err(Error::Strict(format!(
+                "unsupported rustdoc profile scope kind {other:?} for profile {}",
+                profile.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn required_strict_packages(
+    profiles: &[AnalysisProfile],
+    release: Option<&ReleaseQualification>,
+    crates: &[CrateBundle],
+    repository_root: &Path,
+) -> Result<HashSet<String>, Error> {
+    let all_packages = || {
+        crates
+            .iter()
+            .filter(|crate_bundle| {
+                crate_bundle.publish
+                    && crate_has_library_target(&repository_root.join(&crate_bundle.path))
+            })
+            .map(|crate_bundle| crate_bundle.package_name.clone())
+            .collect::<HashSet<_>>()
+    };
+    let Some(release) = release else {
+        return Ok(all_packages());
+    };
+    if profiles.is_empty()
+        || profiles.iter().any(|profile| {
+            !profile
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.kind == "release-family")
+        })
+    {
+        return Ok(all_packages());
+    }
+
+    let family = release_family_from_tag(&release.tag).ok_or_else(|| {
+        Error::Strict(format!(
+            "release-family profile cannot derive a family from immutable tag {}",
+            release.tag
+        ))
+    })?;
+    let mut required = HashSet::new();
+    for profile in profiles {
+        let scope = profile
+            .scope
+            .as_ref()
+            .expect("release-family scope checked above");
+        if scope.family.as_deref() != Some(family.as_str()) {
+            return Err(Error::Strict(format!(
+                "profile {} scopes family {:?}, but release tag {} is {:?}",
+                profile.name,
+                scope.family,
+                release.tag,
+                family
+            )));
+        }
+        if scope.version.as_deref() != Some(release.version.as_str()) {
+            return Err(Error::Strict(format!(
+                "profile {} scopes version {:?}, but immutable release {} is {}",
+                profile.name, scope.version, release.tag, release.version
+            )));
+        }
+        let package = scope.package.as_deref().ok_or_else(|| {
+            Error::Strict(format!(
+                "release-family profile {} has no exact package scope",
+                profile.name
+            ))
+        })?;
+        let crate_bundle = crates
+            .iter()
+            .find(|crate_bundle| crate_bundle.package_name == package)
+            .ok_or_else(|| {
+                Error::Strict(format!(
+                    "release-family profile {} names missing package {}",
+                    profile.name, package
+                ))
+            })?;
+        if crate_bundle.version.as_deref() != scope.version.as_deref() {
+            return Err(Error::Strict(format!(
+                "release-family profile {} package {} has source version {:?}, expected {}",
+                profile.name, package, crate_bundle.version, release.version
+            )));
+        }
+        required.insert(package.to_owned());
+    }
+    Ok(required)
+}
+
+fn release_family_from_tag(tag: &str) -> Option<String> {
+    let direct = [
+        ("filesystem-", "filesystem"),
+        ("fs-", "filesystem"),
+        ("stream-", "stream"),
+        ("harness-", "harness"),
+        ("inference-", "inference"),
+        ("machines-", "machines"),
+        ("objects-", "objects"),
+    ]
+    .into_iter()
+    .find_map(|(prefix, family)| tag.starts_with(prefix).then_some(family.to_owned()));
+    if direct.is_some() {
+        return direct;
+    }
+    [
+        ("publish/acyclic-fs/", "filesystem"),
+        ("publish/acyclic-stream/", "stream"),
+        ("publish/acyclic-harness/", "harness"),
+        ("publish/acyclic-inference/", "inference"),
+        ("publish/acyclic-machines/", "machines"),
+        ("publish/acyclic-objects/", "objects"),
+    ]
+    .into_iter()
+    .find_map(|(prefix, family)| tag.starts_with(prefix).then_some(family.to_owned()))
 }
 
 /// Older releases predate the checked-in multi-target profile manifest. Their
@@ -3224,6 +3411,7 @@ fn infer_historical_profile_manifest(
     Ok(vec![AnalysisProfile {
         name: "host-default-inferred".to_owned(),
         packages,
+        scope: None,
     }])
 }
 
@@ -4598,6 +4786,7 @@ fn profile_blake3(profile: &AnalysisProfile) -> String {
         canonical_json(&serde_json::json!({
             "name": profile.name,
             "packages": packages,
+            "scope": profile.scope.as_ref(),
         }))
         .as_bytes(),
     )
@@ -4823,6 +5012,7 @@ fn validate_release_tag_version(tag: &str, version: &str) -> Result<(), Error> {
         "publish/acyclic-machines/",
         "publish/acyclic-objects/",
         "publish/acyclic-stream/",
+        "publish/acyclic-harness/",
     ]
     .into_iter()
     .find_map(|prefix| tag.strip_prefix(prefix));
@@ -5829,6 +6019,7 @@ mod tests {
                 default_features: false,
                 crate_types: Vec::new(),
             }],
+            scope: None,
         };
         let crate_bundle = CrateBundle {
             package_name: "demo-wasm".to_owned(),
@@ -5872,6 +6063,125 @@ mod tests {
     }
 
     #[test]
+    fn release_scope_requires_only_the_exact_family_package() {
+        let root = std::env::temp_dir().join(format!(
+            "sdk-docs-release-scope-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("rust/crates/stream/src")).unwrap();
+        fs::create_dir_all(root.join("rust/crates/objects/src")).unwrap();
+        fs::write(root.join("rust/crates/stream/src/lib.rs"), b"pub struct Stream;").unwrap();
+        fs::write(root.join("rust/crates/objects/src/lib.rs"), b"pub struct Object;").unwrap();
+        fs::write(
+            root.join("rust/crates/stream/Cargo.toml"),
+            b"[package]\nname = \"acyclic-stream\"\nversion = \"1.0.0-rc.5\"\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("rust/crates/objects/Cargo.toml"),
+            b"[package]\nname = \"acyclic-objects\"\nversion = \"1.0.0-rc.3\"\n",
+        )
+        .unwrap();
+        let profile = AnalysisProfile {
+            name: "host-default".to_owned(),
+            packages: vec![ProfilePackage {
+                package: "acyclic-stream".to_owned(),
+                target: "host".to_owned(),
+                features: Vec::new(),
+                default_features: true,
+                crate_types: Vec::new(),
+            }],
+            scope: Some(ProfileScope {
+                kind: "release-family".to_owned(),
+                family: Some("stream".to_owned()),
+                package: Some("acyclic-stream".to_owned()),
+                version: Some("1.0.0-rc.5".to_owned()),
+            }),
+        };
+        let crates = vec![
+            CrateBundle {
+                package_name: "acyclic-stream".to_owned(),
+                crate_name: Some("acyclic_stream".to_owned()),
+                path: "rust/crates/stream".to_owned(),
+                publish: true,
+                version: Some("1.0.0-rc.5".to_owned()),
+                availability: "source-only".to_owned(),
+                analysis_mode: "rustdoc-json".to_owned(),
+                sources: Vec::new(),
+                guides: Vec::new(),
+                examples: Vec::new(),
+                package_instructions: Vec::new(),
+                navigation: "stream".to_owned(),
+                public_items: vec![PublicItem {
+                    name: "Stream".to_owned(),
+                    module_path: Some("stream::Stream".to_owned()),
+                    kind: "struct".to_owned(),
+                    signature: Some(serde_json::json!({"kind":"plain"})),
+                    signature_text: Some("pub struct Stream".to_owned()),
+                    source_path: Some("rust/crates/stream/src/lib.rs".to_owned()),
+                    source_line: Some(1),
+                    docs: None,
+                    conditional: false,
+                    generated: false,
+                    reexport: None,
+                }],
+                graphs: Vec::new(),
+                rustdoc: None,
+                diagnostics: Vec::new(),
+                content_blake3: "stream".to_owned(),
+                coverage: DocCoverage {
+                    guides: 0,
+                    examples: 0,
+                    public_items: 1,
+                    documented_items: 0,
+                    conditional_items: 0,
+                },
+            },
+            CrateBundle {
+                package_name: "acyclic-objects".to_owned(),
+                crate_name: Some("acyclic_objects".to_owned()),
+                path: "rust/crates/objects".to_owned(),
+                publish: true,
+                version: Some("1.0.0-rc.3".to_owned()),
+                availability: "source-only".to_owned(),
+                analysis_mode: "source-fallback".to_owned(),
+                sources: Vec::new(),
+                guides: Vec::new(),
+                examples: Vec::new(),
+                package_instructions: Vec::new(),
+                navigation: "objects".to_owned(),
+                public_items: Vec::new(),
+                graphs: Vec::new(),
+                rustdoc: None,
+                diagnostics: Vec::new(),
+                content_blake3: "objects".to_owned(),
+                coverage: DocCoverage {
+                    guides: 0,
+                    examples: 0,
+                    public_items: 0,
+                    documented_items: 0,
+                    conditional_items: 0,
+                },
+            },
+        ];
+        let release = ReleaseQualification {
+            schema: "acyclic.sdk.docs.release-qualification.v1".to_owned(),
+            version: "1.0.0-rc.5".to_owned(),
+            tag: "stream-v1.0.0-rc.5".to_owned(),
+            revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            qualified: true,
+        };
+        let required = required_strict_packages(&[profile], Some(&release), &crates, &root)
+            .expect("release profile scope");
+        assert_eq!(required, HashSet::from(["acyclic-stream".to_owned()]));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn profile_status_fails_closed_for_missing_generated_source() {
         let profile = AnalysisProfile {
             name: "wasm".to_owned(),
@@ -5882,6 +6192,7 @@ mod tests {
                 default_features: false,
                 crate_types: Vec::new(),
             }],
+            scope: None,
         };
         let item = PublicItem {
             name: "Demo".to_owned(),
@@ -6331,6 +6642,7 @@ mod tests {
             ("npm-v0.1.5-rc.1", "0.1.5-rc.1"),
             ("fs-v0.2.0-rc.1", "0.2.0-rc.1"),
             ("publish/acyclic-fs/0.2.0-rc.3", "0.2.0-rc.3"),
+            ("publish/acyclic-harness/0.1.0-rc.1", "0.1.0-rc.1"),
         ] {
             validate_release_tag_version(tag, version)
                 .unwrap_or_else(|error| panic!("{tag} should be accepted: {error}"));
@@ -6347,6 +6659,20 @@ mod tests {
                 error.to_string().contains("release qualification"),
                 "unexpected error for {tag}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn release_family_scopes_accept_published_package_tags() {
+        for (tag, family) in [
+            ("publish/acyclic-fs/0.2.0-rc.2", "filesystem"),
+            ("publish/acyclic-stream/1.0.0-rc.5", "stream"),
+            ("publish/acyclic-harness/0.1.0-rc.1", "harness"),
+            ("publish/acyclic-inference/1.0.0-rc.6", "inference"),
+            ("publish/acyclic-machines/1.0.0-rc.5", "machines"),
+            ("publish/acyclic-objects/1.0.0-rc.3", "objects"),
+        ] {
+            assert_eq!(release_family_from_tag(tag).as_deref(), Some(family));
         }
     }
 
