@@ -222,6 +222,9 @@ dependencies = [
  "libc",
  "prost",
  "protoc-bin-vendored",
+ "reqwest",
+ "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2",
  "thiserror",
@@ -229,7 +232,10 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tsify-next",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
