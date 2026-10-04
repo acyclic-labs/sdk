@@ -44,6 +44,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
+use std::path::PathBuf;
 use tokio::sync::{Barrier, Notify};
 
 type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
@@ -52,6 +53,7 @@ struct CapturedModel {
     calls: AtomicUsize,
     requests: Mutex<Vec<ModelRequest>>,
     serialized_requests: Mutex<Vec<Vec<u8>>>,
+    manifest_bytes: Mutex<Vec<Vec<u8>>>,
     binding_digests: Mutex<Vec<[u8; 32]>>,
     root: bool,
     read_first: bool,
@@ -65,6 +67,10 @@ impl ModelProvider for CapturedModel {
     ) -> BoxStream<'a, Result<ModelEvent>> {
         let request = prepared.request().clone();
         let serialized = prepared.bytes().to_vec();
+        let manifest_bytes = match prepared.manifest_bytes() {
+            Ok(bytes) => bytes,
+            Err(error) => return Box::pin(stream::iter(vec![Err(error)])),
+        };
         let binding_digest = prepared.manifest().binding_digest;
         self.requests
             .lock()
@@ -74,6 +80,10 @@ impl ModelProvider for CapturedModel {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(serialized);
+        self.manifest_bytes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(manifest_bytes);
         self.binding_digests
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -166,7 +176,7 @@ impl ModelProvider for CapturedModel {
 }
 
 impl CapturedModel {
-    fn evidence(&self) -> Result<(Vec<ModelRequest>, Vec<Vec<u8>>, Vec<[u8; 32]>)> {
+    fn evidence(&self) -> Result<(Vec<ModelRequest>, Vec<Vec<u8>>, Vec<Vec<u8>>, Vec<[u8; 32]>)> {
         let requests = self
             .requests
             .lock()
@@ -177,12 +187,17 @@ impl CapturedModel {
             .lock()
             .map_err(|error| Error::Storage(error.to_string()))?
             .clone();
+        let manifest_bytes = self
+            .manifest_bytes
+            .lock()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .clone();
         let bindings = self
             .binding_digests
             .lock()
             .map_err(|error| Error::Storage(error.to_string()))?
             .clone();
-        Ok((requests, serialized, bindings))
+        Ok((requests, serialized, manifest_bytes, bindings))
     }
 }
 
@@ -274,6 +289,7 @@ struct ForkAtBatch {
     storage: Arc<DurableHarnessStorage>,
     host: Arc<Host>,
     stream: StreamClient<LocalStream>,
+    root_directory: PathBuf,
     project: VolumeRef,
     issuer: AuthorityIssuer,
     stream_provider: ProviderRef,
@@ -289,16 +305,38 @@ impl ForkAtBatch {
         model: &CapturedModel,
         expected_binding: [u8; 32],
     ) -> Result<Vec<ModelRequest>> {
-        let (requests, serialized, bindings) = model.evidence()?;
+        let (requests, serialized, manifests, bindings) = model.evidence()?;
         assert_eq!(requests.len(), serialized.len());
+        assert_eq!(requests.len(), manifests.len());
         assert_eq!(requests.len(), bindings.len());
-        for ((request, bytes), binding) in requests.iter().zip(&serialized).zip(&bindings) {
+        for (((request, bytes), manifest_bytes), binding) in requests
+            .iter()
+            .zip(&serialized)
+            .zip(&manifests)
+            .zip(&bindings)
+        {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
+            assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
             assert_eq!(*binding, prepared.manifest().binding_digest);
             assert_eq!(*binding, expected_binding);
         }
         Ok(requests)
+    }
+
+    async fn durable_model_manifests(
+        &self,
+        storage: &DurableHarnessStorage,
+        operation: OperationId,
+    ) -> Result<Vec<Vec<u8>>> {
+        let records = storage.journal().replay(operation).await?;
+        let mut manifests = Vec::new();
+        for record in records {
+            if let ExecutionEvent::ModelInputPrepared { manifest, .. } = record.event {
+                manifests.push(storage.journal().load(&manifest).await?);
+            }
+        }
+        Ok(manifests)
     }
 
     async fn assert_model_read(
@@ -1060,6 +1098,15 @@ impl ForkAtBatch {
                 .get(*index as usize)
                 .ok_or_else(|| Error::Invalid("missing deterministic child provider".into()))?;
             let requests = self.assert_model_evidence(child_model, boundary_binding)?;
+            let (_, _, observed_manifests, _) = child_model.evidence()?;
+            let mut durable_manifests = self.durable_model_manifests(storage, *operation).await?;
+            if *index == 0 {
+                durable_manifests.extend(
+                    self.durable_model_manifests(storage, child_follow_operation)
+                        .await?,
+                );
+            }
+            assert_eq!(observed_manifests, durable_manifests);
             assert_eq!(requests.len(), if *index == 0 { 3 } else { 2 });
             for request in requests {
                 assert_eq!(
@@ -1071,6 +1118,144 @@ impl ForkAtBatch {
                 assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
             }
         }
+        let child_zero_seed = parent
+            .reducer()
+            .fork(&child_zero.4)
+            .cloned()
+            .ok_or_else(|| Error::Storage("published child seed missing after activation".into()))?;
+        let cold_child_issuer = child_zero.5.clone();
+        let cold_parent_authority = parent.reducer().authority().clone();
+        let cold_files = child_zero_seed
+            .model_boundary
+            .as_ref()
+            .map(|boundary| boundary.files.iter())
+            .into_iter()
+            .flatten()
+            .chain(child_zero_seed.attachment_manifests.iter())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut cold_expected = Vec::with_capacity(cold_files.len());
+        for file in &cold_files {
+            cold_expected.push((file.clone(), self.storage.read(file).await?));
+        }
+        drop(completed_children);
+        drop(child_zero_storage);
+        drop(child_zero_publisher);
+        let cold_host = Arc::new(FilesystemHost::new(
+            Fs::local(LocalOptions::new(self.root_directory.join("fs")))
+                .await
+                .map_err(|error| Error::Storage(error.to_string()))?,
+            self.project.provider().clone(),
+        )?);
+        let cold_stream = StreamClient::new(Arc::new(
+            LocalStream::open(
+                self.root_directory.join("streams"),
+                LocalStreamLimits::default(),
+            )
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?,
+        ));
+        let cold_parent = StreamAggregate::open(
+            &cold_stream,
+            cold_parent_authority,
+            self.issuer.verifier(),
+            SchemaRegistry::new(),
+        )
+        .await?;
+        let cold_storage = HarnessStorage::from_published_fork(
+            self.limits.file_bytes,
+            cold_host,
+            cold_stream,
+            cold_child_issuer,
+            &cold_parent,
+            &child_zero_seed,
+        )
+        .await?;
+        for (file, expected) in &cold_expected {
+            assert_eq!(cold_storage.read(file).await?, *expected);
+        }
+        let cold_model = Arc::new(CapturedModel {
+            overlap_barrier: None,
+            root: false,
+            read_first: true,
+            reject_first: false,
+            calls: AtomicUsize::new(0),
+            requests: Mutex::new(Vec::new()),
+            serialized_requests: Mutex::new(Vec::new()),
+            manifest_bytes: Mutex::new(Vec::new()),
+            binding_digests: Mutex::new(Vec::new()),
+        });
+        let cold_suffix = vec![ModelMessage {
+            role: ModelRole::System,
+            content: ModelContent::Text("cold child restart; preserve inherited boundary".into()),
+        }];
+        let cold_bundle = cold_storage
+            .inherited_builder(
+                boundary.clone(),
+                cold_suffix,
+                cold_model.clone(),
+                self.limits,
+            )?
+            .tools(cold_storage.default_tools(self.limits)?)
+            .grant("tool:call:acyclic.read_file")
+            .grant("tool:call:acyclic.stage_file")
+            .grant("tool:call:acyclic.list_files")
+            .limits(self.limits)
+            .build()?;
+        let cold_operation = OperationId::from_bytes([62; 16]);
+        let cold_input = cold_storage
+            .stage(
+                cold_operation,
+                "input/cold-restart.txt",
+                b"cold child restart",
+                "text/plain",
+                "cold-restart.txt",
+            )
+            .await?;
+        cold_storage
+            .run_conversation(&cold_bundle, cold_operation, cold_input, Vec::new(), 3)
+            .await
+            .map_err(|error| Error::Storage(format!("cold child restart failed: {error}")))?;
+        let cold_requests = cold_model
+            .requests
+            .lock()
+            .map_err(|error| Error::Storage(error.to_string()))?
+            .clone();
+        assert_eq!(cold_requests.len(), 2);
+        for request in &cold_requests {
+            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
+            let prefix = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
+            assert_eq!(prefix.message_bytes(), boundary.prefix.message_bytes());
+        }
+        assert!(cold_requests[0].messages.iter().any(|message| {
+            matches!(
+                &message.content,
+                ModelContent::Part(ModelContentPart::ToolResult { value, .. })
+                    if value.get("kind") == Some(&Value::String("tool_rejection".into()))
+            )
+        }));
+        let (_, cold_serialized, cold_manifests, cold_bindings) = cold_model.evidence()?;
+        assert_eq!(cold_requests.len(), cold_serialized.len());
+        assert_eq!(cold_requests.len(), cold_manifests.len());
+        assert_eq!(cold_requests.len(), cold_bindings.len());
+        for (((request, bytes), manifest), binding) in cold_requests
+            .iter()
+            .zip(&cold_serialized)
+            .zip(&cold_manifests)
+            .zip(&cold_bindings)
+        {
+            let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
+            assert_eq!(bytes, prepared.bytes());
+            assert_eq!(manifest, &prepared.manifest_bytes()?);
+            assert_eq!(*binding, boundary_binding);
+        }
+        assert_eq!(
+            cold_manifests,
+            self.durable_model_manifests(&cold_storage, cold_operation)
+                .await?
+        );
+        drop(cold_bundle);
+        drop(cold_storage);
         self.publications.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -1413,22 +1598,32 @@ impl ForkAtBatch {
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(projection, Value::String("root request".into()));
-        let (captured, serialized, bindings) = self.grandchild.evidence()?;
+        let (captured, serialized, manifests, bindings) = self.grandchild.evidence()?;
         assert!(captured.len() >= 2);
         assert_eq!(captured.len(), serialized.len());
+        assert_eq!(captured.len(), manifests.len());
         assert_eq!(captured.len(), bindings.len());
         let boundary_binding = PreparedModelInput::prepare(boundary.request.clone(), self.limits)?
             .manifest()
             .binding_digest;
-        for ((request, bytes), binding) in captured.iter().zip(&serialized).zip(&bindings) {
+        for (((request, bytes), manifest_bytes), binding) in captured
+            .iter()
+            .zip(&serialized)
+            .zip(&manifests)
+            .zip(&bindings)
+        {
             let prepared = PreparedModelInput::prepare(request.clone(), self.limits)?;
             assert_eq!(bytes, prepared.bytes());
+            assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
             assert_eq!(*binding, prepared.manifest().binding_digest);
             assert_eq!(*binding, boundary_binding);
+            let inherited = FrozenModelPrefix::capture(&prepared, boundary.request.messages.len())?;
+            assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
         }
-        let actual = PreparedModelInput::prepare(captured[0].clone(), self.limits)?;
-        let inherited = FrozenModelPrefix::capture(&actual, boundary.request.messages.len())?;
-        assert_eq!(inherited.message_bytes(), boundary.prefix.message_bytes());
+        assert_eq!(
+            manifests,
+            self.durable_model_manifests(&storage, operation).await?
+        );
         Ok(())
     }
 }
@@ -1540,6 +1735,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let children = (0..2)
@@ -1552,6 +1748,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
                 serialized_requests: Mutex::new(Vec::new()),
+                manifest_bytes: Mutex::new(Vec::new()),
                 binding_digests: Mutex::new(Vec::new()),
             })
         })
@@ -1564,12 +1761,14 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let publisher = Arc::new(ForkAtBatch {
         storage: storage.clone(),
         host,
         stream,
+        root_directory: directory.path().to_path_buf(),
         project,
         issuer,
         stream_provider,
@@ -1625,20 +1824,27 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         .map_err(|error| Error::Storage(format!("initial root conversation failed: {error}")))?;
     assert_eq!(output.text, " \nα🦀\t retained\nfinal only");
     assert_eq!(publisher.publications.load(Ordering::SeqCst), 1);
-    let (root_requests, root_serialized, root_bindings) = root_model.evidence()?;
+    let (root_requests, root_serialized, root_manifests, root_bindings) = root_model.evidence()?;
     assert_eq!(root_requests.len(), root_serialized.len());
+    assert_eq!(root_requests.len(), root_manifests.len());
     assert_eq!(root_requests.len(), root_bindings.len());
+    assert_eq!(
+        root_manifests,
+        publisher.durable_model_manifests(&storage, operation).await?
+    );
     let root_boundary_binding = root_bindings
         .first()
         .copied()
         .ok_or_else(|| Error::Storage("root model binding digest missing".into()))?;
-    for ((request, bytes), binding) in root_requests
+    for (((request, bytes), manifest_bytes), binding) in root_requests
         .iter()
         .zip(&root_serialized)
+        .zip(&root_manifests)
         .zip(&root_bindings)
     {
         let prepared = PreparedModelInput::prepare(request.clone(), limits)?;
         assert_eq!(bytes, prepared.bytes());
+        assert_eq!(manifest_bytes, &prepared.manifest_bytes()?);
         assert_eq!(*binding, prepared.manifest().binding_digest);
         assert_eq!(*binding, root_boundary_binding);
     }
@@ -1763,6 +1969,7 @@ async fn run_native_forks_capture_completed_authoritative_exchange_and_exact_mod
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let restarted = HarnessStorage::from_providers(
@@ -2097,6 +2304,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let children = (0..2)
@@ -2109,6 +2317,7 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
                 calls: AtomicUsize::new(0),
                 requests: Mutex::new(Vec::new()),
                 serialized_requests: Mutex::new(Vec::new()),
+                manifest_bytes: Mutex::new(Vec::new()),
                 binding_digests: Mutex::new(Vec::new()),
             })
         })
@@ -2121,12 +2330,14 @@ async fn stale_completed_boundary_is_refused_before_publication_files_are_writte
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
         serialized_requests: Mutex::new(Vec::new()),
+        manifest_bytes: Mutex::new(Vec::new()),
         binding_digests: Mutex::new(Vec::new()),
     });
     let publisher = Arc::new(ForkAtBatch {
         storage: storage.clone(),
         host: host.clone(),
         stream: stream.clone(),
+        root_directory: directory.path().to_path_buf(),
         project,
         issuer: issuer.clone(),
         stream_provider,
