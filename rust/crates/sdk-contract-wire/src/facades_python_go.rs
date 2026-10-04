@@ -135,6 +135,7 @@ class Client:
         self.stream = stream_pb2_grpc.StreamServiceStub(self._channel)
         self.buckets = objects_pb2_grpc.BucketsServiceStub(self._channel)
         self.objects = objects_pb2_grpc.ObjectsServiceStub(self._channel)
+        self.multipart = objects_pb2_grpc.MultipartServiceStub(self._channel)
         self.workers = workers_pb2_grpc.WorkersServiceStub(self._channel)
         self.filesystem = filesystem_pb2_grpc.FilesystemServiceStub(self._channel)
         self.harness = harness_pb2_grpc.HarnessServiceStub(self._channel)
@@ -232,6 +233,7 @@ type Client struct {
     Stream streamv2.StreamServiceClient
     Buckets objectsv2.BucketsServiceClient
     Objects objectsv2.ObjectsServiceClient
+    Multipart objectsv2.MultipartServiceClient
     Workers workersv1.WorkersServiceClient
     Filesystem filesystemv2.FilesystemServiceClient
     Harness harnessv2.HarnessServiceClient
@@ -304,6 +306,7 @@ func NewClient(ctx context.Context, endpoint string, c Credentials) (*Client, er
         Stream: streamv2.NewStreamServiceClient(conn),
         Buckets: objectsv2.NewBucketsServiceClient(conn),
         Objects: objectsv2.NewObjectsServiceClient(conn),
+        Multipart: objectsv2.NewMultipartServiceClient(conn),
         Workers: workersv1.NewWorkersServiceClient(conn),
         Filesystem: filesystemv2.NewFilesystemServiceClient(conn),
         Harness: harnessv2.NewHarnessServiceClient(conn),
