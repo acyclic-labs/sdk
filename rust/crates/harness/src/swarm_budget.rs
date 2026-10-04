@@ -1236,7 +1236,7 @@ where
         context: SwarmRootDispatchContext<S>,
         refresh: RootBudgetRefresh,
     ) -> (Arc<Self>, SwarmProviderMeter<S>) {
-        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None, None)
+        Self::new_root_with_refresh_and_options(provider, context, Some(refresh), None)
     }
 
     /// Wraps root work with refresh and an opaque permit factory. The permit
