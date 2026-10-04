@@ -1,0 +1,70 @@
+{
+  "schema": "graphcoder.swarm.validation.receipt.v1",
+  "scope": "current root port 9e787a689 durable budget and metered drop qualification",
+  "source_commit": "9e787a6897622a09e70e5f2509a43dad4bd91660",
+  "budget_implementation_commits": [
+    "95b96b4f0 harness: integrate durable budget on current root",
+    "137473764 fix: preserve coordinator races and metering failures",
+    "764e0b229 test: qualify metered stream drop failures"
+  ],
+  "worktree": "D:\\graphcoder-builds\\budget-root-9e-review",
+  "target_dir": "D:\\graphcoder-builds\\budget-root-9e-target",
+  "source_hashes": {
+    "swarm_budget.rs": "be2cc8cb2c9e2af7cd8157edd9afaed373877a77",
+    "swarm_budget_journal.rs": "1b10c6f8475e80d1059b988300bd21a9840f9a04",
+    "swarm_budget_production_contracts_v3.rs": "889b190558c5c54037f43836e0c01e97bda39bea",
+    "swarm_budget_journal_local.rs": "2b78d1417d395d118c7c611b277430affa574bcc",
+    "swarm_budget_contracts_v2.rs": "096f9835a24bc271aa3aed66e53985219f6c6de2",
+    "swarm_budget_scheduler_contracts_v2.rs": "93d2c9fe091a8ce353d9634d102928e271b8f597",
+    "swarm_budget_usage_contracts_v2.rs": "e8ff010d7cf0f8318bf10237245331404714508"
+  },
+  "native_budget_units": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --lib swarm_budget --target-dir D:\\graphcoder-builds\\budget-root-9e-target -j1 -- --nocapture; then swarm_budget_journal::tests with the same target",
+    "passed": 34,
+    "failed": 0,
+    "logs": {
+      "swarm_budget": "D:\\graphcoder-builds\\budget-root-9e-unit.log",
+      "swarm_budget_sha256": "9CBC238578F3562B63B3A6DA46D099FCC0A478D763DCF3EB28EF7833F2614EF0",
+      "swarm_budget_journal": "D:\\graphcoder-builds\\budget-root-9e-journal.log",
+      "swarm_budget_journal_sha256": "1F97D74EDC4A5CCF174CBF3C74D8DE1ED9872AFC132C2BA36E5240F6A852BFDD"
+    },
+    "assertions": [
+      "metered stream drop accounting failure is surfaced through the shared meter",
+      "post-confirmation provider denial remains Error::Indeterminate with active reservation",
+      "journal recovery and stale-owner fences remain durable"
+    ]
+  },
+  "production_matrix": {
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test swarm_budget_production_contracts_v3 --test swarm_budget_journal_local --test swarm_budget_contracts_v2 --test swarm_budget_scheduler_contracts_v2 --test swarm_budget_usage_contracts_v2 --target-dir D:\\graphcoder-builds\\budget-root-9e-target -j1 --no-fail-fast -- --nocapture",
+    "passed": 21,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-root-9e-matrix.log",
+    "log_sha256": "9875B22EA1FFD39D17DEE4105475B4B076182D592D32D80FCCFFEF7555315BAA"
+  },
+  "persistent_local_root_overlay": {
+    "fixture": "rust/crates/harness/tests/persistent_local_swarm_budget_root_e2e.rs",
+    "fixture_sha256": "B1E69A195EEB9D6ED978CB59A803D7294390BF455625F4BA75035C1BFCE1669C",
+    "command": "CARGO_INCREMENTAL=0 cargo test -p acyclic-harness --features filesystem-local,native-process-tree --test persistent_local_swarm_budget_root_e2e --target-dir D:\\graphcoder-builds\\budget-root-9e-target -j1 -- --nocapture",
+    "passed": 2,
+    "failed": 0,
+    "log": "D:\\graphcoder-builds\\budget-root-9e-persistent.log",
+    "log_sha256": "15DFE22132087FDD06ABCF4B18C6EFD7E6596980031F818F6E90638EEF40930F"
+  },
+  "drop_cold_restart_overlay": {
+    "test": "swarm_budget_journal::tests::drop_accounting_failure_blocks_receipt_and_survives_restart",
+    "result": "passed",
+    "overlay_source_sha256": "C67DAAC601EB7351224CF1EAE608FCCE44E01CBB9A803D5F85E2661BAE0424C3",
+    "log": "D:\\graphcoder-builds\\budget-root-9e-drop-restart.log",
+    "log_sha256": "382BC45DD2540D029D0EC8C2BEAE811D95CD9E8A87AF725522B62046964314BE",
+    "assertions": [
+      "pre-confirmation stale owner returns Error::Conflict",
+      "stream Drop accounting error blocks issue_usage_receipt",
+      "active reservation remains held",
+      "cold reopen preserves usage and resume_dispatch_token succeeds"
+    ]
+  },
+  "artifacts": {
+    "harness_test_executable_sha256": "78B4143BC5873F085E0E96AE099149E97D46E7525E386CEAB5F04173DAF18CA8"
+  },
+  "qualification_boundary": "The persistent and drop cold-restart fixtures are overlays imported from the validator slice; they are source-qualified against 9e787a689 but are not claimed as committed files on the current root branch."
+}
