@@ -129,6 +129,7 @@ struct Args {
     receipt: Option<PathBuf>,
     evidence: Option<PathBuf>,
     package_root: Option<PathBuf>,
+    platform_receipt: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +230,8 @@ struct RequestEnvelope {
     source: SourceIdentity,
     contract_scope: &'static str,
     contract_inputs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generated_package_roots: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -331,6 +334,7 @@ fn run() -> Result<(), CliError> {
             args.package_root.as_deref().ok_or_else(|| {
                 CliError::new("qualify-embedded requires --package-root PATH")
             })?,
+            args.platform_receipt.as_deref(),
         ),
         Operation::Inventory => inventory_command(&source_root, &output),
     }
@@ -352,7 +356,7 @@ fn parse_args() -> Result<Args, CliError> {
         }
         None => {
             return Err(CliError::new(
-                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH]",
+                "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
             ));
         }
     };
@@ -361,6 +365,7 @@ fn parse_args() -> Result<Args, CliError> {
     let mut receipt = None;
     let mut evidence = None;
     let mut package_root = None;
+    let mut platform_receipt = None;
     while let Some(flag) = values.next() {
         match flag.as_str() {
             "--source-root" => {
@@ -397,9 +402,16 @@ fn parse_args() -> Result<Args, CliError> {
                         .ok_or_else(|| CliError::new("--package-root requires a path"))?,
                 ))
             }
+            "--platform-receipt" => {
+                platform_receipt = Some(PathBuf::from(
+                    values
+                        .next()
+                        .ok_or_else(|| CliError::new("--platform-receipt requires a path"))?,
+                ))
+            }
             "--help" | "-h" => {
                 return Err(CliError::new(
-                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH]",
+                    "usage: sdk-generation <generate|check|drift|qualify|qualify-embedded|inventory> --source-root PATH --output PATH [--receipt PATH --evidence PATH --package-root PATH --platform-receipt PATH]",
                 ));
             }
             other => return Err(CliError::new(format!("unknown argument {other}"))),
@@ -412,6 +424,7 @@ fn parse_args() -> Result<Args, CliError> {
         receipt,
         evidence,
         package_root,
+        platform_receipt,
     })
 }
 
@@ -705,6 +718,7 @@ fn qualify_embedded(
     receipt_path: &Path,
     evidence_path: &Path,
     package_root: &Path,
+    platform_receipt_path: Option<&Path>,
 ) -> Result<(), CliError> {
     let source = canonical_existing_directory(source_root, "source root")?;
     let output = absolute_path(output)?;
@@ -750,6 +764,61 @@ fn qualify_embedded(
     if source_digest.len() != 64 || !source_digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(CliError::new("embedded ABI source digest is invalid"));
     }
+    let git_root = command_stdout(&source, "git", &["rev-parse", "--show-toplevel"])
+        .and_then(|root| canonical_existing_directory(Path::new(&root), "Git source root"))?;
+    if git_root != source {
+        return Err(CliError::new(format!(
+            "Git source root does not match requested embedded source root: {} != {}",
+            git_root.display(),
+            source.display()
+        )));
+    }
+    let current_revision = command_stdout(&source, "git", &["rev-parse", "HEAD"])?;
+    if current_revision != source_revision {
+        return Err(CliError::new(format!(
+            "embedded source revision is stale: receipt {source_revision}, checkout {current_revision}"
+        )));
+    }
+    let dirty = command_stdout(&source, "git", &["status", "--porcelain"])?;
+    if !dirty.is_empty() {
+        return Err(CliError::new(
+            "embedded source checkout is dirty; qualification requires a clean Rust source root",
+        ));
+    }
+    let source_inputs = source_record
+        .get("source_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new("embedded ABI source inputs are missing"))?;
+    let mut source_digest_lines = Vec::with_capacity(source_inputs.len());
+    for input in source_inputs {
+        let relative = input
+            .as_str()
+            .ok_or_else(|| CliError::new("embedded ABI source input is not a string"))?;
+        if !is_portable_relative(relative) {
+            return Err(CliError::new(format!(
+                "embedded ABI source input is not portable: {relative}"
+            )));
+        }
+        let path = source.join(relative);
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            CliError::new(format!("embedded ABI source input is missing: {relative}: {error}"))
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(CliError::new(format!(
+                "embedded ABI source input is not a file: {relative}"
+            )));
+        }
+        let digest = hash_bytes(&fs::read(&path)?).trim_start_matches("sha256:").to_owned();
+        source_digest_lines.push(format!("{relative} {digest}"));
+    }
+    let observed_source_digest = hash_bytes(source_digest_lines.join("\n").as_bytes())
+        .trim_start_matches("sha256:")
+        .to_owned();
+    if observed_source_digest != source_digest.to_ascii_lowercase() {
+        return Err(CliError::new(format!(
+            "embedded source digest mismatch: receipt {source_digest}, checkout {observed_source_digest}"
+        )));
+    }
     let consumers = receipt
         .get("foreign_consumers")
         .and_then(Value::as_object)
@@ -773,14 +842,14 @@ fn qualify_embedded(
             .get(name)
             .and_then(Value::as_object)
             .ok_or_else(|| CliError::new(format!("actual embedded consumer receipt is missing: {name}")))?;
-        if consumer.get("status").and_then(Value::as_str) != Some("passed")
-            || consumer
-                .get("checks")
-                .and_then(Value::as_array)
-                .is_none_or(|checks| checks.is_empty())
-        {
-            return Err(CliError::new(format!("actual embedded consumer receipt did not pass: {name}")));
-        }
+        validate_embedded_consumer_receipt(
+            &source,
+            &package,
+            source_revision,
+            name,
+            consumer,
+            "bin/acyclic_sdk_embedded_prototype.dll",
+        )?;
     }
     if receipt
         .get("reproducibility")
@@ -872,24 +941,38 @@ fn qualify_embedded(
             ),
         ));
     }
-    let runtime_path = package.join("bin/acyclic_sdk_embedded_prototype.dll");
-    let runtime = fs::read(&runtime_path).map_err(|error| {
-        CliError::new(format!("embedded runtime artifact is missing: {error}"))
-    })?;
-    if runtime.len() < 64
-        || &runtime[0..2] != b"MZ"
-        || runtime
-            .get(0x3c..0x40)
-            .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("PE offset")) as usize)
-            .and_then(|offset| runtime.get(offset..offset + 4))
-            != Some(b"PE\0\0")
-        || !runtime
-            .windows(b"acyclic_embedded_abi_version".len())
-            .any(|window| window == b"acyclic_embedded_abi_version")
-    {
-        return Err(CliError::new(
-            "embedded runtime does not have a valid PE signature and ABI export",
-        ));
+    let platform_runtime_artifact = if let Some(platform_receipt_path) = platform_receipt_path {
+        Some(validate_embedded_platform_receipt(
+            &source,
+            &package,
+            source_revision,
+            source_digest,
+            source_inputs,
+            platform_receipt_path,
+        )?)
+    } else {
+        None
+    };
+    if platform_runtime_artifact.is_none() {
+        let runtime_path = package.join("bin/acyclic_sdk_embedded_prototype.dll");
+        let runtime = fs::read(&runtime_path).map_err(|error| {
+            CliError::new(format!("embedded runtime artifact is missing: {error}"))
+        })?;
+        if runtime.len() < 64
+            || &runtime[0..2] != b"MZ"
+            || runtime
+                .get(0x3c..0x40)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("PE offset")) as usize)
+                .and_then(|offset| runtime.get(offset..offset + 4))
+                != Some(b"PE\0\0")
+            || !runtime
+                .windows(b"acyclic_embedded_abi_version".len())
+                .any(|window| window == b"acyclic_embedded_abi_version")
+        {
+            return Err(CliError::new(
+                "embedded runtime does not have a valid PE signature and ABI export",
+            ));
+        }
     }
     let report = json!({
         "schema": "acyclic.sdk.embedded.qualification.v1",
@@ -898,12 +981,297 @@ fn qualify_embedded(
         "contract_digest": format!("sha256:{source_digest}"),
         "artifact_digest": expected_artifact_digest,
         "artifact_count": artifact_count,
+        "runtime_artifact": platform_runtime_artifact
+            .unwrap_or_else(|| "bin/acyclic_sdk_embedded_prototype.dll".to_owned()),
         "consumers": ["c", "python-ctypes", "cpp"],
         "embedded_scope": ["layout", "ownership", "lifetime", "cancellation", "cross-thread wakeup", "package loading"],
         "pe": { "mz": true, "pe": true, "export": "acyclic_embedded_abi_version" },
     });
     write_json_value(&output.join("embedded-qualification.json"), &report)?;
     print_json(&report)
+}
+
+fn validate_embedded_platform_receipt(
+    source_root: &Path,
+    package_root: &Path,
+    source_revision: &str,
+    source_digest: &str,
+    expected_source_inputs: &[Value],
+    receipt_path: &Path,
+) -> Result<String, CliError> {
+    let receipt: Value = read_json(receipt_path).map_err(|error| {
+        CliError::new(format!("cannot read embedded platform receipt: {error}"))
+    })?;
+    if receipt.get("schema").and_then(Value::as_str)
+        != Some("acyclic.sdk.embedded.platform-package.v1")
+        || receipt.get("status").and_then(Value::as_str) != Some("passed")
+    {
+        return Err(CliError::new("embedded platform receipt schema or status is invalid"));
+    }
+    if receipt.get("source_revision").and_then(Value::as_str) != Some(source_revision) {
+        return Err(CliError::new("embedded platform receipt source revision is stale"));
+    }
+    let platform_digest = receipt
+        .get("source_digest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded platform receipt source digest is missing"))?;
+    if platform_digest != format!("sha256:{source_digest}") {
+        return Err(CliError::new("embedded platform receipt source digest is stale"));
+    }
+    let platform_inputs = receipt
+        .get("source_inputs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new("embedded platform receipt source inputs are missing"))?;
+    if platform_inputs != expected_source_inputs {
+        return Err(CliError::new(
+            "embedded platform receipt source inputs differ from the release receipt",
+        ));
+    }
+    let runtime_artifact = receipt
+        .get("runtime_artifact")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new("embedded platform receipt runtime artifact is missing"))?;
+    if !is_portable_relative(runtime_artifact)
+        || !(runtime_artifact.ends_with(".dll")
+            || runtime_artifact.ends_with(".so")
+            || runtime_artifact.ends_with(".dylib"))
+    {
+        return Err(CliError::new(
+            "embedded platform runtime artifact path is invalid",
+        ));
+    }
+    let artifacts = receipt
+        .get("artifacts")
+        .and_then(Value::as_object)
+        .filter(|artifacts| !artifacts.is_empty())
+        .ok_or_else(|| CliError::new("embedded platform receipt artifact hashes are missing"))?;
+    let mut package_files = Vec::new();
+    collect_output_files(package_root, package_root, &mut package_files)?;
+    let actual_files = package_files.into_iter().collect::<BTreeSet<_>>();
+    let expected_files = artifacts.keys().cloned().collect::<BTreeSet<_>>();
+    if actual_files != expected_files {
+        return Err(CliError::new(
+            "embedded platform receipt artifact set differs from installed prefix",
+        ));
+    }
+    for (relative, expected) in artifacts {
+        if !is_portable_relative(relative) {
+            return Err(CliError::new(format!(
+                "embedded platform artifact path is not portable: {relative}"
+            )));
+        }
+        let expected = expected
+            .as_str()
+            .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .ok_or_else(|| CliError::new(format!("embedded platform artifact hash is invalid: {relative}")))?;
+        let artifact = package_root.join(relative);
+        let metadata = fs::symlink_metadata(&artifact).map_err(|error| {
+            CliError::new(format!("embedded platform artifact is missing: {relative}: {error}"))
+        })?;
+        if !metadata.file_type().is_file()
+            || hash_bytes(&fs::read(&artifact)?) != format!("sha256:{}", expected.to_ascii_lowercase())
+        {
+            return Err(CliError::new(format!(
+                "embedded platform artifact hash mismatch: {relative}"
+            )));
+        }
+    }
+    let runtime = package_root.join(runtime_artifact);
+    let runtime_bytes = fs::read(&runtime).map_err(|error| {
+        CliError::new(format!("embedded platform runtime artifact is missing: {error}"))
+    })?;
+    let valid_format = if runtime_artifact.ends_with(".dll") {
+        runtime_bytes.len() >= 64
+            && runtime_bytes.starts_with(b"MZ")
+            && runtime_bytes
+                .get(0x3c..0x40)
+                .and_then(|bytes| bytes.try_into().ok())
+                .map(|bytes: [u8; 4]| u32::from_le_bytes(bytes) as usize)
+                .and_then(|offset| runtime_bytes.get(offset..offset + 4))
+                == Some(b"PE\0\0")
+    } else if runtime_artifact.ends_with(".so") {
+        runtime_bytes.starts_with(b"\x7fELF")
+    } else {
+        matches!(
+            runtime_bytes.get(0..4),
+            Some(b"\xfe\xed\xfa\xce")
+                | Some(b"\xce\xfa\xed\xfe")
+                | Some(b"\xfe\xed\xfa\xcf")
+                | Some(b"\xcf\xfa\xed\xfe")
+                | Some(b"\xca\xfe\xba\xbe")
+                | Some(b"\xbe\xba\xfe\xca")
+        )
+    };
+    if !valid_format
+        || !runtime_bytes
+            .windows(b"acyclic_embedded_abi_version".len())
+            .any(|window| window == b"acyclic_embedded_abi_version")
+    {
+        return Err(CliError::new(
+            "embedded platform runtime has an invalid binary format or ABI export",
+        ));
+    }
+    let consumers = receipt
+        .get("consumers")
+        .and_then(Value::as_object)
+        .ok_or_else(|| CliError::new("embedded platform consumer receipts are missing"))?;
+    for name in ["c", "python", "cpp"] {
+        let consumer = consumers
+            .get(name)
+            .and_then(Value::as_object)
+            .ok_or_else(|| CliError::new(format!("embedded platform consumer receipt is missing: {name}")))?;
+        validate_embedded_consumer_receipt(
+            source_root,
+            package_root,
+            source_revision,
+            name,
+            consumer,
+            runtime_artifact,
+        )?;
+    }
+    for field in ["ctest", "clean_prefix"] {
+        if receipt.get(field).and_then(Value::as_str) != Some("passed") {
+            return Err(CliError::new(format!(
+                "embedded platform receipt did not pass {field}"
+            )));
+        }
+    }
+    Ok(runtime_artifact.to_owned())
+}
+
+/// Validate the producer's actual ABI consumer invocation against the bytes
+/// used for qualification. The descriptive `checks` list cannot certify a
+/// consumer by itself: the source program, immutable revision, invoked exit
+/// status, and loaded ABI artifact must all be bound and hashed.
+fn validate_embedded_consumer_receipt(
+    source_root: &Path,
+    package_root: &Path,
+    source_revision: &str,
+    name: &str,
+    consumer: &serde_json::Map<String, Value>,
+    runtime_artifact: &str,
+) -> Result<(), CliError> {
+    if consumer.get("status").and_then(Value::as_str) != Some("passed")
+        || consumer.get("scope").and_then(Value::as_str) != Some("embedded-native-abi")
+        || consumer.get("invoked").and_then(Value::as_bool) != Some(true)
+        || consumer.get("exit_code").and_then(Value::as_i64) != Some(0)
+    {
+        return Err(CliError::new(format!(
+            "actual embedded consumer receipt did not record an invoked exit-0 ABI scenario: {name}"
+        )));
+    }
+    if consumer.get("source_revision").and_then(Value::as_str) != Some(source_revision) {
+        return Err(CliError::new(format!(
+            "embedded consumer source revision is stale: {name}"
+        )));
+    }
+    let source_path = consumer
+        .get("source")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new(format!("embedded consumer source is missing: {name}")))?;
+    if !is_portable_relative(source_path) {
+        return Err(CliError::new(format!(
+            "embedded consumer source path is not portable: {source_path}"
+        )));
+    }
+    let source_sha256 = consumer
+        .get("source_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| CliError::new(format!("embedded consumer source hash is invalid: {name}")))?;
+    let source_file = source_root.join(source_path);
+    let source_metadata = fs::symlink_metadata(&source_file).map_err(|error| {
+        CliError::new(format!("embedded consumer source is missing: {source_path}: {error}"))
+    })?;
+    if !source_metadata.file_type().is_file() {
+        return Err(CliError::new(format!(
+            "embedded consumer source is not a regular file: {source_path}"
+        )));
+    }
+    let source_root_canonical = fs::canonicalize(source_root)?;
+    let source_file_canonical = fs::canonicalize(&source_file)?;
+    if !source_file_canonical.starts_with(&source_root_canonical) {
+        return Err(CliError::new(format!(
+            "embedded consumer source escapes the Rust checkout: {source_path}"
+        )));
+    }
+    let actual_source_sha256 = hash_bytes(&fs::read(&source_file)?);
+    if actual_source_sha256 != format!("sha256:{}", source_sha256.to_ascii_lowercase()) {
+        return Err(CliError::new(format!(
+            "embedded consumer source hash mismatch: {name}"
+        )));
+    }
+
+    let artifact_path = consumer
+        .get("package_artifact")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new(format!("embedded consumer package artifact is missing: {name}")))?;
+    if !is_portable_relative(artifact_path) {
+        return Err(CliError::new(format!(
+            "embedded consumer package artifact path is not portable: {artifact_path}"
+        )));
+    }
+    if artifact_path != runtime_artifact {
+        return Err(CliError::new(format!(
+            "embedded consumer is not bound to the runtime artifact {runtime_artifact}: {name}"
+        )));
+    }
+    let artifact_sha256 = consumer
+        .get("package_artifact_sha256")
+        .and_then(Value::as_str)
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| CliError::new(format!("embedded consumer artifact hash is invalid: {name}")))?;
+    let artifact = package_root.join(artifact_path);
+    let artifact_metadata = fs::symlink_metadata(&artifact).map_err(|error| {
+        CliError::new(format!("embedded consumer artifact is missing: {artifact_path}: {error}"))
+    })?;
+    if !artifact_metadata.file_type().is_file() {
+        return Err(CliError::new(format!(
+            "embedded consumer artifact is not a regular file: {artifact_path}"
+        )));
+    }
+    let package_root_canonical = fs::canonicalize(package_root)?;
+    let artifact_canonical = fs::canonicalize(&artifact)?;
+    if !artifact_canonical.starts_with(&package_root_canonical) {
+        return Err(CliError::new(format!(
+            "embedded consumer artifact escapes the ABI package: {artifact_path}"
+        )));
+    }
+    let actual_artifact_sha256 = hash_bytes(&fs::read(&artifact)?);
+    if actual_artifact_sha256 != format!("sha256:{}", artifact_sha256.to_ascii_lowercase()) {
+        return Err(CliError::new(format!(
+            "embedded consumer artifact hash mismatch: {name}"
+        )));
+    }
+    let checks = consumer
+        .get("checks")
+        .and_then(Value::as_array)
+        .filter(|checks| !checks.is_empty())
+        .ok_or_else(|| CliError::new(format!("embedded consumer checks are missing: {name}")))?;
+    let mut seen_checks = BTreeSet::new();
+    for check in checks {
+        let check = check
+            .as_str()
+            .filter(|check| !check.trim().is_empty())
+            .ok_or_else(|| CliError::new(format!("embedded consumer check is invalid: {name}")))?;
+        if !seen_checks.insert(check) {
+            return Err(CliError::new(format!(
+                "embedded consumer checks contain a duplicate: {name}"
+            )));
+        }
+    }
+    let required_checks: &[&str] = match name {
+        "c" => &["layout", "append", "read", "release", "stale_handles"],
+        "python" => &["append", "follow", "owned_buffers", "cancel", "stale_handles"],
+        "cpp" => &["blocked_pull_wakeup", "cross_thread_cancel", "clean_prefix_install"],
+        _ => &[],
+    };
+    if !required_checks.iter().all(|required| seen_checks.contains(required)) {
+        return Err(CliError::new(format!(
+            "embedded consumer behavior checks are incomplete: {name}"
+        )));
+    }
+    Ok(())
 }
 
 fn inventory_command(source_root: &Path, output: &Path) -> Result<(), CliError> {
@@ -1871,18 +2239,6 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             script: None,
         },
         ToolSpec {
-            id: "sdk-examples",
-            required: true,
-            manifest: some_file(root, "rust/crates/sdk-examples/Cargo.toml"),
-            script: first_file(root, &["docs/sdk-examples.py", "scripts/sdk-examples.py"]),
-        },
-        ToolSpec {
-            id: "sdk-docs",
-            required: true,
-            manifest: some_file(root, "rust/crates/sdk-docs/Cargo.toml"),
-            script: first_file(root, &["docs/sdk-docs.py", "scripts/sdk-docs.py"]),
-        },
-        ToolSpec {
             id: "sdk-language-producers",
             required: true,
             manifest: some_file(root, "languages/generation-targets.json"),
@@ -1907,6 +2263,20 @@ fn tool_specs(root: &Path) -> Vec<ToolSpec> {
             manifest: some_file(root, "rust/crates/sdk-typescript/Cargo.toml"),
             script: None,
         },
+        // Generated packages must exist before examples and docs consume
+        // their exact source-bound artifacts.
+        ToolSpec {
+            id: "sdk-examples",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-examples/Cargo.toml"),
+            script: first_file(root, &["docs/sdk-examples.py", "scripts/sdk-examples.py"]),
+        },
+        ToolSpec {
+            id: "sdk-docs",
+            required: true,
+            manifest: some_file(root, "rust/crates/sdk-docs/Cargo.toml"),
+            script: first_file(root, &["docs/sdk-docs.py", "scripts/sdk-docs.py"]),
+        },
     ]
 }
 
@@ -1914,6 +2284,19 @@ fn some_file(root: &Path, relative: &str) -> Option<PathBuf> {
     let path = root.join(relative);
     path.is_file().then_some(path)
 }
+
+fn generated_package_roots(output: &Path) -> BTreeMap<String, String> {
+    [
+        ("language-producers", output.join("language-producers")),
+        ("python", output.join("python")),
+        ("typescript", output.join("typescript")),
+    ]
+    .into_iter()
+    .filter(|(_, path)| path.is_dir())
+    .map(|(name, path)| (name.to_owned(), path.to_string_lossy().into_owned()))
+    .collect()
+}
+
 fn first_file(root: &Path, paths: &[&str]) -> Option<PathBuf> {
     paths
         .iter()
@@ -2158,6 +2541,9 @@ fn run_tools(
             source: source.clone(),
             contract_scope: "explicit",
             contract_inputs: contract_inputs(root, spec.id),
+            generated_package_roots: (spec.id == "sdk-examples")
+                .then(|| generated_package_roots(output))
+                .filter(|roots| !roots.is_empty()),
         };
         let request_path = request_directory.join(format!("{}.json", spec.id));
         write_json(&request_path, &request)?;
@@ -3681,6 +4067,17 @@ fn tool_command(
                 authority.as_os_str().to_os_string(),
                 OsString::from("--source-authority-sha256"),
                 OsString::from(authority_sha256),
+            ]);
+        }
+        // Registry metadata is Rust-owned input to the docs bundle. Keep the
+        // path explicit in the generated command so a release or preview can
+        // be reproduced from the exact checkout without relying on ambient
+        // defaults.
+        let registry_manifest = root.join("release/cargo-registry-metadata.json");
+        if registry_manifest.is_file() {
+            command.extend([
+                OsString::from("--registry-manifest"),
+                registry_manifest.as_os_str().to_os_string(),
             ]);
         }
         return Some(command);
@@ -6013,6 +6410,22 @@ mod tests {
     }
 
     #[test]
+    fn package_producers_precede_examples_and_docs() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        let ids = tool_specs(&root)
+            .into_iter()
+            .map(|spec| spec.id)
+            .collect::<Vec<_>>();
+        let index = |id: &str| ids.iter().position(|candidate| *candidate == id).unwrap();
+        assert!(index("sdk-contract-wire") < index("sdk-language-producers"));
+        assert!(index("sdk-openapi-prototype") < index("sdk-language-producers"));
+        assert!(index("sdk-language-producers") < index("sdk-python"));
+        assert!(index("sdk-python") < index("sdk-typescript"));
+        assert!(index("sdk-typescript") < index("sdk-examples"));
+        assert!(index("sdk-examples") < index("sdk-docs"));
+    }
+
+    #[test]
     fn language_producer_plan_covers_primary_and_http_targets() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
         let output = test_directory("language-producer-plan");
@@ -6175,6 +6588,15 @@ mod tests {
         assert!(
             args.iter()
                 .any(|argument| argument == "--strict-rustdoc-json")
+        );
+        let registry_index = args
+            .iter()
+            .position(|argument| argument == "--registry-manifest")
+            .expect("Rust-owned registry metadata must be passed to docs");
+        assert_eq!(
+            args[registry_index + 1],
+            root.join("release/cargo-registry-metadata.json")
+                .to_string_lossy()
         );
     }
 
