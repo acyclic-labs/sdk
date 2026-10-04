@@ -31,6 +31,13 @@ function Assert-PeMachine([string]$Path, [string]$Target) {
     }
 }
 
+function Assert-PythonArm64 {
+    $machine = (& python -c "import platform; print(platform.machine())").Trim().ToUpperInvariant()
+    if ($machine -notin @("ARM64", "AARCH64")) {
+        throw "Native ARM64 execution requires an ARM64 Python process; observed $machine"
+    }
+}
+
 function Normalize-PeTimestamp([string]$Path) {
     # rustc/LLVM writes build-specific time and PDB identity data into the PE
     # image.  Normalize those non-runtime fields before hashing or installing
@@ -177,6 +184,7 @@ if ($RustTarget -eq "aarch64-pc-windows-msvc") {
         "-DCMAKE_SYSTEM_PROCESSOR=ARM64",
         "-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY"
     )
+    Assert-PeMachine $clangC $RustTarget
 }
 $linkArch = if ($RustTarget -eq "aarch64-pc-windows-msvc") { "arm64" } else { "x64" }
 $msvcLink = Get-ChildItem -LiteralPath "${env:ProgramFiles(x86)}\Microsoft Visual Studio" -Recurse -File -Filter link.exe -ErrorAction SilentlyContinue |
@@ -190,6 +198,13 @@ if ($msvcLink) {
 $clangForCMake = $clang.Replace('\', '/')
 Invoke-Checked "cmake" (@("-S", $consumerSource, "-B", $cmakeBuild, "-G", "Ninja", "-DCMAKE_CXX_COMPILER=$clangForCMake", "-DACYCLIC_EMBEDDED_ROOT=$release", "-DACYCLIC_EMBEDDED_HEADER=$($header.FullName)") + $cmakeTargetArgs)
 Invoke-Checked "cmake" @("--build", $cmakeBuild)
+foreach ($executable in @(
+    "acyclic_cpp_embedded_consumer.exe",
+    "acyclic_cpp_embedded_negative.exe",
+    "acyclic_cpp_embedded_cross_thread.exe"
+)) {
+    Assert-PeMachine (Join-Path $cmakeBuild $executable) $RustTarget
+}
 if (-not $SkipExecution) {
     Invoke-Checked "ctest" @("--test-dir", $cmakeBuild, "--output-on-failure")
 }
@@ -214,6 +229,8 @@ $installedRuntime = Join-Path $prefix "bin\acyclic_sdk_embedded_prototype.dll"
 $importLibraryInstalled = Join-Path $prefix "lib\acyclic_sdk_embedded_prototype.dll.lib"
 Invoke-Checked $clangC (@("--target=$RustTarget", "-std=c11", "-I$(Join-Path $prefix 'include')", $cSource, $importLibraryInstalled, "-o", $cConsumer))
 if (-not $SkipExecution) {
+    Assert-PeMachine $cConsumer $RustTarget
+    if ($RustTarget -eq "aarch64-pc-windows-msvc") { Assert-PythonArm64 }
     $oldPath = $env:PATH
     try {
         $env:PATH = "$(Join-Path $prefix 'bin');$oldPath"
@@ -226,6 +243,8 @@ if (-not $SkipExecution) {
 
 Invoke-Checked "cmake" (@("-S", (Join-Path $consumerSource "install-consumer"), "-B", $installedConsumer, "-G", "Ninja", "-DCMAKE_CXX_COMPILER=$clangForCMake", "-DCMAKE_PREFIX_PATH=$prefix") + $cmakeTargetArgs)
 Invoke-Checked "cmake" @("--build", $installedConsumer)
+$installedExecutable = Join-Path $installedConsumer "acyclic_cpp_installed_consumer.exe"
+Assert-PeMachine $installedExecutable $RustTarget
 if (-not $SkipExecution) {
     $oldPath = $env:PATH
     try {
