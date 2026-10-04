@@ -97,7 +97,7 @@ describe("GraphCoder UI transport boundary", () => {
 
   test("bridge uses the shared UTF-8 identifier and decimal generation checks", async () => {
     const oversizedId = "é".repeat(129);
-    expect(() => checkedRequestId(oversizedId)).toThrow(/256 UTF-8 bytes/u);
+    expect(() => checkedRequestId(oversizedId)).toThrow(/UTF-8 byte limit/u);
 
     const malformedSummary = new BridgeGraphCoderTransport({ request: async request => ({ request_id: request.request_id, ok: true, result: { items: [{ id: oversizedId, title: "inspect", state: "running", updated_at: "0", root_agent_id: "agent-1" }] } }) });
     await expect(malformedSummary.listSessions()).rejects.toMatchObject({ code: "invalid_input" });

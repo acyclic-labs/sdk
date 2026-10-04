@@ -37,8 +37,11 @@ import {
   encodeGeneration,
   encodePageQuery,
   MAX_REQUEST_ID_BYTES,
-} from "./newwire-codec.js";
-export { checkedRequestId, MAX_REQUEST_ID_BYTES } from "./newwire-codec.js";
+  array,
+  record,
+  text,
+} from "./wire-codec.js";
+export { checkedRequestId, MAX_REQUEST_ID_BYTES } from "./wire-codec.js";
 
 /**
  * Small request/response protocol for native and terminal hosts.
@@ -330,20 +333,6 @@ function decodeResponse(value: unknown, requestId: string, maximumBytes: number)
   throw new GraphCoderError(code, text(error.message, "bridge error message"));
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an object`);
-  return value as Record<string, unknown>;
-}
-
-function array(value: unknown, label: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an array`);
-  return value;
-}
-
-function text(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new GraphCoderError("transport", `${label} is not text`);
-  return value;
-}
 
 function boundSnapshot(snapshot: SessionSnapshot, expectedSession: SessionSnapshot["summary"]["id"], operation: string): SessionSnapshot {
   if (snapshot.summary.id !== expectedSession) throw new GraphCoderError("transport", `${operation} response is not bound to its session`);

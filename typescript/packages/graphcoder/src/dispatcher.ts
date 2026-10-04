@@ -11,7 +11,7 @@ import {
   type GraphCoderTransport,
 } from "./api.js";
 import { checkedRequestId, GRAPH_CODER_WIRE_METHODS, type GraphCoderWireMethod, type GraphCoderWireRequest, type GraphCoderWireResponse } from "./bridge.js";
-import { checkedWireText, decodeGeneration, decodePageQuery, wireActivity, wireAgent, wireApproval, wireChange, wireChangeSummary, wireFile, wireMessage, wirePage, wireSessionSummary, wireSnapshot } from "./newwire-codec.js";
+import { decodeGeneration, decodePageQuery, wireActivity, wireApproval, wireChange, wireChangeSummary, wireFile, wireMessage, wirePage, wireSessionSummary, wireSnapshot } from "./wire-codec.js";
 
 /** Native-side JSON-lines dispatcher over an injected durable transport. */
 export class GraphCoderWireDispatcher {
@@ -41,18 +41,18 @@ export class GraphCoderWireDispatcher {
     switch (request.method) {
       case "list_sessions": return wirePage(await this.transport.listSessions(decodePageQuery(params.query)), wireSessionSummary);
       case "start_session": return wireSnapshot(await this.transport.startSession({ prompt: checkedPublicText(params.prompt, "prompt", MAX_PROMPT_BYTES), operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), ...(params.model_fixture === undefined ? {} : { modelFixture: checkedPublicText(params.model_fixture, "model_fixture", MAX_OPERATION_ID_BYTES) }) }));
-      case "open_session": return wireSnapshot(await this.transport.openSession(sessionId(checkedWireText(params.session_id, "session_id"))));
-      case "resume_session": return wireSnapshot(await this.transport.resumeSession(sessionId(checkedWireText(params.session_id, "session_id"))));
-      case "read_activity": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wirePage(await this.transport.readActivity(id, decodePageQuery(params.query)), wireActivity); }
-      case "read_messages": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wirePage(await this.transport.readMessages(id, decodePageQuery(params.query)), wireMessage); }
-      case "send_message": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wireMessage(await this.transport.sendMessage({ sessionId: id, senderId: agentId(checkedWireText(params.sender_id, "sender_id")), recipientId: agentId(checkedWireText(params.recipient_id, "recipient_id")), body: checkedPublicText(params.body, "body", MAX_MESSAGE_BODY_BYTES) })); }
-      case "list_approvals": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wirePage(await this.transport.listApprovals(id, decodePageQuery(params.query)), wireApproval); }
-      case "resolve_approval": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wireApproval(await this.transport.resolveApproval({ approvalId: approvalId(checkedWireText(params.approval_id, "approval_id")), approved: requiredBoolean(params.approved, "approved"), sessionId: id })); }
-      case "cancel_session": return wireSnapshot(await this.transport.cancelSession(sessionId(checkedWireText(params.session_id, "session_id"))));
-      case "list_changes": { const id = sessionId(checkedWireText(params.session_id, "session_id")); const changes = await this.transport.listChanges(id); return { session_id: id, generation: changes.generation, items: changes.items.map(wireChangeSummary) }; }
-      case "read_change": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wireChange(await this.transport.readChange(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
-      case "read_file": { const id = sessionId(checkedWireText(params.session_id, "session_id")); return wireFile(await this.transport.readFile(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
-      case "approve_writeback": { const id = sessionId(checkedWireText(params.session_id, "session_id")); const receipt = await this.transport.approveWriteback({ sessionId: id, operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), expectedGeneration: decodeGeneration(params.expected_generation, "expected_generation", "invalid_input"), approved: requiredBoolean(params.approved, "approved") }); return { operation_id: receipt.operationId, session_id: receipt.sessionId, generation: receipt.generation, applied: receipt.applied }; }
+      case "open_session": return wireSnapshot(await this.transport.openSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
+      case "resume_session": return wireSnapshot(await this.transport.resumeSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
+      case "read_activity": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wirePage(await this.transport.readActivity(id, decodePageQuery(params.query)), wireActivity); }
+      case "read_messages": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wirePage(await this.transport.readMessages(id, decodePageQuery(params.query)), wireMessage); }
+      case "send_message": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireMessage(await this.transport.sendMessage({ sessionId: id, senderId: agentId(checkedPublicText(params.sender_id, "sender_id", MAX_OPERATION_ID_BYTES)), recipientId: agentId(checkedPublicText(params.recipient_id, "recipient_id", MAX_OPERATION_ID_BYTES)), body: checkedPublicText(params.body, "body", MAX_MESSAGE_BODY_BYTES) })); }
+      case "list_approvals": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wirePage(await this.transport.listApprovals(id, decodePageQuery(params.query)), wireApproval); }
+      case "resolve_approval": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireApproval(await this.transport.resolveApproval({ approvalId: approvalId(checkedPublicText(params.approval_id, "approval_id", MAX_OPERATION_ID_BYTES)), approved: requiredBoolean(params.approved, "approved"), sessionId: id })); }
+      case "cancel_session": return wireSnapshot(await this.transport.cancelSession(sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES))));
+      case "list_changes": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const changes = await this.transport.listChanges(id); return { session_id: id, generation: changes.generation, items: changes.items.map(wireChangeSummary) }; }
+      case "read_change": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireChange(await this.transport.readChange(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
+      case "read_file": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); return wireFile(await this.transport.readFile(id, checkedPath(params.path), decodeGeneration(params.generation, "generation", "invalid_input")), id); }
+      case "approve_writeback": { const id = sessionId(checkedPublicText(params.session_id, "session_id", MAX_OPERATION_ID_BYTES)); const receipt = await this.transport.approveWriteback({ sessionId: id, operationId: checkedPublicText(params.operation_id, "operation_id", MAX_OPERATION_ID_BYTES), expectedGeneration: decodeGeneration(params.expected_generation, "expected_generation", "invalid_input"), approved: requiredBoolean(params.approved, "approved") }); return { operation_id: receipt.operationId, session_id: receipt.sessionId, generation: receipt.generation, applied: receipt.applied }; }
     }
   }
 }
@@ -60,7 +60,7 @@ export class GraphCoderWireDispatcher {
 function decodeRequest(value: unknown): GraphCoderWireRequest {
   const raw = record(value, "request");
   const requestId = checkedRequestId(raw.request_id);
-  const method = checkedWireText(raw.method, "method");
+  const method = checkedPublicText(raw.method, "method", MAX_OPERATION_ID_BYTES);
   if (!GRAPH_CODER_WIRE_METHODS.includes(method as GraphCoderWireMethod)) throw new GraphCoderError("invalid_input", `unsupported method ${method}`);
   return { request_id: requestId, method: method as GraphCoderWireMethod, params: record(raw.params, "request params") } as GraphCoderWireRequest;
 }

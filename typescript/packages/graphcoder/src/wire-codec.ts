@@ -27,20 +27,10 @@ import {
  * browser/native side and the host side must reject and encode the same bytes
  * before a request reaches a transport.
  */
-export const MAX_REQUEST_ID_BYTES = 256;
-
-export function checkedWireText(value: unknown, label: string, maximumBytes = MAX_OPERATION_ID_BYTES): string {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new GraphCoderError("invalid_input", `${label} must be nonempty text`);
-  }
-  if (new TextEncoder().encode(value).byteLength > maximumBytes) {
-    throw new GraphCoderError("invalid_input", `${label} must be at most ${maximumBytes} UTF-8 bytes`);
-  }
-  return value;
-}
+export const MAX_REQUEST_ID_BYTES = MAX_OPERATION_ID_BYTES;
 
 export function checkedRequestId(value: unknown, label = "request_id"): string {
-  return checkedWireText(value, label, MAX_REQUEST_ID_BYTES);
+  return checkedPublicText(value, label, MAX_REQUEST_ID_BYTES);
 }
 
 export function encodePageQuery(query: PageQuery | undefined): { readonly after?: string; readonly limit?: number } | undefined {
@@ -54,10 +44,7 @@ export function decodePageQuery(value: unknown): PageQuery | undefined {
 }
 
 function parsePageQuery(value: unknown): { readonly after?: string; readonly limit?: number } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new GraphCoderError("invalid_input", "page query must be an object");
-  }
-  const raw = value as Record<string, unknown>;
+  const raw = record(value, "page query", "invalid_input");
   if (raw.after !== undefined && (typeof raw.after !== "string" || raw.after.trim() === "")) {
     throw new GraphCoderError("invalid_input", "page cursor must be nonempty text");
   }
@@ -157,7 +144,7 @@ export function decodeMessage(value: unknown): GraphMessage {
 
 export function decodeApproval(value: unknown): ApprovalRequest {
   const raw = record(value, "approval");
-  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: checkedWireText(raw.operation_id, "approval operation id"), actionDigest: text(raw.action_digest, "approval action digest"), description: text(raw.description, "approval description"), state: oneOf(raw.state, ["pending", "approved", "declined", "cancelled", "expired", "denied"], "approval state"), createdAt: text(raw.created_at, "approval created_at") };
+  return { id: approvalId(text(raw.id, "approval id")), sessionId: sessionId(text(raw.session_id, "approval session id")), agentId: agentId(text(raw.agent_id, "approval agent id")), operationId: checkedPublicText(raw.operation_id, "approval operation id", MAX_OPERATION_ID_BYTES), actionDigest: text(raw.action_digest, "approval action digest"), description: text(raw.description, "approval description"), state: oneOf(raw.state, ["pending", "approved", "declined", "cancelled", "expired", "denied"], "approval state"), createdAt: text(raw.created_at, "approval created_at") };
 }
 
 export function decodeChangeSummary(value: unknown): ChangeSummary {
@@ -182,18 +169,18 @@ export function decodeFileBody(value: unknown, maximumBytes = 64 * 1024 * 1024, 
   return { path: text(raw.path, "file path"), mediaType: text(raw.media_type, "file media type"), bytes: Uint8Array.from(bytes as ArrayLike<number>), generation: decodeGeneration(raw.generation, "file generation") };
 }
 
-function record(value: unknown, label: string): Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an object`);
+export function record(value: unknown, label: string, code: "invalid_input" | "transport" = "transport"): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new GraphCoderError(code, `${label} is not an object`);
   return value as Record<string, unknown>;
 }
 
-function array(value: unknown, label: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw new GraphCoderError("transport", `${label} is not an array`);
+export function array(value: unknown, label: string, code: "invalid_input" | "transport" = "transport"): readonly unknown[] {
+  if (!Array.isArray(value)) throw new GraphCoderError(code, `${label} is not an array`);
   return value;
 }
 
-function text(value: unknown, label: string): string {
-  if (typeof value !== "string") throw new GraphCoderError("transport", `${label} is not text`);
+export function text(value: unknown, label: string, code: "invalid_input" | "transport" = "transport"): string {
+  if (typeof value !== "string") throw new GraphCoderError(code, `${label} is not text`);
   return value;
 }
 
