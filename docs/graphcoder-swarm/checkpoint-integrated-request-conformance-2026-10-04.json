@@ -20,7 +20,7 @@
   "sources": [
     {"path": "rust/crates/harness/tests/model_input_conformance_v3.rs", "sha256": "af5eced283e594fff54f0c55c722f16e19dc716c3d0f1599b7fb7dc497a149ef"},
     {"path": "rust/crates/harness/tests/model_input_rejection_conformance_v3.rs", "sha256": "3432902d90cfb48dd5871157ce7610182ddbd9154092bf3647a184230bbd1dcd"},
-    {"path": "rust/crates/harness/conformance/model-input-v3.json", "sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaeF22b8fcc7c1d620148c0a"}
+    {"path": "rust/crates/harness/conformance/model-input-v3.json", "sha256": "3b7133eaba5c237ba98646129df8201f88c51e8ceaef22b8fcc7c1d620148c0a"}
   ],
   "artifacts": [
     {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/model_input_conformance_v3-b4c3cb68970f9b4d.exe", "sha256": "0367fbc886c1d3874626bab38089d8cf11ee5125ae26aa144c8a5f83159801b4"},
@@ -40,6 +40,24 @@
     "source": {"path": "rust/crates/objects/src/physical.rs", "sha256": "395628e22022a790e9d796df4e8e895309c0d0ad8fda4775edc7c46d279a02fa"},
     "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_objects-e04ff6416c5ed5c8.exe", "sha256": "780fdcf2cadaff2171fc044fe00e5b16a43bb912515519fbb952b82710d8bb2e"},
     "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/physical-probe-ambiguity.log", "sha256": "88cb4a4c05783cae75ea55a1135a3a91824a7439032d56f69647d9e6f3c54707"}
+  },
+  "subsequent_adapter_centralization": {
+    "scope": "One HostedCodingTool allocation serves both executor and projection; no public contract change",
+    "source_commit": "ac6fc60e755b750bff453c00a28a25dd695243d1",
+    "rust_tree": "9f89c7f88542dea503252fa89789b82fd1a05d0a",
+    "source_committed_during_build": true,
+    "source": {"path": "rust/crates/harness/src/bundle.rs", "sha256": "70bad634549faa89e46a0ad91662db1ca1aa1edbe0181d70b95d0d50887c3ff4"},
+    "change": {"insertions": 6, "deletions": 8},
+    "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --lib bundle::tests::coding_ --target-dir Q:/graphcoder-builds/root-conformance-20261004 -j2",
+    "process_session": 40497,
+    "exit_code": 0,
+    "passed": 3,
+    "failed": 0,
+    "ignored": 0,
+    "filtered": 321,
+    "artifact": {"path": "Q:/graphcoder-builds/root-conformance-20261004/debug/deps/acyclic_harness-9fe0aa1bb5097eba.exe", "sha256": "2e5d6d99970811df74734b64216fd18b8675bc29d494bbc86e13e69341884e37"},
+    "log": {"path": "Q:/graphcoder-builds/root-conformance-20261004/coding-adapter-sharing.log", "sha256": "ddb5f598de25b8b8c5aa9de172f5c6f8fc0d0a7dcde51f217b5b25d46045b9b2"},
+    "boundaries": "Focused existing registry execution/projection/schema tests only; the earlier six conformance cases remain attributed to their earlier Rust tree"
   },
   "boundaries": [
     "Actual Windows test executables; deterministic mocked model providers; no production model quality claim",
