@@ -19,9 +19,10 @@
       "depends_on": [],
       "semantic_check": "mismatch: protocol identity",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.HandshakeResponse"
       },
-      "elapsed_ms": 0.52
+      "elapsed_ms": 1.131
     },
     {
       "order": 2,
@@ -35,11 +36,12 @@
       "depends_on": [
         "handshake"
       ],
-      "semantic_check": "mismatch: expected workspace+head; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded workspace+head; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.WorkspaceResponse"
       },
-      "elapsed_ms": 0.779
+      "elapsed_ms": 0.503
     },
     {
       "order": 3,
@@ -53,9 +55,10 @@
       "depends_on": [
         "create_workspace"
       ],
-      "semantic_check": "mismatch: expected workspace; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded workspace; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.WorkspaceResponse"
       },
       "elapsed_ms": 0
     },
@@ -71,11 +74,12 @@
       "depends_on": [
         "open_workspace"
       ],
-      "semantic_check": "mismatch: expected generation; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.GenerationResponse"
       },
-      "elapsed_ms": 0.543
+      "elapsed_ms": 0.934
     },
     {
       "order": 5,
@@ -89,11 +93,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected generation; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.GenerationResponse"
       },
-      "elapsed_ms": 0.654
+      "elapsed_ms": 0
     },
     {
       "order": 6,
@@ -107,11 +112,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected bytes; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded bytes; response contained no present fields",
       "actual": {
-        "field_count": 1
+        "fields": {},
+        "type": "acyclic.filesystem.v2.ReadResponse"
       },
-      "elapsed_ms": 0.336
+      "elapsed_ms": 0.823
     },
     {
       "order": 7,
@@ -125,11 +131,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected metadata; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded metadata; response contained no present fields",
       "actual": {
-        "field_count": 1
+        "fields": {},
+        "type": "acyclic.filesystem.v2.StatResponse"
       },
-      "elapsed_ms": 0.506
+      "elapsed_ms": 0
     },
     {
       "order": 8,
@@ -143,11 +150,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected entries; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded entries; response contained no present fields",
       "actual": {
-        "field_count": 1
+        "fields": {},
+        "type": "acyclic.filesystem.v2.ListDirectoryResponse"
       },
-      "elapsed_ms": 1.222
+      "elapsed_ms": 0.503
     },
     {
       "order": 9,
@@ -161,11 +169,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected target; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded target; response contained no present fields",
       "actual": {
-        "field_count": 1
+        "fields": {},
+        "type": "acyclic.filesystem.v2.ReadResponse"
       },
-      "elapsed_ms": 0
+      "elapsed_ms": 0.529
     },
     {
       "order": 10,
@@ -179,11 +188,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected extents; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded extents; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.PlanExtentsResponse"
       },
-      "elapsed_ms": 0.507
+      "elapsed_ms": 0
     },
     {
       "order": 11,
@@ -197,11 +207,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected generation+conflicts; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation+conflicts; response contained no present fields",
       "actual": {
-        "field_count": 5
+        "fields": {},
+        "type": "acyclic.filesystem.v2.MutationResponse"
       },
-      "elapsed_ms": 0.546
+      "elapsed_ms": 0.62
     },
     {
       "order": 12,
@@ -215,9 +226,10 @@
       "depends_on": [
         "apply_transaction"
       ],
-      "semantic_check": "mismatch: expected generation+conflicts; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation+conflicts; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.RebaseTransactionResponse"
       },
       "elapsed_ms": 0
     },
@@ -233,11 +245,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected workspace; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded workspace; response contained no present fields",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.WorkspaceResponse"
       },
-      "elapsed_ms": 0.6
+      "elapsed_ms": 1.001
     },
     {
       "order": 14,
@@ -251,11 +264,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected changes; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded changes; response contained no present fields",
       "actual": {
-        "field_count": 6
+        "fields": {},
+        "type": "acyclic.filesystem.v2.DiffResponse"
       },
-      "elapsed_ms": 0.573
+      "elapsed_ms": 0
     },
     {
       "order": 15,
@@ -269,11 +283,12 @@
       "depends_on": [
         "diff"
       ],
-      "semantic_check": "mismatch: expected generation+conflicts; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation+conflicts; response contained no present fields",
       "actual": {
-        "field_count": 4
+        "fields": {},
+        "type": "acyclic.filesystem.v2.RebaseResponse"
       },
-      "elapsed_ms": 0
+      "elapsed_ms": 0.505
     },
     {
       "order": 16,
@@ -287,11 +302,12 @@
       "depends_on": [
         "diff"
       ],
-      "semantic_check": "mismatch: expected join_plan; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded join_plan; response contained no present fields",
       "actual": {
-        "field_count": 12
+        "fields": {},
+        "type": "acyclic.filesystem.v2.JoinPlan"
       },
-      "elapsed_ms": 0.615
+      "elapsed_ms": 4.558
     },
     {
       "order": 17,
@@ -305,11 +321,12 @@
       "depends_on": [
         "plan_join"
       ],
-      "semantic_check": "mismatch: expected generation+conflicts; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation+conflicts; response contained no present fields",
       "actual": {
-        "field_count": 4
+        "fields": {},
+        "type": "acyclic.filesystem.v2.JoinResponse"
       },
-      "elapsed_ms": 2.173
+      "elapsed_ms": 0.612
     },
     {
       "order": 18,
@@ -323,11 +340,12 @@
       "depends_on": [
         "get_head"
       ],
-      "semantic_check": "mismatch: expected retained_generation; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded retained_generation; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.RetainGenerationResponse"
       },
-      "elapsed_ms": 0.507
+      "elapsed_ms": 0
     },
     {
       "order": 19,
@@ -341,11 +359,12 @@
       "depends_on": [
         "checkpoint"
       ],
-      "semantic_check": "mismatch: expected retained_generation; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded retained_generation; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.RetainGenerationResponse"
       },
-      "elapsed_ms": 1.529
+      "elapsed_ms": 0.622
     },
     {
       "order": 20,
@@ -366,7 +385,7 @@
         "object_id": "fixture-export-object-1",
         "terminal": true
       },
-      "elapsed_ms": 1.739
+      "elapsed_ms": 0.542
     },
     {
       "order": 21,
@@ -380,11 +399,12 @@
       "depends_on": [
         "create_workspace"
       ],
-      "semantic_check": "mismatch: expected generation; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded generation; response contained no present fields",
       "actual": {
-        "field_count": 1
+        "fields": {},
+        "type": "acyclic.filesystem.v2.ImportResponse"
       },
-      "elapsed_ms": 1.322
+      "elapsed_ms": 0.553
     },
     {
       "order": 22,
@@ -398,11 +418,12 @@
       "depends_on": [
         "create_workspace"
       ],
-      "semantic_check": "mismatch: expected credential; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded credential; response contained no present fields",
       "actual": {
-        "field_count": 4
+        "fields": {},
+        "type": "acyclic.filesystem.v2.CredentialResponse"
       },
-      "elapsed_ms": 0.506
+      "elapsed_ms": 0
     },
     {
       "order": 23,
@@ -416,11 +437,12 @@
       "depends_on": [
         "create_workspace"
       ],
-      "semantic_check": "mismatch: expected credential; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded credential; response contained no present fields",
       "actual": {
-        "field_count": 4
+        "fields": {},
+        "type": "acyclic.filesystem.v2.CredentialResponse"
       },
-      "elapsed_ms": 0
+      "elapsed_ms": 0.529
     },
     {
       "order": 24,
@@ -434,11 +456,12 @@
       "depends_on": [
         "create_workspace"
       ],
-      "semantic_check": "mismatch: expected source_state; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded source_state; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.SourceResponse"
       },
-      "elapsed_ms": 0.696
+      "elapsed_ms": 0.52
     },
     {
       "order": 25,
@@ -452,11 +475,12 @@
       "depends_on": [
         "get_source_state"
       ],
-      "semantic_check": "mismatch: expected source_state; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded source_state; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.SourceResponse"
       },
-      "elapsed_ms": 0.727
+      "elapsed_ms": 0
     },
     {
       "order": 26,
@@ -470,11 +494,12 @@
       "depends_on": [
         "reconcile_source"
       ],
-      "semantic_check": "mismatch: expected source_state; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded source_state; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.SourceResponse"
       },
-      "elapsed_ms": 0
+      "elapsed_ms": 0.57
     },
     {
       "order": 27,
@@ -488,11 +513,12 @@
       "depends_on": [
         "rescan_source"
       ],
-      "semantic_check": "mismatch: expected source_state; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded source_state; response contained no present fields",
       "actual": {
-        "field_count": 3
+        "fields": {},
+        "type": "acyclic.filesystem.v2.SourceResponse"
       },
-      "elapsed_ms": 0.525
+      "elapsed_ms": 0
     },
     {
       "order": 28,
@@ -508,9 +534,10 @@
       ],
       "semantic_check": "mismatch: expected running status",
       "actual": {
-        "field_count": 2
+        "fields": {},
+        "type": "acyclic.filesystem.v2.ObserveResponse"
       },
-      "elapsed_ms": 0
+      "elapsed_ms": 7.707
     },
     {
       "order": 29,
@@ -529,7 +556,7 @@
         "operation_present": false,
         "status_present": false
       },
-      "elapsed_ms": 0.735
+      "elapsed_ms": 1.547
     },
     {
       "order": 30,
@@ -543,11 +570,12 @@
       "depends_on": [
         "cancel"
       ],
-      "semantic_check": "mismatch: expected deleted; Rust fixture returned default response",
+      "semantic_check": "mismatch: expected decoded deleted; response contained no present fields",
       "actual": {
-        "field_count": 5
+        "fields": {},
+        "type": "acyclic.filesystem.v2.MutationResponse"
       },
-      "elapsed_ms": 0.535
+      "elapsed_ms": 0.584
     },
     {
       "order": 31,
@@ -565,7 +593,7 @@
         "protocol_version": "2",
         "supported_present": true
       },
-      "elapsed_ms": 1.085
+      "elapsed_ms": 0.669
     },
     {
       "order": 32,
@@ -585,7 +613,7 @@
         "operation_present": true,
         "state": 1
       },
-      "elapsed_ms": 0.506
+      "elapsed_ms": 0
     },
     {
       "order": 33,
@@ -605,7 +633,7 @@
         "generation": "rust-fixture-generation-v1",
         "live": false
       },
-      "elapsed_ms": 0.685
+      "elapsed_ms": 0
     },
     {
       "order": 34,
@@ -628,7 +656,7 @@
         "revision": 0,
         "state": 1
       },
-      "elapsed_ms": 0.518
+      "elapsed_ms": 0.522
     },
     {
       "order": 35,
@@ -650,7 +678,7 @@
         "state": 4,
         "status_present": true
       },
-      "elapsed_ms": 0.689
+      "elapsed_ms": 0.577
     }
   ]
 }

@@ -79,13 +79,48 @@ def has_field(value, name):
     except (AttributeError, ValueError):
         return False
 
+
+def decoded_summary(value, depth=0):
+    if depth > 3:
+        return {"type": value.DESCRIPTOR.full_name, "truncated": True}
+    result = {"type": value.DESCRIPTOR.full_name, "fields": {}}
+    for field, item in value.ListFields():
+        if field.message_type is not None:
+            if field.is_repeated:
+                result["fields"][field.name] = [decoded_summary(child, depth + 1) for child in item[:8]]
+            else:
+                result["fields"][field.name] = decoded_summary(item, depth + 1)
+        elif field.is_repeated:
+            result["fields"][field.name] = list(item[:8])
+        elif field.type == field.TYPE_BYTES:
+            result["fields"][field.name] = {"byte_length": len(item), "sha256": __import__("hashlib").sha256(item).hexdigest()}
+        elif field.enum_type is not None:
+            result["fields"][field.name] = {"number": int(item), "name": field.enum_type.values_by_number[int(item)].name}
+        else:
+            result["fields"][field.name] = item
+    return result
+
+
+def generic_semantic(value, known_output):
+    summary = decoded_summary(value)
+    fields = summary["fields"]
+    if not fields:
+        return f"mismatch: expected decoded {known_output}; response contained no present fields"
+    identity_names = {"id", "operation_id", "workspace_id", "generation_id", "object_id", "cursor", "path", "name", "version"}
+    for name, item in fields.items():
+        if name in identity_names and isinstance(item, str) and not item:
+            return f"mismatch: decoded identity {name} is empty"
+        if isinstance(item, dict) and "name" in item and item["name"].endswith("UNSPECIFIED"):
+            return f"mismatch: decoded enum {name} is unspecified"
+    return f"passed: decoded fields for {known_output}"
+
 def actual(method_name, responses):
     if not responses:
         return {"response": "empty"}
     value = responses[0]
     if method_name == "Handshake":
         if not has_field(value, "protocol"):
-            return {"field_count": len(value.ListFields())}
+            return decoded_summary(value)
         return {"protocol_version": value.protocol.version, "descriptor_digest": value.protocol.descriptor_digest, "supported_present": has_field(value, "supported")}
     if method_name == "Submit":
         return {"state": value.state, "operation_id": value.operation.operation_id if value.HasField("operation") else ""}
@@ -93,7 +128,7 @@ def actual(method_name, responses):
         return {"live": value.live, "generation": value.generation, "from_revision": value.from_revision, "through_revision": value.through_revision, "event_count": len(value.events)}
     if method_name == "Observe":
         if not has_field(value, "operation") and not has_field(value, "owner"):
-            return {"field_count": len(value.ListFields())}
+            return decoded_summary(value)
         return {"state": value.state, "operation_id": value.operation.operation_id if has_field(value, "operation") else "", "owner_id": value.owner.id if has_field(value, "owner") else "", "revision": value.revision}
     if method_name == "Cancel":
         try:
@@ -101,7 +136,7 @@ def actual(method_name, responses):
         except (AttributeError, ValueError):
             status = None
         return {"status_present": status is not None, "state": status.state if status is not None else None, "revision": status.revision if status is not None else None, "operation_id": value.operation.operation_id if value.HasField("operation") else ""}
-    return {"field_count": len(value.ListFields())}
+    return decoded_summary(value)
 
 def semantic(method_name, responses, known_output):
     if method_name == "Export":
@@ -140,7 +175,7 @@ def semantic(method_name, responses, known_output):
             return "mismatch: expected cancelled revision 1"
         return "passed: cancelled_revision"
     if responses:
-        return f"mismatch: expected {known_output}; Rust fixture returned default response"
+        return generic_semantic(responses[0], known_output)
     return f"mismatch: expected {known_output}; empty response"
 
 
@@ -174,6 +209,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 

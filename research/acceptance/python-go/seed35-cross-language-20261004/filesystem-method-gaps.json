@@ -1,0 +1,214 @@
+{
+  "schema": "acyclic.sdk.filesystem.fixture-method-gaps.v1",
+  "fixture_binary": "Q:/sdk/work/fixture-build-semantic-20261004/debug/fixture-server.exe",
+  "fixture_binary_sha256": "988C78B31A3B0CB1B9A3BBFEC297B3A7A5233CF7C87C7E7F9DAC9B4446184AB3",
+  "startup_source_sha256": "21D13BC5F4ECC678ADB192E297D8FEB38CCCF4F35C1B68F5CA148A318E6B98A1",
+  "fixture_source_sha256": "5CAFB17319D5D217227103ADFFB09F0D111CDBD23CCC41209183456AC5E4DE5D",
+  "note": "The binary identifies startup lib source 21d13. The current fixture-server source is 5caf and its handlers still return default responses for these methods. Rebuild after MemoryFs changes before requalification.",
+  "methods": [
+    {
+      "order": 1,
+      "operation": "handshake",
+      "known_output": "protocol+capabilities",
+      "response_type": "acyclic.filesystem.v2.HandshakeResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 2,
+      "operation": "create_workspace",
+      "known_output": "workspace+head",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 3,
+      "operation": "open_workspace",
+      "known_output": "workspace",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 4,
+      "operation": "get_head",
+      "known_output": "generation",
+      "response_type": "acyclic.filesystem.v2.GenerationResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 5,
+      "operation": "get_generation",
+      "known_output": "generation",
+      "response_type": "acyclic.filesystem.v2.GenerationResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 6,
+      "operation": "read",
+      "known_output": "bytes",
+      "response_type": "acyclic.filesystem.v2.ReadResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 7,
+      "operation": "stat",
+      "known_output": "metadata",
+      "response_type": "acyclic.filesystem.v2.StatResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 8,
+      "operation": "list_directory",
+      "known_output": "entries",
+      "response_type": "acyclic.filesystem.v2.ListDirectoryResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 9,
+      "operation": "read_link",
+      "known_output": "target",
+      "response_type": "acyclic.filesystem.v2.ReadResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 10,
+      "operation": "plan_extents",
+      "known_output": "extents",
+      "response_type": "acyclic.filesystem.v2.PlanExtentsResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 11,
+      "operation": "apply_transaction",
+      "known_output": "generation+conflicts",
+      "response_type": "acyclic.filesystem.v2.MutationResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 12,
+      "operation": "rebase_transaction",
+      "known_output": "generation+conflicts",
+      "response_type": "acyclic.filesystem.v2.RebaseTransactionResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 13,
+      "operation": "fork_workspace",
+      "known_output": "workspace",
+      "response_type": "acyclic.filesystem.v2.WorkspaceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 14,
+      "operation": "diff",
+      "known_output": "changes",
+      "response_type": "acyclic.filesystem.v2.DiffResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 15,
+      "operation": "rebase",
+      "known_output": "generation+conflicts",
+      "response_type": "acyclic.filesystem.v2.RebaseResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 16,
+      "operation": "plan_join",
+      "known_output": "join_plan",
+      "response_type": "acyclic.filesystem.v2.JoinPlan",
+      "decoded_fields": {}
+    },
+    {
+      "order": 17,
+      "operation": "apply_join",
+      "known_output": "generation+conflicts",
+      "response_type": "acyclic.filesystem.v2.JoinResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 18,
+      "operation": "checkpoint",
+      "known_output": "retained_generation",
+      "response_type": "acyclic.filesystem.v2.RetainGenerationResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 19,
+      "operation": "pin",
+      "known_output": "retained_generation",
+      "response_type": "acyclic.filesystem.v2.RetainGenerationResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 21,
+      "operation": "import",
+      "known_output": "generation",
+      "response_type": "acyclic.filesystem.v2.ImportResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 22,
+      "operation": "issue_mount_credential",
+      "known_output": "credential",
+      "response_type": "acyclic.filesystem.v2.CredentialResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 23,
+      "operation": "issue_s3_credential",
+      "known_output": "credential",
+      "response_type": "acyclic.filesystem.v2.CredentialResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 24,
+      "operation": "get_source_state",
+      "known_output": "source_state",
+      "response_type": "acyclic.filesystem.v2.SourceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 25,
+      "operation": "reconcile_source",
+      "known_output": "source_state",
+      "response_type": "acyclic.filesystem.v2.SourceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 26,
+      "operation": "rescan_source",
+      "known_output": "source_state",
+      "response_type": "acyclic.filesystem.v2.SourceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 27,
+      "operation": "seal_source",
+      "known_output": "source_state",
+      "response_type": "acyclic.filesystem.v2.SourceResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 28,
+      "operation": "observe",
+      "known_output": "operation_status",
+      "response_type": "acyclic.filesystem.v2.ObserveResponse",
+      "decoded_fields": {}
+    },
+    {
+      "order": 29,
+      "operation": "cancel",
+      "known_output": "cancelled_operation_status",
+      "response_type": null,
+      "decoded_fields": null
+    },
+    {
+      "order": 30,
+      "operation": "delete_workspace",
+      "known_output": "deleted",
+      "response_type": "acyclic.filesystem.v2.MutationResponse",
+      "decoded_fields": {}
+    }
+  ]
+}
+
