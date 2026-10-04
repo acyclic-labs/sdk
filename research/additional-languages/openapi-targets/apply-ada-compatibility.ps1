@@ -169,6 +169,14 @@ end $rootUnit.Streams;
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-client.adb')) {
             $text = [regex]::Replace($text, "(?m)^\s*C\.Set_Credentials \(Cred'Unchecked_Access\);\r?\n", "      null;`n")
         }
+        if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-clients.adb')) {
+            # OpenAPI Generator represents the free-form models/list body as
+            # the shared Rust-owned Value_Type.  There is no schema-specific
+            # serializer to call for that opaque body, so preserve the request
+            # seam without inventing a second model implementation.
+            $rootEscaped = [regex]::Escape($rootUnit)
+            $text = [regex]::Replace($text, "(?m)^\s*$rootEscaped\.Models\.Serialize \(Req\.Stream, \"\", P_Body\);\r?\n", "      null;`n")
+        }
         if ($text -notmatch [regex]::Escape("$rootUnit.Is_Null(")) {
             $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*)\.Is_Null", "$rootUnit.Is_Null(`$1)")
         }
