@@ -660,6 +660,11 @@ impl TaskAdmissionRecord {
 /// The host stages input before committing ref-only operation state and returns
 /// `Indeterminate` when an acknowledgement is lost; callers reconcile by ID.
 pub trait DurableTaskHost: Send + Sync {
+    /// Returns the owner clock for composing durable side journals.
+    fn owner_clock(&self) -> std::sync::Arc<dyn acyclic_stream::UnixMillisClock> {
+        std::sync::Arc::new(acyclic_stream::SystemUnixMillisClock)
+    }
+
     /// Returns the owner clock used for durable deadline and completion
     /// validation. Hosts with an injected clock override this boundary;
     /// lightweight adapters retain the system-clock default.

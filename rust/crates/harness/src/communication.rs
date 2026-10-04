@@ -536,12 +536,6 @@ impl WaitRequest {
 /// not own a second journal or a process-local mailbox.  The host remains the
 /// authority for admission, grants, idempotent publication, and recovery.
 pub trait DurableWaitStore: Send + Sync {
-    /// Returns the clock sample captured by a clock-bound store. Stores that
-    /// cannot expose their clock retain compatibility by returning `None`.
-    fn clock_sample(&self) -> Option<u64> {
-        None
-    }
-
     /// Persists one immutable wait admission before observation begins.
     /// Returns a previously retained terminal completion during recovery.
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>>;
@@ -792,10 +786,6 @@ impl<P: StreamProvider> StreamWaitStore<P> {
 }
 
 impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
-    fn clock_sample(&self) -> Option<u64> {
-        Some(self.clock.now_unix_millis())
-    }
-
     fn open<'a>(&'a self, request: WaitRequest) -> BoxFuture<'a, Result<Option<WaitCompletion>>> {
         Box::pin(async move {
             request.validate(None)?;
@@ -931,28 +921,31 @@ impl<P: StreamProvider> DurableWaitStore for StreamWaitStore<P> {
 pub struct DurableCommunication {
     host: Arc<dyn DurableTaskHost>,
     waits: Option<Arc<dyn DurableWaitStore>>,
-    wait_clock_mismatch: bool,
 }
 
 impl DurableCommunication {
     /// Binds communication to one owner-retained durable host.
     #[must_use]
     pub fn new(host: Arc<dyn DurableTaskHost>) -> Self {
-        Self {
-            host,
-            waits: None,
-            wait_clock_mismatch: false,
-        }
+        Self { host, waits: None }
     }
 
     /// Binds owner-retained wait admission and completion persistence.
     #[must_use]
     pub fn with_wait_store(mut self, waits: Arc<dyn DurableWaitStore>) -> Self {
-        self.wait_clock_mismatch = waits
-            .clock_sample()
-            .is_some_and(|sample| sample != self.host.now_unix_millis());
         self.waits = Some(waits);
         self
+    }
+
+    /// Binds the owner clock to the durable wait journal in one composition
+    /// path. The returned store and host share the same clock object.
+    #[must_use]
+    pub fn with_stream_wait_store<P: StreamProvider>(self, stream: StreamClient<P>) -> Self {
+        let waits = Arc::new(StreamWaitStore::new_with_clock(
+            stream,
+            self.host.owner_clock(),
+        ));
+        self.with_wait_store(waits)
     }
 
     /// Validates target authorization from owner-retained admissions before
@@ -994,7 +987,6 @@ impl DurableCommunication {
         request: WaitRequest,
         mut cancellation: Option<tokio::sync::watch::Receiver<bool>>,
     ) -> Result<WaitCompletion> {
-        self.ensure_wait_clock()?;
         request.validate_admission_at(self.host.now_unix_millis())?;
         if cancellation.is_some() && request.cancellation_id.is_none() {
             return Err(Error::Invalid(
@@ -1080,7 +1072,6 @@ impl DurableCommunication {
     /// intentionally separate from the live watch bridge so a cancellation
     /// request survives process loss and can be replayed after restart.
     pub async fn cancel(&self, request: WaitRequest) -> Result<WaitCompletion> {
-        self.ensure_wait_clock()?;
         request.validate(None)?;
         if request.cancellation_id.is_none() {
             return Err(Error::Invalid(
@@ -1104,7 +1095,6 @@ impl DurableCommunication {
         request: WaitRequest,
         completion: WaitCompletion,
     ) -> Result<WaitCompletion> {
-        self.ensure_wait_clock()?;
         request.validate_completion_at(&completion, Some(self.host.now_unix_millis()))?;
         match &self.waits {
             Some(waits) => {
@@ -1114,15 +1104,6 @@ impl DurableCommunication {
             }
             None => Ok(completion),
         }
-    }
-
-    fn ensure_wait_clock(&self) -> Result<()> {
-        if self.wait_clock_mismatch {
-            return Err(Error::Conflict(
-                "wait store clock does not match owner clock".into(),
-            ));
-        }
-        Ok(())
     }
 
     async fn authorize_wait(&self, request: &WaitRequest) -> Result<()> {

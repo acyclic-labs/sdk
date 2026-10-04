@@ -472,10 +472,6 @@ async fn local_wait_store_and_host_share_injected_clock_across_reopen() -> Resul
         .await?,
         Admission::Accepted(id) if id == waiter
     ));
-    let waits = Arc::new(StreamWaitStore::new_with_clock(
-        fixture.stream.clone(),
-        clock.clone(),
-    ));
     let request = WaitRequest {
         operation_id: OperationId::from_bytes([22; 16]),
         waiter,
@@ -487,12 +483,12 @@ async fn local_wait_store_and_host_share_injected_clock_across_reopen() -> Resul
         timeout_epoch_ms: Some(9_999),
         cancellation_id: None,
     };
-    let communication = DurableCommunication::new(host).with_wait_store(waits.clone());
+    let communication =
+        DurableCommunication::new(host).with_stream_wait_store(fixture.stream.clone());
     assert_eq!(
         communication.wait(request.clone(), None).await?,
         WaitCompletion::TimedOut
     );
-    drop(waits);
     drop(communication);
     drop(fixture);
     let reopened_fixture = Fixture::open(directory.path()).await?;
@@ -504,38 +500,6 @@ async fn local_wait_store_and_host_share_injected_clock_across_reopen() -> Resul
         reopened_waits.open(request).await?,
         Some(WaitCompletion::TimedOut)
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn local_wait_rejects_mismatched_owner_and_store_clocks() -> Result<()> {
-    let directory = tempfile::tempdir().map_err(|e| Error::Storage(e.to_string()))?;
-    let fixture = Fixture::open(directory.path()).await?;
-    let host = fixture
-        .host_with_clock(Arc::new(FixedClock(20_000)))
-        .await?;
-    let waits = Arc::new(StreamWaitStore::new_with_clock(
-        fixture.stream.clone(),
-        Arc::new(FixedClock(19_999)),
-    ));
-    let request = WaitRequest {
-        operation_id: OperationId::from_bytes([23; 16]),
-        waiter: TaskId::from_bytes([24; 16]),
-        target: WaitTarget::Messages {
-            task_id: TaskId::from_bytes([24; 16]),
-            after: 0,
-            limit: 1,
-        },
-        timeout_epoch_ms: None,
-        cancellation_id: None,
-    };
-    assert!(matches!(
-        DurableCommunication::new(host)
-            .with_wait_store(waits)
-            .wait(request, None)
-            .await,
-        Err(Error::Conflict(message)) if message.contains("clock")
-    ));
     Ok(())
 }
 

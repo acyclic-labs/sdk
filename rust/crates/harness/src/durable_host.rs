@@ -573,6 +573,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
 }
 
 impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
+    fn owner_clock(&self) -> Arc<dyn UnixMillisClock> {
+        self.clock.clone()
+    }
+
     fn now_unix_millis(&self) -> u64 {
         self.clock.now_unix_millis()
     }
