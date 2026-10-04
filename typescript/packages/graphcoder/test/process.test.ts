@@ -315,6 +315,30 @@ describe("JSON-lines process bridge", () => {
     expect(errors).toBe(0);
   });
 
+  test("applies a bounded stream cap when a native reader is never consumed", async () => {
+    let polls = 0;
+    const io: NativeOwnedProcessIo = {
+      launch: () => ({ token: "native-blocked-token", pid: 42 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: (_token, stream) => {
+        if (stream === "stdout") {
+          polls += 1;
+          return { kind: "data", bytes: new Uint8Array(16 * 1024) };
+        }
+        return { kind: "idle" };
+      },
+      pollExit: () => ({ kind: "running" }),
+      terminate: () => ({ kind: "terminated" }),
+    };
+    const owner = createNativeOwnedProcessOwner(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    child.on("error", () => undefined);
+    await new Promise(resolve => setTimeout(resolve, 250));
+    expect(polls).toBeLessThan(12);
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 42 });
+  });
+
   test("composes the process bridge with the public transport adapter", async () => {
     const script = `let buffer = ""; process.stdin.on("data", chunk => { buffer += chunk.toString(); for (;;) { const newline = buffer.indexOf("\\n"); if (newline < 0) break; const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1); if (!line.trim()) continue; const request = JSON.parse(line); process.stdout.write(JSON.stringify({ request_id: request.request_id, ok: true, result: { items: [] } }) + "\\n"); } });`;
     const connection = ownConnection({ executable: testRuntimeExecutable(), args: ["-e", script], env: env() });

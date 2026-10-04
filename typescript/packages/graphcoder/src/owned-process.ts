@@ -36,6 +36,8 @@ type NativeOwnedChild = ChildProcess & {
   readonly __nativeOwnerToken: string;
 };
 
+const NATIVE_STREAM_HIGH_WATER_MARK = 64 * 1024;
+
 /**
  * Adapts the native token protocol to the bridge's ChildProcess-shaped
  * lifecycle. The native owner remains the only authority for process effects;
@@ -74,8 +76,8 @@ export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedPr
           catch (error) { callback(error instanceof Error ? error : new Error(String(error))); }
         },
       });
-      const stdout = new PassThrough();
-      const stderr = new PassThrough();
+      const stdout = new PassThrough({ highWaterMark: NATIVE_STREAM_HIGH_WATER_MARK });
+      const stderr = new PassThrough({ highWaterMark: NATIVE_STREAM_HIGH_WATER_MARK });
       Object.defineProperties(child, {
         stdin: { value: stdin },
         stdout: { value: stdout },
@@ -85,6 +87,8 @@ export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedPr
         timer: undefined as ReturnType<typeof setInterval> | undefined,
         closed: false,
         stopping: false,
+        stdoutBlocked: false,
+        stderrBlocked: false,
         resume: (): void => undefined,
         finish: (): void => undefined,
       };
@@ -105,8 +109,23 @@ export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedPr
         try {
           for (const stream of ["stdout", "stderr"] as const) {
             const target = stream === "stdout" ? stdout : stderr;
+            const blocked = stream === "stdout" ? state.stdoutBlocked : state.stderrBlocked;
+            if (blocked) continue;
             const value = io.pollOutput(launch.token, stream);
-            if (value.kind === "data" && value.bytes !== undefined) target.write(Buffer.from(value.bytes));
+            if (value.kind === "data" && value.bytes !== undefined) {
+              if (value.bytes.byteLength > NATIVE_STREAM_HIGH_WATER_MARK) {
+                throw new Error(`${stream} output chunk exceeds the bounded stream limit`);
+              }
+              const accepted = target.write(Buffer.from(value.bytes));
+              if (!accepted) {
+                if (stream === "stdout") state.stdoutBlocked = true;
+                else state.stderrBlocked = true;
+                target.once("drain", () => {
+                  if (stream === "stdout") state.stdoutBlocked = false;
+                  else state.stderrBlocked = false;
+                });
+              }
+            }
             if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
             if (value.kind === "eof") {
               target.end();

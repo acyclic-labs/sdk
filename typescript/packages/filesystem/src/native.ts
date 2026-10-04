@@ -89,6 +89,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
 import { bigintRecord, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptResolvableJoinPlan, workspaceOperations } from "./workspace-operations.js";
 import { createNativeProcessOwner, type NativeProcessIo, type NativeProcessLaunch, type NativeProcessOwner } from "./native-process.js";
+export { createNativeProcessOwnerAdapter } from "./native-process.js";
 
 import { decodeMergeConflict as decodeSharedMergeConflict, parseJoinResult as parseSharedJoinResult, parseMergePreparation, parseWorkspaceRebaseResult as parseSharedWorkspaceRebaseResult,
   validateJoinOptions, validateWorkspaceRebaseOptions } from "./workspace-results.js";

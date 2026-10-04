@@ -2,7 +2,7 @@ export * from "./process.js";
 
 import { HarnessGraphCoderTransport } from "./bridge.js";
 import { JsonLineGraphCoderBridge, type GraphCoderProcessBridgeOptions } from "./process.js";
-import { createNativeOwnedProcessOwner, type OwnedProcessOwner } from "./owned-process.js";
+import type { OwnedProcessOwner } from "./owned-process.js";
 
 /** A host-owned Node connection over the durable local runtime bridge. */
 export interface NodeGraphCoderConnection {
@@ -29,17 +29,19 @@ export async function openDefaultNodeProcessOwner(): Promise<OwnedProcessOwner> 
   const moduleName = "@acyclic-labs/fs/native";
   const nativeModule = await import(moduleName) as {
     readonly openNativeProcessOwner?: () => Promise<{
-      readonly io?: Parameters<typeof createNativeOwnedProcessOwner>[0];
+      readonly io?: unknown;
     }>;
+    readonly createNativeProcessOwnerAdapter?: (io: unknown) => OwnedProcessOwner;
   };
-  if (typeof nativeModule.openNativeProcessOwner !== "function") {
-    throw new Error("@acyclic-labs/fs/native does not export openNativeProcessOwner");
+  if (typeof nativeModule.openNativeProcessOwner !== "function"
+    || typeof nativeModule.createNativeProcessOwnerAdapter !== "function") {
+    throw new Error("@acyclic-labs/fs/native does not export the native process owner adapter");
   }
   const nativeOwner = await nativeModule.openNativeProcessOwner();
   if (nativeOwner.io === undefined) {
     throw new Error("the native filesystem companion does not provide streaming process ownership");
   }
-  return createNativeOwnedProcessOwner(nativeOwner.io);
+  return nativeModule.createNativeProcessOwnerAdapter(nativeOwner.io);
 }
 
 /**

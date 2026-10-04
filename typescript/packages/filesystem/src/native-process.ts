@@ -1,4 +1,6 @@
+import { EventEmitter } from "node:events";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { PassThrough, Writable } from "node:stream";
 
 /** Versioned capability name exchanged by the native companion. */
 export const NATIVE_PROCESS_OWNER_CAPABILITY = "acyclic.native-process-owner.v1";
@@ -28,6 +30,159 @@ export interface NativeProcessIo {
   };
   readonly pollExit: (token: string) => { readonly kind: "running" | "exited"; readonly code?: number | null };
   readonly terminate: (token: string) => NativeProcessTermination;
+}
+
+/** Structural owner returned to a Node host without importing GraphCoder. */
+export interface NativeProcessOwnerAdapter {
+  readonly spawn: (executable: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+  readonly terminate: (child: ChildProcess, graceMs?: number) => Promise<NativeProcessTermination>;
+}
+
+const NATIVE_STREAM_HIGH_WATER_MARK = 64 * 1024;
+
+/**
+ * Bridges token-scoped native I/O to a ChildProcess-shaped host boundary.
+ * Filesystem owns this platform adapter; GraphCoder only consumes its
+ * structural spawn/terminate surface.
+ */
+export function createNativeProcessOwnerAdapter(io: NativeProcessIo): NativeProcessOwnerAdapter {
+  const tokens = new WeakMap<ChildProcess, string>();
+  const states = new WeakMap<ChildProcess, {
+    timer: ReturnType<typeof setInterval> | undefined;
+    closed: boolean;
+    stopping: boolean;
+    stdoutBlocked: boolean;
+    stderrBlocked: boolean;
+    resume: () => void;
+    finish: () => void;
+  }>();
+  const owner: NativeProcessOwnerAdapter = {
+    spawn(executable, args, options) {
+      const launch = io.launch(executable, args, options);
+      const child = new EventEmitter() as ChildProcess;
+      Object.defineProperties(child, {
+        pid: { value: launch.pid, enumerable: true },
+        exitCode: { writable: true, value: null, enumerable: true },
+        signalCode: { writable: true, value: null, enumerable: true },
+      });
+      const stdin = new Writable({
+        write(chunk, _encoding, callback) {
+          try {
+            io.write(launch.token, new Uint8Array(chunk));
+            callback();
+          } catch (error) {
+            callback(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+        final(callback) {
+          try { io.closeStdin(launch.token); callback(); }
+          catch (error) { callback(error instanceof Error ? error : new Error(String(error))); }
+        },
+      });
+      const stdout = new PassThrough({ highWaterMark: NATIVE_STREAM_HIGH_WATER_MARK });
+      const stderr = new PassThrough({ highWaterMark: NATIVE_STREAM_HIGH_WATER_MARK });
+      Object.defineProperties(child, { stdin: { value: stdin }, stdout: { value: stdout }, stderr: { value: stderr } });
+      const state = {
+        timer: undefined as ReturnType<typeof setInterval> | undefined,
+        closed: false,
+        stopping: false,
+        stdoutBlocked: false,
+        stderrBlocked: false,
+        resume: (): void => undefined,
+        finish: (): void => undefined,
+      };
+      let stdoutDone = false;
+      let stderrDone = false;
+      const finish = (): void => {
+        if (state.closed) return;
+        state.closed = true;
+        if (state.timer !== undefined) clearInterval(state.timer);
+        if (!stdoutDone) stdout.end();
+        if (!stderrDone) stderr.end();
+        child.emit("exit", child.exitCode, child.signalCode);
+        child.emit("close", child.exitCode, child.signalCode);
+      };
+      state.finish = finish;
+      const poll = (): void => {
+        if (state.closed || state.stopping) return;
+        try {
+          for (const stream of ["stdout", "stderr"] as const) {
+            const target = stream === "stdout" ? stdout : stderr;
+            if (stream === "stdout" ? state.stdoutBlocked : state.stderrBlocked) continue;
+            const value = io.pollOutput(launch.token, stream);
+            if (value.kind === "data" && value.bytes !== undefined) {
+              if (value.bytes.byteLength > NATIVE_STREAM_HIGH_WATER_MARK) {
+                throw new Error(`${stream} output chunk exceeds the bounded stream limit`);
+              }
+              if (!target.write(Buffer.from(value.bytes))) {
+                if (stream === "stdout") state.stdoutBlocked = true;
+                else state.stderrBlocked = true;
+                target.once("drain", () => {
+                  if (stream === "stdout") state.stdoutBlocked = false;
+                  else state.stderrBlocked = false;
+                });
+              }
+            }
+            if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+            if (value.kind === "eof") {
+              target.end();
+              if (stream === "stdout") stdoutDone = true;
+              else stderrDone = true;
+            }
+          }
+          const exit = io.pollExit(launch.token);
+          if (exit.kind === "exited") {
+            (child as ChildProcess & { exitCode: number | null }).exitCode = exit.code ?? null;
+            if (stdoutDone && stderrDone) finish();
+          }
+        } catch (error) {
+          child.emit("error", error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      state.resume = (): void => {
+        if (state.closed || state.timer !== undefined) return;
+        state.timer = setInterval(poll, 10);
+      };
+      state.resume();
+      tokens.set(child, launch.token);
+      states.set(child, state);
+      return child;
+    },
+    async terminate(child, graceMs = 250) {
+      const token = tokens.get(child);
+      if (token === undefined) return { kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" };
+      const state = states.get(child);
+      if (state !== undefined) {
+        state.stopping = true;
+        if (state.timer !== undefined) {
+          clearInterval(state.timer);
+          state.timer = undefined;
+        }
+      }
+      const deadline = Date.now() + Math.max(0, graceMs);
+      let result: NativeProcessTermination;
+      try {
+        result = io.terminate(token);
+        while (result.kind !== "terminated" && Date.now() < deadline) {
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+          result = io.terminate(token);
+        }
+      } catch (error) {
+        if (state !== undefined) { state.stopping = false; state.resume(); }
+        return { kind: "unknown", pid: child.pid ?? -1, reason: error instanceof Error ? error.message : String(error) };
+      }
+      if (result.kind !== "terminated") {
+        if (state !== undefined) { state.stopping = false; state.resume(); }
+        return result.kind === "timeout"
+          ? { kind: "timeout", pid: child.pid ?? -1, phase: "command" }
+          : { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
+      }
+      state?.finish();
+      tokens.delete(child);
+      return { kind: "terminated", pid: child.pid ?? -1 };
+    },
+  };
+  return owner;
 }
 
 /**
