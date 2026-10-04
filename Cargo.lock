@@ -353,6 +353,7 @@ dependencies = [
  "blake3",
  "bytes",
  "fs2",
+ "futures",
  "hex",
  "libc",
  "notify",

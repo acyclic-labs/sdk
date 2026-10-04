@@ -138,6 +138,9 @@ impl SharedRootAdmission {
 }
 
 pub(crate) struct SharedPhysicalRoot {
+    /// Retained capability used through publication.  Path re-opening is
+    /// validation only; callers must pass this handle to filesystem effects.
+    pub(crate) root: Arc<HostRoot>,
     pub(crate) source: Arc<LocalLazySource>,
     pub(crate) watcher: Arc<Mutex<NativeWatch>>,
     pub(crate) reference: Arc<Mutex<SourceReference>>,
@@ -270,6 +273,15 @@ impl SharedRootRegistry {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
         });
+        let root_handle = Arc::new(
+            tokio::task::spawn_blocking({
+                let canonical = canonical.clone();
+                move || HostRoot::open(&canonical)
+            })
+            .await
+            .map_err(|error| format!("physical root handle worker failed: {error}"))?
+            .map_err(display)?,
+        );
         let watcher_path = canonical.clone();
         let watcher = tokio::task::spawn_blocking(move || open_native_watcher(&watcher_path))
             .await
@@ -297,6 +309,7 @@ impl SharedRootRegistry {
         let reference = Arc::new(Mutex::new(source.reference()));
         let native_identity = source.inner().root_identity();
         let shared = Arc::new(SharedPhysicalRoot {
+            root: root_handle,
             source,
             watcher,
             reference: Arc::clone(&reference),
@@ -442,16 +455,35 @@ pub(crate) type LocalPublicationCoordinator = MultiRootPublicationCoordinator<
 pub(crate) struct PluginRootMaterializer {
     pub(crate) state: LocalCoreStateStore,
     pub(crate) physical_roots: BTreeMap<WorkspaceRootId, PhysicalRoot>,
-    /// Approval issued by the Harness/operator for the current root
-    /// publication.  A publication has no implicit authority merely because
-    /// it originated in the plugin coordinator.
-    pub(crate) writeback_approval: Option<acyclic_fs::HostCheckoutRootWritebackApproval>,
+    pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
+}
+
+/// Root writeback remains closed until the Harness composition supplies its
+/// durable interaction verifier.  Filesystem does not accept grants or
+/// approval records from this plugin layer.
+struct DenyRootWriteback;
+
+impl acyclic_fs::RootWritebackApprovalVerifier for DenyRootWriteback {
+    fn verify<'a>(
+        &'a self,
+        _context: acyclic_fs::RootWritebackApprovalContext,
+    ) -> futures::future::BoxFuture<'a, Result<(), String>> {
+        Box::pin(async {
+            Err("root writeback requires Harness durable operator approval".to_owned())
+        })
+    }
+}
+
+pub(crate) fn default_root_writeback_verifier() -> Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>
+{
+    Arc::new(DenyRootWriteback)
 }
 
 #[derive(Clone)]
 pub(crate) struct PhysicalRoot {
     pub(crate) workspace_id: acyclic_fs::WorkspaceId,
     pub(crate) path: PathBuf,
+    pub(crate) root: Arc<HostRoot>,
 }
 
 #[derive(Debug)]
@@ -514,16 +546,9 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
             &[".git"],
         )
         .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
-        // The approval must have been issued by the Harness/operator and
-        // persisted independently of this request.  The plugin coordinator
-        // cannot authorize its own host writeback.
-        let approval = self.writeback_approval.ok_or_else(|| {
-            PluginRootMaterializerError(
-                "root writeback requires an explicit Harness/operator approval".to_owned(),
-            )
-        })?;
         let intent = request
-            .authorize(approval)
+            .authorize_with(self.root_writeback_verifier.as_ref())
+            .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;
         intent
             .publish_native(
@@ -534,6 +559,8 @@ impl MultiRootMaterializer<LocalAuthorityBackend, LocalObjectBackend> for Plugin
                 &[".git"],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
+                self.root_writeback_verifier.as_ref(),
+                Arc::clone(&physical.root),
             )
             .await
             .map_err(|error| PluginRootMaterializerError(error.to_string()))?;

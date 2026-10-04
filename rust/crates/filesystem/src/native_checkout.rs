@@ -26,6 +26,7 @@ use crate::{
     NativeWorkspacePublication, NativeWorkspacePublicationError,
     publish_native_generation_transition,
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -234,74 +235,24 @@ impl HostCheckoutRootWritebackRequest {
         self.request_digest
     }
 
-    /// Binds an approval to this exact request.
-    pub fn authorize(
-        self,
-        approval: HostCheckoutRootWritebackApproval,
+    /// Asks the caller's authenticated Harness authority to admit this exact
+    /// request.  Filesystem never stores or constructs an operator grant;
+    /// the verifier resolves the durable interaction and binds it to the
+    /// operation and request digest before this private intent is created.
+    pub async fn authorize_with<V: RootWritebackApprovalVerifier + ?Sized>(
+        &self,
+        verifier: &V,
     ) -> Result<HostCheckoutRootWritebackIntent, HostCheckoutRootWritebackError> {
-        if approval.operation_id != self.operation_id
-            || approval.request_digest != self.request_digest
-        {
-            return Err(HostCheckoutRootWritebackError::ApprovalMismatch);
-        }
+        verifier
+            .verify(RootWritebackApprovalContext {
+                operation_id: self.operation_id,
+                request_digest: self.request_digest,
+            })
+            .await
+            .map_err(|error| HostCheckoutRootWritebackError::ApprovalDenied(error.to_string()))?;
         Ok(HostCheckoutRootWritebackIntent {
-            request: self,
-            approval,
+            request: self.clone(),
         })
-    }
-}
-
-/// Durable approval token for one exact host writeback request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct HostCheckoutRootWritebackApproval {
-    operation_id: OperationId,
-    request_digest: crate::Digest,
-    authority_revision: u64,
-}
-
-/// Durable grant issued by Harness/operator policy for one writeback.
-///
-/// Filesystem code only binds this grant to the immutable request.  The grant
-/// must be loaded from the Harness authority journal; a request cannot create
-/// one for itself.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct HostCheckoutRootWritebackGrant {
-    /// Operation identity approved by Harness policy.
-    pub operation_id: OperationId,
-    /// Exact request digest approved by Harness policy.
-    pub request_digest: crate::Digest,
-    /// Monotonic durable policy revision.
-    pub authority_revision: u64,
-}
-
-impl HostCheckoutRootWritebackApproval {
-    /// Converts a durable Harness/operator grant into the opaque execution
-    /// approval consumed by the filesystem publication path.
-    #[must_use]
-    pub const fn from_grant(grant: HostCheckoutRootWritebackGrant) -> Self {
-        Self {
-            operation_id: grant.operation_id,
-            request_digest: grant.request_digest,
-            authority_revision: grant.authority_revision,
-        }
-    }
-
-    /// Operation identity covered by the approval.
-    #[must_use]
-    pub const fn operation_id(self) -> OperationId {
-        self.operation_id
-    }
-
-    /// Request digest covered by the approval.
-    #[must_use]
-    pub const fn request_digest(self) -> crate::Digest {
-        self.request_digest
-    }
-
-    /// Durable authority revision that issued this approval.
-    #[must_use]
-    pub const fn authority_revision(self) -> u64 {
-        self.authority_revision
     }
 }
 
@@ -309,7 +260,6 @@ impl HostCheckoutRootWritebackApproval {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct HostCheckoutRootWritebackIntent {
     request: HostCheckoutRootWritebackRequest,
-    approval: HostCheckoutRootWritebackApproval,
 }
 
 impl HostCheckoutRootWritebackIntent {
@@ -329,11 +279,6 @@ impl HostCheckoutRootWritebackIntent {
     /// Checks that persisted request bytes still describe the same root and
     /// operation before they are admitted for replay.
     pub fn validate(&self) -> Result<(), HostCheckoutRootWritebackError> {
-        if self.approval.operation_id != self.request.operation_id
-            || self.approval.request_digest != self.request.request_digest
-        {
-            return Err(HostCheckoutRootWritebackError::ApprovalMismatch);
-        }
         let digest = root_writeback_request_fingerprint(
             self.request.operation_id,
             self.request.source_generation,
@@ -398,6 +343,61 @@ impl HostCheckoutRootWritebackIntent {
         }
     }
 
+    /// Resolves an uncertain publication without replaying the physical
+    /// effect. The verifier must authenticate the same durable
+    /// Harness/operator interaction used for the original request; changing
+    /// the journal is CAS fenced.
+    pub async fn recover<S: RootWritebackJournalStore>(
+        &self,
+        store: &S,
+        verifier: &impl RootWritebackApprovalVerifier,
+        recovery: RootWritebackRecovery,
+    ) -> Result<RootWritebackJournal, HostCheckoutRootWritebackError> {
+        verifier
+            .verify(RootWritebackApprovalContext {
+                operation_id: self.request.operation_id,
+                request_digest: self.request.request_digest,
+            })
+            .await
+            .map_err(|error| HostCheckoutRootWritebackError::ApprovalDenied(error.to_string()))?;
+        let current = store
+            .load(self.operation_id())
+            .await
+            .map_err(|error| HostCheckoutRootWritebackError::Journal(error.to_string()))?
+            .ok_or(HostCheckoutRootWritebackError::Conflict)?;
+        if current.intent != *self || current.phase != RootWritebackPhase::Publishing {
+            return Err(HostCheckoutRootWritebackError::Conflict);
+        }
+        let (phase, outcome) = match recovery {
+            RootWritebackRecovery::Failed => {
+                (RootWritebackPhase::Failed, RootWritebackOutcome::Failed)
+            }
+            RootWritebackRecovery::Conflicted => (
+                RootWritebackPhase::Conflicted,
+                RootWritebackOutcome::Conflict,
+            ),
+            RootWritebackRecovery::Cancelled => (
+                RootWritebackPhase::Cancelled,
+                RootWritebackOutcome::Cancelled,
+            ),
+        };
+        let resolved = RootWritebackJournal {
+            version: current.version,
+            revision: current.revision.saturating_add(1),
+            intent: self.clone(),
+            phase,
+            outcome,
+        };
+        if !store
+            .compare_and_swap(self.operation_id(), current.revision, resolved.clone())
+            .await
+            .map_err(|error| HostCheckoutRootWritebackError::Journal(error.to_string()))?
+        {
+            return Err(HostCheckoutRootWritebackError::Conflict);
+        }
+        Ok(resolved)
+    }
+
     /// Publishes through the existing journaled native publisher after the
     /// authority admission has been durably recorded. A restart can replay a
     /// `Publishing` journal with the same operation and exact staging paths.
@@ -406,7 +406,7 @@ impl HostCheckoutRootWritebackIntent {
         feature = "native-mount",
         not(target_arch = "wasm32")
     ))]
-    pub async fn publish_native<A, O, S>(
+    pub async fn publish_native<A, O, S, V>(
         &self,
         from_generation: &Generation<A, O>,
         to_generation: &Generation<A, O>,
@@ -415,11 +415,14 @@ impl HostCheckoutRootWritebackIntent {
         excluded_names: &[&str],
         budget: WorkBudget,
         cancellation: &CancellationToken,
+        verifier: &V,
+        root_handle: Arc<HostRoot>,
     ) -> Result<HostCheckoutRootWritebackResult, HostCheckoutRootWritebackError>
     where
         A: AsyncAuthorityStore,
         O: AsyncObjectStore,
         S: RootWritebackJournalStore,
+        V: RootWritebackApprovalVerifier + ?Sized,
     {
         if from_generation.id() != self.request.source_generation
             || to_generation.id() != self.request.target_generation
@@ -429,6 +432,16 @@ impl HostCheckoutRootWritebackIntent {
         {
             return Err(HostCheckoutRootWritebackError::RequestMismatch);
         }
+        verifier
+            .verify(RootWritebackApprovalContext {
+                operation_id: self.request.operation_id,
+                request_digest: self.request.request_digest,
+            })
+            .await
+            .map_err(|error| HostCheckoutRootWritebackError::ApprovalDenied(error.to_string()))?;
+        if root_handle.identity().to_bytes() != self.request.root_identity {
+            return Err(HostCheckoutRootWritebackError::RootIdentityMismatch);
+        }
         let admitted = self
             .admit(store)
             .await
@@ -437,6 +450,22 @@ impl HostCheckoutRootWritebackIntent {
             return Err(HostCheckoutRootWritebackError::Conflict);
         }
         if cancellation.is_cancelled() && !matches!(admitted.phase, RootWritebackPhase::Published) {
+            let cancelled = RootWritebackJournal {
+                version: admitted.version,
+                revision: admitted.revision.saturating_add(1),
+                intent: self.clone(),
+                phase: RootWritebackPhase::Cancelled,
+                outcome: RootWritebackOutcome::Cancelled,
+            };
+            let cancelled = store
+                .compare_and_swap(self.operation_id(), admitted.revision, cancelled)
+                .await
+                .map_err(|error| HostCheckoutRootWritebackError::Journal(error.to_string()))?;
+            if !cancelled {
+                return Err(HostCheckoutRootWritebackError::Journal(
+                    RootWritebackJournalError::<S::Error>::Contended.to_string(),
+                ));
+            }
             return Err(HostCheckoutRootWritebackError::Cancelled);
         }
         let publishing_revision = match admitted.phase {
@@ -479,7 +508,7 @@ impl HostCheckoutRootWritebackIntent {
             options,
             budget,
             cancellation,
-            root_handle: Some(Arc::new(self.open_verified_root()?)),
+            root_handle: Some(root_handle),
         };
         let result = publish_native_generation_transition(
             from_generation,
@@ -568,6 +597,22 @@ pub enum RootWritebackOutcome {
     Applied,
     /// An external mutation fenced publication.
     Conflict,
+    /// The operation was cancelled before dispatch.
+    Cancelled,
+    /// The operation failed before its effect could be considered unknown.
+    Failed,
+}
+
+/// Explicit operator resolution for a journal whose physical outcome is
+/// unknown.  Recovery never silently re-dispatches an uncertain operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RootWritebackRecovery {
+    /// Mark the operation as requiring a fresh approved request.
+    Failed,
+    /// Record an observed external mutation.
+    Conflicted,
+    /// Record an explicit cancellation.
+    Cancelled,
 }
 
 /// Result of an idempotent host writeback request.
@@ -624,6 +669,28 @@ pub trait RootWritebackJournalStore: Send + Sync {
     fn materialization_store(&self) -> &crate::LocalCoreStateStore;
 }
 
+/// Exact request identity presented to Harness's durable interaction authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RootWritebackApprovalContext {
+    /// Stable operation identity.
+    pub operation_id: OperationId,
+    /// Digest of every mutable publication input.
+    pub request_digest: crate::Digest,
+}
+
+/// Harness-owned authority boundary for host writeback.
+///
+/// Implementations must resolve an authenticated owner interaction and verify
+/// its exact operation and digest.  A missing verifier is a denial; the
+/// filesystem has no local persistence fallback and cannot self-approve.
+pub trait RootWritebackApprovalVerifier: Send + Sync {
+    /// Verify one exact request before durable publication admission.
+    fn verify<'a>(
+        &'a self,
+        context: RootWritebackApprovalContext,
+    ) -> BoxFuture<'a, Result<(), String>>;
+}
+
 /// Root writeback authority errors.
 #[derive(Debug, Error)]
 pub enum RootWritebackJournalError<E: std::error::Error + 'static> {
@@ -644,9 +711,9 @@ pub enum RootWritebackJournalError<E: std::error::Error + 'static> {
 /// Errors raised before or during an approved root writeback.
 #[derive(Debug, Error)]
 pub enum HostCheckoutRootWritebackError {
-    /// Approval fields do not match the immutable request.
-    #[error("root writeback approval does not match the request")]
-    ApprovalMismatch,
+    /// The Harness/operator authority did not authenticate this request.
+    #[error("root writeback approval denied: {0}")]
+    ApprovalDenied(String),
     /// Persisted request digest no longer matches its fields.
     #[error("root writeback request digest is invalid")]
     CorruptRequest,
@@ -673,17 +740,6 @@ pub enum HostCheckoutRootWritebackError {
     /// Cancellation was observed before physical dispatch.
     #[error("root writeback was cancelled before dispatch")]
     Cancelled,
-}
-
-impl HostCheckoutRootWritebackIntent {
-    fn open_verified_root(&self) -> Result<HostRoot, HostCheckoutRootWritebackError> {
-        let root = HostRoot::open(&self.request.root)
-            .map_err(|error| HostCheckoutRootWritebackError::Journal(error.to_string()))?;
-        if root.identity().to_bytes() != self.request.root_identity {
-            return Err(HostCheckoutRootWritebackError::RootIdentityMismatch);
-        }
-        Ok(root)
-    }
 }
 
 impl HostRestoreRequest {
@@ -1182,7 +1238,7 @@ fn hash_path(hasher: &mut blake3::Hasher, path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Fs, SourceMode};
+    use crate::{Fs, LocalCoreStateStore, SourceMode};
     use tempfile::tempdir;
 
     #[tokio::test]
@@ -1210,6 +1266,162 @@ mod tests {
             checkout.source().verify_root(other.path()).await,
             Err(SourceError::BindingMismatch)
         ));
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "local",
+        feature = "native-mount",
+        not(target_arch = "wasm32")
+    ))]
+    #[test]
+    fn approved_writeback_rejects_replaced_root_identity() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let parent = tempdir()?;
+        let root = parent.path().join("checkout");
+        let staging = parent.path().join("staging");
+        std::fs::create_dir(&root)?;
+        std::fs::create_dir(&staging)?;
+        let options = MaterializeOptions {
+            destination: staging.join("target"),
+            maximum_directory_entries: 32,
+            maximum_extent_spans: 32,
+            transfer_bytes: 1024,
+        };
+        let request = HostCheckoutRootWritebackRequest::new_with_options(
+            OperationId::from_bytes([0x11; 16]),
+            GenerationId::new(crate::Digest::from_bytes([0x12; 32])),
+            GenerationId::new(crate::Digest::from_bytes([0x13; 32])),
+            &root,
+            &staging,
+            &options,
+            &[".git"],
+        )?;
+        struct Allow;
+        impl RootWritebackApprovalVerifier for Allow {
+            fn verify<'a>(
+                &'a self,
+                _context: RootWritebackApprovalContext,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        let _intent = futures::executor::block_on(request.authorize_with(&Allow))?;
+        let moved = parent.path().join("old-checkout");
+        std::fs::rename(&root, &moved)?;
+        std::fs::create_dir(&root)?;
+        assert_ne!(
+            HostRoot::open(&root)?.identity().to_bytes(),
+            request.root_identity()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn denied_writeback_never_creates_an_intent_or_journal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempdir()?;
+        let root = parent.path().join("checkout");
+        let staging = parent.path().join("staging");
+        std::fs::create_dir(&root)?;
+        std::fs::create_dir(&staging)?;
+        let options = MaterializeOptions::native(staging.join("target"));
+        let request = HostCheckoutRootWritebackRequest::new_with_options(
+            OperationId::from_bytes([0x21; 16]),
+            GenerationId::new(crate::Digest::from_bytes([0x22; 32])),
+            GenerationId::new(crate::Digest::from_bytes([0x23; 32])),
+            &root,
+            &staging,
+            &options,
+            &[],
+        )?;
+        struct Deny;
+        impl RootWritebackApprovalVerifier for Deny {
+            fn verify<'a>(
+                &'a self,
+                _context: RootWritebackApprovalContext,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Err("denied".to_owned()) })
+            }
+        }
+        assert!(matches!(
+            request.authorize_with(&Deny).await,
+            Err(HostCheckoutRootWritebackError::ApprovalDenied(_))
+        ));
+        assert!(!staging.join("target").exists());
+        Ok(())
+    }
+
+    #[cfg(all(
+        feature = "local",
+        feature = "native-mount",
+        not(target_arch = "wasm32")
+    ))]
+    #[tokio::test]
+    async fn recovery_requires_authority_and_never_replays_publishing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parent = tempdir()?;
+        let root = parent.path().join("checkout");
+        let staging = parent.path().join("staging");
+        std::fs::create_dir(&root)?;
+        std::fs::create_dir(&staging)?;
+        let options = MaterializeOptions::native(staging.join("target"));
+        let request = HostCheckoutRootWritebackRequest::new_with_options(
+            OperationId::from_bytes([0x31; 16]),
+            GenerationId::new(crate::Digest::from_bytes([0x32; 32])),
+            GenerationId::new(crate::Digest::from_bytes([0x33; 32])),
+            &root,
+            &staging,
+            &options,
+            &[],
+        )?;
+        struct Allow;
+        impl RootWritebackApprovalVerifier for Allow {
+            fn verify<'a>(
+                &'a self,
+                _context: RootWritebackApprovalContext,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+        struct Deny;
+        impl RootWritebackApprovalVerifier for Deny {
+            fn verify<'a>(
+                &'a self,
+                _context: RootWritebackApprovalContext,
+            ) -> BoxFuture<'a, Result<(), String>> {
+                Box::pin(async { Err("recovery denied".to_owned()) })
+            }
+        }
+        let intent = request.authorize_with(&Allow).await?;
+        let store = LocalCoreStateStore::open_owned(parent.path().join("state"))?;
+        let admitted = intent.admit(&store).await?;
+        let publishing = RootWritebackJournal {
+            version: admitted.version,
+            revision: admitted.revision + 1,
+            intent: intent.clone(),
+            phase: RootWritebackPhase::Publishing,
+            outcome: RootWritebackOutcome::Unknown,
+        };
+        assert!(
+            store
+                .compare_and_swap(intent.operation_id(), admitted.revision, publishing)
+                .await?
+        );
+        assert!(matches!(
+            intent
+                .recover(&store, &Deny, RootWritebackRecovery::Failed)
+                .await,
+            Err(HostCheckoutRootWritebackError::ApprovalDenied(_))
+        ));
+        assert!(matches!(
+            intent
+                .recover(&store, &Allow, RootWritebackRecovery::Conflicted)
+                .await?
+                .phase,
+            RootWritebackPhase::Conflicted
+        ));
+        assert!(!root.join("published.txt").exists());
         Ok(())
     }
 }

@@ -832,7 +832,8 @@ pub(crate) struct RootMaterializingGitExecutor<'a> {
     pub(crate) inner: PluginGitExecutor<'a>,
     pub(crate) root: &'a Path,
     pub(crate) store: &'a LocalCoreStateStore,
-    pub(crate) writeback_approval: Option<acyclic_fs::HostCheckoutRootWritebackApproval>,
+    pub(crate) root_handle: Arc<acyclic_fs::native_host::HostRoot>,
+    pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
 }
 
 impl RootMaterializingGitExecutor<'_> {
@@ -873,12 +874,10 @@ impl RootMaterializingGitExecutor<'_> {
             &[".git"],
         )
         .map_err(display)?;
-        let approval = self.writeback_approval.ok_or_else(|| {
-            PluginGitExecutor::error(
-                "root writeback requires an explicit Harness/operator approval",
-            )
-        })?;
-        let intent = request.authorize(approval).map_err(display)?;
+        let intent = request
+            .authorize_with(self.root_writeback_verifier.as_ref())
+            .await
+            .map_err(display)?;
         intent
             .publish_native(
                 &from,
@@ -888,6 +887,8 @@ impl RootMaterializingGitExecutor<'_> {
                 &[".git"],
                 WorkBudget::UNBOUNDED,
                 &cancellation,
+                self.root_writeback_verifier.as_ref(),
+                Arc::clone(&self.root_handle),
             )
             .await
             .map_err(display)?;

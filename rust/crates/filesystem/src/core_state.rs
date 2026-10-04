@@ -42,6 +42,7 @@ const LAZY_WORKSPACE_FAMILY: &str = "lazy-workspaces";
 const MATERIALIZATION_FAMILY: &str = "materialization";
 #[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 const ROOT_WRITEBACK_FAMILY: &str = "root-writeback-v1";
+#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
 const MULTI_ROOT_PARENT_CLAIM_FAMILY: &str = "multi-root-parent-claims";
 const MULTI_ROOT_PUBLICATION_FAMILY: &str = "multi-root-publications";
 const OWNER_LOCK: &str = "owner.lock";

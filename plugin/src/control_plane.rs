@@ -228,6 +228,7 @@ pub(crate) struct ControlPlane {
     pub(crate) state: AdapterState,
     pub(crate) roots: BTreeMap<String, LocalLazyWorkspace>,
     pub(crate) physical_roots: BTreeMap<String, Arc<SharedPhysicalRoot>>,
+    pub(crate) root_writeback_verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
     pub(crate) mounts: BTreeMap<String, LocalMount>,
     pub(crate) pending_mounts: BTreeMap<[u8; 16], LocalMount>,
     /// Detached mounts whose sources are still being torn down; see
@@ -314,6 +315,7 @@ impl ControlPlane {
             state,
             roots: BTreeMap::new(),
             physical_roots: BTreeMap::new(),
+            root_writeback_verifier: default_root_writeback_verifier(),
             mounts: BTreeMap::new(),
             pending_mounts: BTreeMap::new(),
             retiring: Vec::new(),
@@ -355,6 +357,16 @@ impl ControlPlane {
             control.finalize_requested_stops(&agent_id).await?;
         }
         Ok(control)
+    }
+
+    /// Installs the Harness-owned durable operator verifier used by root
+    /// publications. The default verifier is fail-closed.
+    #[allow(dead_code)]
+    pub(crate) fn set_root_writeback_verifier(
+        &mut self,
+        verifier: Arc<dyn acyclic_fs::RootWritebackApprovalVerifier>,
+    ) {
+        self.root_writeback_verifier = verifier;
     }
 
     pub(crate) fn workspace_mount_root(&self) -> PathBuf {
@@ -429,21 +441,26 @@ impl ControlPlane {
             .roots
             .into_iter()
             .map(|(root_id, root)| {
-                (
+                let retained = self
+                    .physical_roots
+                    .get(&root_key(root_id))
+                    .ok_or_else(|| "physical root capability is unavailable".to_owned())?;
+                Ok((
                     root_id,
                     PhysicalRoot {
                         workspace_id: root.workspace_id,
                         path: root.source_path,
+                        root: Arc::clone(&retained.root),
                     },
-                )
+                ))
             })
-            .collect();
+            .collect::<Result<BTreeMap<_, _>, String>>()?;
         let mut publisher = MaterializingWorkspaceMultiRootPublisher::new(
             self.distributed.clone(),
             PluginRootMaterializer {
                 state: self.store.clone(),
                 physical_roots,
-                writeback_approval: None,
+                root_writeback_verifier: Arc::clone(&self.root_writeback_verifier),
             },
         );
         for binding in self.state.roots.values() {
@@ -1797,6 +1814,12 @@ impl ControlPlane {
             .get(&root_key(root_id))
             .cloned()
             .ok_or_else(|| "root binding is unavailable".to_owned())?;
+        let root_handle = self
+            .physical_roots
+            .get(&root_key(root_id))
+            .ok_or_else(|| "physical root capability is unavailable".to_owned())?
+            .root
+            .clone();
         let workspace = lazy_workspace.workspace().clone();
         let before_tree = git_workspace_tree(&lazy_workspace, &argv, None).await?;
         let apply_patch = git_apply_patch(&lazy_workspace, &root_binding.path, &argv).await?;
@@ -1821,7 +1844,8 @@ impl ControlPlane {
             },
             root: &root_binding.path,
             store: &self.store,
-            writeback_approval: None,
+            root_handle,
+            root_writeback_verifier: Arc::clone(&self.root_writeback_verifier),
         };
         let repository = self.distributed.git(repository_id);
         let output = run_git_command(
