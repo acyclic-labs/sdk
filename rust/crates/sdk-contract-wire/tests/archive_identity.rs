@@ -93,11 +93,25 @@ fn generated_facades_serialize_every_rust_operation_policy() {
     let operations = all_facade_operations();
     assert_eq!(operations.len(), 106);
 
-    for output in generate_remote_facades() {
+    let outputs = generate_remote_facades();
+    let targets = outputs
+        .iter()
+        .map(|output| output.language.name())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        targets,
+        ["python", "go", "ruby", "php", "dart", "java", "csharp"]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(outputs.len(), targets.len(), "duplicate facade targets");
+    for output in outputs {
         assert!(
             matches!(
                 output.language,
-                FacadeLanguage::Ruby
+                FacadeLanguage::Python
+                    | FacadeLanguage::Go
+                    | FacadeLanguage::Ruby
                     | FacadeLanguage::Php
                     | FacadeLanguage::Dart
                     | FacadeLanguage::Java
