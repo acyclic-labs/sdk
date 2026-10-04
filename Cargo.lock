@@ -20,6 +20,7 @@ version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
  "acyclic-workers",
+ "futures",
  "prost",
  "prost-reflect",
  "rcgen",
@@ -529,6 +530,7 @@ name = "acyclic-workers"
 version = "0.2.0"
 dependencies = [
  "acyclic-sdk-contract-wire",
+ "futures",
  "prost",
  "prost-reflect",
  "reqwest",
