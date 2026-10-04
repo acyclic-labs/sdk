@@ -16,8 +16,8 @@ import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV2GrpcClients } from "../../objects/dist/v2-grpc.js";
 import { HttpActorsClient } from "../dist/http.js";
 import { HttpWorkersClient } from "../../workers/dist/http.js";
-import { HTTP_ROUTES as actorRoutes } from "../dist/routes.js";
-import { HTTP_ROUTES as workerRoutes } from "../../workers/dist/routes.js";
+import { ACTORS_METHODS as actorRoutes } from "../dist/generated-client.js";
+import { WORKERS_METHODS as workerRoutes } from "../../workers/dist/generated-client.js";
 
 const services = [ActorsService, WorkersService, StreamService, BucketsService, ObjectsService, MultipartService];
 const expected = services.reduce((count, service) => count + service.methods.length, 0);
@@ -77,10 +77,13 @@ if (process.argv.includes("--client")) {
   for (const [index, service] of services.entries()) {
     for (const method of service.methods) {
       const initializer = {};
-      if (method.name === "InvokeActor") initializer.headers = [{ name: "content-type", value: "application/json" }];
+      if (method.name === "InvokeActor") Object.assign(initializer, {
+        actorId: "actor-a", method: "GET", url: "https://example.test/",
+        headers: [{ name: "content-type", value: "application/json" }],
+      });
       if (method.name === "SelectDeployment") initializer.expectedRevision = 7n;
-      if (method.name === "InvokeVersion") initializer.versionSha256 = new Uint8Array(32).fill(1);
-      if (method.name === "InvokeDeployment") initializer.alias = "current";
+      if (method.name === "InvokeVersion") Object.assign(initializer, { versionSha256: new Uint8Array(32).fill(1), method: "GET", url: "https://example.test/" });
+      if (method.name === "InvokeDeployment") Object.assign(initializer, { alias: "current", method: "GET", url: "https://example.test/" });
       if (method.name === "AddSubscription") Object.assign(initializer, {
         actorId: "actor-a",
         subscription: { subscriptionId: "input", streamPath: "events/input", start: { start: { case: "cursor", value: 9007199254740993n } } },
@@ -142,7 +145,7 @@ const httpServer = createServer(async (request, response) => {
     for (const [index, service] of services.slice(0, 2).entries()) {
       const routes = index === 0 ? actorRoutes : workerRoutes;
       for (const method of service.methods) {
-        const path = "/" + routes[method.localName].replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
+        const path = "/" + routes[method.localName].path.replace("{sha256hex}", "01".repeat(32)).replace("{alias}", "current");
         if (request.url !== path) continue;
         const input = fromJsonString(method.input, body);
         if (method.name === "InspectActor" && input.actorId === "oversize") {

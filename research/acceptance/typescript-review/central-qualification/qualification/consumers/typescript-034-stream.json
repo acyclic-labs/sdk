@@ -1,0 +1,19 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "719328f96dbc30640ac8d17249607b9e03277d0a",
+  "status": "passed",
+  "invoked": true,
+  "exit_code": 0,
+  "family": "stream",
+  "rpc": "acyclic.stream.v2.StreamService/Follow",
+  "shape": "server",
+  "transport": "grpc",
+  "execution_mode": "remote",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization",
+    "cancellation"
+  ],
+  "fixture_evidence": "rust-authority-runtime-receipt-20261004.json"
+}

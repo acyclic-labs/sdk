@@ -8,7 +8,7 @@ class RustFamilyGoldensTest < Minitest::Test
   GOLDENS = File.expand_path(
     ENV.fetch(
       "RUST_FAMILY_GOLDENS",
-      "../../php/tests/fixtures/rust-family-goldens.json"
+      "fixtures/rust-family-goldens.json"
     ),
     __dir__
   )

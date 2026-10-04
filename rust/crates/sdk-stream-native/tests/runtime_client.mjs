@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
+import { mkdirSync, writeFileSync } from "node:fs";
 
 const require = createRequire(import.meta.url);
 
@@ -33,6 +35,45 @@ function firstLengthDelimited(value, wantedField) {
   throw new Error(`missing protobuf field ${wantedField}`);
 }
 
+const sourceRevision = process.env.ACYCLIC_STREAM_SOURCE_REVISION;
+const scenarioDirectory = process.env.ACYCLIC_STREAM_SCENARIO_DIR;
+const scenarioRecords = [];
+function recordScenario(rpc, shape, checks, outcome) {
+  if (scenarioDirectory === undefined) return;
+  if (sourceRevision === undefined || !/^[0-9a-f]{40}$/i.test(sourceRevision)) {
+    throw new Error("scenario output requires ACYCLIC_STREAM_SOURCE_REVISION");
+  }
+  const result = {
+    schema: "acyclic.sdk.rpc-scenario-result.v1",
+    source_revision: sourceRevision,
+    family: "stream",
+    rpc,
+    shape,
+    transport: "grpc",
+    status: "passed",
+    invoked: true,
+    exit_code: 0,
+    checks,
+    outcome: { code: "OK", ...outcome },
+  };
+  const file = `${rpc.slice(rpc.lastIndexOf("/") + 1).toLowerCase()}.json`;
+  mkdirSync(scenarioDirectory, { recursive: true });
+  const path = `${scenarioDirectory}/${file}`;
+  const bytes = Buffer.from(`${JSON.stringify(result, null, 2)}\n`);
+  writeFileSync(path, bytes);
+  scenarioRecords.push({
+    family: "stream",
+    rpc,
+    shape,
+    status: "passed",
+    outcome: { code: "OK", ...outcome },
+    output_path: process.env.ACYCLIC_STREAM_SCENARIO_PREFIX === undefined
+      ? file
+      : `${process.env.ACYCLIC_STREAM_SCENARIO_PREFIX}/${file}`,
+    output_sha256: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+  });
+}
+
 const capabilities = nativeStreamCapabilities();
 assert.equal(capabilities.maxEndpoints, 16);
 assert.equal(capabilities.operationDeadlineMs, 10_000);
@@ -56,6 +97,12 @@ assert.equal(appended.committed, true);
 assert.equal(appended.start, "0");
 assert.equal(appended.end, "1");
 assert.equal(appended.tail, "1");
+recordScenario("acyclic.stream.v2.StreamService/Append", "unary", ["invocation", "transport", "serialization"], {
+  committed: appended.committed,
+  start: appended.start,
+  end: appended.end,
+  tail: appended.tail,
+});
 
 assert.equal(await client.tail("native/runtime"), "1");
 const page = await client.read("native/runtime", "0", 8);
@@ -63,10 +110,18 @@ assert.equal(page.cancelled, false);
 assert.equal(page.records.length, 1);
 assert.equal(page.records[0].sequence, "0");
 assert.equal(Buffer.from(page.records[0].value).toString(), "one");
+recordScenario("acyclic.stream.v2.StreamService/Read", "server", ["invocation", "transport", "serialization"], {
+  records: page.records.length,
+  firstSequence: page.records[0].sequence,
+  firstValue: Buffer.from(page.records[0].value).toString(),
+});
 
 const idempotencyKey = Buffer.from("native-runtime-append");
 const idempotency = await client.inspectIdempotency(lengthDelimited(1, idempotencyKey));
 assert(idempotency.length > 0);
+recordScenario("acyclic.stream.v2.StreamService/InspectIdempotency", "unary", ["invocation", "transport", "serialization"], {
+  bytes: idempotency.length,
+});
 
 const commitRequest = Buffer.from(process.env.ACYCLIC_STREAM_FIXTURE_COMMIT_REQUEST, "base64");
 const commitResponse = await client.commit(
@@ -77,9 +132,38 @@ const commitId = firstLengthDelimited(committedEnvelope, 1);
 assert.equal(commitId.length, 32);
 const readCommit = await client.readCommit(lengthDelimited(1, commitId));
 assert.equal(firstLengthDelimited(readCommit, 1).length, 32);
+recordScenario("acyclic.stream.v2.StreamService/Commit", "unary", ["invocation", "transport", "serialization"], {
+  commitIdBytes: commitId.length,
+});
+recordScenario("acyclic.stream.v2.StreamService/ReadCommit", "unary", ["invocation", "transport", "serialization"], {
+  commitIdBytes: firstLengthDelimited(readCommit, 1).length,
+});
 
 const childrenResponse = await client.childrenPage(Buffer.from([0x0a, 0x06, 0x6e, 0x61, 0x74, 0x69, 0x76, 0x65, 0x20, 0x08]));
 assert(childrenResponse.length > 0);
+recordScenario("acyclic.stream.v2.StreamService/ChildrenPage", "unary", ["invocation", "transport", "serialization"], {
+  bytes: childrenResponse.length,
+});
+
+const forkAt = await client.tail("native/runtime");
+const forked = await client.fork(
+  "native/runtime",
+  "native/fork",
+  forkAt,
+  Buffer.from("native-runtime-fork"),
+);
+assert.equal(forked.destination, "native/fork");
+assert.equal(forked.forkedAt, forkAt);
+recordScenario("acyclic.stream.v2.StreamService/Fork", "unary", ["invocation", "transport", "serialization"], {
+  destination: forked.destination,
+  forkedAt: forked.forkedAt,
+});
+
+const children = await client.children("native", 16);
+assert(children.some((child) => child.path === "native/fork"));
+recordScenario("acyclic.stream.v2.StreamService/Children", "server", ["invocation", "transport", "serialization"], {
+  containsFork: children.some((child) => child.path === "native/fork"),
+});
 
 const cancellation = new NativeStreamCancellation();
 const follow = client.follow("native/runtime", "1", cancellation);
@@ -96,6 +180,11 @@ const followed = await follow;
 assert.equal(followed.cancelled, true);
 assert.equal(followed.records.length, 1);
 assert.equal(Buffer.from(followed.records[0].value).toString(), "two");
+recordScenario("acyclic.stream.v2.StreamService/Follow", "server", ["invocation", "transport", "serialization", "cancellation"], {
+  cancelled: followed.cancelled,
+  records: followed.records.length,
+  firstValue: Buffer.from(followed.records[0].value).toString(),
+});
 
 const recovering = await NativeStreamClient.connect({
   endpoints: ["https://localhost:9", endpoint],
@@ -103,6 +192,29 @@ const recovering = await NativeStreamClient.connect({
   caCertificatePem: Buffer.from(ca, "base64"),
 });
 assert.equal(await recovering.tail("native/runtime"), "2");
+recordScenario("acyclic.stream.v2.StreamService/Tail", "unary", ["invocation", "transport", "serialization", "recovery"], {
+  tail: await recovering.tail("native/runtime"),
+  recovery: true,
+});
+
+if (process.env.ACYCLIC_STREAM_CONSUMER_OUTPUT !== undefined) {
+  if (sourceRevision === undefined || !/^[0-9a-f]{40}$/i.test(sourceRevision)) {
+    throw new Error("consumer output requires ACYCLIC_STREAM_SOURCE_REVISION");
+  }
+  const consumer = {
+    schema: "acyclic.sdk.stream.native-installed-consumer.v1",
+    source_revision: sourceRevision,
+    status: "passed",
+    invoked: true,
+    exit_code: 0,
+    package: process.env.ACYCLIC_STREAM_NATIVE_MODULE,
+    resolution: "node_modules package name",
+    scenarios: scenarioRecords,
+    checks: ["package-install", "napi-loader", "tls", "serialization", "cancellation", "recovery"],
+  };
+  const bytes = `${JSON.stringify(consumer, null, 2)}\n`;
+  writeFileSync(process.env.ACYCLIC_STREAM_CONSUMER_OUTPUT, bytes);
+}
 
 console.log(JSON.stringify({
   append: appended,

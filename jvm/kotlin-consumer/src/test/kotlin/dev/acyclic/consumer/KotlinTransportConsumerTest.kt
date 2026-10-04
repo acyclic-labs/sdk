@@ -30,6 +30,8 @@ import kotlin.test.assertTrue
 import kotlin.test.assertContentEquals
 import java.security.MessageDigest
 import java.util.Base64
+import java.nio.file.Files
+import java.nio.file.Path
 
 class KotlinTransportConsumerTest {
   @Test
@@ -171,24 +173,37 @@ class KotlinTransportConsumerTest {
   @Test
   fun installedJarExercisesRustFixtureUnaryStreamAndCancellation() = runBlocking {
     val endpoint = System.getenv("ACYCLIC_FIXTURE_ENDPOINT")
-    if (endpoint.isNullOrBlank()) return@runBlocking
+    val fixtureRootValue = System.getenv("ACYCLIC_RUST_FIXTURE_ROOT")
+    if (endpoint.isNullOrBlank() || fixtureRootValue.isNullOrBlank()) return@runBlocking
+    val fixtureRoot = Path.of(fixtureRootValue).let { path ->
+      if (Files.isRegularFile(path)) path.parent else path
+    }
+    fun requestBytes(relative: String): ByteArray = Files.readAllBytes(fixtureRoot.resolve(relative))
     val target = endpoint.removePrefix("http://").removePrefix("https://")
     val channel = ManagedChannelBuilder.forTarget(target).usePlaintext().build()
     try {
-      val request = Actors.CreateActorRequest.newBuilder()
-        .setCodeSha256(com.google.protobuf.ByteString.copyFrom(ByteArray(32) { (it + 1).toByte() }))
-        .setHomeRegion("fixture")
-        .setIdempotencyKey("kotlin-fixture")
-        .setLimits(Actors.ActorLimits.newBuilder().setMemoryBytes(Long.MAX_VALUE))
-        .build()
+      val actorBytes = requestBytes("fixtures/actors-create-unary-v1/request.bin")
+      val request = Actors.CreateActorRequest.parseFrom(actorBytes)
+      assertContentEquals(actorBytes, request.toByteArray(), "Rust actor request changed during typed decode")
       val actors = ActorsServiceGrpcKt.ActorsServiceCoroutineStub(channel)
-      assertEquals("fixture-actor", actors.createActor(request).actor.actorId)
+      val actorResponse = actors.createActor(request)
+      assertTrue(actorResponse.hasActor(), "Rust fixture returned no actor")
+      assertContentEquals(request.codeSha256.toByteArray(), actorResponse.actor.codeSha256.toByteArray())
 
       val stream = StreamServiceGrpcKt.StreamServiceCoroutineStub(channel)
+      val appendBytes = requestBytes("fixtures/stream-append-read-v2/append-request.bin")
+      val appendRequest = Stream.AppendRequest.parseFrom(appendBytes)
+      assertContentEquals(appendBytes, appendRequest.toByteArray(), "Rust append request changed during typed decode")
+      val readBytes = requestBytes("fixtures/stream-append-read-v2/read-request.bin")
+      val readRequest = Stream.ReadRequest.parseFrom(readBytes)
+      assertContentEquals(readBytes, readRequest.toByteArray(), "Rust read request changed during typed decode")
+      val appended = stream.append(appendRequest)
+      val replayed = stream.append(appendRequest)
+      assertEquals(appended, replayed, "Rust stream idempotency replay mismatch")
       var received = false
       val first = CompletableDeferred<Unit>()
       val job = launch {
-        stream.read(Stream.ReadRequest.newBuilder().setPath("fixture/events").setLimit(16).build())
+        stream.read(readRequest)
           .collect { received = true; first.complete(Unit) }
       }
       first.await()

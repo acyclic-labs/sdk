@@ -429,7 +429,7 @@ export class HttpInferenceTransport implements InferenceTransport {
     const authorization = headers.get("authorization");
     const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : "";
     try {
-      validateRustOwnedCredentialPolicy(token);
+      await validateRustOwnedCredentialPolicy(token);
     } catch {
       throw new InferenceTransportError(0, "invalid bearer credential");
     }
@@ -484,7 +484,6 @@ export function fromEnv(environment: InferenceEnvironment): InferenceClient {
   if (selected.kind !== "http") {
     throw new TypeError("Inference gRPC transport is unavailable in the installed TypeScript facade");
   }
-  validateRustOwnedCredentialPolicy(environment.token);
   return new InferenceClient(new HttpInferenceTransport(
     environment.endpoint,
     () => ({ authorization: `Bearer ${environment.token}` }),

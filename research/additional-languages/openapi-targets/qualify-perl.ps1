@@ -11,9 +11,8 @@ if ([string]::IsNullOrWhiteSpace($Root)) {
     $Root = (Resolve-Path (Join-Path (Join-Path $scriptDir '..') '..')).Path
 }
 $version = '7.25.0'
-$jarSha256 = '41CE4F6B07F196676439D710759FA1CED7A08066D06FF1BF314681470289EFAE'
 $work = Join-Path $Root 'research/additional-languages/target/perl'
-$jar = Join-Path $Root "research/additional-languages/target/bash/openapi-generator-cli-$version.jar"
+$jar = [string](& pwsh '-NoProfile' '-File' (Join-Path $scriptDir 'ensure-openapi-generator.ps1') '-SourceRoot' $Root)
 $families = @('actors', 'workers', 'stream', 'objects', 'inference')
 $specRoot = Join-Path $Root 'research/additional-languages/target/bash'
 $packages = Join-Path $work 'packages'
@@ -25,8 +24,8 @@ $adapt = Join-Path $scriptDir 'apply-perl-runtime-adaptation.ps1'
 $port = 18766
 
 New-Item -ItemType Directory -Force -Path $work | Out-Null
-if (-not (Test-Path -LiteralPath $jar)) { throw "Missing pinned OpenAPI Generator jar: $jar" }
-if ((Get-FileHash $jar -Algorithm SHA256).Hash -ne $jarSha256) { throw 'OpenAPI Generator checksum mismatch' }
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $jar -PathType Leaf)) { throw 'Pinned OpenAPI Generator bootstrap failed' }
+$jarSha256 = (Get-FileHash -LiteralPath $jar -Algorithm SHA256).Hash.ToLowerInvariant()
 if (-not $SkipRustGeneration) {
     Push-Location $Root
     try {

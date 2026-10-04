@@ -1,0 +1,459 @@
+{
+  "consumer": "go",
+  "execution_mode": "remote",
+  "fixture_binary_sha256": "1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6",
+  "rows": [
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/PublishVersion",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/SelectDeployment",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/SubmitJob",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/InspectJob",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/CancelJob",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/InvokeVersion",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "workers",
+      "RPC": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.BucketsService/CreateBucket",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.BucketsService/HeadBucket",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.BucketsService/DeleteBucket",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.ObjectsService/PutObject",
+      "Shape": "client-streaming",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.ObjectsService/GetObject",
+      "Shape": "server-streaming",
+      "Status": "passed",
+      "Semantic": "fixture_defined_empty_stream",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.ObjectsService/HeadObject",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.ObjectsService/DeleteObject",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.ObjectsService/ListObjects",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.MultipartService/CreateMultipart",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.MultipartService/UploadPart",
+      "Shape": "client-streaming",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.MultipartService/ListParts",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "objects",
+      "RPC": "acyclic.objects.v2.MultipartService/AbortMultipart",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Handshake",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/GetHead",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Read",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Stat",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Diff",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Rebase",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Pin",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Export",
+      "Shape": "server-streaming",
+      "Status": "passed",
+      "Semantic": "fixture_defined_empty_stream",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Import",
+      "Shape": "client-streaming",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/SealSource",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Observe",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    },
+    {
+      "Family": "filesystem",
+      "RPC": "acyclic.filesystem.v2.FilesystemService/Cancel",
+      "Shape": "unary",
+      "Status": "passed",
+      "Semantic": "fixture_default_response",
+      "execution_mode": "remote",
+      "transport": "grpc"
+    }
+  ],
+  "rust_model_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "schema": "acyclic.sdk.go.stateful-remote-scenario-log.v1"
+}

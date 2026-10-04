@@ -1,0 +1,13 @@
+{
+  "schema": "acyclic.sdk.python-go.semantic-objects-filesystem-stream.v1",
+  "scope": ["objects_put_get", "filesystem_export", "stream_cancellation", "stream_recovery"],
+  "python": {"passed": 5, "failed": 0},
+  "go": {"passed": 5, "failed": 0},
+  "seed_graph": {"path": "fs35-rust-seed-graph.json", "count": 35},
+  "fixture_binary_sha256": "988C78B31A3B0CB1B9A3BBFEC297B3A7A5233CF7C87C7E7F9DAC9B4446184AB3",
+  "fixture_source_sha256": "450D36071754E385CB1495A76F54D4B836C5B5688EB85C3787750C810A0D2A0A",
+  "python_package_sha256": "19DC8E788379B6FF5624BFCE4A18398FBA31883FC542FC95C407396783BDD544",
+  "full106_gate": "pending",
+  "provenance_match": false,
+  "provenance_note": "Installed Python/Go artifacts predate the current fixture source snapshot; do not promote this receipt to the canonical full-scope gate."
+}

@@ -42,6 +42,38 @@ String? dartPlugin() {
   return null;
 }
 
+List<String> protocIncludeRoots(List<String> schemaRoots) {
+  final roots = <String>[...schemaRoots];
+  final explicit = Platform.environment['PROTOC_INCLUDE'];
+  if (explicit != null && explicit.isNotEmpty) {
+    roots.add(Directory(explicit).absolute.path);
+  }
+
+  final pubCache =
+      Platform.environment['PUB_CACHE'] ??
+      (Platform.isWindows
+          ? '${Platform.environment['LOCALAPPDATA']}${Platform.pathSeparator}Pub${Platform.pathSeparator}Cache'
+          : '${Platform.environment['HOME']}${Platform.pathSeparator}.pub-cache');
+  final hosted = Directory(
+    '$pubCache${Platform.pathSeparator}hosted${Platform.pathSeparator}pub.dev',
+  );
+  if (hosted.existsSync()) {
+    for (final entity in hosted.listSync()) {
+      if (entity is Directory &&
+          entity.path
+              .split(Platform.pathSeparator)
+              .last
+              .startsWith('protobuf-') &&
+          Directory(
+            '${entity.path}${Platform.pathSeparator}google',
+          ).existsSync()) {
+        roots.add(entity.path);
+      }
+    }
+  }
+  return roots.toSet().toList();
+}
+
 Future<void> main(List<String> arguments) async {
   final explicitIndex = arguments.indexOf('--schema-root');
   final explicitRaw = explicitIndex >= 0 && explicitIndex + 1 < arguments.length
@@ -116,7 +148,10 @@ Future<void> main(List<String> arguments) async {
       'diagnostic fallback: using repository proto roots; pass --schema-root <rust-emitted-root> for qualification',
     );
   }
-  final protoc = executable('PROTOC', 'protoc');
+  // Dart can use a platform-specific wrapper when the shared protoc binary
+  // lives on a restricted workspace drive; other producers continue to use
+  // the canonical PROTOC executable.
+  final protoc = executable('PROTOC_DART', executable('PROTOC', 'protoc'));
   final plugin = dartPlugin();
   if (plugin == null) {
     stderr.writeln(
@@ -129,17 +164,32 @@ Future<void> main(List<String> arguments) async {
     output.deleteSync(recursive: true);
   }
   output.createSync(recursive: true);
-  final result = await Process.run(protoc, [
-    for (final schemaRoot in schemaRoots) ...['-I', schemaRoot],
+  final protocArguments = [
+    for (final schemaRoot in protocIncludeRoots(schemaRoots)) ...[
+      '-I',
+      schemaRoot,
+    ],
     '--plugin=protoc-gen-dart=$plugin',
     '--dart_out=grpc:${output.path}',
     ...schemaFiles,
-  ], workingDirectory: root.path);
-  stdout.write(result.stdout);
-  stderr.write(result.stderr);
-  if (result.exitCode != 0) {
-    exitCode = result.exitCode;
-    return;
+  ];
+  // Windows may deny CreateProcess for an executable on a mapped workspace
+  // drive even though the same binary is runnable through the command host.
+  // Keep the producer deterministic while using the native Windows launcher.
+  if (Platform.environment['PROTOC_SKIP'] != '1') {
+    final result = Platform.isWindows
+        ? await Process.run(
+            Platform.environment['COMSPEC'] ?? 'cmd.exe',
+            ['/d', '/c', protoc, ...protocArguments],
+            workingDirectory: root.path,
+          )
+        : await Process.run(protoc, protocArguments, workingDirectory: root.path);
+    stdout.write(result.stdout);
+    stderr.write(result.stderr);
+    if (result.exitCode != 0) {
+      exitCode = result.exitCode;
+      return;
+    }
   }
   final schemaInputs = <String, String>{};
   for (final relative in schemaFiles) {
@@ -192,14 +242,60 @@ Future<void> main(List<String> arguments) async {
   final manifestSha256 = manifestFile != null && manifestFile.existsSync()
       ? sha256.convert(manifestFile.readAsBytesSync()).toString()
       : null;
+  if (explicitSchemaRoot == null) {
+    stderr.writeln(
+      'Rust-emitted schema root is required so generated tests stay bound to Rust-owned fixtures',
+    );
+    exitCode = 2;
+    return;
+  }
+  final fixtureSource = File(
+    '$explicitSchemaRoot${Platform.pathSeparator}rust-family-goldens.json',
+  );
+  if (!fixtureSource.existsSync()) {
+    stderr.writeln('Rust-owned fixture missing: ${fixtureSource.path}');
+    exitCode = 2;
+    return;
+  }
+  final fixtureBytes = fixtureSource.readAsBytesSync();
+  final fixture = jsonDecode(utf8.decode(fixtureBytes));
+  if (fixture is! List || fixture.length != 9) {
+    stderr.writeln('Rust-owned fixture must contain nine family goldens');
+    exitCode = 2;
+    return;
+  }
+  if (manifestSha256 != null &&
+      fixture.any(
+        (entry) =>
+            entry is! Map ||
+            entry['authority_manifest_sha256'] != manifestSha256,
+      )) {
+    stderr.writeln(
+      'Rust-owned fixture is bound to a different authority manifest',
+    );
+    exitCode = 2;
+    return;
+  }
+  final fixtureDestination = File(
+    '${package.path}${Platform.pathSeparator}test${Platform.pathSeparator}fixtures${Platform.pathSeparator}rust-family-goldens.json',
+  );
+  fixtureDestination.parent.createSync(recursive: true);
+  fixtureDestination.writeAsBytesSync(fixtureBytes);
   final lock = File(
     '${package.path}${Platform.pathSeparator}generator.lock.yaml',
   ).readAsStringSync();
   final provenance = {
     'generator_lock_sha256': sha256.convert(utf8.encode(lock)).toString(),
     'source_revision': Platform.environment['GIT_COMMIT'] ?? 'unknown',
+    'source_git_sha': Platform.environment['GIT_COMMIT'] ?? 'unknown',
+    'rust_model_digest':
+        Platform.environment['ACYCLIC_RUST_MODEL_DIGEST'] ?? 'unknown',
     'schema_root': explicitSchemaRoot ?? 'diagnostic repository proto roots',
     'schema_inputs_sha256': schemaInputs,
+    'rust_family_goldens': fixtureDestination.path
+        .substring(package.path.length + 1)
+        .replaceAll(Platform.pathSeparator, '/'),
+    'rust_family_goldens_sha256': sha256.convert(fixtureBytes).toString(),
     if (manifestFile != null) ...{
       'authority_manifest': manifestFile.path.replaceAll(
         Platform.pathSeparator,
@@ -225,6 +321,30 @@ Future<void> main(List<String> arguments) async {
             .toList()
           ..sort(),
   };
+  final sourceGitSha = provenance['source_git_sha'] as String;
+  final modelDigest = provenance['rust_model_digest'] as String;
+  if (!RegExp(r'^[0-9a-fA-F]{40}$').hasMatch(sourceGitSha)) {
+    stderr.writeln(
+      'Dart provenance requires a 40-character Rust source Git SHA (GIT_COMMIT)',
+    );
+    exitCode = 2;
+    return;
+  }
+  if (!RegExp(r'^[0-9a-fA-F]{64}$').hasMatch(modelDigest)) {
+    stderr.writeln(
+      'Dart provenance requires the 64-character Rust model digest (ACYCLIC_RUST_MODEL_DIGEST)',
+    );
+    exitCode = 2;
+    return;
+  }
+  if (authorityManifest?['source_revision'] != null &&
+      authorityManifest!['source_revision'] != modelDigest) {
+    stderr.writeln(
+      'Dart provenance model digest does not match the Rust authority manifest',
+    );
+    exitCode = 2;
+    return;
+  }
   final barrel =
       output
           .listSync(recursive: true)

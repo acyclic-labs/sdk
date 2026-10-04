@@ -1,0 +1,162 @@
+name: Additional language qualification
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact Rust source revision to qualify
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: additional-language-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qualify:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: elixir
+            elixir_version: '1.17.3'
+            os: ubuntu-24.04
+          - language: erlang
+            elixir_version: ''
+            os: ubuntu-24.04
+          - language: ocaml
+            elixir_version: ''
+            os: ubuntu-24.04
+          - language: common-lisp
+            elixir_version: ''
+            os: ubuntu-24.04
+          - language: lua-remote
+            elixir_version: ''
+            os: ubuntu-24.04
+          - language: lua-remote
+            elixir_version: ''
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - name: Check out exact Rust source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install protobuf compiler and common build tools
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes protobuf-compiler build-essential pkg-config libssl-dev git python3-pip
+
+      - name: Install BEAM toolchain
+        if: matrix.language == 'elixir' || matrix.language == 'erlang'
+        uses: erlef/setup-beam@v1.8.0
+        with:
+          otp-version: '27.2.4'
+          elixir-version: ${{ matrix.elixir_version }}
+          rebar3-version: '3.24.0'
+          version-type: strict
+
+      - name: Install OCaml toolchain
+        if: matrix.language == 'ocaml'
+        uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.2.1'
+          opam-depext: true
+          dune-cache: true
+
+      - name: Install Common Lisp toolchain
+        if: matrix.language == 'common-lisp'
+        run: |
+          sudo install -d -m 0755 /usr/share/keyrings
+          curl --fail --silent --show-error --location \
+            https://ocicl.github.io/ocicl/deb-repo/ocicl-archive-keyring.gpg \
+            | sudo tee /usr/share/keyrings/ocicl-archive-keyring.asc >/dev/null
+          echo "deb [signed-by=/usr/share/keyrings/ocicl-archive-keyring.asc] https://ocicl.github.io/ocicl/deb-repo stable main" \
+            | sudo tee /etc/apt/sources.list.d/ocicl.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install --yes sbcl ocicl
+          ocicl setup
+
+      - name: Install LuaJIT
+        if: matrix.language == 'lua-remote'
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update
+            sudo apt-get install --yes luajit
+          else
+            brew install luajit
+          fi
+
+      - name: Install runtime probe dependencies
+        if: matrix.language != 'lua-remote'
+        run: python3 -m pip install --disable-pip-version-check --no-cache-dir grpcio==1.66.2 protobuf==5.27.5
+
+      - name: Start Rust fixture server
+        if: matrix.language != 'lua-remote'
+        shell: bash
+        run: |
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 18080 --grpc-port 18081 >"$RUNNER_TEMP/fixture-server.log" 2>&1 &
+          echo $! >"$RUNNER_TEMP/fixture-server.pid"
+          for _ in $(seq 1 60); do
+            if (echo >/dev/tcp/127.0.0.1/18081) >/dev/null 2>&1; then exit 0; fi
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/fixture-server.log"
+          exit 1
+      - name: Generate Rust-owned products
+        run: |
+          cargo run --locked --bin sdk-contract-wire -- generate-products \
+            --root "$GITHUB_WORKSPACE" --out "$RUNNER_TEMP/rust-products"
+
+      - name: Generate Rust-owned executable typed request manifest
+        if: matrix.language != 'lua-remote'
+        run: |
+          cargo run --locked --manifest-path rust/crates/sdk-examples/Cargo.toml \
+            --bin typed-request-manifest > "$RUNNER_TEMP/rust-typed-request-manifest.json"
+          test -s "$RUNNER_TEMP/rust-typed-request-manifest.json"
+
+      - name: Build and consume generated package
+        if: matrix.language != 'lua-remote'
+        env:
+          ACYCLIC_FIXTURE_GRPC_ENDPOINT: 127.0.0.1:18081
+          ACYCLIC_RUST_TYPED_REQUEST_MANIFEST: ${{ runner.temp }}/rust-typed-request-manifest.json
+        run: |
+          bash scripts/qualify-additional-language.sh \
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \
+            "$RUNNER_TEMP/rust-products"
+
+      - name: Build LuaJIT remote package
+        if: matrix.language == 'lua-remote'
+        run: |
+          bash scripts/qualify-additional-language.sh \
+            '${{ matrix.language }}' "$GITHUB_WORKSPACE" "$RUNNER_TEMP/${{ matrix.language }}-${{ matrix.os }}" \
+            "$RUNNER_TEMP/rust-products"
+
+      - name: Stop Rust fixture server
+        if: always() && matrix.language != 'lua-remote'
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/fixture-server.pid" ]; then kill "$(cat "$RUNNER_TEMP/fixture-server.pid")" || true; fi
+
+      - name: Upload qualification receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: additional-language-${{ matrix.language }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/${{ matrix.language }}-${{ matrix.os }}

@@ -21,7 +21,7 @@ import type {
   UpdateActorRequest, UpdateActorResponse,
   ErrorCode,
 } from "../generated/proto/actors/v1/actors_pb.js";
-import { ACTORS_METHODS, interpolateRustOwnedPath, type RustOwnedMethodMetadata } from "./generated-client.js";
+import { ACTORS_METHODS, interpolateRustOwnedPath, validateRustOwnedCredential, type RustOwnedMethodMetadata } from "./generated-client.js";
 import { validateActorsContentLength, validateActorsCredential, validateActorsEndpoint, validateActorsInvoke, validateActorsResponseChunk, validateActorsResponseLimit } from "./wasm-runtime.js";
 
 export interface HttpActorsOptions {
@@ -45,6 +45,7 @@ export class HttpActorsClient {
   constructor(options: HttpActorsOptions) {
     const endpoint = new URL(options.endpoint);
     validateActorsEndpoint(options.endpoint);
+    validateRustOwnedCredential(ACTORS_METHODS.createActor, options.token);
     validateActorsCredential(options.token);
     this.#endpoint = endpoint;
     this.#token = options.token;

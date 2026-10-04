@@ -1,0 +1,15 @@
+{
+  "schema": "acyclic.haskell.remote-request-manifest.v1",
+  "source": "rust/crates/stream/proto/stream/v2/stream.proto",
+  "service": "acyclic.stream.v2.StreamService",
+  "method": "Append",
+  "rpc_type": "Acyclic.Stream.Api.Append",
+  "request_type": "acyclic.stream.v2.AppendRequest",
+  "fields": [
+    {"name": "path", "wire": 1, "source_type": "string", "value": "haskell/remote"},
+    {"name": "records", "wire": 2, "source_type": "bytes[]", "value": "rust-owned-haskell-record"},
+    {"name": "idempotencyKey", "wire": 4, "source_type": "bytes", "value": "haskell-remote-append"}
+  ],
+  "behavior": ["unary", "cancellation deadline", "reconnect policy"],
+  "rust_owned": true
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "acyclic.sdk.python-go.current-authority-remote-service-receipt.v1",
+  "status": "passed",
+  "qualification": "Installed Rust-authority-generated Go and Python packages passed Actors, Stream, Machines RSA/mTLS, and Inference Runs RSA/mTLS scenarios against bounded Rust fixtures.",
+  "authority": {
+    "manifest": "Q:/sdk/work/python-go-authority-current-resume/rust-authority.json",
+    "manifest_sha256": "9d5c3f9601b125cf4134b3cada386c7fb5f9a1a0a63ba8dc9c374f757d2e9b21",
+    "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a"
+  },
+  "go": {
+    "module": "github.com/acyclic-labs/sdk/go",
+    "version": "v0.0.1",
+    "archive_sha256": "4c10017b9fe2b15dcc8d764ab0ff77dd23cb6bed510237a41822ca454ae376f5",
+    "installed_from": "Q:/sdk/work/python-go-producer-run-resume/module-proxy/github.com/acyclic-labs/sdk/go/@v/v0.0.1.zip",
+    "scenarios": {
+      "machines_tls": "installed Go current package Machines mTLS PASS methods=19 watch_states=2",
+      "inference_tls": "installed Go current package Inference mTLS PASS runs=generate+inspect+cancel watch=[0,1]",
+      "actors_stream": "installed Go current package Actors/Stream PASS actor=create append=[0,2) idempotency=recovered tail=2 read=2 follow=cancelled"
+    }
+  },
+  "python": {
+    "wheel_sha256": "8496e7d67af04f60e6197baf9ff521f79d3b28f62b71a119541e2077f73505ad",
+    "installed_from": "Q:/sdk/work/python-current-wheel-resume/acyclic_sdk_transport-0.2.0-py3-none-any.whl",
+    "scenarios": {
+      "machines_tls": "installed Python current package Machines mTLS PASS methods=19 watch_states=2",
+      "inference_tls": "installed Python current package Inference mTLS PASS runs=generate+inspect+cancel watch=[0,1]",
+      "actors_stream": "installed Python current package Actors/Stream PASS actor=create append=[0,2) idempotency=recovered tail=2 read=2 follow=cancelled"
+    }
+  },
+  "source_bound": {
+    "rust_fixture_source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+    "fixture_receipt": "research/acceptance/python-go/fixture-current-authority-resume.json",
+    "generated_go_tree_sha256": "7807b1b41bc2d97f5d5db16b6524ddd3c0d005f8f56d35cbe6e9b95e58c22a9d",
+    "generated_python_tree_sha256": "1bcc541a2abef01a0dc0b57d92b29bcb92abc82f757d3aa77bb73ee779f92d3b"
+  }
+}

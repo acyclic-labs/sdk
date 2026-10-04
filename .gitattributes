@@ -9,6 +9,14 @@
 *.yaml text eol=lf
 *.c text eol=lf
 *.h text eol=lf
+*.cc text eol=lf
+*.cpp text eol=lf
+*.cxx text eol=lf
+*.cmake text eol=lf
+CMakeLists.txt text eol=lf
+*.in text eol=lf
+*.lock text eol=lf
+*.py text eol=lf
 *.bin binary
 *.wasm binary
 *.node binary

@@ -6,7 +6,7 @@ Status: active. This ledger is specific to the Rust-source migration, not the hi
 
 - SDK branch: `codex/rust-sdk-docs-source`, isolated worktree based on `5beef008f88cd51a434260b36b79776bb95e605f`.
 - Website branch: `codex/rust-sdk-docs-source`, isolated worktree based on `68fea323412df5461b9c54475d97b2a48ca9c14e`.
-- Never merge to main, enable auto-merge, publish registry artifacts, or deploy production in this loop.
+- The user authorized opening a PR and merging only when absolutely confident on 2026-10-04. Only the coordinator may merge, after the complete generation, compatibility, installed package, snippet, and website audit passes. Never enable auto-merge, publish registry artifacts, or deploy production in this loop.
 - Keep available subagent slots occupied with explicitly owned independent work; replenish finished tasks.
 - Preserve existing protocol identities, descriptor handshake digests, archived contracts, release claims, and user changes.
 
@@ -368,3 +368,10 @@ Next bounded milestones: restore and render the actual docs preview; ingest exac
 - Root inspected legacy generation: scripts/generate-typescript-packages.mjs still independently owns8 family import rewrites despite invoking Rust for prototype content. TypeScript owner is migrating those final outputs/path mappings into Rust; legacy package.json generation chains will be removed only with verified equivalent Rust-owned coverage.
 - Website owner153613b/9ee005d reports70/70 Rust guide destinations and query/fragment preservation, with all70 legacy URLs307. This proves destination coverage, not preservation of every old substantive instruction or rendered desktop/mobile quality. Additional content equivalence and immutable-version search/navigation checks remain assigned.
 - All16 subagent slots remain occupied with explicit responsibilities. Current clean full generation, complete language/platform packages, strict docs, snippet execution, rendered website proof and Rust-only change propagation remain outstanding. No merge, auto-merge, registry publishing or production deployment.
+## Current authorization and verification closure — 2026-10-04
+
+The previous goal turn made concrete progress: recorded the failed immutable-source full run with all log hashes and diagnosed exact output-routing and producer prerequisite failures. The current turn committed the stronger external-policy routing/tamper regression (719328f96), which passed. Manual/release qualification now invokes revision-bound Rust source, installed embedded, and native Stream checks (ccadaeddaf); all 16 fast qualification policy tests pass. Native hosted execution is required before cross-platform qualification is complete.
+
+The user authorized the specific acyclic-labs/sdk isolated branch push, PR, and manual CI after automatic review rejected the initial external transfer. The isolated branch was pushed at ccadaeddaf and draft PR https://github.com/acyclic-labs/sdk/pull/241 is attached to this task. The first manual dispatch was rejected with HTTP 422 because runner.temp appeared in a job-level environment; the workflow owner is fixing that exact context error before a retry. No merge is authorized until the full completion audit proves the requested end state. Production publication and deployment remain outside the loop.
+
+Qualification still requires actual installed archives to execute against the matching Rust fixture source. Historical fixture transcripts, ancestry checks, fresh packing of previously tested loose dist trees, compile-only platform evidence, and orphan commit objects do not establish integrated current-source package qualification. Outstanding viable language targets remain part of the original goal. Generated documentation redirects are absent from the current website.

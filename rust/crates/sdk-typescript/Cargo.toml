@@ -13,6 +13,9 @@ description = "Standalone Rust-owned SDK-family TypeScript metadata generator"
 
 [dependencies]
 acyclic-sdk-contract-wire = { path = "../sdk-contract-wire" }
+acyclic-inference = { path = "../inference", default-features = false }
+acyclic-inference-wasm = { path = "../inference-wasm" }
+acyclic-stream = { path = "../stream", default-features = false }
 prost = "0.14.4"
 prost-types = "0.14.4"
 serde = { version = "1.0.228", features = ["derive"] }

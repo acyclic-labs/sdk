@@ -5,7 +5,15 @@
 //! binds only to loopback, and makes no hosted service-availability claim.
 
 use acyclic_actors::{FILE_DESCRIPTOR_SET, validate_create, wire as actors_wire};
+use acyclic_fs::wire::filesystem::v2 as fs_wire;
+use acyclic_harness::{grpc::HarnessGrpcService, wire as harness_wire, wire_api::HarnessWireApi};
+use acyclic_objects::wire as objects_wire;
+use acyclic_sdk_examples::fixtures::filesystem_harness::{filesystem_server, harness_server};
 use acyclic_sdk_examples::transport_fixtures;
+use acyclic_sdk_examples::tls_fixture::{
+    AllRoutesMachinesFixture, InferenceMetadataFixture, InferenceRunsFixture,
+    new_method_transcript_log,
+};
 use acyclic_stream::{
     AppendOutcome, AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath,
     StreamProvider, wire as stream_wire,
@@ -14,7 +22,7 @@ use acyclic_workers::{
     FILE_DESCRIPTOR_SET as WORKERS_FILE_DESCRIPTOR_SET, validate_publish, validate_select,
     validate_submit, wire as workers_wire,
 };
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt, stream};
 use prost::Message;
 use prost_reflect::{DescriptorPool, DynamicMessage};
 use serde_json::{Deserializer, Value, json};
@@ -105,12 +113,6 @@ impl ActorsFixture {
     fn new(_app: GrpcApp) -> Self {
         Self {}
     }
-
-    fn unimplemented<T>(&self, operation: &'static str) -> Result<Response<T>, Status> {
-        Err(Status::unimplemented(format!(
-            "fixture Actors endpoint does not implement {operation}"
-        )))
-    }
 }
 
 #[tonic::async_trait]
@@ -154,54 +156,558 @@ impl actors_wire::actors_service_server::ActorsService for ActorsFixture {
 
     async fn update_actor(
         &self,
-        _request: Request<actors_wire::UpdateActorRequest>,
+        request: Request<actors_wire::UpdateActorRequest>,
     ) -> Result<Response<actors_wire::UpdateActorResponse>, Status> {
-        self.unimplemented("UpdateActor")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn inspect_actor(
         &self,
-        _request: Request<actors_wire::InspectActorRequest>,
+        request: Request<actors_wire::InspectActorRequest>,
     ) -> Result<Response<actors_wire::InspectActorResponse>, Status> {
-        self.unimplemented("InspectActor")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn add_subscription(
         &self,
-        _request: Request<actors_wire::AddSubscriptionRequest>,
+        request: Request<actors_wire::AddSubscriptionRequest>,
     ) -> Result<Response<actors_wire::AddSubscriptionResponse>, Status> {
-        self.unimplemented("AddSubscription")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn remove_subscription(
         &self,
-        _request: Request<actors_wire::RemoveSubscriptionRequest>,
+        request: Request<actors_wire::RemoveSubscriptionRequest>,
     ) -> Result<Response<actors_wire::RemoveSubscriptionResponse>, Status> {
-        self.unimplemented("RemoveSubscription")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn resume_subscription(
         &self,
-        _request: Request<actors_wire::ResumeSubscriptionRequest>,
+        request: Request<actors_wire::ResumeSubscriptionRequest>,
     ) -> Result<Response<actors_wire::ResumeSubscriptionResponse>, Status> {
-        self.unimplemented("ResumeSubscription")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn checkpoint_actor(
         &self,
-        _request: Request<actors_wire::CheckpointActorRequest>,
+        request: Request<actors_wire::CheckpointActorRequest>,
     ) -> Result<Response<actors_wire::CheckpointActorResponse>, Status> {
-        self.unimplemented("CheckpointActor")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 
     async fn invoke_actor(
         &self,
-        _request: Request<actors_wire::InvokeActorRequest>,
+        request: Request<actors_wire::InvokeActorRequest>,
     ) -> Result<Response<actors_wire::InvokeActorResponse>, Status> {
-        self.unimplemented("InvokeActor")
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
     }
 }
 
+#[derive(Clone)]
+struct FilesystemFixture;
+
+#[tonic::async_trait]
+impl fs_wire::filesystem_service_server::FilesystemService for FilesystemFixture {
+    type ExportStream = stream::Empty<Result<fs_wire::ExportChunk, Status>>;
+
+    async fn handshake(
+        &self,
+        request: Request<fs_wire::HandshakeRequest>,
+    ) -> Result<Response<fs_wire::HandshakeResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn create_workspace(
+        &self,
+        request: Request<fs_wire::CreateWorkspaceRequest>,
+    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn open_workspace(
+        &self,
+        request: Request<fs_wire::OpenWorkspaceRequest>,
+    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn delete_workspace(
+        &self,
+        request: Request<fs_wire::DeleteWorkspaceRequest>,
+    ) -> Result<Response<fs_wire::MutationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn get_head(
+        &self,
+        request: Request<fs_wire::GetHeadRequest>,
+    ) -> Result<Response<fs_wire::GenerationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn get_generation(
+        &self,
+        request: Request<fs_wire::GetGenerationRequest>,
+    ) -> Result<Response<fs_wire::GenerationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn read(
+        &self,
+        request: Request<fs_wire::ReadRequest>,
+    ) -> Result<Response<fs_wire::ReadResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn stat(
+        &self,
+        request: Request<fs_wire::StatRequest>,
+    ) -> Result<Response<fs_wire::StatResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn list_directory(
+        &self,
+        request: Request<fs_wire::ListDirectoryRequest>,
+    ) -> Result<Response<fs_wire::ListDirectoryResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn read_link(
+        &self,
+        request: Request<fs_wire::ReadLinkRequest>,
+    ) -> Result<Response<fs_wire::ReadResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn plan_extents(
+        &self,
+        request: Request<fs_wire::PlanExtentsRequest>,
+    ) -> Result<Response<fs_wire::PlanExtentsResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn apply_transaction(
+        &self,
+        request: Request<fs_wire::ApplyTransactionRequest>,
+    ) -> Result<Response<fs_wire::MutationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn rebase_transaction(
+        &self,
+        request: Request<fs_wire::RebaseTransactionRequest>,
+    ) -> Result<Response<fs_wire::RebaseTransactionResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn fork_workspace(
+        &self,
+        request: Request<fs_wire::ForkWorkspaceRequest>,
+    ) -> Result<Response<fs_wire::WorkspaceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn diff(
+        &self,
+        request: Request<fs_wire::DiffRequest>,
+    ) -> Result<Response<fs_wire::DiffResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn rebase(
+        &self,
+        request: Request<fs_wire::RebaseRequest>,
+    ) -> Result<Response<fs_wire::RebaseResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn plan_join(
+        &self,
+        request: Request<fs_wire::PlanJoinRequest>,
+    ) -> Result<Response<fs_wire::JoinPlan>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn apply_join(
+        &self,
+        request: Request<fs_wire::ApplyJoinRequest>,
+    ) -> Result<Response<fs_wire::JoinResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn checkpoint(
+        &self,
+        request: Request<fs_wire::RetainGenerationRequest>,
+    ) -> Result<Response<fs_wire::RetainGenerationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn pin(
+        &self,
+        request: Request<fs_wire::RetainGenerationRequest>,
+    ) -> Result<Response<fs_wire::RetainGenerationResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn export(
+        &self,
+        request: Request<fs_wire::ExportRequest>,
+    ) -> Result<Response<Self::ExportStream>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(stream::empty()))
+    }
+    async fn import(
+        &self,
+        request: Request<tonic::Streaming<fs_wire::ImportChunk>>,
+    ) -> Result<Response<fs_wire::ImportResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn issue_mount_credential(
+        &self,
+        request: Request<fs_wire::CredentialRequest>,
+    ) -> Result<Response<fs_wire::CredentialResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn issue_s3_credential(
+        &self,
+        request: Request<fs_wire::CredentialRequest>,
+    ) -> Result<Response<fs_wire::CredentialResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn get_source_state(
+        &self,
+        request: Request<fs_wire::SourceStateRequest>,
+    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn reconcile_source(
+        &self,
+        request: Request<fs_wire::SourceOperationRequest>,
+    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn rescan_source(
+        &self,
+        request: Request<fs_wire::SourceOperationRequest>,
+    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn seal_source(
+        &self,
+        request: Request<fs_wire::SourceOperationRequest>,
+    ) -> Result<Response<fs_wire::SourceResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn observe(
+        &self,
+        request: Request<fs_wire::ObserveRequest>,
+    ) -> Result<Response<fs_wire::ObserveResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+    async fn cancel(
+        &self,
+        request: Request<fs_wire::CancelRequest>,
+    ) -> Result<Response<fs_wire::CancelResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+}
+
+#[derive(Clone)]
+struct HarnessFixtureApi;
+
+impl HarnessWireApi for HarnessFixtureApi {
+    fn authorize_operation_control<'a>(
+        &'a self,
+        _request: &'a acyclic_harness::wire_api::OperationControlRequest,
+    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<()>> {
+        async { Ok(()) }.boxed()
+    }
+
+    fn handshake<'a>(
+        &'a self,
+        _request: harness_wire::HandshakeRequest,
+    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::HandshakeResponse>>
+    {
+        async {
+            Ok(harness_wire::HandshakeResponse {
+                protocol: Some(acyclic_harness::wire_api::current_protocol()),
+                supported: Some(Default::default()),
+            })
+        }
+        .boxed()
+    }
+
+    fn submit<'a>(
+        &'a self,
+        command: harness_wire::CommandEnvelope,
+    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::Admission>> {
+        async move {
+            Ok(harness_wire::Admission {
+                operation: command.operation,
+                state: harness_wire::AdmissionState::Accepted as i32,
+                error: None,
+            })
+        }
+        .boxed()
+    }
+
+    fn replay<'a>(
+        &'a self,
+        _request: harness_wire::ResumeRequest,
+    ) -> futures::future::BoxFuture<
+        'a,
+        acyclic_harness::Result<
+            futures::stream::BoxStream<'static, acyclic_harness::Result<harness_wire::Delivery>>,
+        >,
+    > {
+        async { Ok(Box::pin(stream::empty()) as _) }.boxed()
+    }
+
+    fn observe<'a>(
+        &'a self,
+        request: harness_wire::ObserveRequest,
+    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::OperationStatus>>
+    {
+        async move {
+            Ok(harness_wire::OperationStatus {
+                operation: Some(harness_wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: String::new(),
+                }),
+                state: harness_wire::CompletionState::Running as i32,
+                error: None,
+                protocol: request.protocol,
+                owner: request.owner,
+                cancellation_requested: false,
+                revision: 0,
+            })
+        }
+        .boxed()
+    }
+
+    fn cancel<'a>(
+        &'a self,
+        request: harness_wire::CancelRequest,
+    ) -> futures::future::BoxFuture<'a, acyclic_harness::Result<harness_wire::CancelResponse>> {
+        async move {
+            Ok(harness_wire::CancelResponse {
+                status: Some(harness_wire::OperationStatus {
+                    operation: Some(harness_wire::OperationIdentity {
+                        operation_id: request.operation_id.clone(),
+                        idempotency_key: String::new(),
+                    }),
+                    state: harness_wire::CompletionState::Cancelled as i32,
+                    error: None,
+                    protocol: request.protocol.clone(),
+                    owner: request.owner.clone(),
+                    cancellation_requested: false,
+                    revision: 1,
+                }),
+                operation: Some(harness_wire::OperationIdentity {
+                    operation_id: request.operation_id,
+                    idempotency_key: request.idempotency_key,
+                }),
+            })
+        }
+        .boxed()
+    }
+}
+#[derive(Clone)]
+struct ObjectsFixture;
+
+#[tonic::async_trait]
+impl objects_wire::buckets_service_server::BucketsService for ObjectsFixture {
+    async fn create_bucket(
+        &self,
+        request: Request<objects_wire::CreateBucketRequest>,
+    ) -> Result<Response<objects_wire::Bucket>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn head_bucket(
+        &self,
+        request: Request<objects_wire::HeadBucketRequest>,
+    ) -> Result<Response<objects_wire::Bucket>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn delete_bucket(
+        &self,
+        request: Request<objects_wire::DeleteBucketRequest>,
+    ) -> Result<Response<objects_wire::DeleteBucketResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+}
+
+#[tonic::async_trait]
+impl objects_wire::objects_service_server::ObjectsService for ObjectsFixture {
+    async fn put_object(
+        &self,
+        request: Request<tonic::Streaming<objects_wire::PutObjectRequest>>,
+    ) -> Result<Response<objects_wire::ObjectInfo>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    type GetObjectStream = futures::stream::Empty<Result<objects_wire::GetObjectResponse, Status>>;
+
+    async fn get_object(
+        &self,
+        request: Request<objects_wire::GetObjectRequest>,
+    ) -> Result<Response<Self::GetObjectStream>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(futures::stream::empty()))
+    }
+
+    async fn head_object(
+        &self,
+        request: Request<objects_wire::HeadObjectRequest>,
+    ) -> Result<Response<objects_wire::HeadObjectResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn delete_object(
+        &self,
+        request: Request<objects_wire::DeleteObjectRequest>,
+    ) -> Result<Response<objects_wire::DeleteObjectResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn list_objects(
+        &self,
+        request: Request<objects_wire::ListObjectsRequest>,
+    ) -> Result<Response<objects_wire::ListObjectsResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+}
+
+#[tonic::async_trait]
+impl objects_wire::multipart_service_server::MultipartService for ObjectsFixture {
+    async fn create_multipart(
+        &self,
+        request: Request<objects_wire::CreateMultipartRequest>,
+    ) -> Result<Response<objects_wire::MultipartUpload>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn upload_part(
+        &self,
+        request: Request<tonic::Streaming<objects_wire::UploadPartRequest>>,
+    ) -> Result<Response<objects_wire::UploadedPart>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn list_parts(
+        &self,
+        request: Request<objects_wire::ListPartsRequest>,
+    ) -> Result<Response<objects_wire::ListPartsResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn complete_multipart(
+        &self,
+        request: Request<objects_wire::CompleteMultipartRequest>,
+    ) -> Result<Response<objects_wire::ObjectInfo>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn abort_multipart(
+        &self,
+        request: Request<objects_wire::AbortMultipartRequest>,
+    ) -> Result<Response<objects_wire::AbortMultipartResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+}
+#[derive(Clone)]
+struct WorkersFixture;
+
+#[tonic::async_trait]
+impl workers_wire::workers_service_server::WorkersService for WorkersFixture {
+    async fn publish_version(
+        &self,
+        request: Request<workers_wire::PublishVersionRequest>,
+    ) -> Result<Response<workers_wire::PublishVersionResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn select_deployment(
+        &self,
+        request: Request<workers_wire::SelectDeploymentRequest>,
+    ) -> Result<Response<workers_wire::SelectDeploymentResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn submit_job(
+        &self,
+        request: Request<workers_wire::SubmitJobRequest>,
+    ) -> Result<Response<workers_wire::SubmitJobResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn inspect_job(
+        &self,
+        request: Request<workers_wire::InspectJobRequest>,
+    ) -> Result<Response<workers_wire::InspectJobResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn cancel_job(
+        &self,
+        request: Request<workers_wire::CancelJobRequest>,
+    ) -> Result<Response<workers_wire::CancelJobResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn invoke_version(
+        &self,
+        request: Request<workers_wire::InvokeVersionRequest>,
+    ) -> Result<Response<workers_wire::InvokeResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+
+    async fn invoke_deployment(
+        &self,
+        request: Request<workers_wire::InvokeDeploymentRequest>,
+    ) -> Result<Response<workers_wire::InvokeResponse>, Status> {
+        let _request = request.into_inner();
+        Ok(Response::new(Default::default()))
+    }
+}
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let options = parse_args(env::args().skip(1))?;
@@ -241,17 +747,92 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .max_encoding_message_size(MAX_BODY_BYTES),
             interceptor.clone(),
         );
+        let workers = tonic::service::interceptor::InterceptedService::new(
+            workers_wire::workers_service_server::WorkersServiceServer::new(WorkersFixture)
+                .max_decoding_message_size(MAX_BODY_BYTES)
+                .max_encoding_message_size(MAX_BODY_BYTES),
+            interceptor.clone(),
+        );
+        let objects_buckets = tonic::service::interceptor::InterceptedService::new(
+            objects_wire::buckets_service_server::BucketsServiceServer::new(ObjectsFixture),
+            interceptor.clone(),
+        );
+        let objects = tonic::service::interceptor::InterceptedService::new(
+            objects_wire::objects_service_server::ObjectsServiceServer::new(ObjectsFixture),
+            interceptor.clone(),
+        );
+        let objects_multipart = tonic::service::interceptor::InterceptedService::new(
+            objects_wire::multipart_service_server::MultipartServiceServer::new(ObjectsFixture),
+            interceptor.clone(),
+        );
+        let harness = tonic::service::interceptor::InterceptedService::new(
+            harness_server(),
+            interceptor.clone(),
+        );
+        let filesystem = tonic::service::interceptor::InterceptedService::new(
+            filesystem_server().expect('canonical filesystem fixture service'),
+            interceptor.clone(),
+        );
         let streams = tonic::service::interceptor::InterceptedService::new(
             acyclic_stream::wire::stream_service_server::StreamServiceServer::new(
                 acyclic_stream::grpc::Service::new(Arc::clone(&grpc_app.stream)),
             )
             .max_decoding_message_size(MAX_BODY_BYTES)
             .max_encoding_message_size(MAX_BODY_BYTES),
+            interceptor.clone(),
+        );
+        let transcript = new_method_transcript_log();
+        let machines = tonic::service::interceptor::InterceptedService::new(
+            acyclic_machines::wire::machines_service_server::MachinesServiceServer::new(
+                AllRoutesMachinesFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let models = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::models_service_server::ModelsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let contexts = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::contexts_service_server::ContextsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let warm_contexts = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::warm_contexts_service_server::WarmContextsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let evaluations = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::evaluations_service_server::EvaluationsServiceServer::new(
+                InferenceMetadataFixture::with_transcript(transcript.clone()),
+            ),
+            interceptor.clone(),
+        );
+        let runs = tonic::service::interceptor::InterceptedService::new(
+            acyclic_inference::wire::runs_service_server::RunsServiceServer::new(
+                InferenceRunsFixture::with_transcript(transcript),
+            ),
             interceptor,
         );
         Server::builder()
             .add_service(actors)
+            .add_service(workers)
+            .add_service(objects_buckets)
+            .add_service(objects)
+            .add_service(objects_multipart)
+            .add_service(harness)
+            .add_service(filesystem)
             .add_service(streams)
+            .add_service(machines)
+            .add_service(models)
+            .add_service(contexts)
+            .add_service(warm_contexts)
+            .add_service(evaluations)
+            .add_service(runs)
             .serve_with_incoming_shutdown(TcpListenerStream::new(grpc_listener), async move {
                 grpc_shutdown.notified().await;
             })
@@ -933,7 +1514,12 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> 
             });
         }
         bytes.extend_from_slice(&chunk[..read]);
-        if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+        if let Some(index) = bytes.windows(4).position(|window| {
+            window
+                == b"\r
+\r
+"
+        }) {
             break index + 4;
         }
     };
@@ -941,7 +1527,10 @@ async fn read_request(stream: &mut TcpStream) -> Result<HttpRequest, HttpError> 
         status: 400,
         message: "request headers are not UTF-8".to_owned(),
     })?;
-    let mut lines = headers.split("\r\n");
+    let mut lines = headers.split(
+        "\r
+",
+    );
     let request_line = lines.next().ok_or_else(|| HttpError {
         status: 400,
         message: "request line is missing".to_owned(),
@@ -1015,7 +1604,12 @@ async fn write_json(stream: &mut TcpStream, status: u16, body: &Value) -> io::Re
         _ => "Not Found",
     };
     let header = format!(
-        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status} {reason}\r
+Content-Type: application/json\r
+Content-Length: {}\r
+Connection: close\r
+\r
+",
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;

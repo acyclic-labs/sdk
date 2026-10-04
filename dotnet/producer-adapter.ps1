@@ -29,6 +29,10 @@ $obj = Join-Path $output 'obj'
 $packages = Join-Path $output 'packages'
 $nuget = Join-Path $output '.nuget'
 $null = New-Item -ItemType Directory -Force -Path $output, $workspace, $build, $obj, $packages, $nuget
+# PathMap is owned by the project so its semicolon/comma escaping is handled by
+# MSBuild.  Passing a multi-root value as a `dotnet pack` command-line property
+# is parsed as a second property on Windows and makes the compiler reject the
+# invocation before it can emit diagnostics.
 
 & robocopy (Join-Path $SourceRoot 'dotnet') $workspaceDotnet /E /XD target obj bin consumer /NFL /NDL /NJH /NJS /NC /NS | Out-Null
 if ($LASTEXITCODE -gt 7) {
@@ -50,7 +54,9 @@ if (-not (Test-Path -LiteralPath $project -PathType Leaf)) {
   "-p:BaseIntermediateOutputPath=$obj\" `
   "-p:PackageOutputPath=$packages\" `
   "-p:RestorePackagesPath=$nuget\" `
-  '-p:ContinuousIntegrationBuild=true'
+  '-p:ContinuousIntegrationBuild=true' `
+  '-p:Deterministic=true' `
+  '-p:DeterministicSourcePaths=true'
 if ($LASTEXITCODE -ne 0) {
   throw "Pinned .NET producer failed with exit code $LASTEXITCODE."
 }

@@ -229,6 +229,7 @@ pub enum WorkspaceOperationFinish<A, O> {
 }
 
 /// Durable optimistic-concurrency adapter for operation-window state.
+#[cfg(not(target_arch = "wasm32"))]
 pub trait OperationWindowStore: Send + Sync {
     /// Adapter error.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -246,6 +247,28 @@ pub trait OperationWindowStore: Send + Sync {
         expected_revision: u64,
         replacement: OperationWindowSnapshot,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+}
+
+/// Browser operation-window adapters use local futures because the WASM
+/// stream provider is intentionally single-threaded.
+#[cfg(target_arch = "wasm32")]
+pub trait OperationWindowStore {
+    /// Adapter error.
+    type Error: std::error::Error + 'static;
+
+    /// Loads current state, returning `None` before first use.
+    fn load(
+        &self,
+        workspace_id: WorkspaceId,
+    ) -> impl Future<Output = Result<Option<OperationWindowSnapshot>, Self::Error>>;
+
+    /// Replaces `expected_revision` atomically. Revision zero creates state.
+    fn compare_and_swap(
+        &self,
+        workspace_id: WorkspaceId,
+        expected_revision: u64,
+        replacement: OperationWindowSnapshot,
+    ) -> impl Future<Output = Result<bool, Self::Error>>;
 }
 
 /// Operation-window state stored beside generation authority in one Stream

@@ -1,0 +1,21 @@
+{
+  "schema": "acyclic.sdk.python-go.rust-seed35-cross-language.v1",
+  "fixture_source_sha256": "5CAFB17319D5D217227103ADFFB09F0D111CDBD23CCC41209183456AC5E4DE5D",
+  "python": {
+    "steps": 35,
+    "semantic_mismatches": 29,
+    "transport_passed": 35,
+    "semantic_passed": 6
+  },
+  "semantic_policy": "Both consumers recursively decode every present protobuf field and apply generic presence/type/range/identity checks. Empty/default responses remain semantic mismatches; no expected response values are synthesized.",
+  "fixture_binary_sha256": "988C78B31A3B0CB1B9A3BBFEC297B3A7A5233CF7C87C7E7F9DAC9B4446184AB3",
+  "go": {
+    "steps": 35,
+    "semantic_mismatches": 29,
+    "transport_passed": 35,
+    "semantic_passed": 6
+  },
+  "fixture_grpc_address": "127.0.0.1:58315",
+  "filesystem_method_gaps": "filesystem-method-gaps.json"
+}
+

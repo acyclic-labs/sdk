@@ -1,0 +1,58 @@
+{
+  "schema": "acyclic.sdk.rust-wire-input-inventory.v1",
+  "source_revision": "5d48d57fe243ddc3f033bcca53a7a4c185e1811b",
+  "source_revision_kind": "git-oid",
+  "rust_fixture_source": "rust/crates/sdk-examples/src/tls_fixture.rs",
+  "rust_fixture_source_sha256": "sha256:0b1d24198b40d56c311f3c58d1a0d978e64dcfa87213d54d6eb7396c9855322f",
+  "purpose": "Input identities, response values, and stream shapes used by installed Python and Go consumers.",
+  "provenance_rule": "Values are copied from Rust fixture handlers and client scenario construction; consumers must record decoded responses and semantic checks.",
+  "families": {
+    "inference": {
+      "consumer_scenarios": 14,
+      "identity": {"client_instance": "01 repeated 16 bytes", "request_id": "02 repeated 16 bytes"},
+      "inputs": [
+        {"rpc": "ModelsService/List", "shape": "unary", "request": "empty ListModelsRequest"},
+        {"rpc": "ContextsService/Create", "shape": "unary", "request": "identity + model=fixture-model"},
+        {"rpc": "ContextsService/Inspect", "shape": "unary", "request": "revision from Create response"},
+        {"rpc": "ContextsService/Mutate", "shape": "unary", "request": "identity + source from Create response + fork=Empty"},
+        {"rpc": "WarmContextsService/Retain", "shape": "unary", "request": "identity + context from Create + latency_profile=03 repeated 32 + expires_at_ms=4102444800000"},
+        {"rpc": "WarmContextsService/Inspect", "shape": "unary", "request": "commitment from Retain response"},
+        {"rpc": "WarmContextsService/Renew", "shape": "unary", "request": "identity + commitment from Retain + expires_at_ms=4102444800000"},
+        {"rpc": "WarmContextsService/Release", "shape": "unary", "request": "identity + commitment from Retain"},
+        {"rpc": "RunsService/Generate", "shape": "unary", "request": "identity + context from Create + user item payload=hello + maximum_output=8"},
+        {"rpc": "RunsService/Inspect", "shape": "unary", "request": "run_id from Generate response"},
+        {"rpc": "RunsService/Watch", "shape": "server-stream", "request": "run_id from Generate + from_sequence=0", "expected_stream": ["RunEvent sequence=0 progress.kind=queued", "RunEvent sequence=1 terminal=RUN_TERMINAL_COMPLETED"]},
+        {"rpc": "RunsService/Cancel", "shape": "unary", "request": "run_id from Generate response"},
+        {"rpc": "EvaluationsService/Create", "shape": "unary", "request": "identity + fixture EvaluationSpec (candidate/suite/grader/metric digests 04..08)"},
+        {"rpc": "EvaluationsService/Inspect", "shape": "unary", "request": "evaluation_id from Create response"}
+      ],
+      "fixture_outputs": {"model": "fixture-model", "context_digests": "03,04,05 repeated 32 bytes", "warm_digests": "08,09,0a,0b,0c repeated 32 bytes", "run_id": "02 repeated 16 bytes", "evaluation_id": "0d repeated 16 bytes"}
+    },
+    "machines": {
+      "consumer_scenarios": 19,
+      "identity": {"machine_id": "fixture metadata machineId", "operation_id": "fixture metadata operationId"},
+      "inputs": [
+        {"rpc": "MachinesService/QualifyImage", "shape": "unary", "request": "Image kind=CUSTOM custom_digest=00 repeated 32"},
+        {"rpc": "MachinesService/Create", "shape": "unary", "request": "same Image"},
+        {"rpc": "MachinesService/Checkpoint", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/Fork", "shape": "unary", "request": "count=2"},
+        {"rpc": "MachinesService/ForkMachine", "shape": "unary", "request": "machine metadata identity + count=2"},
+        {"rpc": "MachinesService/Suspend", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/Wake", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/SetSuspensionPolicy", "shape": "unary", "request": "machine metadata identity + policy default"},
+        {"rpc": "MachinesService/DestroyMachine", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/DestroyCheckpoint", "shape": "unary", "request": "default CheckpointMutationRequest"},
+        {"rpc": "MachinesService/Recover", "shape": "unary", "request": "default RecoverRequest"},
+        {"rpc": "MachinesService/InspectMachine", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/InspectCheckpoint", "shape": "unary", "request": "default InspectCheckpointRequest"},
+        {"rpc": "MachinesService/ListMachines", "shape": "unary", "request": "limit=1"},
+        {"rpc": "MachinesService/Events", "shape": "unary", "request": "machine metadata identity + limit=1"},
+        {"rpc": "MachinesService/Usage", "shape": "unary", "request": "machine metadata identity"},
+        {"rpc": "MachinesService/Cancel", "shape": "unary", "request": "operation metadata identity"},
+        {"rpc": "MachinesService/InspectOperation", "shape": "unary", "request": "operation metadata identity"},
+        {"rpc": "MachinesService/WatchOperation", "shape": "server-stream", "request": "operation metadata identity", "expected_stream": ["OperationState status=OPERATION_STATUS_PENDING", "OperationState status=OPERATION_STATUS_SUCCEEDED"]}
+      ],
+      "fixture_outputs": {"machine": "01 repeated 16 bytes", "operation": "02 repeated 16 bytes", "checkpoint": "03 repeated 16 bytes", "fork_children": ["04 repeated 16 bytes", "05 repeated 16 bytes"], "compatibility_revision": "08 repeated 32 bytes"}
+    }
+  }
+}

@@ -30,6 +30,16 @@ async function loadBinding(): Promise<InferenceWasm> {
   return binding;
 }
 
+/** Validate a bearer credential through the Rust/WASM boundary. */
+export async function validateInferenceCredential(token: string): Promise<void> {
+  const module = await loadBinding();
+  try {
+    module.validate_remote_web_credential(token);
+  } catch (error) {
+    throw new InferenceProtocolError(String(error));
+  }
+}
+
 /** Validate generated protobuf bytes without JSON or safe-integer conversion. */
 export async function validateContract<Schema extends DescMessage>(
   kind: string,

@@ -7,8 +7,13 @@
 #![recursion_limit = "256"]
 
 use acyclic_sdk_examples::{
-    GUIDE_SCENARIOS, Language, RenderedSnippet, TransportFixture, execute_actors_roundtrip,
-    execute_stream_append_read, render_all, transport_fixtures,
+    filesystem_scenarios, guide_projections, harness_scenarios, inference_scenarios, machines_scenarios,
+    objects_scenarios, workers_scenarios, GUIDE_SCENARIOS, Language, RenderedSnippet,
+    TransportFixture, execute_actors_roundtrip, execute_stream_append_read, render_all, scenarios,
+    transport_fixtures,
+};
+use acyclic_sdk_examples::fixtures::{
+    filesystem_harness_scenarios, qualification_scenarios, scenario_expectation,
 };
 use prost::Message;
 use serde_json::{Value, json};
@@ -175,6 +180,34 @@ fn write_qualification_receipt(
         .map_err(|error| format!("encode snippets evidence: {error}"))?;
     let fixtures_bytes = serde_json::to_vec(&fixtures)
         .map_err(|error| format!("encode fixtures evidence: {error}"))?;
+    let rpc_scenarios = fixtures
+        .get("qualification")
+        .and_then(|qualification| qualification.get("rpc_scenarios"))
+        .cloned()
+        .ok_or("fixture manifest is missing Rust-owned RPC scenarios")?;
+    let rpc_scenario_count = rpc_scenarios
+        .get("count")
+        .and_then(Value::as_u64)
+        .ok_or("Rust-owned RPC scenario set is missing count")?;
+    if rpc_scenario_count != 35 {
+        return Err(format!("Rust-owned RPC scenario set has {rpc_scenario_count} entries; expected 35"));
+    }
+    let rpc_scenarios_bytes = serde_json::to_vec(&rpc_scenarios)
+        .map_err(|error| format!("encode RPC scenario evidence: {error}"))?;
+    let seed_graph = fixtures
+        .get("qualification")
+        .and_then(|qualification| qualification.get("seed_graph"))
+        .cloned()
+        .ok_or("fixture manifest is missing Rust-owned semantic seed graph")?;
+    let seed_graph_count = seed_graph
+        .get("count")
+        .and_then(Value::as_u64)
+        .ok_or("Rust-owned semantic seed graph is missing count")?;
+    if seed_graph_count != rpc_scenario_count {
+        return Err("Rust-owned semantic seed graph count differs from RPC scenarios".to_owned());
+    }
+    let seed_graph_bytes = serde_json::to_vec(&seed_graph)
+        .map_err(|error| format!("encode semantic seed graph evidence: {error}"))?;
     let status = if [(&snippets, &snippets_bytes), (&fixtures, &fixtures_bytes)]
         .into_iter()
         .all(|(manifest, _)| manifest_status(manifest) == "passed")
@@ -223,6 +256,24 @@ fn write_qualification_receipt(
                 "sha256": hash(&fixtures_bytes),
             },
             {
+                "id": "rust-rpc-scenarios",
+                "kind": "semantic-scenario-set",
+                "status": "passed",
+                "schema": "acyclic.sdk.rust-rpc-scenarios.v1",
+                "count": rpc_scenario_count,
+                "sha256": hash(&rpc_scenarios_bytes),
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            },
+            {
+                "id": "rust-semantic-seed-graph",
+                "kind": "semantic-seed-graph",
+                "status": "passed",
+                "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
+                "count": seed_graph_count,
+                "sha256": hash(&seed_graph_bytes),
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            },
+            {
                 "id": "rust-canonical-vectors",
                 "kind": "golden-vector-bundle",
                 "status": "passed",
@@ -256,8 +307,30 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     .map_err(|error| format!("read guide source {}: {error}", spec.source))?,
             );
             let result = match spec.id {
+                "actors-create-roundtrip" => acyclic_sdk_examples::execute_actors_roundtrip()
+                    .map_err(|error| error.to_string())
+                    .map(|()| json!({
+                        "status": "passed",
+                        "scope": "rust-wire-validation",
+                        "evidence": {
+                            "roundtrip": true,
+                            "validator": "acyclic_actors::validate_create",
+                        },
+                    })),
+                "stream-append-read" => runtime
+                    .block_on(acyclic_sdk_examples::execute_stream_append_read())
+                    .map_err(|error| error.to_string())
+                    .map(|records| json!({
+                        "status": if records.len() == 2 { "passed" } else { "failed" },
+                        "scope": "rust-memory-provider",
+                        "evidence": {
+                            "record_count": records.len(),
+                            "records": records.iter().map(|record| String::from_utf8_lossy(record).into_owned()).collect::<Vec<_>>(),
+                        },
+                    })),
                 acyclic_sdk_examples::filesystem_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::filesystem_scenarios::execute_filesystem_scenario())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| {
                         json!({
                             "status": if receipt.checkpointed && receipt.mounted_bindings == 2 { "passed" } else { "failed" },
@@ -286,14 +359,18 @@ fn build_guide_receipts(source_root: &Path) -> Result<Vec<Value>, String> {
                     }))
                 }
                 acyclic_sdk_examples::inference_scenarios::SCENARIO_ID => acyclic_sdk_examples::inference_scenarios::execute()
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"event_count": receipt.event_count, "terminal": receipt.terminal}})),
                 acyclic_sdk_examples::machines_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::machines_scenarios::execute())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"event_count": receipt.event_count, "checkpoint_children": receipt.checkpoint_children, "machine_state": format!("{:?}", receipt.machine_state)}})),
                 acyclic_sdk_examples::objects_scenarios::SCENARIO_ID => runtime
                     .block_on(acyclic_sdk_examples::objects_scenarios::execute())
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"body_size": receipt.body_size}})),
                 acyclic_sdk_examples::workers_scenarios::SCENARIO_ID => acyclic_sdk_examples::workers_scenarios::execute()
+                    .map_err(|error| error.to_string())
                     .map(|receipt| json!({"status": receipt.status, "scope": receipt.scope, "evidence": {"module_sha256": hash(&receipt.module_sha256)}})),
                 other => return Err(format!("unregistered guide scenario {other}")),
             }
@@ -362,7 +439,14 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
     let source_files = source_closure::closure_files(source_root)?;
     ensure_compiled_source_matches(&source_sha256)?;
     let source_revision = git_revision(source_root);
-    let snippets = render_all();
+    let snippets = render_all()
+        .into_iter()
+        .chain(
+            guide_projections::all()
+                .into_iter()
+                .map(guide_projections::rendered),
+        )
+        .collect::<Vec<_>>();
     let mut entries = Vec::new();
     let mut files = BTreeMap::new();
     for snippet in snippets {
@@ -408,6 +492,7 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
             "code_sha256": hash(snippet.code.as_bytes()),
         }));
     }
+    let rpc_scenarios = rust_rpc_scenarios();
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.examples.bundle.v1",
@@ -423,6 +508,33 @@ fn build_bundle(source_root: &Path, output: &Path) -> Result<Value, String> {
         "snippets": entries,
         "files": files.keys().collect::<Vec<_>>(),
     }))
+}
+
+
+fn rust_rpc_scenarios() -> Vec<Value> {
+    qualification_scenarios()
+        .map(|scenario| {
+            let semantic = scenario_expectation(scenario);
+            json!({
+                "family": scenario.family,
+                "operation": scenario.operation,
+                "input": scenario.input,
+                "expected": scenario.expected,
+                "order": scenario.order,
+                "seed": scenario.seed,
+                "depends_on": scenario.depends_on,
+                "known_output": scenario.known_output,
+                "semantic": {
+                    "operation_id": semantic.operation_id,
+                    "authority": semantic.authority,
+                    "cursor": semantic.cursor,
+                    "status": semantic.status,
+                    "output": semantic.output,
+                },
+                "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+            })
+        })
+        .collect()
 }
 
 fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result<Value, String> {
@@ -476,6 +588,21 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         &build_recipe_sha256,
     );
     let vector_bytes = json_bytes(&vectors);
+    let rpc_scenarios = rust_rpc_scenarios();
+    let typed_wire_evidence = typed_wire_evidence()?;
+    let seed_graph = json!({
+        "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
+        "count": rpc_scenarios.len(),
+        "steps": rpc_scenarios.iter().map(|scenario| json!({
+            "order": scenario["order"],
+            "family": scenario["family"],
+            "operation": scenario["operation"],
+            "seed": scenario["seed"],
+            "depends_on": scenario["depends_on"],
+            "known_output": scenario["known_output"],
+            "semantic": scenario["semantic"],
+        })).collect::<Vec<_>>(),
+    });
     ensure_source_unchanged(source_root, &source_sha256)?;
     Ok(json!({
         "schema": "acyclic.sdk.transport-fixtures.v1",
@@ -500,6 +627,13 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         "qualification": {
             "scope": "loopback-local",
             "service_availability": "not_claimed",
+            "rpc_scenarios": {
+                "schema": "acyclic.sdk.rust-rpc-scenarios.v1",
+                "count": rpc_scenarios.len(),
+                "scenarios": rpc_scenarios,
+            },
+            "seed_graph": seed_graph,
+            "typed_wire_evidence": typed_wire_evidence,
             "fixture_server": {
                 "command": "cargo run --manifest-path rust/crates/sdk-examples/Cargo.toml --bin fixture-server -- --port 0",
                 "bind": "127.0.0.1",
@@ -512,6 +646,21 @@ fn build_fixture_bundle(source_root: &Path, model_source_digest: &str) -> Result
         },
         "fixtures": entries,
     }))
+}
+
+fn typed_wire_evidence() -> Result<Vec<Value>, String> {
+    let evidence = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("build typed fixture runtime: {error}"))?
+        .block_on(filesystem_harness_scenarios::export())?;
+    if evidence.len() != 35 {
+        return Err(format!(
+            "typed Filesystem/Harness exporter returned {}; expected 35",
+            evidence.len()
+        ));
+    }
+    Ok(evidence)
 }
 
 fn json_bytes(value: &Value) -> Vec<u8> {
@@ -890,14 +1039,39 @@ fn run_rust(
         .join("rust/crates/stream")
         .to_string_lossy()
         .replace('\\', "/");
+    let filesystem = source_root
+        .join("rust/crates/filesystem")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let harness = source_root
+        .join("rust/crates/harness")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let inference = source_root
+        .join("rust/crates/inference")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let machines = source_root
+        .join("rust/crates/machines")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let objects = source_root
+        .join("rust/crates/objects")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let workers = source_root
+        .join("rust/crates/workers")
+        .to_string_lossy()
+        .replace('\\', "/");
     let manifest = format!(
-        "[package]\nname = \"sdk-example-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ path = \"{actors}\" }}\nacyclic-stream = {{ path = \"{stream}\", features = [\"grpc\"] }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n"
+        "[package]\nname = \"sdk-example-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ path = \"{actors}\" }}\nacyclic-fs = {{ path = \"{filesystem}\" }}\nacyclic-harness = {{ path = \"{harness}\", features = [\"grpc\"] }}\nacyclic-inference = {{ path = \"{inference}\" }}\nacyclic-machines = {{ path = \"{machines}\" }}\nacyclic-objects = {{ path = \"{objects}\" }}\nacyclic-stream = {{ path = \"{stream}\", features = [\"grpc\"] }}\nacyclic-workers = {{ path = \"{workers}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n"
     );
     fs::write(staging.join("Cargo.toml"), manifest)
         .map_err(|error| format!("write Rust consumer manifest: {error}"))?;
+    let bundle_snippet = snippet.code.clone();
     let main = format!(
         "#![allow(unused_imports)]\nuse std::error::Error;\n\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn Error>> {{\n{}\nOk(())\n}}\n",
-        snippet.code
+        bundle_snippet
     );
     fs::write(staging.join("src/main.rs"), main)
         .map_err(|error| format!("write Rust consumer snippet: {error}"))?;
@@ -913,20 +1087,32 @@ fn run_rust(
     let package_dir_name = format!("{}-sdk-package", snippet.metadata.id);
     let package_root = packages.join(&package_dir_name);
     let package_manifest = package_root.join("Cargo.toml");
+
     let package_path = packages.join(format!("{}-sdk-package.tgz", snippet.metadata.id));
     let package_name = "acyclic-sdk-bundle";
     fs::create_dir_all(package_root.join("src"))
         .map_err(|error| format!("create SDK package root: {error}"))?;
-    fs::write(
-        &package_manifest,
-        format!(
-            "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\n"
-        ),
-    )
-    .map_err(|error| format!("write SDK package manifest: {error}"))?;
+    // The extracted archive is a standalone Cargo workspace.  Without an
+    // explicit workspace root Cargo walks up into the checkout that happened
+    // to produce the bundle, so an archive consumer can accidentally resolve
+    // source paths outside the artifact (or inherit the producer's members,
+    // lints, and workspace dependency table).  Preserve the Rust workspace
+    // policy and dependency pins while relocating its members below `crates`.
+    let workspace_manifest = fs::read_to_string(source_root.join("Cargo.toml"))
+        .map_err(|error| format!("read Rust workspace manifest: {error}"))?;
+    let workspace_tail = workspace_manifest
+        .find("[workspace.package]")
+        .map(|index| &workspace_manifest[index..])
+        .ok_or("Rust workspace manifest is missing [workspace.package]")?;
+    let package_manifest_contents = format!(
+        "[package]\nname = \"{package_name}\"\nversion = \"0.0.0\"\nedition = \"2024\"\nlicense = \"Apache-2.0\"\npublish = false\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\nacyclic-actors = {{ path = \"crates/actors\" }}\nacyclic-fs = {{ path = \"crates/filesystem\" }}\nacyclic-harness = {{ path = \"crates/harness\" }}\nacyclic-inference = {{ path = \"crates/inference\" }}\nacyclic-machines = {{ path = \"crates/machines\" }}\nacyclic-objects = {{ path = \"crates/objects\" }}\nacyclic-stream = {{ path = \"crates/stream\", features = [\"grpc\"] }}\nacyclic-workers = {{ path = \"crates/workers\" }}\n\n[workspace]\nmembers = [\"crates/*\"]\nresolver = \"2\"\n\n{workspace_tail}",
+        workspace_tail = workspace_tail.trim_start(),
+    );
+    fs::write(&package_manifest, package_manifest_contents)
+        .map_err(|error| format!("write SDK package manifest: {error}"))?;
     fs::write(
         package_root.join("src/lib.rs"),
-        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\n",
+        b"//! Bundled generated Rust SDK facade.\npub use acyclic_actors::{validate_create, wire};\npub use acyclic_fs;\npub use acyclic_harness;\npub use acyclic_inference;\npub use acyclic_machines;\npub use acyclic_objects;\npub use acyclic_stream::{AppendRequest, IdempotencyKey, MemoryStream, ReadRequest, StreamPath, StreamProvider};\npub use acyclic_workers;\n",
     )
     .map_err(|error| format!("write SDK package library: {error}"))?;
     let crates_root = source_root.join("rust/crates");
@@ -936,10 +1122,7 @@ fn run_rust(
     {
         let entry = entry.map_err(|error| format!("read SDK crate entry: {error}"))?;
         let crate_source = entry.path();
-        if !crate_source.join("Cargo.toml").is_file()
-            || entry.file_name() == "sdk-examples"
-            || entry.file_name() == "sdk-source-identity"
-        {
+        if !crate_source.join("Cargo.toml").is_file() || entry.file_name() == "sdk-examples" {
             continue;
         }
         copy_dir_recursive(&crate_source, &bundled_crates.join(entry.file_name()))?;
@@ -1003,16 +1186,41 @@ fn run_rust(
         ));
     }
     let package_manifest = package_root.join("Cargo.toml");
+    if snippet.metadata.id == "actors-create-roundtrip" {
+        run_guide_rust_consumers(
+            source_root,
+            source_sha256,
+            &package_root,
+            &package_path,
+            &qualification,
+        )?;
+    }
+
     let consumer_manifest = consumers.join(format!("{}-Cargo.toml", snippet.metadata.id));
     let consumer_lock = consumers.join(format!("{}-Cargo.lock", snippet.metadata.id));
     let consumer_metadata = consumers.join(format!("{}-cargo-metadata.json", snippet.metadata.id));
-    let consumer_manifest_bytes = format!(
-        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-actors = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nacyclic-stream = {{ package = \"acyclic-sdk-bundle\", path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
+    let portable_consumer_manifest_bytes = format!(
+        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"../../qualification/packages/{package_dir_name}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
         snippet.metadata.id
     );
-    fs::write(staging.join("Cargo.toml"), &consumer_manifest_bytes)
+    let consumed_package_root = staging
+        .parent()
+        .unwrap_or(staging.as_path())
+        .join(format!(".sdk-examples-{}-consumed-sdk-package", snippet.metadata.id));
+    if consumed_package_root.exists() {
+        fs::remove_dir_all(&consumed_package_root)
+            .map_err(|error| format!("remove stale consumed SDK package: {error}"))?;
+    }
+    copy_dir_recursive(&package_root, &consumed_package_root)?;
+    let consumed_package_root_string = consumed_package_root.to_string_lossy().replace('\\', "/");
+    let compile_consumer_manifest_bytes = format!(
+        "[package]\nname = \"rendered-{}\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n\n[dependencies]\nacyclic-sdk-bundle = {{ path = \"{consumed_package_root_string}\" }}\nbytes = \"1.10.1\"\nfutures = \"0.3.31\"\nprost = \"0.14.4\"\ntokio = {{ version = \"1.48.0\", features = [\"macros\", \"rt-multi-thread\"] }}\n",
+        snippet.metadata.id
+    );
+    fs::write(staging.join("Cargo.toml"), &compile_consumer_manifest_bytes)
         .map_err(|error| format!("write archive consumer manifest: {error}"))?;
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let deterministic_rustflags = deterministic_rustflags();
     let lock = Command::new(&cargo)
         .args(["generate-lockfile", "--offline"])
         .env("CARGO_NET_OFFLINE", "true")
@@ -1067,7 +1275,8 @@ fn run_rust(
         .get("manifest_path")
         .and_then(Value::as_str)
         .ok_or("Rust consumer metadata package has no manifest path")?;
-    let expected_manifest = package_manifest
+    let expected_manifest = consumed_package_root
+        .join("Cargo.toml")
         .canonicalize()
         .map_err(|error| format!("canonicalize extracted SDK manifest: {error}"))?;
     let resolved_manifest_path = PathBuf::from(resolved_manifest)
@@ -1092,6 +1301,7 @@ fn run_rust(
             "--quiet",
         ])
         .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTFLAGS", &deterministic_rustflags)
         .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
         .current_dir(&staging)
         .output();
@@ -1141,6 +1351,7 @@ fn run_rust(
             "--force",
         ])
         .env("CARGO_NET_OFFLINE", "true")
+        .env("RUSTFLAGS", &deterministic_rustflags)
         .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
         .current_dir(&staging)
         .output()
@@ -1186,16 +1397,28 @@ fn run_rust(
 
     let compile_path = consumers.join(format!("{}-compile.bin", snippet.metadata.id));
     let runtime_path = consumers.join(format!("{}-runtime.bin", snippet.metadata.id));
-    fs::copy(&installed, &compile_path)
-        .map_err(|error| format!("copy Rust compile artifact: {error}"))?;
-    fs::copy(&installed, &runtime_path)
-        .map_err(|error| format!("copy Rust runtime artifact: {error}"))?;
-    fs::copy(staging.join("Cargo.toml"), &consumer_manifest)
-        .map_err(|error| format!("copy Rust consumer manifest: {error}"))?;
+    // Windows PE linkers stamp the executable header with the invocation time.
+    // Keep the exact installed executable for the invocation, but publish
+    // normalized compile/runtime evidence so regeneration compares the
+    // authored/package bytes rather than that volatile header field.
+    let installed_bytes =
+        fs::read(&installed).map_err(|error| format!("read installed Rust consumer: {error}"))?;
+    let (normalized_bytes, artifact_normalization) =
+        normalize_invocation_artifact(&installed_bytes);
+    let invocation_path = consumers.join(format!("{}-invocation.bin", snippet.metadata.id));
+    fs::write(&invocation_path, &installed_bytes)
+        .map_err(|error| format!("write Rust invocation artifact: {error}"))?;
+    fs::write(&compile_path, &normalized_bytes)
+        .map_err(|error| format!("write Rust compile artifact: {error}"))?;
+    fs::write(&runtime_path, &normalized_bytes)
+        .map_err(|error| format!("write Rust runtime artifact: {error}"))?;
+    fs::write(&consumer_manifest, &portable_consumer_manifest_bytes)
+        .map_err(|error| format!("write Rust consumer manifest: {error}"))?;
     fs::copy(staging.join("Cargo.lock"), &consumer_lock)
         .map_err(|error| format!("copy Rust consumer lock: {error}"))?;
-    let compile_digest = hash(&fs::read(&compile_path).map_err(|error| error.to_string())?);
-    let runtime_digest = hash(&fs::read(&runtime_path).map_err(|error| error.to_string())?);
+    let compile_digest = hash(&normalized_bytes);
+    let runtime_digest = hash(&normalized_bytes);
+    let invocation_digest = hash(&installed_bytes);
     let package_bytes = fs::read(&package_path).map_err(|error| error.to_string())?;
     let package_digest = hash(&package_bytes);
     let package_size = package_bytes.len();
@@ -1223,6 +1446,13 @@ fn run_rust(
         "compile_artifact_sha256": compile_digest,
         "runtime_artifact_path": portable_output_path(&runtime_path, &qualification),
         "runtime_artifact_sha256": runtime_digest,
+        "invocation_artifact": {
+            "path": portable_output_path(&invocation_path, &qualification),
+            "bytes": installed_bytes.len(),
+            "sha256": invocation_digest,
+            "normalized_sha256": hash(&normalized_bytes),
+            "normalization": artifact_normalization,
+        },
         "package_artifact_path": portable_output_path(&package_path, &qualification),
         "package_artifact_sha256": package_digest,
         "package_artifact_size": package_size,
@@ -1241,6 +1471,13 @@ fn run_rust(
             "compiled_snippet_sha256": snippet_digest,
             "compile_artifact_path": portable_output_path(&compile_path, &qualification),
             "compile_artifact_sha256": compile_digest,
+            "invocation_artifact": {
+                "path": portable_output_path(&invocation_path, &qualification),
+                "bytes": installed_bytes.len(),
+                "sha256": invocation_digest,
+                "normalized_sha256": hash(&normalized_bytes),
+                "normalization": artifact_normalization,
+            },
             "package_artifact_path": portable_output_path(&package_path, &qualification),
             "package_artifact_sha256": package_digest,
             "package_artifact_size": package_size,
@@ -1276,6 +1513,21 @@ fn run_rust(
         "consumer_stderr_path": portable_output_path(&stderr_path, &qualification),
         "consumer_stderr_sha256": hash(&output.stderr),
     });
+    if snippet.metadata.id == "actors-create-roundtrip" {
+        let guide_receipts = guide_rust_cases()
+            .into_iter()
+            .map(|(scenario_id, _, _)| {
+                let receipt_path = qualification
+                    .join("guide-consumers")
+                    .join(format!("{scenario_id}.receipt.json"));
+                let receipt = fs::read(&receipt_path)
+                    .map_err(|error| format!("read guide receipt {scenario_id}: {error}"))?;
+                serde_json::from_slice::<Value>(&receipt)
+                    .map_err(|error| format!("decode guide receipt {scenario_id}: {error}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        receipt["guide_consumers"] = json!(guide_receipts);
+    }
     if !output.status.success() {
         receipt["message"] = json!(String::from_utf8_lossy(&output.stderr).trim());
     }
@@ -1283,6 +1535,266 @@ fn run_rust(
     Ok(receipt)
 }
 
+fn guide_rust_cases() -> Vec<(&'static str, &'static str, String)> {
+    let filesystem = format!(
+        "let root = std::env::temp_dir().join(format!(\"acyclic-sdk-guide-fs-{{}}\", std::process::id()));
+{}",
+        filesystem_scenarios::QUICKSTART_SNIPPET
+    );
+    let harness = r#"use acyclic_harness::{Admission, Outcome, TaskGroup};
+
+let group = TaskGroup::new(1);
+let first = group.try_spawn(async { 7_u8 }).await;
+if let Admission::Accepted(handle) = first {
+    assert!(matches!(handle.result().await, Outcome::Succeeded(7)));
+} else {
+    panic!("initial task was not admitted");
+}
+group.cancel();
+assert!(matches!(
+    group.try_spawn(async { 9_u8 }).await,
+    Admission::Rejected { .. }
+));
+let recovered = TaskGroup::new(1).try_spawn(async { 11_u8 }).await;
+assert!(matches!(recovered, Admission::Accepted(_)));
+"#.to_owned();
+    vec![
+        (
+            "actors-create-roundtrip",
+            "rust/crates/sdk-examples/src/lib.rs",
+            scenarios()[0].render(Language::Rust).code,
+        ),
+        (
+            "stream-append-read",
+            "rust/crates/sdk-examples/src/lib.rs",
+            scenarios()[1].render(Language::Rust).code,
+        ),
+        (
+            filesystem_scenarios::SCENARIO_ID,
+            filesystem_scenarios::SOURCE,
+            filesystem,
+        ),
+        (
+            harness_scenarios::SCENARIO_ID,
+            harness_scenarios::SOURCE,
+            harness,
+        ),
+        (
+            inference_scenarios::SCENARIO_ID,
+            inference_scenarios::SOURCE,
+            inference_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            machines_scenarios::SCENARIO_ID,
+            machines_scenarios::SOURCE,
+            machines_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            objects_scenarios::SCENARIO_ID,
+            objects_scenarios::SOURCE,
+            objects_scenarios::rust_snippet().to_owned(),
+        ),
+        (
+            workers_scenarios::SCENARIO_ID,
+            workers_scenarios::SOURCE,
+            workers_scenarios::rust_snippet(),
+        ),
+    ]
+}
+
+fn rewrite_guide_imports(mut code: String) -> String {
+    for crate_name in [
+        "acyclic_fs",
+        "acyclic_harness",
+        "acyclic_inference",
+        "acyclic_machines",
+        "acyclic_objects",
+        "acyclic_workers",
+    ] {
+        code = code.replace(
+            &format!("use {crate_name}::"),
+            &format!("use acyclic_sdk_bundle::{crate_name}::"),
+        );
+    }
+    code
+}
+
+fn run_guide_rust_consumers(
+    source_root: &Path,
+    source_sha256: &str,
+    package_root: &Path,
+    package_path: &Path,
+    qualification: &Path,
+) -> Result<(), String> {
+    let package_bytes =
+        fs::read(package_path).map_err(|error| format!("read guide package archive: {error}"))?;
+    let package_sha256 = hash(&package_bytes);
+    let package_root = package_root
+        .canonicalize()
+        .map_err(|error| format!("canonicalize guide package root: {error}"))?;
+    let guide_root = qualification.join("guide-consumers");
+    fs::create_dir_all(&guide_root)
+        .map_err(|error| format!("create guide consumer root: {error}"))?;
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let rustflags = deterministic_rustflags();
+
+    for (scenario_id, source, source_code) in guide_rust_cases() {
+        let staging = guide_root.join(scenario_id);
+        if staging.exists() {
+            fs::remove_dir_all(&staging)
+                .map_err(|error| format!("remove guide staging: {error}"))?;
+        }
+        fs::create_dir_all(staging.join("src"))
+            .map_err(|error| format!("create guide staging: {error}"))?;
+        let package_path_text = package_root.to_string_lossy().replace('\\', "/");
+        let manifest = format!(
+            r#"[package]
+name = "guide-{scenario_id}"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+acyclic-sdk-bundle = {{ path = "{package_path_text}" }}
+bytes = "1.10.1"
+futures = "0.3.31"
+prost = "0.14.4"
+serde_json = "1.0.145"
+sha2 = "0.10.9"
+tokio = {{ version = "1.48.0", features = ["macros", "rt-multi-thread"] }}
+"#,
+            scenario_id = scenario_id,
+            package_path_text = package_path_text,
+        );
+        fs::write(staging.join("Cargo.toml"), manifest)
+            .map_err(|error| format!("write guide consumer manifest: {error}"))?;
+        let code = rewrite_guide_imports(source_code);
+        let main = format!(
+            r#"#![allow(unused_imports)]
+use std::error::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {{
+{code}
+Ok(())
+}}
+"#,
+            code = code,
+        );
+        fs::write(staging.join("src/main.rs"), main)
+            .map_err(|error| format!("write guide consumer source: {error}"))?;
+
+        let lock = Command::new(&cargo)
+            .args(["generate-lockfile", "--offline"])
+            .env("CARGO_NET_OFFLINE", "true")
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide lockfile generation: {error}"))?;
+        if !lock.status.success() {
+            return Err(format!(
+                "guide {scenario_id} lockfile failed: {}",
+                String::from_utf8_lossy(&lock.stderr).trim()
+            ));
+        }
+        let test = Command::new(&cargo)
+            .args([
+                "test",
+                "--manifest-path",
+                "Cargo.toml",
+                "--locked",
+                "--offline",
+                "--quiet",
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("RUSTFLAGS", &rustflags)
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide consumer test: {error}"))?;
+        if !test.status.success() {
+            let stderr = String::from_utf8_lossy(&test.stderr);
+            let _ = fs::write(guide_root.join(format!("{scenario_id}.stderr.log")), test.stderr);
+            return Err(format!("guide {scenario_id} test failed: {}", stderr.trim()));
+        }
+        let install = Command::new(&cargo)
+            .args([
+                "install",
+                "--offline",
+                "--path",
+                ".",
+                "--root",
+                "install-root",
+                "--force",
+            ])
+            .env("CARGO_NET_OFFLINE", "true")
+            .env("RUSTFLAGS", &rustflags)
+            .envs(env::var_os("CARGO_TARGET_DIR").map(|value| ("CARGO_TARGET_DIR", value)))
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("start guide consumer install: {error}"))?;
+        if !install.status.success() {
+            return Err(format!(
+                "guide {scenario_id} install failed: {}",
+                String::from_utf8_lossy(&install.stderr).trim()
+            ));
+        }
+        let executable_name = if cfg!(windows) {
+            format!("guide-{scenario_id}.exe")
+        } else {
+            format!("guide-{scenario_id}")
+        };
+        let executable = staging.join("install-root").join("bin").join(executable_name);
+        if !executable.is_file() {
+            return Err(format!("guide {scenario_id} install produced no executable"));
+        }
+        let output = Command::new(&executable)
+            .current_dir(&staging)
+            .output()
+            .map_err(|error| format!("run guide {scenario_id} consumer: {error}"))?;
+        let stdout_path = guide_root.join(format!("{scenario_id}.stdout.log"));
+        let stderr_path = guide_root.join(format!("{scenario_id}.stderr.log"));
+        fs::write(&stdout_path, &output.stdout)
+            .map_err(|error| format!("write guide stdout: {error}"))?;
+        fs::write(&stderr_path, &output.stderr)
+            .map_err(|error| format!("write guide stderr: {error}"))?;
+        let receipt = json!({
+            "schema": "acyclic.sdk.guide-consumer-receipt.v1",
+            "scenario_id": scenario_id,
+            "source_path": source,
+            "source_revision": git_revision(source_root),
+            "source_sha256": source_sha256,
+            "snippet_sha256": hash(source_code.as_bytes()),
+            "package_artifact_path": portable_output_path(package_path, qualification),
+            "package_artifact_sha256": package_sha256,
+            "package_root_path": portable_output_path(&package_root, qualification),
+            "command": "cargo test --manifest-path Cargo.toml --locked --offline --quiet; cargo install --offline --path .; installed consumer",
+            "executed": true,
+            "status": if output.status.success() { "qualified" } else { "failed" },
+            "exit_code": output.status.code(),
+            "stdout_path": portable_output_path(&stdout_path, qualification),
+            "stdout_sha256": hash(&output.stdout),
+            "stderr_path": portable_output_path(&stderr_path, qualification),
+            "stderr_sha256": hash(&output.stderr),
+        });
+        let receipt_path = guide_root.join(format!("{scenario_id}.receipt.json"));
+        let receipt_bytes = serde_json::to_vec_pretty(&receipt)
+            .map_err(|error| format!("encode guide receipt: {error}"))?;
+        fs::write(receipt_path, receipt_bytes)
+            .map_err(|error| format!("write guide receipt: {error}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "guide {scenario_id} consumer failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        fs::remove_dir_all(&staging)
+            .map_err(|error| format!("remove guide staging: {error}"))?;
+    }
+    Ok(())
+}
 fn add_snippet_binding(
     receipt: &mut Value,
     source_root: &Path,
@@ -1512,10 +2024,10 @@ fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 }
 
 fn validation_staging(root: &Path, language: &str, scenario: &str) -> PathBuf {
-    root.join(format!(
-        ".sdk-examples-{language}-{}-{scenario}",
-        std::process::id()
-    ))
+    let stage_root = env::var_os("SDK_EXAMPLES_STAGING_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.to_owned());
+    stage_root.join(format!(".sdk-examples-{language}-{scenario}"))
 }
 
 fn receipt(result: Result<&'static str, Box<dyn std::error::Error>>, source_sha256: &str) -> Value {
@@ -2372,6 +2884,59 @@ fn git_revision(root: &Path) -> String {
         .unwrap_or_else(|| "working-tree".to_owned())
 }
 
+fn normalize_invocation_artifact(bytes: &[u8]) -> (Vec<u8>, &'static str) {
+    // PE/COFF stores a linker timestamp in the COFF header. It changes on
+    // every cargo install even when the source, lockfile, and package bytes
+    // are identical. The timestamp is not part of the executable behavior,
+    // so zero only that field and retain every other byte for the evidence
+    // artifact. Non-PE targets remain byte-for-byte unchanged.
+    if bytes.len() < 0x40 || &bytes[..2] != b"MZ" {
+        return (bytes.to_vec(), "identity-v1");
+    }
+    let pe_offset =
+        u32::from_le_bytes([bytes[0x3c], bytes[0x3d], bytes[0x3e], bytes[0x3f]]) as usize;
+    let Some(timestamp) = pe_offset.checked_add(8) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    let Some(pe_header_end) = pe_offset.checked_add(12) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    let Some(signature_end) = pe_offset.checked_add(4) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    let Some(timestamp_end) = timestamp.checked_add(4) else {
+        return (bytes.to_vec(), "identity-v1");
+    };
+    if pe_header_end > bytes.len()
+        || signature_end > bytes.len()
+        || &bytes[pe_offset..signature_end] != b"PE\0\0"
+        || timestamp_end > bytes.len()
+    {
+        return (bytes.to_vec(), "identity-v1");
+    }
+    let mut normalized = bytes.to_vec();
+    normalized[timestamp..timestamp + 4].fill(0);
+    (normalized, "pe-coff-timestamp-zero-v1")
+}
+
+fn deterministic_rustflags() -> String {
+    let existing = env::var("RUSTFLAGS").unwrap_or_default();
+    if cfg!(windows) {
+        if existing.trim().is_empty() {
+            "-C link-arg=/Brepro".to_owned()
+        } else if existing
+            .split_whitespace()
+            .any(|flag| flag == "link-arg=/Brepro")
+        {
+            existing
+        } else {
+            format!("{existing} -C link-arg=/Brepro")
+        }
+    } else {
+        existing
+    }
+}
+
 fn hash(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
 }
@@ -2405,6 +2970,38 @@ mod tests {
         assert!(error.contains("does not match compiled producer"));
         assert!(error.contains(compiled));
         assert!(error.contains(&changed));
+    }
+
+    #[test]
+    fn pe_invocation_normalization_only_clears_coff_timestamp() {
+        let mut executable = vec![0u8; 0x90];
+        executable[..2].copy_from_slice(b"MZ");
+        executable[0x3c..0x40].copy_from_slice(&(0x60u32).to_le_bytes());
+        executable[0x60..0x64].copy_from_slice(b"PE\0\0");
+        executable[0x68..0x6c].copy_from_slice(&0x12345678u32.to_le_bytes());
+        executable[0x80] = 0xa5;
+        let (normalized, method) = normalize_invocation_artifact(&executable);
+        assert_eq!(method, "pe-coff-timestamp-zero-v1");
+        assert_eq!(&normalized[0x68..0x6c], &[0, 0, 0, 0]);
+        assert_eq!(normalized[0x80], 0xa5);
+    }
+
+    #[test]
+    fn non_pe_invocation_normalization_preserves_bytes() {
+        let bytes = b"not an executable";
+        let (normalized, method) = normalize_invocation_artifact(bytes);
+        assert_eq!(method, "identity-v1");
+        assert_eq!(normalized, bytes);
+    }
+
+    #[test]
+    fn malformed_pe_offset_is_rejected_without_panicking() {
+        let mut bytes = vec![0u8; 0x40];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&u32::MAX.to_le_bytes());
+        let (normalized, method) = normalize_invocation_artifact(&bytes);
+        assert_eq!(method, "identity-v1");
+        assert_eq!(normalized, bytes);
     }
 
     #[test]
@@ -2461,3 +3058,6 @@ mod tests {
         fs::remove_dir_all(relocated).expect("clean relocated source closure fixture");
     }
 }
+
+
+

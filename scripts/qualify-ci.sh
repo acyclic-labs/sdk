@@ -225,6 +225,8 @@ case "$lane" in
       "$SDK_ARTIFACT_DIR/packages/harness" \
       "$SDK_ARTIFACT_DIR/packages/harness/runner-report.json" \
       "$SDK_ARTIFACT_DIR/packages/harness/qualification-receipt.json"
+    node scripts/write-package-qualification-manifest.mjs \
+      "$SDK_ARTIFACT_DIR/packages" "$PWD"
     bun run licenses
     bun x buf format -d --exit-code
     bun x buf lint

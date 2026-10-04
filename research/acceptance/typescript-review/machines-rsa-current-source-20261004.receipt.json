@@ -1,0 +1,32 @@
+{
+  "schema": "acyclic.sdk.machines-rsa-current-source-receipt.v1",
+  "capturedAt": "2026-10-04",
+  "scope": "Installed TypeScript Machines gRPC consumer against the current Rust-owned bounded RSA/mTLS fixture",
+  "source": {
+    "path": "rust/crates/sdk-examples",
+    "revisionAtCapture": "483d6ffcfdfce0c6b8299d2c73a4c95b9db85b60",
+    "closureSha256": "sha256:cb0c483d4ad2baca781bc1fa404fd0d27737ef4fe81c23a1aa403072ad9c8d2d"
+  },
+  "fixture": {
+    "binary": "rust/crates/sdk-examples/src/bin/machines-rsa-fixture.rs",
+    "transcript": "research/acceptance/typescript-review/machines-rsa-current-source-transcript-20261004.json",
+    "transcriptSha256": "sha256:49db717d2c5ba462e9dcb7a47ba109a677bf4e5cae00f224ddcb74799681f33d",
+    "tls": "RSA-2048 mutual TLS with localhost hostname verification",
+    "serviceAvailability": "local_fixture_only"
+  },
+  "consumer": {
+    "package": "typescript/packages/machines",
+    "test": "test/rsa-fixture.test.ts",
+    "command": "bun test test/rsa-fixture.test.ts",
+    "exitCode": 0,
+    "passed": true
+  },
+  "rpcCoverage": {
+    "expected": 19,
+    "observed": 19,
+    "complete": true,
+    "requestAndResponseHashes": true,
+    "streamingWatchOperation": true
+  },
+  "credentials": "Ephemeral fixture credentials were used only through the process-local connection handoff and are absent from this receipt and transcript."
+}

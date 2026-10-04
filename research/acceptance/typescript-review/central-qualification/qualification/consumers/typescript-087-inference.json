@@ -1,0 +1,18 @@
+{
+  "schema": "acyclic.sdk.rpc-scenario-result.v1",
+  "source_revision": "719328f96dbc30640ac8d17249607b9e03277d0a",
+  "status": "passed",
+  "invoked": true,
+  "exit_code": 0,
+  "family": "inference",
+  "rpc": "inference.customer.v1.WarmContextsService/Retain",
+  "shape": "unary",
+  "transport": "grpc",
+  "execution_mode": "remote",
+  "checks": [
+    "invocation",
+    "transport",
+    "serialization"
+  ],
+  "fixture_evidence": "inference-rsa-current-source-transcript-20261004.json"
+}

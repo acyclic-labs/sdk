@@ -1,0 +1,353 @@
+{
+  "schema": "acyclic.sdk.rust-semantic-seed-graph.v1",
+  "count": 35,
+  "source": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs",
+  "steps": [
+    {
+      "order": 1,
+      "family": "filesystem",
+      "operation": "handshake",
+      "seed": "protocol:current",
+      "depends_on": [],
+      "known_output": "protocol+capabilities"
+    },
+    {
+      "order": 2,
+      "family": "filesystem",
+      "operation": "create_workspace",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "handshake"
+      ],
+      "known_output": "workspace+head"
+    },
+    {
+      "order": 3,
+      "family": "filesystem",
+      "operation": "open_workspace",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "create_workspace"
+      ],
+      "known_output": "workspace"
+    },
+    {
+      "order": 4,
+      "family": "filesystem",
+      "operation": "get_head",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "open_workspace"
+      ],
+      "known_output": "generation"
+    },
+    {
+      "order": 5,
+      "family": "filesystem",
+      "operation": "get_generation",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "generation"
+    },
+    {
+      "order": 6,
+      "family": "filesystem",
+      "operation": "read",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "bytes"
+    },
+    {
+      "order": 7,
+      "family": "filesystem",
+      "operation": "stat",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "metadata"
+    },
+    {
+      "order": 8,
+      "family": "filesystem",
+      "operation": "list_directory",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "entries"
+    },
+    {
+      "order": 9,
+      "family": "filesystem",
+      "operation": "read_link",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "target"
+    },
+    {
+      "order": 10,
+      "family": "filesystem",
+      "operation": "plan_extents",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "extents"
+    },
+    {
+      "order": 11,
+      "family": "filesystem",
+      "operation": "apply_transaction",
+      "seed": "transaction:fixture",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "generation+conflicts"
+    },
+    {
+      "order": 12,
+      "family": "filesystem",
+      "operation": "rebase_transaction",
+      "seed": "transaction:fixture",
+      "depends_on": [
+        "apply_transaction"
+      ],
+      "known_output": "generation+conflicts"
+    },
+    {
+      "order": 13,
+      "family": "filesystem",
+      "operation": "fork_workspace",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "workspace"
+    },
+    {
+      "order": 14,
+      "family": "filesystem",
+      "operation": "diff",
+      "seed": "generations:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "changes"
+    },
+    {
+      "order": 15,
+      "family": "filesystem",
+      "operation": "rebase",
+      "seed": "generations:fixture/head",
+      "depends_on": [
+        "diff"
+      ],
+      "known_output": "generation+conflicts"
+    },
+    {
+      "order": 16,
+      "family": "filesystem",
+      "operation": "plan_join",
+      "seed": "join:fixture",
+      "depends_on": [
+        "diff"
+      ],
+      "known_output": "join_plan"
+    },
+    {
+      "order": 17,
+      "family": "filesystem",
+      "operation": "apply_join",
+      "seed": "join:fixture",
+      "depends_on": [
+        "plan_join"
+      ],
+      "known_output": "generation+conflicts"
+    },
+    {
+      "order": 18,
+      "family": "filesystem",
+      "operation": "checkpoint",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "retained_generation"
+    },
+    {
+      "order": 19,
+      "family": "filesystem",
+      "operation": "pin",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "checkpoint"
+      ],
+      "known_output": "retained_generation"
+    },
+    {
+      "order": 20,
+      "family": "filesystem",
+      "operation": "export",
+      "seed": "generation:fixture/head",
+      "depends_on": [
+        "get_head"
+      ],
+      "known_output": "archive_chunk"
+    },
+    {
+      "order": 21,
+      "family": "filesystem",
+      "operation": "import",
+      "seed": "archive:fixture",
+      "depends_on": [
+        "create_workspace"
+      ],
+      "known_output": "generation"
+    },
+    {
+      "order": 22,
+      "family": "filesystem",
+      "operation": "issue_mount_credential",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "create_workspace"
+      ],
+      "known_output": "credential"
+    },
+    {
+      "order": 23,
+      "family": "filesystem",
+      "operation": "issue_s3_credential",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "create_workspace"
+      ],
+      "known_output": "credential"
+    },
+    {
+      "order": 24,
+      "family": "filesystem",
+      "operation": "get_source_state",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "create_workspace"
+      ],
+      "known_output": "source_state"
+    },
+    {
+      "order": 25,
+      "family": "filesystem",
+      "operation": "reconcile_source",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "get_source_state"
+      ],
+      "known_output": "source_state"
+    },
+    {
+      "order": 26,
+      "family": "filesystem",
+      "operation": "rescan_source",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "reconcile_source"
+      ],
+      "known_output": "source_state"
+    },
+    {
+      "order": 27,
+      "family": "filesystem",
+      "operation": "seal_source",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "rescan_source"
+      ],
+      "known_output": "source_state"
+    },
+    {
+      "order": 28,
+      "family": "filesystem",
+      "operation": "observe",
+      "seed": "operation:fixture-op",
+      "depends_on": [
+        "handshake"
+      ],
+      "known_output": "operation_status"
+    },
+    {
+      "order": 29,
+      "family": "filesystem",
+      "operation": "cancel",
+      "seed": "operation:fixture-op",
+      "depends_on": [
+        "observe"
+      ],
+      "known_output": "cancelled_operation_status"
+    },
+    {
+      "order": 30,
+      "family": "filesystem",
+      "operation": "delete_workspace",
+      "seed": "workspace:fixture",
+      "depends_on": [
+        "cancel"
+      ],
+      "known_output": "deleted"
+    },
+    {
+      "order": 31,
+      "family": "harness",
+      "operation": "handshake",
+      "seed": "protocol:current",
+      "depends_on": [],
+      "known_output": "protocol+capabilities"
+    },
+    {
+      "order": 32,
+      "family": "harness",
+      "operation": "submit",
+      "seed": "operation:fixture-op",
+      "depends_on": [
+        "handshake"
+      ],
+      "known_output": "accepted+succeeded"
+    },
+    {
+      "order": 33,
+      "family": "harness",
+      "operation": "replay",
+      "seed": "cursor:fixture",
+      "depends_on": [
+        "submit"
+      ],
+      "known_output": "live_delivery"
+    },
+    {
+      "order": 34,
+      "family": "harness",
+      "operation": "observe",
+      "seed": "operation:fixture-op",
+      "depends_on": [
+        "submit"
+      ],
+      "known_output": "succeeded_status"
+    },
+    {
+      "order": 35,
+      "family": "harness",
+      "operation": "cancel",
+      "seed": "operation:fixture-op",
+      "depends_on": [
+        "observe"
+      ],
+      "known_output": "cancelled+revision"
+    }
+  ]
+}

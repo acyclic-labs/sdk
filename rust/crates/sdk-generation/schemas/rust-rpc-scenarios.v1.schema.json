@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdk.acyclic.dev/schemas/rust-rpc-scenarios.v1.json",
+  "title": "Rust-owned RPC semantic scenarios",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "count",
+    "scenarios"
+  ],
+  "properties": {
+    "schema": {
+      "const": "acyclic.sdk.rust-rpc-scenarios.v1"
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "family",
+          "operation",
+          "input",
+          "expected",
+          "source",
+          "order",
+          "seed",
+          "depends_on",
+          "known_output",
+          "semantic"
+        ],
+        "properties": {
+          "family": {
+            "enum": [
+              "filesystem",
+              "harness"
+            ]
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1
+          },
+          "input": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source": {
+            "const": "rust/crates/sdk-examples/src/fixtures/filesystem_harness.rs"
+          },
+          "order": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "seed": {
+            "type": "string",
+            "minLength": 1
+          },
+          "depends_on": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "known_output": {
+            "type": "string",
+            "minLength": 1
+          },
+          "semantic": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["operation_id", "authority", "cursor", "status", "output"],
+            "properties": {
+              "operation_id": { "type": "string", "minLength": 1 },
+              "authority": { "type": "string", "minLength": 1 },
+              "cursor": { "type": "string", "minLength": 1 },
+              "status": { "type": "string", "minLength": 1 },
+              "output": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -27,6 +27,18 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
         "@acyclic-labs/stream-linux-arm64-gnu",
     ),
     (
+        "linux-x64-musl",
+        "linux",
+        "x64",
+        "@acyclic-labs/stream-linux-x64-musl",
+    ),
+    (
+        "linux-arm64-musl",
+        "linux",
+        "arm64",
+        "@acyclic-labs/stream-linux-arm64-musl",
+    ),
+    (
         "darwin-x64",
         "darwin",
         "x64",
@@ -58,6 +70,7 @@ fn every_platform_fixture_is_loadable_shape_with_matching_binary_name() {
         assert!(package.contains(&format!("\"cpu\":[\"{cpu}\"]")));
         assert!(package.contains("\"main\":\"index.js\""));
         assert!(package.contains("\"acyclic_stream_native.node\""));
+        assert!(package.contains("\"BUILD.json\""));
         let loader = match fs::read_to_string(root.join(target).join("index.js")) {
             Ok(value) => value,
             Err(_) => {

@@ -112,7 +112,7 @@ interface HostedClient {
 export async function openHostedFs(options: HostedFsOptions): Promise<HostedFsEngine> {
   const endpoint = secureServiceEndpoint(options.endpoint, message => new RangeError(`hosted filesystem ${message}`));
   try {
-    validateRustOwnedCredentialPolicy(options.bearerToken);
+    await validateRustOwnedCredentialPolicy(options.bearerToken);
   } catch {
     throw new RangeError("invalid bearer token");
   }

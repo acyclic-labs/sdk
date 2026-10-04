@@ -460,5 +460,6 @@ impl ErrorCode {
         }
     }
 }
+#[cfg(not(target_arch = "wasm32"))]
 include!("acyclic.actors.v1.tonic.rs");
 // @@protoc_insertion_point(module)

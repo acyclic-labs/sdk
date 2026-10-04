@@ -76,6 +76,9 @@ dependencies = [
  "sha2",
  "thiserror",
  "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
  "tsify-next",
  "uuid",
  "wasm-bindgen",
@@ -171,11 +174,13 @@ name = "acyclic-sdk-contract-wire"
 version = "0.1.0"
 dependencies = [
  "acyclic-sdk-contract-options",
+ "base64 0.22.1",
  "prost",
  "prost-build",
  "prost-types",
  "protoc-gen-prost",
  "protoc-gen-tonic",
+ "serde_json",
  "sha2",
  "tonic-prost-build",
 ]
@@ -190,6 +195,7 @@ dependencies = [
  "acyclic-inference",
  "acyclic-machines",
  "acyclic-objects",
+ "acyclic-sdk-contract-wire",
  "acyclic-stream",
  "acyclic-workers",
  "bytes",
@@ -222,6 +228,9 @@ dependencies = [
  "libc",
  "prost",
  "protoc-bin-vendored",
+ "reqwest",
+ "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "sha2",
  "thiserror",
@@ -229,7 +238,10 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "tsify-next",
  "uuid",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

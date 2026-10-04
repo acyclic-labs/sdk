@@ -4,6 +4,7 @@
 use sha2::{Digest, Sha256};
 
 pub mod client;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 pub mod http;
 

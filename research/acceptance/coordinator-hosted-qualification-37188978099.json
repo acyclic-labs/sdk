@@ -1,0 +1,1544 @@
+{
+  "schema": "acyclic.sdk.hosted-qualification-observation.v1",
+  "observed_at": "2026-10-04T08:38:47.6383061Z",
+  "goal_status": "active",
+  "pull_request": "https://github.com/acyclic-labs/sdk/pull/241",
+  "source_revision": "74a9049a660c80447e43394e67e78f50d8cb8772",
+  "run": {
+    "conclusion": "failure",
+    "headSha": "74a9049a660c80447e43394e67e78f50d8cb8772",
+    "jobs": [
+      {
+        "completedAt": "2026-10-04T08:27:49Z",
+        "conclusion": "failure",
+        "databaseId": 111396970638,
+        "name": "plan",
+        "startedAt": "2026-10-04T08:27:37Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Restore preflight tools",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Verify commit signatures and secrets",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Fingerprint lane inputs",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find gate marker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find linux marker",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find web marker",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find linux-arm64 marker",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find linux-musl marker",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find linux-arm64-musl marker",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find windows marker",
+            "number": 13,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find macos marker",
+            "number": 14,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Find policy marker",
+            "number": 15,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select lanes to execute",
+            "number": 16,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Windows lane required",
+            "number": 17,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Post Restore preflight tools",
+            "number": 32,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 33,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 34,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 35,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970638"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:44Z",
+        "conclusion": "failure",
+        "databaseId": 111396970866,
+        "name": "Rust source generation and documentation / cpp pinned platform scope",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Provision official pinned package toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify pinned package lane and run the generated consumer",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust platform receipt",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload internal platform package evidence",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 15,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 16,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 17,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970866"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:45Z",
+        "conclusion": "failure",
+        "databaseId": 111396970872,
+        "name": "Rust source generation and documentation / swift pinned platform scope",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Provision official pinned package toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify pinned package lane and run the generated consumer",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust platform receipt",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload internal platform package evidence",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 15,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 16,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 17,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970872"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:39Z",
+        "conclusion": "failure",
+        "databaseId": 111396970884,
+        "name": "Installed native Stream packages / linux-x64-musl",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970884"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:45Z",
+        "conclusion": "failure",
+        "databaseId": 111396970896,
+        "name": "Installed native Stream packages / linux-arm64-gnu",
+        "startedAt": "2026-10-04T08:27:41Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970896"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:38Z",
+        "conclusion": "failure",
+        "databaseId": 111396970897,
+        "name": "Installed native Stream packages / darwin-arm64",
+        "startedAt": "2026-10-04T08:27:37Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970897"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:34Z",
+        "conclusion": "failure",
+        "databaseId": 111396970899,
+        "name": "Installed native Stream packages / win32-arm64",
+        "startedAt": "2026-10-04T08:27:32Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970899"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:40Z",
+        "conclusion": "failure",
+        "databaseId": 111396970903,
+        "name": "Installed native Stream packages / darwin-x64",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970903"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:45Z",
+        "conclusion": "failure",
+        "databaseId": 111396970904,
+        "name": "Installed Rust embedded packages / linux-x64-musl",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install musl linker",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select native Windows ARM64 linker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Windows installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970904"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:47Z",
+        "conclusion": "success",
+        "databaseId": 111396970911,
+        "name": "Installed Rust embedded packages / macos-arm64",
+        "startedAt": "2026-10-04T08:27:48Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install musl linker",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select native Windows ARM64 linker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Windows installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970911"
+      },
+      {
+        "completedAt": "2026-10-04T08:29:29Z",
+        "conclusion": "success",
+        "databaseId": 111396970913,
+        "name": "Installed Rust embedded packages / windows-x64-msvc",
+        "startedAt": "2026-10-04T08:28:01Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install musl linker",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select native Windows ARM64 linker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Run the Windows installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970913"
+      },
+      {
+        "completedAt": "2026-10-04T08:31:18Z",
+        "conclusion": "success",
+        "databaseId": 111396970914,
+        "name": "Installed Rust embedded packages / windows-arm64-msvc",
+        "startedAt": "2026-10-04T08:27:33Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install musl linker",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Select native Windows ARM64 linker",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Windows installed-package consumers",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 22,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 23,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970914"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:04Z",
+        "conclusion": "failure",
+        "databaseId": 111396970915,
+        "name": "Rust source generation and documentation / linux-arm64",
+        "startedAt": "2026-10-04T08:27:42Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Verify pinned platform toolchain",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Test generation and contract validators",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust wire export and drift",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run unified source generation and exact drift check",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload unified generation evidence",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify source-bound docs profile graph",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Generate and check Rust-owned TypeScript stage",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970915"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:39Z",
+        "conclusion": "failure",
+        "databaseId": 111396970916,
+        "name": "Installed native Stream packages / linux-x64-gnu",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970916"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:45Z",
+        "conclusion": "failure",
+        "databaseId": 111396970917,
+        "name": "Installed native Stream packages / linux-arm64-musl",
+        "startedAt": "2026-10-04T08:27:41Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970917"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:05Z",
+        "conclusion": "failure",
+        "databaseId": 111396970932,
+        "name": "Rust source generation and documentation / macos",
+        "startedAt": "2026-10-04T08:27:49Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Verify pinned platform toolchain",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Test generation and contract validators",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust wire export and drift",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run unified source generation and exact drift check",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload unified generation evidence",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify source-bound docs profile graph",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Generate and check Rust-owned TypeScript stage",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970932"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:06Z",
+        "conclusion": "failure",
+        "databaseId": 111396970935,
+        "name": "Installed native Stream packages / win32-x64",
+        "startedAt": "2026-10-04T08:28:02Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "failure",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970935"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:54Z",
+        "conclusion": "failure",
+        "databaseId": 111396970937,
+        "name": "Rust source generation and documentation / linux",
+        "startedAt": "2026-10-04T08:27:36Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Verify pinned platform toolchain",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Test generation and contract validators",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust wire export and drift",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run unified source generation and exact drift check",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload unified generation evidence",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify source-bound docs profile graph",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Generate and check Rust-owned TypeScript stage",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970937"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:16Z",
+        "conclusion": "failure",
+        "databaseId": 111396970956,
+        "name": "Installed Rust embedded packages / linux-arm64-musl",
+        "startedAt": "2026-10-04T08:27:42Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install musl linker",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select native Windows ARM64 linker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Windows installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970956"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:23Z",
+        "conclusion": "failure",
+        "databaseId": 111396970970,
+        "name": "Rust source generation and documentation / windows",
+        "startedAt": "2026-10-04T08:28:04Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Configure per-run Rust target directory",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Verify pinned platform toolchain",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Test generation and contract validators",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify Rust wire export and drift",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run unified source generation and exact drift check",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Upload unified generation evidence",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Verify source-bound docs profile graph",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Generate and check Rust-owned TypeScript stage",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970970"
+      },
+      {
+        "completedAt": "2026-10-04T08:28:56Z",
+        "conclusion": "failure",
+        "databaseId": 111396970978,
+        "name": "Installed Rust embedded packages / macos-x64",
+        "startedAt": "2026-10-04T08:27:50Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Check out exact release source",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Install pinned Rust toolchain",
+            "number": 4,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install musl linker",
+            "number": 5,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Install pinned Windows ARM64 LLVM",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Select native Windows ARM64 linker",
+            "number": 7,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Fetch locked embedded dependencies",
+            "number": 8,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the Windows installed-package consumers",
+            "number": 9,
+            "status": "completed"
+          },
+          {
+            "conclusion": "skipped",
+            "name": "Run the native Windows ARM64 installed-package consumers",
+            "number": 10,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Run the Unix and Darwin installed-package consumers",
+            "number": 11,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Upload package, receipts, and consumer evidence",
+            "number": 12,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Post Check out exact release source",
+            "number": 23,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 24,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 25,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396970978"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:30Z",
+        "conclusion": "skipped",
+        "databaseId": 111396971764,
+        "name": "Rust source generation and documentation / Fast qualification policy",
+        "startedAt": "2026-10-04T08:27:31Z",
+        "status": "completed",
+        "steps": [],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111396971764"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:49Z",
+        "conclusion": "skipped",
+        "databaseId": 111397026069,
+        "name": "windows",
+        "startedAt": "2026-10-04T08:27:49Z",
+        "status": "completed",
+        "steps": [],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111397026069"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:49Z",
+        "conclusion": "skipped",
+        "databaseId": 111397026251,
+        "name": "matrix.lane",
+        "startedAt": "2026-10-04T08:27:49Z",
+        "status": "completed",
+        "steps": [],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111397026251"
+      },
+      {
+        "completedAt": "2026-10-04T08:27:49Z",
+        "conclusion": "skipped",
+        "databaseId": 111397026546,
+        "name": "record",
+        "startedAt": "2026-10-04T08:27:49Z",
+        "status": "completed",
+        "steps": [],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111397026546"
+      },
+      {
+        "completedAt": "2026-10-04T08:31:30Z",
+        "conclusion": "failure",
+        "databaseId": 111397624321,
+        "name": "SDK Qualification",
+        "startedAt": "2026-10-04T08:31:25Z",
+        "status": "completed",
+        "steps": [
+          {
+            "conclusion": "success",
+            "name": "Set up job",
+            "number": 1,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Set up runner",
+            "number": 2,
+            "status": "completed"
+          },
+          {
+            "conclusion": "failure",
+            "name": "Require every qualification lane",
+            "number": 3,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete runner",
+            "number": 6,
+            "status": "completed"
+          },
+          {
+            "conclusion": "success",
+            "name": "Complete job",
+            "number": 7,
+            "status": "completed"
+          }
+        ],
+        "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099/job/111397624321"
+      }
+    ],
+    "status": "completed",
+    "url": "https://github.com/acyclic-labs/sdk/actions/runs/37188978099"
+  },
+  "qualification_claim": "none",
+  "publication": false,
+  "deployment": false,
+  "merge": false,
+  "local_verification": [
+    {
+      "check": "standalone Rust nominal RPC receipt validators",
+      "command": "cargo test --manifest-path rust/crates/sdk-generation/Cargo.toml --locked --offline qualification_receipt -- --nocapture",
+      "passed": 4,
+      "failed": 0,
+      "includes": [
+        "reject RPC errors marked as passes",
+        "reject missing RPC",
+        "reject in-process evidence for remote qualification",
+        "derive complete inventory from results"
+      ]
+    },
+    {
+      "check": "original checkout tracked changes",
+      "git_revision": "31b9ff52d63c91f2b9bf87e16b78ad682d26546f",
+      "tracked_changes": false
+    }
+  ]
+}

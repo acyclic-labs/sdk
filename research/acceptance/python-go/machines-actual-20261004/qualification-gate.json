@@ -1,0 +1,14 @@
+{
+  "schema": "acyclic.sdk.remote-consumer-gate.v1",
+  "source_revision": "5d48d57fe243ddc3f033bcca53a7a4c185e1811b",
+  "rust_fixture_source_sha256": "sha256:0b1d24198b40d56c311f3c58d1a0d978e64dcfa87213d54d6eb7396c9855322f",
+  "families": {
+    "inference": {"expected_scenarios": 14, "python_consumer": "prepared", "go_consumer": "prepared"},
+    "machines": {"expected_scenarios": 19, "python_consumer": "prepared", "go_consumer": "prepared"}
+  },
+  "semantic_policy": "A family qualifies only when every installed-consumer receipt has a passing decoded semantic check and the receipt provenance matches this exact source and package archive.",
+  "execution_status": "blocked-before-fixture-start",
+  "blocked_step": "building fresh inference-rsa-fixture and machines-rsa-fixture binaries",
+  "diagnostic": "cargo build failed with Windows os error 112 (There is not enough space on the disk) while Q: had no free space; no remote receipt is promoted from older fixture metadata.",
+  "next_step": "free workspace capacity, build the current exact revision, launch each TLS fixture, then run all four installed consumers with matching package archives and retain their semantic receipts."
+}

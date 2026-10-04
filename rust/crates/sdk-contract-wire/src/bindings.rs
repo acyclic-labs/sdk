@@ -408,7 +408,7 @@ fn generate_plugin_files(
     );
     let prost_files = protoc_gen_prost::execute(&request)
         .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, prost_files, family == BindingFamily::Objects)?;
+    write_plugin_files(out_dir, prost_files, family)?;
 
     let mut tonic_params = Vec::new();
     if !config.client {
@@ -424,14 +424,19 @@ fn generate_plugin_files(
         &tonic_params.join(","),
     ))
     .map_err(|error| BindingGenerationError::Plugin(error.to_string()))?;
-    write_plugin_files(out_dir, tonic_files, family == BindingFamily::Objects)
+    write_plugin_files(out_dir, tonic_files, family)
 }
 
 fn write_plugin_files(
     out_dir: &Path,
     files: Vec<prost_types::compiler::code_generator_response::File>,
-    guard_grpc: bool,
+    family: BindingFamily,
 ) -> Result<(), BindingGenerationError> {
+    let guard_cfg = match family {
+        BindingFamily::Actors | BindingFamily::Workers => Some("not(target_arch = \"wasm32\")"),
+        BindingFamily::Objects => Some("feature = \"grpc\""),
+        _ => None,
+    };
     for file in files {
         let name = file.name.ok_or_else(|| {
             BindingGenerationError::Plugin("generator returned unnamed file".into())
@@ -449,8 +454,8 @@ fn write_plugin_files(
                 ))
             })?;
             let insertion = file.content.as_deref().unwrap_or_default();
-            let insertion = if guard_grpc {
-                guard_tonic_include(insertion)
+            let insertion = if let Some(cfg) = guard_cfg {
+                guard_tonic_include_with_cfg(insertion, cfg)
             } else {
                 insertion.to_owned()
             };
@@ -458,12 +463,10 @@ fn write_plugin_files(
             fs::write(path, current)?;
         } else {
             let content = file.content.unwrap_or_default();
-            let content = if guard_grpc && name.ends_with(".tonic.rs") {
-                guard_tonic_modules(&content)
-            } else if guard_grpc {
-                guard_tonic_include(&content)
-            } else {
-                content
+            let content = match guard_cfg {
+                Some(cfg) if name.ends_with(".tonic.rs") => guard_tonic_modules_with_cfg(&content, cfg),
+                Some(cfg) => guard_tonic_include_with_cfg(&content, cfg),
+                None => content,
             };
             fs::write(path, content)?;
         }
@@ -471,11 +474,16 @@ fn write_plugin_files(
     Ok(())
 }
 
+#[cfg(test)]
 fn guard_tonic_modules(source: &str) -> String {
+    guard_tonic_modules_with_cfg(source, "feature = \"grpc\"")
+}
+
+fn guard_tonic_modules_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 128);
     for line in source.lines() {
         if line.starts_with("pub mod ") {
-            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+            guarded.push_str(&format!("#[cfg({cfg})]\n"));
         }
         guarded.push_str(line);
         guarded.push('\n');
@@ -486,12 +494,17 @@ fn guard_tonic_modules(source: &str) -> String {
     guarded
 }
 
+#[cfg(test)]
 fn guard_tonic_include(source: &str) -> String {
+    guard_tonic_include_with_cfg(source, "feature = \"grpc\"")
+}
+
+fn guard_tonic_include_with_cfg(source: &str, cfg: &str) -> String {
     let mut guarded = String::with_capacity(source.len() + 64);
     for line in source.lines() {
         if line.trim_start().starts_with("include!(") && line.trim_end().ends_with(".tonic.rs\");")
         {
-            guarded.push_str("#[cfg(feature = \"grpc\")]\n");
+            guarded.push_str(&format!("#[cfg({cfg})]\n"));
         }
         guarded.push_str(line);
         guarded.push('\n');

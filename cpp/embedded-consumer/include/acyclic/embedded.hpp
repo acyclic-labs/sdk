@@ -75,29 +75,39 @@ class NextResult {
 class Reader {
  public:
   Reader() = default;
-  explicit Reader(AcyclicOpenResult result) : result_(result) {}
-  ~Reader() { acyclic_open_result_release(result_); }
+  explicit Reader(AcyclicOpenResult result)
+      : reader_(acyclic_open_result_take_reader(&result)), result_(result) {}
+  ~Reader() {
+    acyclic_embedded_reader_close(reader_);
+    acyclic_open_result_release(result_);
+  }
   Reader(const Reader&) = delete;
   Reader& operator=(const Reader&) = delete;
-  Reader(Reader&& other) noexcept : result_(other.result_) {
+  Reader(Reader&& other) noexcept
+      : reader_(other.reader_), result_(other.result_) {
+    other.reader_ = 0;
     other.result_.reader = 0;
     other.result_.message = AcyclicBuffer{};
   }
   Reader& operator=(Reader&& other) noexcept {
     if (this != &other) {
+      acyclic_embedded_reader_close(reader_);
       acyclic_open_result_release(result_);
+      reader_ = other.reader_;
       result_ = other.result_;
+      other.reader_ = 0;
       other.result_.reader = 0;
       other.result_.message = AcyclicBuffer{};
     }
     return *this;
   }
 
-  bool valid() const { return result_.reader != 0; }
-  NextResult next() const { return NextResult(acyclic_embedded_reader_next(result_.reader)); }
-  void cancel() const { acyclic_embedded_reader_cancel(result_.reader); }
+  bool valid() const { return reader_ != 0; }
+  NextResult next() const { return NextResult(acyclic_embedded_reader_next(reader_)); }
+  void cancel() const { acyclic_embedded_reader_cancel(reader_); }
 
  private:
+  uint64_t reader_ = 0;
   AcyclicOpenResult result_{InvalidArgument, 0, AcyclicBuffer{}};
 };
 

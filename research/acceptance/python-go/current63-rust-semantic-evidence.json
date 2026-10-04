@@ -1,0 +1,43 @@
+{
+  "schema": "acyclic.sdk.python-go.current63-rust-semantic-evidence.v1",
+  "status": "failed",
+  "qualification_rule": "A method qualifies only when its captured request and every terminal response frame pass the Rust semantic verifier.",
+  "source_git_sha": "41dc85d3010999e29e604d39253830ba9f0df627",
+  "method_count": 63,
+  "semantic_comparisons": 111,
+  "verifier_sha256": "e84dcecaf727325f6249a37ff5733550cb965787ac3afec0b6b6edf813fe7c9d",
+  "artifacts": {
+    "expected": {
+      "path": "C:\\Users\\varun\\.codex\\visualizations\\2026\\10\\03\\01a1012c-cbf9-71f3-9cb6-fb3047b2fa2b\\oracle-63-expected.json",
+      "sha256": "F2C53DCB20809BAAC6FE508E3AA1B137B8F039D7FE4ACEC06EA18ABD94BB1176"
+    },
+    "observed": {
+      "path": "C:\\Users\\varun\\.codex\\visualizations\\2026\\10\\03\\01a1012c-cbf9-71f3-9cb6-fb3047b2fa2b\\oracle-63-observed.json",
+      "sha256": "5FF2B4B48C604D6C492CF866A292BFA406381DEB54194CA83C1C2A59F177B60D"
+    },
+    "receipt": {
+      "path": "C:\\Users\\varun\\.codex\\visualizations\\2026\\10\\03\\01a1012c-cbf9-71f3-9cb6-fb3047b2fa2b\\oracle-63-semantic-receipt.json",
+      "sha256": "DE6FC0F17FCCD76FA0F209C1042A5F6CF4F8B6DB598723D36C89B317D32EDA25"
+    }
+  },
+  "failures": [
+    "acyclic.stream.v2.StreamService/Follow.response_bytes_hex is missing",
+    "acyclic.objects.v2.ObjectsService/PutObject request frame 0: protobuf semantic mismatch at <decode expected>: expected valid protobuf bytes, observed failed to decode Protobuf message: invalid wire type: EndGroup (expected StartGroup)",
+    "acyclic.objects.v2.ObjectsService/PutObject.response_bytes_hex is missing",
+    "acyclic.objects.v2.ObjectsService/GetObject.response_bytes_hex is missing",
+    "acyclic.machines.v1.MachinesService/Create.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/PlanExtents.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/Rebase.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/PlanJoin.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/ApplyJoin.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/Checkpoint.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/Export.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/IssueMountCredential.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/IssueS3Credential.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/GetSourceState.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/ReconcileSource.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/RescanSource.response_bytes_hex is missing",
+    "acyclic.filesystem.v2.FilesystemService/SealSource.response_bytes_hex is missing"
+  ],
+  "next_bounded_milestone": "Repair the Rust fixture transcript for the 17 listed failures, recapture current63 request and terminal response frames, and rerun the same verifier without weakening its checks."
+}

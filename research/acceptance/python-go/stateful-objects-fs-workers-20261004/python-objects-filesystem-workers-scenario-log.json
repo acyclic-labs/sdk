@@ -1,0 +1,1216 @@
+{
+  "schema": "acyclic.sdk.python-go.stateful-remote-scenario-log.v1",
+  "consumer": "python",
+  "address": "127.0.0.1:58211",
+  "execution_mode": "remote",
+  "source_revision": "f7a2e0eedea058cf85b1746e8dd0af8716cb362e035c45938b0c1ddf3d4d9b2a",
+  "source_revision_kind": "rust-model-sha256",
+  "artifact_sha256": "8496E7D67AF04F60E6197BAF9FF521F79D3B28F62B71A119541E2077F73505AD",
+  "fixture_binary_sha256": "1CFB09F18959E4013513B40C4F68ADCE935583803E9BA936BFD2EE6885D5DAE6",
+  "fixture_source_sha256": "7096011f17bf2760e7c19ec72f2e55d9cff953f52963c754918f45c786ef2d81",
+  "scenarios": [
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/PublishVersion",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        46
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 2.009
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/SelectDeployment",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        50
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/SubmitJob",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        70
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.998
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InspectJob",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        9
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/CancelJob",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        32
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeVersion",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        34
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "workers",
+      "rpc": "acyclic.workers.v1.WorkersService/InvokeDeployment",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        34
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.998
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/CreateBucket",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        44
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.004
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/HeadBucket",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        18
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.995
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.BucketsService/DeleteBucket",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        46
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/PutObject",
+      "shape": "client-streaming",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 3,
+      "request_bytes": [
+        31,
+        7,
+        2
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/GetObject",
+      "shape": "server-streaming",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 0
+      },
+      "response_count": 0,
+      "request_frame_count": 1,
+      "request_bytes": [
+        44
+      ],
+      "response_bytes": [],
+      "semantic_check": "fixture_defined_empty_stream",
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/HeadObject",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        47
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/DeleteObject",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        68
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.ObjectsService/ListObjects",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        47
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/CreateMultipart",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        109
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/UploadPart",
+      "shape": "client-streaming",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 3,
+      "request_bytes": [
+        49,
+        7,
+        2
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/ListParts",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        49
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/CompleteMultipart",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        89
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.997
+    },
+    {
+      "family": "objects",
+      "rpc": "acyclic.objects.v2.MultipartService/AbortMultipart",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        75
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.508
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Handshake",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        17
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/CreateWorkspace",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        40
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/OpenWorkspace",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        9
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/DeleteWorkspace",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        51
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.997
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetHead",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        20
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.005
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetGeneration",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        31
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Read",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        49
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Stat",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        41
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ListDirectory",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        56
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.002
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReadLink",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        43
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanExtents",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        49
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyTransaction",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        94
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RebaseTransaction",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        95
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ForkWorkspace",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        69
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Diff",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        64
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Rebase",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        48
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/PlanJoin",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        68
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ApplyJoin",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        135
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Checkpoint",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        66
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Pin",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        59
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Export",
+      "shape": "server-streaming",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 0
+      },
+      "response_count": 0,
+      "request_frame_count": 1,
+      "request_bytes": [
+        44
+      ],
+      "response_bytes": [],
+      "semantic_check": "fixture_defined_empty_stream",
+      "elapsed_ms": 0.999
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Import",
+      "shape": "client-streaming",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        68
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueMountCredential",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        89
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.001
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/IssueS3Credential",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        86
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.997
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/GetSourceState",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        20
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/ReconcileSource",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        51
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.997
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/RescanSource",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        48
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/SealSource",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        46
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 1.005
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Observe",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        43
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    },
+    {
+      "family": "filesystem",
+      "rpc": "acyclic.filesystem.v2.FilesystemService/Cancel",
+      "shape": "unary",
+      "execution_mode": "remote",
+      "transport": "grpc",
+      "rust_scenario_order": true,
+      "status": "passed",
+      "rpc_outcome": {
+        "status": "ok",
+        "code": 0,
+        "response_count": 1
+      },
+      "response_count": 1,
+      "request_frame_count": 1,
+      "request_bytes": [
+        43
+      ],
+      "response_bytes": [
+        0
+      ],
+      "semantic_check": "fixture_default_response",
+      "elapsed_ms": 0.0
+    }
+  ],
+  "passed": 50,
+  "failed": 0,
+  "semantic_empty_streams": 2
+}
