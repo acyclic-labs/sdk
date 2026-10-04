@@ -2108,6 +2108,7 @@ impl PersistentLocalSwarm {
                 record,
             )?;
         }
+        let mut registry_tail = initial_tail;
         if sessions.is_empty() {
             let root_task = TaskId::new();
             let root_session = LocalSwarmSession {
@@ -2118,7 +2119,15 @@ impl PersistentLocalSwarm {
                 operation: None,
                 phase: LocalSessionPhase::Ready,
             };
-            append_record(&stream, StoredEvent::Session(root_session.clone().into())).await?;
+            append_record_at(
+                &stream,
+                StoredEvent::Session(root_session.clone().into()),
+                initial_tail,
+            )
+            .await?;
+            registry_tail = initial_tail
+                .checked_add(1)
+                .ok_or_else(|| Error::Storage("swarm registry sequence overflow".into()))?;
             sessions.insert(root_task, root_session);
         }
         let root_task = sessions
@@ -2126,11 +2135,6 @@ impl PersistentLocalSwarm {
             .find(|session| session.parent.is_none())
             .map(|session| session.task)
             .ok_or_else(|| Error::Storage("swarm registry has no root session".into()))?;
-        let registry_tail = match stream.tail().await {
-            Ok(tail) => tail,
-            Err(StreamError::NotFound) => 0,
-            Err(error) => return Err(Error::Storage(error.to_string())),
-        };
         let root_session = open_session_path(&root, root_task);
         let root_harness = Arc::new(
             PersistentLocalHarness::open_with_tools_and_project_on_providers(
@@ -2488,8 +2492,10 @@ impl PersistentLocalSwarm {
             .filter(|candidate| candidate.parent == Some(task))
             .cloned()
             .collect();
-        let harness = self.open_session(task).await?;
-        let conversation_revision = self.conversation_tail(&harness).await?;
+        let conversation_revision = match self.conversation_authority(task).await {
+            Some(authority) => self.conversation_tail(&authority).await?,
+            None => 0,
+        };
         Ok(LocalSwarmSnapshot {
             session,
             children,
@@ -2498,8 +2504,45 @@ impl PersistentLocalSwarm {
         })
     }
 
-    async fn conversation_tail(&self, harness: &PersistentLocalHarness) -> Result<u64> {
-        let path = harness.storage().conversation().stream_path()?;
+    /// Finds an already-authenticated descriptor for metadata projection. A
+    /// cold child uses its persisted seed/request authority; an unbound root
+    /// has no conversation stream yet and therefore reports revision zero.
+    async fn conversation_authority(&self, task: TaskId) -> Option<Authority> {
+        if let Some(harness) = self.sessions.lock().await.get(&task).cloned() {
+            return Some(harness.storage().conversation().clone());
+        }
+        if let Some(seed) = self.seeds.lock().await.get(&task) {
+            return Some(seed.child.clone());
+        }
+        if let Some(authority) = self
+            .requests
+            .lock()
+            .await
+            .get(&task)
+            .and_then(|request| request.child_authority.clone())
+        {
+            return Some(authority);
+        }
+        let is_root = self
+            .records
+            .lock()
+            .await
+            .get(&task)
+            .is_some_and(|session| session.parent.is_none());
+        if is_root {
+            return self
+                .seeds
+                .lock()
+                .await
+                .values()
+                .next()
+                .map(|seed| seed.parent.clone());
+        }
+        None
+    }
+
+    async fn conversation_tail(&self, authority: &Authority) -> Result<u64> {
+        let path = authority.stream_path()?;
         let stream = self
             .conversation_stream
             .stream(path)
@@ -2546,33 +2589,13 @@ impl PersistentLocalSwarm {
             ));
         }
         let harness = self.open_session(task).await?;
-        let mut cursor = after_sequence;
-        let mut messages = Vec::with_capacity(limit);
-        while messages.len() < limit {
-            let page_limit = (limit - messages.len()).min(256);
-            let page = self
-                .read_conversation_events(&harness, cursor, page_limit)
-                .await?;
-            if page.is_empty() {
-                break;
-            }
-            cursor = page.last().map_or(cursor, |event| event.revision);
-            for event in page {
-                if let crate::core::EventPayload::ConversationMessageAppended { message } =
-                    event.payload
-                    && message.sequence > after_sequence
-                {
-                    messages.push(*message);
-                    if messages.len() == limit {
-                        break;
-                    }
-                }
-            }
-            if cursor == 0 {
-                break;
-            }
-        }
-        Ok(messages)
+        let state = harness.conversation_state(self.config.limits).await?;
+        Ok(state
+            .messages
+            .into_iter()
+            .filter(|message| message.sequence > after_sequence)
+            .take(limit)
+            .collect())
     }
 
     async fn read_conversation_events(
