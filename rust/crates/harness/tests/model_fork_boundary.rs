@@ -31,6 +31,7 @@ use acyclic_harness::{
     registry::ComponentIdentity,
     resources::{ProviderRef, StreamRef},
     store::StreamAggregate,
+    tool::ToolResult,
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
 use futures::{
@@ -300,9 +301,9 @@ impl ForkAtBatch {
         });
         let result =
             result.ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
-        let result: Value = serde_json::from_slice(&storage.journal().load(&result).await?)
+        let result: ToolResult = serde_json::from_slice(&storage.journal().load(&result).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
-        assert_eq!(result.get("text").and_then(Value::as_str), Some(expected));
+        assert_eq!(result.value.get("text").and_then(Value::as_str), Some(expected));
         Ok(())
     }
 
@@ -1331,12 +1332,12 @@ impl ForkAtBatch {
         let (completed_call, result, projection) = read_completed
             .ok_or_else(|| Error::Storage("recursive read_file result missing".into()))?;
         assert_eq!(read_started.as_deref(), Some(completed_call.as_str()));
-        let result: Value = serde_json::from_slice(&storage.journal().load(&result).await?)
+        let result: ToolResult = serde_json::from_slice(&storage.journal().load(&result).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
         assert_eq!(
-            result.get("text").and_then(Value::as_str),
+            result.value.get("text").and_then(Value::as_str),
             Some("root request"),
-            "grandchild inherited-file read returned {result}"
+            "grandchild inherited-file read returned {result:?}"
         );
         let projection: Value = serde_json::from_slice(&storage.journal().load(&projection).await?)
             .map_err(|error| Error::Storage(error.to_string()))?;
