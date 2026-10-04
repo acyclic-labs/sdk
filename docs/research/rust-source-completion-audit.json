@@ -93,6 +93,11 @@
       "id": "language-inventory-completion",
       "state": "partial",
       "evidence": "Canonical catalog c77499b95 preserves java/csharp IDs and jvm/dotnet package aliases; CLI alias normalization remains assigned. Prior inventory34 entries contained32 languages and2 tooling categories. Producer adapter recipes and all viable target remote/embedded/docs/snippet/install qualifications remain incomplete. Catalog rows or install smoke alone cannot qualify complete behavior."
+    },
+    {
+      "id": "strong-language-type-projections",
+      "state": "unverified",
+      "evidence": "Explicit user requirement: expose the strongest practical type information in every target language, including type-system features beyond Rust. All semantic type intent, constraints, and language projection rules must be authored in Rust source; target type declarations are generated. Completion requires installed-package positive and negative compile/type-check evidence, precise presence and oneof/union typing, typed identifiers and applicable refinements, and preservation of unknown wire values and compatibility."
     }
   ],
   "latest_coordinator_iteration": {
