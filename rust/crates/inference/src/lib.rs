@@ -11,13 +11,20 @@ pub mod wire {
 mod contract;
 #[cfg(feature = "http-codec")]
 pub mod http_codec;
+#[cfg(feature = "http-client")]
+pub mod http;
+#[cfg(feature = "http-client")]
+pub mod client;
 pub use contract::{
     MAXIMUM_EVALUATION_CANDIDATES, MAXIMUM_EVALUATION_CASES, MAXIMUM_EVALUATION_METRICS,
     MAXIMUM_EVALUATION_RESULTS, MAXIMUM_HTTP_JSON_BYTES, MAXIMUM_MESSAGE_BYTES, WatchRunState,
     validate_customer_wire, watch_run_start_state_wire, watch_run_start_wire,
 };
 
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
 mod host;
-#[cfg(feature = "host")]
+#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
 pub use host::*;
+
+#[cfg(all(feature = "host", not(target_arch = "wasm32")))]
+mod grpc;
