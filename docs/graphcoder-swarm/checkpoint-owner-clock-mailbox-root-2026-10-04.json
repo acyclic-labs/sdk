@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "source_commit": "d04c029be",
+  "rust_tree": "3d0d51f912d14aef11b177a2dde2ef42767b5a8f",
+  "command": "cargo test -p acyclic-harness --features filesystem-local,native-process-tree,test-support --test communication_local --target-dir D:/graphcoder-builds/root-fork-20261004/target -j2",
+  "exit_code": 0,
+  "passed": 4,
+  "failed": 0,
+  "ignored": 0,
+  "filtered": 0,
+  "log": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\d04c029be\\communication-owner-clock-root.log",
+  "log_sha256": "a43ef61d1906cf4394755577870401dccfcd7df7c9391843c7324b7f5137c3fd",
+  "artifact": "D:\\graphcoder-builds\\root-fork-20261004\\checkpoints\\d04c029be\\communication_local.exe",
+  "artifact_sha256": "2ced00f321291259c62cc069d530bb01c2d67529fda6bfd62888e5e0ba1a4473",
+  "verified": [
+    "real LocalStream and Filesystem message reopen and idempotency",
+    "forged cross-mailbox record rejection",
+    "typed timeout and cancellation",
+    "same owner clock across durable wait reopen"
+  ],
+  "unmet": "Production native composition and full recursive messaging/fault/installed qualification.",
+  "requirements_sha256": "4d723c6391a234d8cf18c149960c3d45eb19459a642ff326cb8dc439dc1605ef"
+}
