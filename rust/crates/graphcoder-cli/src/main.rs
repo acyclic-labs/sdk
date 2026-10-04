@@ -530,39 +530,15 @@ impl Runtime {
 
     async fn list_sessions_page(&self, params: &Value) -> Result<Value, DispatchError> {
         let (after, limit) = page_bounds(params)?;
-        let mut summaries = self
+        let page = self
             .swarm
-            .sessions()
+            .sessions_page(after, limit)
             .await
-            .into_iter()
-            .map(session_summary)
-            .collect::<Vec<_>>();
-        summaries.sort_by(|left, right| {
-            left.get("id")
-                .and_then(Value::as_str)
-                .cmp(&right.get("id").and_then(Value::as_str))
+            .map_err(DispatchError::from_harness)?;
+        let mut result = json!({
+            "items": page.items.into_iter().map(session_summary).collect::<Vec<_>>(),
         });
-        let start = match after {
-            Some(cursor) => summaries
-                .iter()
-                .position(|item| item.get("id").and_then(Value::as_str) == Some(cursor))
-                .map(|index| index + 1)
-                .ok_or_else(|| DispatchError::invalid("page cursor does not identify a session"))?,
-            None => 0,
-        };
-        let end = (start + limit).min(summaries.len());
-        let items = summaries[start..end].to_vec();
-        let next = (end < summaries.len())
-            .then(|| {
-                items
-                    .last()
-                    .and_then(|item| item.get("id"))
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .flatten();
-        let mut result = json!({ "items": items });
-        if let Some(next) = next {
+        if let Some(next) = page.next {
             result["next"] = Value::String(next);
         }
         Ok(result)
@@ -747,35 +723,16 @@ impl Runtime {
         let params = object(params)?;
         let task = task_from_value(params, "session_id")?;
         let (after, limit) = page_bounds_object(params)?;
-        let approvals = self
+        let page = self
             .swarm
-            .list_approvals(task)
+            .approvals_page(task, after, limit)
             .await
             .map_err(DispatchError::from_harness)?;
-        let start = after
-            .map(|cursor| {
-                approvals
-                    .iter()
-                    .position(|approval| approval.ticket.id.to_string() == cursor)
-                    .map(|index| index + 1)
-                    .ok_or_else(|| DispatchError::invalid("approval cursor is unknown"))
-            })
-            .transpose()?
-            .unwrap_or(0);
-        let selected = approvals
-            .into_iter()
-            .skip(start)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let next = (selected.len() == limit)
-            .then(|| {
-                selected
-                    .last()
-                    .map(|approval| approval.ticket.id.to_string())
-            })
-            .flatten();
-        let items = selected.into_iter().map(approval_value).collect::<Vec<_>>();
-        Ok(page_result(task, items, next))
+        Ok(page_result(
+            task,
+            page.items.into_iter().map(approval_value).collect(),
+            page.next,
+        ))
     }
 
     /// Records an operator-origin decision from the private control channel.
@@ -893,17 +850,20 @@ impl Runtime {
         session: acyclic_harness::filesystem::LocalSwarmSession,
     ) -> Result<Value, DispatchError> {
         self.lazy_observation.record_workspace_read();
-        let sessions = self.swarm.sessions().await;
-        let agents = sessions
-            .iter()
+        let agents = self
+            .swarm
+            .recursive_agent_tree(session.task)
+            .await
+            .map_err(DispatchError::from_harness)?
+            .into_iter()
             .map(|item| {
                 json!({
-                    "id": item.task.to_string(),
-                    "parent_id": item.parent.map(|id| id.to_string()),
-                    "task": item.task_description.clone(),
-                    "state": agent_state(&item.phase),
-                    "depth": item.depth,
-                    "children": sessions.iter().filter(|child| child.parent == Some(item.task)).map(|child| child.task.to_string()).collect::<Vec<_>>(),
+                    "id": item.session.task.to_string(),
+                    "parent_id": item.session.parent.map(|id| id.to_string()),
+                    "task": item.session.task_description.clone(),
+                    "state": agent_state(&item.session.phase),
+                    "depth": item.session.depth,
+                    "children": item.children.into_iter().map(|id| id.to_string()).collect::<Vec<_>>(),
                 })
             })
             .collect::<Vec<_>>();
@@ -1540,6 +1500,7 @@ mod tests {
                 .len(),
             1
         );
+        assert!(listed["result"].get("next").is_none());
         let started = exchange(
             runtime,
             json!({
@@ -1589,6 +1550,24 @@ mod tests {
         .await;
         assert_eq!(resumed["ok"], true);
         assert_eq!(resumed["result"]["summary"]["state"], "completed");
+        let agents = resumed["result"]["agents"]
+            .as_array()
+            .expect("agent tree");
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0]["id"], json!(session_id));
+        assert_eq!(agents[0]["children"], json!([]));
+        let approvals = exchange(
+            runtime.clone(),
+            json!({
+                "request_id":"approvals-1",
+                "method":"list_approvals",
+                "params":{"session_id":session_id}
+            }),
+        )
+        .await;
+        assert_eq!(approvals["ok"], true);
+        assert_eq!(approvals["result"]["items"], json!([]));
+        assert!(approvals["result"].get("next").is_none());
         let messages = exchange(
             runtime,
             json!({
