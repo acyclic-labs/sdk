@@ -1,5 +1,7 @@
 # Local swarm implementation status
 
+Integrated immutable execution-fence repair passes 19/19 existing host execution tests on Rust tree `e3d9a3c39ca21684b5e9e29b38c96fdae94c63ef`, including substituted Unknown-receipt rejection and actual Windows subprocess checks. [Scoped evidence](checkpoint-integrated-uncertain-replay-fence-2026-10-04.json) excludes held cleanup/reaper changes, local-provider recovery and the full fault matrix.
+
 Latest production swarm qualification at `c6ab87bbb` still fails: recursive model swarm 0/1, local recovery faults 1/5. Precise diagnostics identify the admission failure as `inherited conversation differs from authoritative parent history`; direct-parent declaration selection and guarded model-reference attachment did not clear it. All attempts and source-scoped artifacts are recorded in [current fork admission evidence](checkpoint-current-fork-admission-2026-10-04.json). Immutable boundary versus publication revision binding is under repair; no required gate has been waived.
 
 Existing core admission/replay regressions pass 25/25 on that diagnostic Rust tree, including fork invisibility before commit, authority attenuation, terminal lifecycle, uncertainty replay, and exact event replay. These reducer tests do not qualify the production swarm failure above.
