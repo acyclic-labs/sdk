@@ -169,6 +169,8 @@ pub struct NativeProcessOwner {
 struct NativeProcessEntry {
     tree: ProcessTree,
     stdin: Option<Arc<Mutex<ChildStdin>>>,
+    write_in_flight: Arc<AtomicBool>,
+    terminating: Arc<AtomicBool>,
     stdout: Option<NativeProcessReader>,
     stderr: Option<NativeProcessReader>,
 }
@@ -188,6 +190,8 @@ enum NativeProcessChunk {
 pub struct NativeProcessWriteTask {
     stdin: Arc<Mutex<ChildStdin>>,
     bytes: Vec<u8>,
+    write_in_flight: Arc<AtomicBool>,
+    terminating: Arc<AtomicBool>,
 }
 
 impl Task for NativeProcessWriteTask {
@@ -195,6 +199,9 @@ impl Task for NativeProcessWriteTask {
     type JsValue = ();
 
     fn compute(&mut self) -> Result<Self::Output> {
+        if self.terminating.load(Ordering::Acquire) {
+            return Err(napi_error("native process termination is in progress"));
+        }
         let mut stdin = self
             .stdin
             .lock()
@@ -208,11 +215,21 @@ impl Task for NativeProcessWriteTask {
     }
 }
 
+impl Drop for NativeProcessWriteTask {
+    fn drop(&mut self) {
+        self.write_in_flight.store(false, Ordering::Release);
+    }
+}
+
+const MAX_NATIVE_PROCESS_WRITE_BYTES: usize = 64 * 1024;
+
 impl NativeProcessEntry {
     fn without_io(tree: ProcessTree) -> Self {
         Self {
             tree,
             stdin: None,
+            write_in_flight: Arc::new(AtomicBool::new(false)),
+            terminating: Arc::new(AtomicBool::new(false)),
             stdout: None,
             stderr: None,
         }
@@ -225,6 +242,8 @@ impl NativeProcessEntry {
         Self {
             tree,
             stdin,
+            write_in_flight: Arc::new(AtomicBool::new(false)),
+            terminating: Arc::new(AtomicBool::new(false)),
             stdout,
             stderr,
         }
@@ -359,6 +378,7 @@ impl NativeProcessOwner {
         let Some(tree) = trees.get_mut(&token) else {
             return NativeProcessTermination::unknown("owner token is not active");
         };
+        tree.terminating.store(true, Ordering::Release);
         match tree.tree.terminate_descendants() {
             Ok(()) => match tree.tree.termination_complete() {
                 Ok(true) => {
@@ -382,7 +402,10 @@ impl NativeProcessOwner {
         bytes: Buffer,
     ) -> Result<AsyncTask<NativeProcessWriteTask>> {
         let token = parse_process_token(&token)?;
-        let stdin = {
+        if bytes.len() > MAX_NATIVE_PROCESS_WRITE_BYTES {
+            return Err(napi_error("native process stdin write exceeds the bounded request size"));
+        }
+        let (stdin, write_in_flight, terminating) = {
             let trees = self
                 .trees
                 .lock()
@@ -390,15 +413,28 @@ impl NativeProcessOwner {
             let entry = trees
                 .get(&token)
                 .ok_or_else(|| napi_error("owner token is not active"))?;
-            entry
+            let stdin = entry
                 .stdin
                 .as_ref()
                 .cloned()
-                .ok_or_else(|| napi_error("native process stdin is unavailable"))?
+                .ok_or_else(|| napi_error("native process stdin is unavailable"))?;
+            if entry.terminating.load(Ordering::Acquire) {
+                return Err(napi_error("native process termination is in progress"));
+            }
+            if entry
+                .write_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return Err(napi_error("native process already has a stdin write in progress"));
+            }
+            (stdin, entry.write_in_flight.clone(), entry.terminating.clone())
         };
         Ok(AsyncTask::new(NativeProcessWriteTask {
             stdin,
             bytes: bytes.to_vec(),
+            write_in_flight,
+            terminating,
         }))
     }
 

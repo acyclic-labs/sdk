@@ -201,7 +201,14 @@ async function qualifyProcessIo(owner, executable, environment) {
     null,
     environment,
   );
-  const pendingWrite = owner.writeStdin(writerBlocked.token, Buffer.alloc(4 * 1024 * 1024));
+  const pendingWrite = owner.writeStdin(writerBlocked.token, Buffer.alloc(64 * 1024));
+  let concurrentWriteRejected = false;
+  try {
+    await owner.writeStdin(writerBlocked.token, Buffer.from("second-write"));
+  } catch {
+    concurrentWriteRejected = true;
+  }
+  if (!concurrentWriteRejected) throw new Error("native owner accepted concurrent stdin writes");
   let writeSettled = false;
   void pendingWrite.then(() => { writeSettled = true; }, () => { writeSettled = true; });
   await delay(100);

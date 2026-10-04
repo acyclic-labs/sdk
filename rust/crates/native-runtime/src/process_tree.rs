@@ -5,8 +5,10 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitSta
 
 /// One child and descendants that remain in its operating-system containment.
 ///
-/// Windows uses a Job object. Unix uses a process group, which cannot contain
-/// a descendant that deliberately creates a new process group or session.
+/// Windows uses a Job object. Unix uses a process group, or an explicitly
+/// configured Linux cgroup for retained descendant ownership. A plain process
+/// group cannot contain a descendant that deliberately creates a new process
+/// group or session; that fallback reports uncertainty after the root exits.
 pub struct ProcessTree {
     child: Option<Child>,
     guard: platform::Guard,
@@ -129,21 +131,76 @@ mod platform {
     use std::os::unix::process::CommandExt as _;
     use std::process::{Child, Command};
 
+    #[cfg(target_os = "linux")]
+    use std::fs::{create_dir, read_to_string, remove_dir, write};
+    #[cfg(target_os = "linux")]
+    use std::path::{Path, PathBuf};
+
     pub(super) struct Guard {
         process_group: libc::pid_t,
         active: bool,
+        #[cfg(target_os = "linux")]
+        root_start_time: Option<u64>,
+        #[cfg(target_os = "linux")]
+        cgroup: Option<Cgroup>,
     }
 
     pub(super) fn spawn(command: &mut Command) -> io::Result<(Child, Guard)> {
         command.process_group(0);
-        let child = command.spawn()?;
+        #[cfg(target_os = "linux")]
+        unsafe {
+            command.pre_exec(|| {
+                // Stop before exec so a configured cgroup can receive the root
+                // before it can fork any descendants. This is lifecycle
+                // ownership only; no filesystem or capability confinement is
+                // implied.
+                if libc::raise(libc::SIGSTOP) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut child = command.spawn()?;
         let process_group = libc::pid_t::try_from(child.id())
             .map_err(|_| io::Error::other("child process id does not fit pid_t"))?;
+        #[cfg(target_os = "linux")]
+        let root_start_time = match process_start_time(child.id()) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                stop_child(&mut child);
+                return Err(error);
+            }
+        };
+        #[cfg(target_os = "linux")]
+        let cgroup = match configured_cgroup_root() {
+            Some(root) => match Cgroup::assign(&root, child.id()) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    stop_child(&mut child);
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
+        #[cfg(target_os = "linux")]
+        {
+            // Ownership has been assigned (or the host explicitly chose the
+            // process-group fallback); release the stopped child only now.
+            if unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGCONT) } != 0 {
+                let error = io::Error::last_os_error();
+                let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+                return Err(error);
+            }
+        }
         Ok((
             child,
             Guard {
                 process_group,
                 active: true,
+                #[cfg(target_os = "linux")]
+                root_start_time,
+                #[cfg(target_os = "linux")]
+                cgroup,
             },
         ))
     }
@@ -169,13 +226,99 @@ mod platform {
         Ok(Guard {
             process_group,
             active: true,
+            #[cfg(target_os = "linux")]
+            root_start_time: Some(process_start_time(pid)?),
+            #[cfg(target_os = "linux")]
+            cgroup: None,
         })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn configured_cgroup_root() -> Option<PathBuf> {
+        std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_start_time(pid: u32) -> io::Result<u64> {
+        let stat = read_to_string(format!("/proc/{pid}/stat"))?;
+        let (_, fields) = stat
+            .rsplit_once(") ")
+            .ok_or_else(|| io::Error::other("process identity record is malformed"))?;
+        fields
+            .split_whitespace()
+            .nth(19)
+            .ok_or_else(|| io::Error::other("process identity record lacks start time"))?
+            .parse()
+            .map_err(|_| io::Error::other("process identity start time is malformed"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn stop_child(child: &mut Child) {
+        let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGKILL) };
+        let _ = child.wait();
+    }
+
+    #[cfg(target_os = "linux")]
+    struct Cgroup {
+        path: PathBuf,
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Cgroup {
+        fn assign(root: &Path, pid: u32) -> io::Result<Self> {
+            if !root.is_dir() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "configured process cgroup root is not a directory",
+                ));
+            }
+            for suffix in 0..100_u32 {
+                let path = root.join(format!("acyclic-process-{pid}-{suffix}"));
+                match create_dir(&path) {
+                    Ok(()) => {
+                        if let Err(error) = write(path.join("cgroup.procs"), pid.to_string()) {
+                            let _ = remove_dir(&path);
+                            return Err(error);
+                        }
+                        return Ok(Self { path });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "could not allocate a unique process cgroup",
+            ))
+        }
+
+        fn terminate(&self) -> io::Result<()> {
+            write(self.path.join("cgroup.kill"), b"1")
+        }
+
+        fn complete(&self) -> io::Result<bool> {
+            let events = read_to_string(self.path.join("cgroup.events"))?;
+            Ok(events.lines().any(|line| line.trim() == "populated 0"))
+        }
     }
 
     impl Guard {
         pub(super) fn terminate(&mut self) -> io::Result<()> {
             if !self.active {
                 return Ok(());
+            }
+            #[cfg(target_os = "linux")]
+            if let Some(cgroup) = &self.cgroup {
+                return cgroup.terminate();
+            }
+            #[cfg(target_os = "linux")]
+            if !self.root_identity_matches()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "process-group identity is unavailable after root exit",
+                ));
             }
             // SAFETY: a negative, nonzero pid addresses exactly this owned
             // process group; SIGKILL requires no shared memory or signal data.
@@ -195,6 +338,22 @@ mod platform {
             if !self.active {
                 return Ok(true);
             }
+            #[cfg(target_os = "linux")]
+            if let Some(cgroup) = &self.cgroup {
+                if cgroup.complete()? {
+                    let _ = remove_dir(&cgroup.path);
+                    self.active = false;
+                    return Ok(true);
+                }
+                return Ok(false);
+            }
+            #[cfg(target_os = "linux")]
+            if !self.root_identity_matches()? {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "process-group identity is unavailable after root exit",
+                ));
+            }
             // SAFETY: a negative, nonzero pid addresses exactly this process
             // group. No signal is sent by the existence probe.
             if unsafe { libc::kill(-self.process_group, 0) } == 0 {
@@ -208,6 +367,17 @@ mod platform {
                 Ok(false)
             } else {
                 Err(error)
+            }
+        }
+
+        #[cfg(target_os = "linux")]
+        fn root_identity_matches(&self) -> io::Result<bool> {
+            let pid = u32::try_from(self.process_group)
+                .map_err(|_| io::Error::other("process group id does not fit u32"))?;
+            match process_start_time(pid) {
+                Ok(start_time) => Ok(self.root_start_time == Some(start_time)),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
             }
         }
     }
@@ -319,7 +489,17 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(tree.try_wait().expect("observe root exit").is_some());
-        tree.terminate().expect("terminate after root exit");
+        let termination = tree.terminate();
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("ACYCLIC_PROCESS_CGROUP_ROOT").is_none() {
+            // A bare numeric process group is deliberately not reused after
+            // its root identity disappears. The unsupported fallback keeps
+            // the outcome uncertain instead of risking an unrelated group.
+            assert!(termination.is_err());
+            thread::sleep(Duration::from_secs(1));
+            return;
+        }
+        termination.expect("terminate after root exit");
         thread::sleep(Duration::from_secs(1));
         assert!(!temporary.path().join("escaped").exists());
     }
