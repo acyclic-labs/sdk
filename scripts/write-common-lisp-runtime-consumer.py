@@ -78,6 +78,8 @@ def main() -> int:
     (with-open-file (stream (format nil \"~A/~3,'0D.request.bin\" directory index) :direction :output :if-exists :supersede :element-type '(unsigned-byte 8)) (write-sequence request-bytes stream))
     (loop for bytes in response-bytes for frame from 0 do
       (with-open-file (stream (format nil \"~A/~3,'0D.response.~D.bin\" directory index frame) :direction :output :if-exists :supersede :element-type '(unsigned-byte 8)) (write-sequence bytes stream)))
+    (with-open-file (stream (format nil \"~A/~3,'0D.meta.sexp\" directory index) :direction :output :if-exists :supersede)
+      (format stream \"~S\" (list :rpc rpc :shape shape :status status :execution execution :error (and error (princ-to-string error)))))
     (push (list :rpc rpc :shape shape :status status :execution execution :error (and error (princ-to-string error)) :request-file (format nil \"~3,'0D.request.bin\" index) :response-files (loop for frame from 0 below (length response-bytes) collect (format nil \"~3,'0D.response.~D.bin\" index frame))) *observations*)))""",
         "(defun call-unary (stub package function request-package request-class response-package response-class rpc)",
         """  (let ((request (make-instance (required-class request-package request-class))))

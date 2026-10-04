@@ -18,6 +18,16 @@ def digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def metadata(path: Path) -> dict[str, object]:
+    text = path.read_text(encoding="utf-8")
+    rpc = re.search(r":rpc\s+\"([^\"]+)\"", text)
+    shape = re.search(r":shape\s+\"([^\"]+)\"", text)
+    execution = re.search(r":execution\s+\"([^\"]+)\"", text)
+    status = re.search(r":status\s+(-?\d+|NIL)", text, re.IGNORECASE)
+    value: object = None if not status or status.group(1).upper() == "NIL" else int(status.group(1))
+    return {"rpc": rpc.group(1) if rpc else None, "shape": shape.group(1) if shape else None, "execution": execution.group(1) if execution else None, "status": value}
+
+
 def main() -> int:
     if len(sys.argv) != 5:
         print("usage: collect-runtime-observation-receipt.py PROJECT OUTPUT SOURCE_REVISION MANIFEST_SHA256", file=sys.stderr)
@@ -35,13 +45,17 @@ def main() -> int:
             continue
         prefix = match.group(1)
         responses = sorted(observation_dir.glob(f"{prefix}.response.*.bin"))
-        observations.append({
+        item = {
             "request_file": request.name,
             "request_sha256": digest(request),
             "response_files": [response.name for response in responses],
             "response_sha256": [digest(response) for response in responses],
             "response_frames": len(responses),
-        })
+        }
+        meta = observation_dir / f"{prefix}.meta.sexp"
+        if meta.exists():
+            item.update(metadata(meta))
+        observations.append(item)
     payload = {
         "schema": "acyclic.runtime-consumer-receipt.v1",
         "language": "common-lisp",
