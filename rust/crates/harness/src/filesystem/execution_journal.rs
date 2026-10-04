@@ -149,7 +149,7 @@ pub(crate) async fn selected_rejection_evidence_from_journal(
             if inherited.sequence != index as u64 + 1
                 || !ids.insert(inherited.id)
                 || historical.messages.iter().find(|message| message.id == inherited.id)
-                    != Some(inherited)
+                    .is_some_and(|message| message != inherited)
             {
                 return Err(Error::Conflict("historical message differs from frozen inherited prefix".into()));
             }
