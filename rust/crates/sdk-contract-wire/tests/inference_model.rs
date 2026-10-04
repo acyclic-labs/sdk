@@ -1,8 +1,8 @@
 use acyclic_sdk_contract_wire::inference::{
-    INFERENCE, INFERENCE_OPTIONS, INFERENCE_ROUTES, inference_descriptor, inference_raw_options,
+    inference_descriptor, inference_raw_options, INFERENCE, INFERENCE_OPTIONS, INFERENCE_ROUTES,
 };
 use prost::Message;
-use prost_types::{FileDescriptorSet, field_descriptor_proto};
+use prost_types::{field_descriptor_proto, FileDescriptorSet};
 use sha2::{Digest, Sha256};
 
 const INFERENCE_GOLDEN_DESCRIPTOR: &[u8] = include_bytes!(concat!(
@@ -111,6 +111,61 @@ fn write_varint(mut value: u64, output: &mut Vec<u8>) {
     output.push(value as u8);
 }
 
+fn collect_extension_fields(bytes: &[u8], output: &mut Vec<Vec<u8>>) {
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        let start = remaining;
+        let Some(tag) = read_varint(&mut remaining) else {
+            return;
+        };
+        let number = u32::try_from(tag >> 3).expect("descriptor field number");
+        let wire_type = u8::try_from(tag & 7).expect("descriptor wire type");
+        let value = match wire_type {
+            0 => {
+                if read_varint(&mut remaining).is_none() {
+                    return;
+                }
+                None
+            }
+            1 => {
+                let Some(value) = remaining.get(..8) else {
+                    return;
+                };
+                remaining = &remaining[8..];
+                Some(value)
+            }
+            2 => {
+                let Some(length) =
+                    read_varint(&mut remaining).and_then(|length| usize::try_from(length).ok())
+                else {
+                    return;
+                };
+                let Some(value) = remaining.get(..length) else {
+                    return;
+                };
+                remaining = &remaining[length..];
+                Some(value)
+            }
+            5 => {
+                let Some(value) = remaining.get(..4) else {
+                    return;
+                };
+                remaining = &remaining[4..];
+                Some(value)
+            }
+            _ => return,
+        };
+        if number >= 50_000 {
+            output.push(start[..start.len() - remaining.len()].to_vec());
+        }
+        if wire_type == 2 {
+            if let Some(value) = value {
+                collect_extension_fields(value, output);
+            }
+        }
+    }
+}
+
 #[test]
 fn inference_model_matches_compatibility_descriptor_semantics() {
     let normalized_archive = descriptor_without_source_info(INFERENCE_GOLDEN_DESCRIPTOR);
@@ -131,6 +186,24 @@ fn inference_model_matches_compatibility_descriptor_semantics() {
     assert_eq!(
         format!("{digest:x}"),
         "21c35707beb7d3aa8c87f63ceb129083ad092010a64d9b9e82924a0f5661bf15"
+    );
+}
+
+#[test]
+fn inference_model_preserves_every_extension_wire_payload() {
+    let mut archived = Vec::new();
+    collect_extension_fields(INFERENCE_GOLDEN_DESCRIPTOR, &mut archived);
+    let mut emitted = Vec::new();
+    let generated = inference_descriptor();
+    collect_extension_fields(&generated, &mut emitted);
+
+    assert!(
+        !archived.is_empty(),
+        "archived Inference extensions missing"
+    );
+    assert_eq!(
+        archived, emitted,
+        "Rust Inference generation dropped or rewrote an extension option payload"
     );
 }
 
