@@ -782,7 +782,8 @@ export function validateModelInputManifest(request: any, limits: any, policy: an
 export function validateModelMessages(messages: readonly WasmModelMessageInput[], limits: WasmModelLimitsInput): void;
 
 /**
- * Admits an already projected, provider-proven context with native model bounds.
+ * Checks projected context shape and native model bounds. Durable rejection
+ * provenance is authenticated by the owning journal, outside this WASM API.
  */
 export function validateSelectedModelContext(selected: any, limits: any): void;
 
