@@ -2580,7 +2580,9 @@ impl PersistentLocalSwarm {
 
     /// Reads a bounded page of canonical conversation messages by sequence.
     /// Message content remains an immutable FileRef until the caller requests
-    /// it through the authenticated private file API.
+    /// it through the authenticated private file API. This is an explicit
+    /// child-history read and may activate a cold child harness; metadata
+    /// listing and snapshots remain activation-free.
     pub async fn read_messages(
         &self,
         task: TaskId,
@@ -4946,7 +4948,14 @@ mod tests {
             sessions[0].task_description.as_str(),
             "root" | "direct publication"
         ));
-        assert_eq!(swarm.session(task).await?.task_description, "direct publication");
+        // The concurrent page may have begun before the writer's durable
+        // publication. Once both operations have joined, a fresh page must
+        // observe the committed publication exactly.
+        let committed = swarm.sessions().await?;
+        assert_eq!(committed.len(), 1);
+        assert_eq!(committed[0].task, task);
+        assert_eq!(committed[0].phase, LocalSessionPhase::Ready);
+        assert_eq!(committed[0].task_description, "direct publication");
         Ok(())
     }
 
@@ -4978,7 +4987,7 @@ mod tests {
             .await?,
         );
         let task = swarm.root_task().await?;
-        let cancel = {
+        let mut cancel = {
             let swarm = swarm.clone();
             tokio::spawn(async move { swarm.cancel(task).await })
         };
@@ -4986,12 +4995,29 @@ mod tests {
         // Let the production host call begin, then release it. If cancel held
         // registry_refresh across host.cancel, the subsequent session refresh
         // would deadlock and the bounded join below would fail.
-        entered.wait().await;
-        release.wait().await;
-        let cancelled = tokio::time::timeout(std::time::Duration::from_secs(2), cancel)
+        if tokio::time::timeout(std::time::Duration::from_secs(2), entered.wait())
             .await
-            .map_err(|_| Error::Storage("cancellation final refresh timed out".into()))?
-            .map_err(|error| Error::Storage(format!("cancellation task failed: {error}")))??;
+            .is_err()
+        {
+            cancel.abort();
+            let _ = cancel.await;
+            return Err(Error::Storage("cancellation host call timed out".into()));
+        }
+        release.wait().await;
+        let cancelled = match tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            &mut cancel,
+        )
+        .await
+        {
+            Ok(result) => result
+                .map_err(|error| Error::Storage(format!("cancellation task failed: {error}")))??,
+            Err(_) => {
+                cancel.abort();
+                let _ = cancel.await;
+                return Err(Error::Storage("cancellation final refresh timed out".into()));
+            }
+        };
         assert_eq!(cancelled.task, task);
         assert_eq!(cancelled.phase, LocalSessionPhase::Cancelled);
         Ok(())
