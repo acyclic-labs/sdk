@@ -58,6 +58,44 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
     {
         return Err("atomic append or exact replay changed its receipt".into());
     }
+    let source_prefix = provider
+        .read(ReadRequest {
+            path: source.clone(),
+            from: 0,
+            limit: 8,
+        })
+        .await
+        .map_err(|err| error(&err))?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| error(&err))?;
+    provider
+        .append(AppendRequest {
+            path: source.clone(),
+            records: vec![Bytes::from_static(b"three")],
+            if_tail: Some(2),
+            idempotency_key: Some(key(b"stream-append-third")?),
+        })
+        .await
+        .map_err(|err| error(&err))?;
+    let source_after_append = provider
+        .read(ReadRequest {
+            path: source.clone(),
+            from: 0,
+            limit: 8,
+        })
+        .await
+        .map_err(|err| error(&err))?
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| error(&err))?;
+    if source_after_append.get(..source_prefix.len()) != Some(source_prefix.as_slice()) {
+        return Err("append changed an existing immutable stream prefix".into());
+    }
     if provider
         .append(AppendRequest {
             path: source.clone(),
@@ -90,7 +128,7 @@ pub async fn verify(provider: &dyn StreamProvider) -> Result<(), String> {
         })
         .await
         .map_err(|err| error(&err))?
-        != (AppendOutcome::TailConflict { actual_tail: 2 })
+        != (AppendOutcome::TailConflict { actual_tail: 3 })
     {
         return Err("tail conflict was not returned as data".into());
     }
@@ -471,10 +509,125 @@ fn error(error: &impl ToString) -> String {
 #[cfg(test)]
 mod tests {
     use super::verify;
-    use crate::{MemoryLimits, MemoryStream};
+    use crate::{
+        AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest,
+        ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+        IdempotencyKey, IdempotencyObservation, MemoryLimits, MemoryStream, ReadRequest,
+        RecordStream, StreamBounds, StreamError, StreamPath, StreamProvider,
+    };
+    use async_trait::async_trait;
+    use bytes::Bytes;
+    use futures::StreamExt as _;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    /// A deliberately nonconforming provider. It changes one middle record on
+    /// the second full read while preserving the first and last records. The
+    /// public conformance suite must catch this provider violation; endpoint
+    /// anchor checks alone are not a proof for arbitrary middle rewrites.
+    struct MiddleRewrite {
+        inner: Arc<MemoryStream>,
+        source_reads: AtomicUsize,
+    }
+
+    impl MiddleRewrite {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(MemoryStream::new(MemoryLimits::default())),
+                source_reads: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl StreamProvider for MiddleRewrite {
+        async fn inspect_idempotency(
+            &self,
+            key: IdempotencyKey,
+        ) -> Result<Option<IdempotencyObservation>, StreamError> {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
+            self.inner.append(request).await
+        }
+
+        async fn fork(&self, request: crate::ForkRequest) -> Result<ForkReceipt, StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(&self, request: ReadRequest) -> Result<RecordStream, StreamError> {
+            let mut records = self
+                .inner
+                .read(request.clone())
+                .await?
+                .collect::<Vec<_>>()
+                .await;
+            if request.path.as_str() == "conformance/source"
+                && request.from == 0
+                && self.source_reads.fetch_add(1, Ordering::SeqCst) == 1
+                && let Some(Ok(record)) = records.get_mut(1)
+            {
+                record.value = Bytes::from_static(b"middle-rewrite");
+            }
+            Ok(futures::stream::iter(records).boxed())
+        }
+
+        async fn follow(&self, path: StreamPath, from: u64) -> Result<RecordStream, StreamError> {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(&self, request: ChildrenRequest) -> Result<ChildStream, StreamError> {
+            self.inner.children(request).await
+        }
+
+        async fn children_page(
+            &self,
+            request: ChildrenPageRequest,
+        ) -> Result<ChildrenPage, StreamError> {
+            self.inner.children_page(request).await
+        }
+
+        async fn commit(&self, request: CommitRequest) -> Result<CommitOutcome, StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn commit_before(
+            &self,
+            request: CommitRequest,
+            deadline_unix_millis: u64,
+        ) -> Result<CommitOutcome, StreamError> {
+            self.inner
+                .commit_before(request, deadline_unix_millis)
+                .await
+        }
+
+        async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
 
     #[tokio::test]
     async fn memory_provider_passes_the_public_suite() -> Result<(), String> {
         verify(&MemoryStream::new(MemoryLimits::default())).await
+    }
+
+    #[tokio::test]
+    async fn conformance_rejects_a_middle_prefix_rewrite() {
+        let result = verify(&MiddleRewrite::new()).await;
+        assert_eq!(
+            result,
+            Err("append changed an existing immutable stream prefix".into())
+        );
     }
 }

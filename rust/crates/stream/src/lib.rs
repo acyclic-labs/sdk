@@ -532,6 +532,12 @@ pub trait StreamProvider: Send + Sync + 'static {
     /// Atomically observes both ends of the retained replay window.
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError>;
     /// Atomic append or tail conflict.
+    ///
+    /// A committed record is immutable for the lifetime of its stream path:
+    /// providers may extend a history only by appending at its current tail.
+    /// Existing sequence numbers and bytes must remain stable across reads,
+    /// restarts, and concurrent appends. [`Stream::fork`] additionally
+    /// preserves the selected source prefix immutably in the destination.
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError>;
     /// Atomic immutable-prefix fork.
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError>;
@@ -587,6 +593,14 @@ impl<P: StreamProvider> StreamClient<P> {
     #[must_use]
     pub fn new(provider: Arc<P>) -> Self {
         Self { provider }
+    }
+
+    /// Returns whether two clients are bound to the same authenticated
+    /// provider instance.  Callers use this to reject substituting a client
+    /// from another stream domain at an authority-sensitive boundary.
+    #[must_use]
+    pub fn same_provider(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.provider, &other.provider)
     }
 
     /// Observes the exact replay window without guessing from a failed read.

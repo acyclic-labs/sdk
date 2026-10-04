@@ -21,7 +21,7 @@ use acyclic_stream::{
     StreamClient, StreamError, StreamProvider,
 };
 use bytes::Bytes;
-use futures::TryStreamExt as _;
+use futures::{StreamExt as _, TryStreamExt as _};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -562,6 +562,107 @@ impl<P: StreamProvider> StreamAggregate<P> {
             Some(snapshot),
         )
         .await
+    }
+
+    /// Replays only the stream suffix committed after this aggregate's
+    /// current revision. The reducer remains the authority for event
+    /// signatures, scope/capability admission, causal parents, schemas, and
+    /// operation identities, while callers can retain one authenticated
+    /// projection across bounded page reads instead of reopening history for
+    /// every page.
+    pub async fn refresh(&mut self) -> Result<()> {
+        let revision = self.reducer.revision();
+        let tail = match self.stream.tail().await {
+            Ok(tail) => tail,
+            Err(StreamError::NotFound) if revision == 0 => return Ok(()),
+            Err(StreamError::NotFound) => {
+                return Err(Error::Conflict(
+                    "conversation history disappeared behind its authenticated projection".into(),
+                ));
+            }
+            Err(error) => return Err(Error::Storage(error.to_string())),
+        };
+        if tail < revision {
+            return Err(Error::Conflict(
+                "conversation stream tail moved behind its authenticated projection".into(),
+            ));
+        }
+        if revision != 0 {
+            self.verify_history_anchors(revision).await?;
+        }
+        if tail == revision {
+            return Ok(());
+        }
+        let stream = self.stream.clone();
+        let mut replay = stream.replay(revision);
+        while let Some(page) = replay.next_page().await? {
+            for record in page {
+                let (event_authority, event) = decode_event(&record.value)?;
+                if &event_authority != self.reducer.authority() {
+                    return Err(Error::Storage(
+                        "event authority does not match its Stream aggregate".into(),
+                    ));
+                }
+                if event.revision != record.sequence.saturating_add(1) {
+                    return Err(Error::Storage(
+                        "event revision does not match its Stream sequence".into(),
+                    ));
+                }
+                self.reducer.apply_committed(event)?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn verify_history_anchors(&self, revision: u64) -> Result<()> {
+        // The StreamProvider append-only contract is the authority for every
+        // committed sequence. These endpoint anchors are a bounded defense
+        // in depth check for truncation and replacement at either edge; they
+        // cannot prove that a nonconforming provider did not rewrite an
+        // arbitrary middle record while preserving both anchors.
+        let first = self
+            .reducer
+            .events_after(0, 1)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Conflict("authenticated projection has no first event".into()))?;
+        let last = self
+            .reducer
+            .events_after(revision - 1, 1)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| Error::Conflict("authenticated projection has no head event".into()))?;
+        let stream_first = self.read_history_event(0).await?;
+        let stream_last = self.read_history_event(revision - 1).await?;
+        if stream_first != first || stream_last != last {
+            return Err(Error::Conflict(
+                "conversation history prefix identity changed behind its authenticated projection"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    async fn read_history_event(&self, from: u64) -> Result<crate::core::Event> {
+        let mut records = self
+            .stream
+            .read(from, 1)
+            .await
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let record = records
+            .next()
+            .await
+            .ok_or_else(|| Error::Conflict("conversation history has a missing anchor".into()))?
+            .map_err(|error| Error::Storage(error.to_string()))?;
+        let (authority, event) = decode_event(&record.value)?;
+        if authority != *self.reducer.authority()
+            || event.revision != record.sequence.saturating_add(1)
+        {
+            return Err(Error::Conflict(
+                "conversation history anchor failed authority or revision validation".into(),
+            ));
+        }
+        Ok(event)
     }
 
     async fn open_inner(
@@ -1163,9 +1264,152 @@ mod tests {
         },
         resources::ProviderRef,
     };
-    use acyclic_stream::MemoryStream;
+    use acyclic_stream::{
+        AppendOutcome, AppendRequest, ChildStream, ChildrenPage, ChildrenPageRequest,
+        ChildrenRequest, CommitId, CommitOutcome, CommitRequest, CommittedEnvelope, ForkReceipt,
+        IdempotencyObservation, MemoryStream, ReadRequest, RecordStream, StreamBounds, StreamPath,
+    };
+    use async_trait::async_trait;
+    use futures::StreamExt as _;
     use serde_json::json;
-    use std::sync::Arc;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicU8, Ordering},
+    };
+    use tokio::sync::Barrier;
+
+    /// Test-only provider faults used to prove that an authenticated
+    /// aggregate fails closed when cached history disappears or its tail
+    /// rolls back. Production code relies on the StreamProvider contract for
+    /// immutable middle records; this wrapper only simulates edge failures.
+    struct FaultedMemory {
+        inner: Arc<MemoryStream>,
+        mode: AtomicU8,
+        reads: Arc<Mutex<Vec<(u64, u32)>>>,
+    }
+
+    impl FaultedMemory {
+        fn new() -> Self {
+            Self {
+                inner: Arc::new(MemoryStream::default()),
+                mode: AtomicU8::new(0),
+                reads: Arc::new(Mutex::new(Vec::new())),
+            }
+        }
+
+        fn read_ranges(&self) -> Vec<(u64, u32)> {
+            self.reads.lock().expect("read observation lock").clone()
+        }
+
+        fn clear_read_ranges(&self) {
+            self.reads.lock().expect("read observation lock").clear();
+        }
+    }
+
+    #[async_trait]
+    impl acyclic_stream::StreamProvider for FaultedMemory {
+        async fn inspect_idempotency(
+            &self,
+            key: acyclic_stream::IdempotencyKey,
+        ) -> std::result::Result<Option<IdempotencyObservation>, acyclic_stream::StreamError>
+        {
+            self.inner.inspect_idempotency(key).await
+        }
+
+        async fn tail(
+            &self,
+            path: StreamPath,
+        ) -> std::result::Result<u64, acyclic_stream::StreamError> {
+            if self.mode.load(Ordering::SeqCst) == 1 {
+                return Ok(0);
+            }
+            self.inner.tail(path).await
+        }
+
+        async fn bounds(
+            &self,
+            path: StreamPath,
+        ) -> std::result::Result<StreamBounds, acyclic_stream::StreamError> {
+            self.inner.bounds(path).await
+        }
+
+        async fn append(
+            &self,
+            request: AppendRequest,
+        ) -> std::result::Result<AppendOutcome, acyclic_stream::StreamError> {
+            self.inner.append(request).await
+        }
+
+        async fn fork(
+            &self,
+            request: acyclic_stream::ForkRequest,
+        ) -> std::result::Result<ForkReceipt, acyclic_stream::StreamError> {
+            self.inner.fork(request).await
+        }
+
+        async fn read(
+            &self,
+            request: ReadRequest,
+        ) -> std::result::Result<RecordStream, acyclic_stream::StreamError> {
+            self.reads
+                .lock()
+                .expect("read observation lock")
+                .push((request.from, request.limit));
+            if self.mode.load(Ordering::SeqCst) == 3 {
+                return Err(acyclic_stream::StreamError::NotFound);
+            }
+            if self.mode.load(Ordering::SeqCst) == 2 {
+                return Ok(futures::stream::empty().boxed());
+            }
+            self.inner.read(request).await
+        }
+
+        async fn follow(
+            &self,
+            path: StreamPath,
+            from: u64,
+        ) -> std::result::Result<RecordStream, acyclic_stream::StreamError> {
+            self.inner.follow(path, from).await
+        }
+
+        async fn children(
+            &self,
+            request: ChildrenRequest,
+        ) -> std::result::Result<ChildStream, acyclic_stream::StreamError> {
+            self.inner.children(request).await
+        }
+
+        async fn children_page(
+            &self,
+            request: ChildrenPageRequest,
+        ) -> std::result::Result<ChildrenPage, acyclic_stream::StreamError> {
+            self.inner.children_page(request).await
+        }
+
+        async fn commit(
+            &self,
+            request: CommitRequest,
+        ) -> std::result::Result<CommitOutcome, acyclic_stream::StreamError> {
+            self.inner.commit(request).await
+        }
+
+        async fn commit_before(
+            &self,
+            request: CommitRequest,
+            deadline_unix_millis: u64,
+        ) -> std::result::Result<CommitOutcome, acyclic_stream::StreamError> {
+            self.inner
+                .commit_before(request, deadline_unix_millis)
+                .await
+        }
+
+        async fn read_commit(
+            &self,
+            commit_id: CommitId,
+        ) -> std::result::Result<CommittedEnvelope, acyclic_stream::StreamError> {
+            self.inner.read_commit(commit_id).await
+        }
+    }
 
     struct InteractionContent(std::collections::BTreeMap<String, Vec<u8>>);
 
@@ -1223,6 +1467,12 @@ mod tests {
                 content: content()?,
             },
         })
+    }
+
+    fn command_at(identity: u8, expected_revision: u64) -> Result<Command> {
+        let mut command = command(identity)?;
+        command.expected_revision = expected_revision;
+        Ok(command)
     }
 
     const EXTENSION_BYTES: &[u8] = br#"{"text":"hello"}"#;
@@ -1394,6 +1644,114 @@ mod tests {
                 ApplyResult::Applied { event } | ApplyResult::Replayed { event } => event,
             }]
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_readers_refresh_during_concurrent_append_without_replaying_prefix() -> Result<()>
+    {
+        let provider = Arc::new(MemoryStream::default());
+        let client = StreamClient::new(Arc::clone(&provider));
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        let mut reader = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        let mut second_reader = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+
+        let barrier = Arc::new(Barrier::new(2));
+        let writer_barrier = Arc::clone(&barrier);
+        let writer_task = async move {
+            writer_barrier.wait().await;
+            writer.execute(command(1)?).await?;
+            writer.execute(command_at(2, 1)?).await?;
+            Ok::<_, Error>(())
+        };
+        let reader_barrier = Arc::clone(&barrier);
+        let reader_task = async move {
+            reader_barrier.wait().await;
+            reader.refresh().await?;
+            Ok::<_, Error>(reader)
+        };
+        let (writer_result, reader_result) = tokio::join!(writer_task, reader_task);
+        writer_result?;
+        let mut reader = reader_result?;
+        reader.refresh().await?;
+        second_reader.refresh().await?;
+
+        assert_eq!(reader.reducer().revision(), 2);
+        assert_eq!(second_reader.reducer().revision(), 2);
+        assert_eq!(
+            reader.reducer().events_after(0, 8)?,
+            second_reader.reducer().events_after(0, 8)?
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_replays_only_the_new_suffix_and_bounded_anchors() -> Result<()> {
+        let provider = Arc::new(FaultedMemory::new());
+        let client = StreamClient::new(Arc::clone(&provider));
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        writer.execute(command(1)?).await?;
+        let mut reader = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        provider.clear_read_ranges();
+
+        writer.execute(command_at(2, 1)?).await?;
+        reader.refresh().await?;
+
+        let ranges = provider.read_ranges();
+        assert!(
+            ranges.contains(&(1, 1_024)),
+            "refresh did not read the suffix from the cached revision: {ranges:?}"
+        );
+        assert!(
+            ranges.iter().all(|(from, limit)| *from != 0 || *limit == 1),
+            "refresh replayed the cached prefix instead of bounded anchors: {ranges:?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn refresh_fails_closed_on_tail_rollback_and_missing_cached_history() -> Result<()> {
+        let provider = Arc::new(FaultedMemory::new());
+        let client = StreamClient::new(Arc::clone(&provider));
+        let mut writer = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+        writer.execute(command(1)?).await?;
+        let mut reader = with_content(
+            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
+        );
+
+        provider.mode.store(1, Ordering::SeqCst);
+        assert!(matches!(
+            reader.refresh().await,
+            Err(Error::Conflict(message))
+                if message.contains("tail moved behind")
+        ));
+
+        provider.mode.store(0, Ordering::SeqCst);
+        writer.execute(command_at(2, 1)?).await?;
+        provider.mode.store(2, Ordering::SeqCst);
+        assert!(matches!(
+            reader.refresh().await,
+            Err(Error::Conflict(message))
+                if message.contains("missing anchor")
+        ));
+        provider.mode.store(3, Ordering::SeqCst);
+        assert!(matches!(
+            reader.refresh().await,
+            Err(Error::Storage(message))
+                if message.contains("stream not found")
+        ));
         Ok(())
     }
 

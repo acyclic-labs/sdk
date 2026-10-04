@@ -1874,6 +1874,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn append_then_cold_reopen_rereads_the_exact_immutable_records()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use futures::StreamExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let path = StreamPath::new("cold-reopen/history")?;
+        let provider = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"first"), Bytes::from_static(b"second")],
+                if_tail: Some(0),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"cold-first"))?),
+            })
+            .await?;
+        provider
+            .append(AppendRequest {
+                path: path.clone(),
+                records: vec![Bytes::from_static(b"third")],
+                if_tail: Some(2),
+                idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"cold-third"))?),
+            })
+            .await?;
+        let before = provider
+            .read(ReadRequest {
+                path: path.clone(),
+                from: 0,
+                limit: 8,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(provider);
+
+        let reopened = LocalStream::open(directory.path(), LocalStreamLimits::default()).await?;
+        let after = reopened
+            .read(ReadRequest {
+                path,
+                from: 0,
+                limit: 8,
+            })
+            .await?
+            .collect::<Vec<_>>()
+            .await
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(after, before);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn deadline_is_evaluated_once_and_only_accepted_commands_are_replayed()
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
