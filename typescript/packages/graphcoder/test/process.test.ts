@@ -2,7 +2,7 @@ import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { spawn as spawnChild } from "node:child_process";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type OwnedProcessTermination } from "../src/owned-process.js";
+import { createNativeOwnedProcessOwner, retryOwnedProcessTermination, spawnOwnedProcess, terminateOwnedProcess, type NativeOwnedProcessIo, type OwnedProcessTermination } from "../src/owned-process.js";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -255,7 +255,7 @@ describe("JSON-lines process bridge", () => {
     const cli = fileURLToPath(new URL("../src/native-cli.ts", import.meta.url));
     const child = spawnChild(process.execPath, [cli, "-e", "process.exit(0)", "--model-fixture=test"], {
       cwd: process.cwd(),
-      env: { ...env(), GRAPHCODER_RUNTIME: process.execPath },
+      env: { ...env(), GRAPHCODER_RUNTIME: process.execPath, GRAPHCODER_PROCESS_OWNER: "node" },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -287,6 +287,32 @@ describe("JSON-lines process bridge", () => {
     await expect(bridge.waitForExit(2_000)).resolves.toMatchObject({ kind: "closed" });
     expect(spawned).toBe(1);
     expect(terminated).toBe(1);
+  });
+
+  test("stops native polling before a proven token is retired", async () => {
+    let active = true;
+    const io: NativeOwnedProcessIo = {
+      launch: () => ({ token: "native-test-token", pid: 41 }),
+      write: () => undefined,
+      closeStdin: () => undefined,
+      pollOutput: () => {
+        if (!active) throw new Error("retired native token was polled");
+        return { kind: "eof" };
+      },
+      pollExit: () => active ? { kind: "running" } : { kind: "exited", code: 1 },
+      terminate: () => {
+        active = false;
+        return { kind: "terminated" };
+      },
+    };
+    const owner = createNativeOwnedProcessOwner(io);
+    const child = owner.spawn("fixture", [], { stdio: ["pipe", "pipe", "pipe"], env: {} });
+    let errors = 0;
+    child.on("error", () => { errors += 1; });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    await expect(owner.terminate(child)).resolves.toMatchObject({ kind: "terminated", pid: 41 });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(errors).toBe(0);
   });
 
   test("composes the process bridge with the public transport adapter", async () => {

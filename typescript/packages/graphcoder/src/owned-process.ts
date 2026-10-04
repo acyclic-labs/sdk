@@ -43,7 +43,13 @@ type NativeOwnedChild = ChildProcess & {
  */
 export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedProcessOwner {
   const tokens = new WeakMap<ChildProcess, string>();
-  const states = new WeakMap<ChildProcess, { timer: ReturnType<typeof setInterval>; closed: boolean }>();
+  const states = new WeakMap<ChildProcess, {
+    timer: ReturnType<typeof setInterval> | undefined;
+    closed: boolean;
+    stopping: boolean;
+    resume: () => void;
+    finish: () => void;
+  }>();
   const owner = {
     spawn(executable: string, args: readonly string[], options: SpawnOptions): ChildProcess {
       const launch = io.launch(executable, args, options);
@@ -75,35 +81,53 @@ export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedPr
         stdout: { value: stdout },
         stderr: { value: stderr },
       });
-      const state = { timer: undefined as unknown as ReturnType<typeof setInterval>, closed: false };
+      const state = {
+        timer: undefined as ReturnType<typeof setInterval> | undefined,
+        closed: false,
+        stopping: false,
+        resume: (): void => undefined,
+        finish: (): void => undefined,
+      };
       let stdoutDone = false;
       let stderrDone = false;
-      state.timer = setInterval(() => {
-        if (state.closed) return;
-        for (const stream of ["stdout", "stderr"] as const) {
-          const target = stream === "stdout" ? stdout : stderr;
-          const value = io.pollOutput(launch.token, stream);
-          if (value.kind === "data" && value.bytes !== undefined) target.write(Buffer.from(value.bytes));
-          if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
-          if (value.kind === "eof") {
-            target.end();
-            if (stream === "stdout") stdoutDone = true;
-            else stderrDone = true;
-          }
-        }
-        const exit = io.pollExit(launch.token);
-        if (exit.kind === "exited") {
-          (child as ChildProcess & { exitCode: number | null }).exitCode = exit.code ?? null;
-          if (stdoutDone && stderrDone) finish();
-        }
-      }, 10);
       const finish = (): void => {
         if (state.closed) return;
         state.closed = true;
-        clearInterval(state.timer);
+        if (state.timer !== undefined) clearInterval(state.timer);
+        if (!stdoutDone) stdout.end();
+        if (!stderrDone) stderr.end();
         child.emit("exit", child.exitCode, child.signalCode);
         child.emit("close", child.exitCode, child.signalCode);
       };
+      state.finish = finish;
+      const poll = (): void => {
+        if (state.closed || state.stopping) return;
+        try {
+          for (const stream of ["stdout", "stderr"] as const) {
+            const target = stream === "stdout" ? stdout : stderr;
+            const value = io.pollOutput(launch.token, stream);
+            if (value.kind === "data" && value.bytes !== undefined) target.write(Buffer.from(value.bytes));
+            if (value.kind === "error") child.emit("error", new Error(value.reason ?? `${stream} read failed`));
+            if (value.kind === "eof") {
+              target.end();
+              if (stream === "stdout") stdoutDone = true;
+              else stderrDone = true;
+            }
+          }
+          const exit = io.pollExit(launch.token);
+          if (exit.kind === "exited") {
+            (child as ChildProcess & { exitCode: number | null }).exitCode = exit.code ?? null;
+            if (stdoutDone && stderrDone) finish();
+          }
+        } catch (error) {
+          child.emit("error", error instanceof Error ? error : new Error(String(error)));
+        }
+      };
+      state.resume = (): void => {
+        if (state.closed || state.timer !== undefined) return;
+        state.timer = setInterval(poll, 10);
+      };
+      state.resume();
       tokens.set(child, launch.token);
       states.set(child, state);
       return child;
@@ -111,29 +135,40 @@ export function createNativeOwnedProcessOwner(io: NativeOwnedProcessIo): OwnedPr
     async terminate(child: ChildProcess, graceMs = 250): Promise<OwnedProcessTermination> {
       const token = tokens.get(child);
       if (token === undefined) return { kind: "unknown", pid: child.pid ?? -1, reason: "native owner token is unavailable" };
+      const state = states.get(child);
+      if (state !== undefined) {
+        state.stopping = true;
+        if (state.timer !== undefined) {
+          clearInterval(state.timer);
+          state.timer = undefined;
+        }
+      }
       const deadline = Date.now() + Math.max(0, graceMs);
-      let result = io.terminate(token);
-      while (result.kind !== "terminated" && Date.now() < deadline) {
-        await new Promise<void>(resolve => setTimeout(resolve, 10));
+      let result: ReturnType<NativeOwnedProcessIo["terminate"]>;
+      try {
         result = io.terminate(token);
+        while (result.kind !== "terminated" && Date.now() < deadline) {
+          await new Promise<void>(resolve => setTimeout(resolve, 10));
+          result = io.terminate(token);
+        }
+      } catch (error) {
+        if (state !== undefined) {
+          state.stopping = false;
+          state.resume();
+        }
+        return { kind: "unknown", pid: child.pid ?? -1, reason: error instanceof Error ? error.message : String(error) };
       }
       if (result.kind !== "terminated") {
+        if (state !== undefined) {
+          state.stopping = false;
+          state.resume();
+        }
         if (result.kind === "timeout") {
           return { kind: "timeout", pid: child.pid ?? -1, phase: "command" };
         }
         return { kind: "unknown", pid: child.pid ?? -1, reason: result.reason ?? "native cleanup is uncertain" };
       }
-      const state = states.get(child);
-      if (state !== undefined && !state.closed) {
-        await new Promise<void>(resolve => {
-          const onClose = (): void => { child.removeListener("close", onClose); resolve(); };
-          child.once("close", onClose);
-          setTimeout(() => { child.removeListener("close", onClose); resolve(); }, Math.max(0, graceMs));
-        });
-        if (!state.closed) {
-          return { kind: "timeout", pid: child.pid ?? -1, phase: "pipes" };
-        }
-      }
+      state?.finish();
       tokens.delete(child);
       return { kind: "terminated", pid: child.pid ?? -1 };
     },

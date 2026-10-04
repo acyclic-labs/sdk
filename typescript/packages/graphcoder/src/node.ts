@@ -2,6 +2,7 @@ export * from "./process.js";
 
 import { HarnessGraphCoderTransport } from "./bridge.js";
 import { JsonLineGraphCoderBridge, type GraphCoderProcessBridgeOptions } from "./process.js";
+import { createNativeOwnedProcessOwner, type OwnedProcessOwner } from "./owned-process.js";
 
 /** A host-owned Node connection over the durable local runtime bridge. */
 export interface NodeGraphCoderConnection {
@@ -17,4 +18,37 @@ export interface NodeGraphCoderConnection {
 export function createNodeGraphCoderConnection(options: GraphCoderProcessBridgeOptions): NodeGraphCoderConnection {
   const bridge = new JsonLineGraphCoderBridge(options);
   return Object.freeze({ bridge, transport: new HarnessGraphCoderTransport(bridge) });
+}
+
+/**
+ * Opens the installed filesystem companion's process owner. The import is
+ * deliberately lazy so importing GraphCoder does not initialize native
+ * filesystem code or start any workers.
+ */
+export async function openDefaultNodeProcessOwner(): Promise<OwnedProcessOwner> {
+  const moduleName = "@acyclic-labs/fs/native";
+  const nativeModule = await import(moduleName) as {
+    readonly openNativeProcessOwner?: () => Promise<{
+      readonly io?: Parameters<typeof createNativeOwnedProcessOwner>[0];
+    }>;
+  };
+  if (typeof nativeModule.openNativeProcessOwner !== "function") {
+    throw new Error("@acyclic-labs/fs/native does not export openNativeProcessOwner");
+  }
+  const nativeOwner = await nativeModule.openNativeProcessOwner();
+  if (nativeOwner.io === undefined) {
+    throw new Error("the native filesystem companion does not provide streaming process ownership");
+  }
+  return createNativeOwnedProcessOwner(nativeOwner.io);
+}
+
+/**
+ * Local production composition. It binds the bridge to the filesystem
+ * companion's native process owner before the first runtime process starts.
+ */
+export async function createNativeNodeGraphCoderConnection(
+  options: Omit<GraphCoderProcessBridgeOptions, "processOwner">,
+): Promise<NodeGraphCoderConnection> {
+  const processOwner = await openDefaultNodeProcessOwner();
+  return createNodeGraphCoderConnection({ ...options, processOwner });
 }

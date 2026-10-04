@@ -50,11 +50,11 @@ use napi::{Env, Task};
 use napi_derive::napi;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::io::{Read, Write};
+use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 
 #[napi]
@@ -168,7 +168,7 @@ pub struct NativeProcessOwner {
 
 struct NativeProcessEntry {
     tree: ProcessTree,
-    stdin: Option<ChildStdin>,
+    stdin: Option<Arc<Mutex<ChildStdin>>>,
     stdout: Option<Receiver<NativeProcessChunk>>,
     stderr: Option<Receiver<NativeProcessChunk>>,
 }
@@ -190,30 +190,43 @@ impl NativeProcessEntry {
     }
 
     fn with_io(mut tree: ProcessTree) -> Self {
-        let stdin = tree.take_stdin();
+        let stdin = tree.take_stdin().map(|value| Arc::new(Mutex::new(value)));
         let stdout = tree.take_stdout().map(native_process_reader);
         let stderr = tree.take_stderr().map(native_process_reader);
-        Self { tree, stdin, stdout, stderr }
+        Self {
+            tree,
+            stdin,
+            stdout,
+            stderr,
+        }
     }
 }
 
 fn native_process_reader<R: Read + Send + 'static>(mut reader: R) -> Receiver<NativeProcessChunk> {
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver) = mpsc::sync_channel(64);
     std::thread::spawn(move || {
         let mut buffer = [0_u8; 16 * 1024];
         loop {
             match reader.read(&mut buffer) {
                 Ok(0) => {
-                    let _ = sender.send(NativeProcessChunk::Eof);
+                    let _ = sender.try_send(NativeProcessChunk::Eof);
                     return;
                 }
                 Ok(size) => {
-                    if sender.send(NativeProcessChunk::Data(buffer[..size].to_vec())).is_err() {
-                        return;
+                    match sender.try_send(NativeProcessChunk::Data(buffer[..size].to_vec())) {
+                        Ok(()) => {}
+                        Err(mpsc::TrySendError::Full(_)) => {
+                            let _ = sender.try_send(NativeProcessChunk::Error(
+                                "native process output exceeded the bounded reader queue"
+                                    .to_owned(),
+                            ));
+                            return;
+                        }
+                        Err(mpsc::TrySendError::Disconnected(_)) => return,
                     }
                 }
                 Err(error) => {
-                    let _ = sender.send(NativeProcessChunk::Error(error.to_string()));
+                    let _ = sender.try_send(NativeProcessChunk::Error(error.to_string()));
                     return;
                 }
             }
@@ -334,17 +347,23 @@ impl NativeProcessOwner {
     #[napi]
     pub fn write_stdin(&self, token: String, bytes: Buffer) -> Result<()> {
         let token = parse_process_token(&token)?;
-        let mut trees = self
-            .trees
+        let stdin = {
+            let trees = self
+                .trees
+                .lock()
+                .map_err(|_| napi_error("native process owner state poisoned"))?;
+            let entry = trees
+                .get(&token)
+                .ok_or_else(|| napi_error("owner token is not active"))?;
+            entry
+                .stdin
+                .as_ref()
+                .cloned()
+                .ok_or_else(|| napi_error("native process stdin is unavailable"))?
+        };
+        let mut stdin = stdin
             .lock()
-            .map_err(|_| napi_error("native process owner state poisoned"))?;
-        let entry = trees
-            .get_mut(&token)
-            .ok_or_else(|| napi_error("owner token is not active"))?;
-        let stdin = entry
-            .stdin
-            .as_mut()
-            .ok_or_else(|| napi_error("native process stdin is unavailable"))?;
+            .map_err(|_| napi_error("native process stdin state poisoned"))?;
         stdin.write_all(bytes.as_ref()).map_err(napi_error)?;
         stdin.flush().map_err(napi_error)
     }
@@ -385,7 +404,9 @@ impl NativeProcessOwner {
         };
         match receiver.try_recv() {
             Ok(NativeProcessChunk::Data(bytes)) => Ok(NativeProcessOutput::data(bytes)),
-            Ok(NativeProcessChunk::Eof) | Err(TryRecvError::Disconnected) => Ok(NativeProcessOutput::eof()),
+            Ok(NativeProcessChunk::Eof) | Err(TryRecvError::Disconnected) => {
+                Ok(NativeProcessOutput::eof())
+            }
             Ok(NativeProcessChunk::Error(error)) => Ok(NativeProcessOutput::error(error)),
             Err(TryRecvError::Empty) => Ok(NativeProcessOutput::idle()),
         }
@@ -410,7 +431,9 @@ impl NativeProcessOwner {
 }
 
 fn parse_process_token(token: &str) -> Result<u64> {
-    token.parse::<u64>().map_err(|_| napi_error("invalid owner token"))
+    token
+        .parse::<u64>()
+        .map_err(|_| napi_error("invalid owner token"))
 }
 
 #[napi(object)]
@@ -425,10 +448,34 @@ pub struct NativeProcessOutput {
 }
 
 impl NativeProcessOutput {
-    fn idle() -> Self { Self { kind: "idle".to_owned(), bytes: None, reason: None } }
-    fn eof() -> Self { Self { kind: "eof".to_owned(), bytes: None, reason: None } }
-    fn data(bytes: Vec<u8>) -> Self { Self { kind: "data".to_owned(), bytes: Some(Buffer::from(bytes)), reason: None } }
-    fn error(reason: String) -> Self { Self { kind: "error".to_owned(), bytes: None, reason: Some(reason) } }
+    fn idle() -> Self {
+        Self {
+            kind: "idle".to_owned(),
+            bytes: None,
+            reason: None,
+        }
+    }
+    fn eof() -> Self {
+        Self {
+            kind: "eof".to_owned(),
+            bytes: None,
+            reason: None,
+        }
+    }
+    fn data(bytes: Vec<u8>) -> Self {
+        Self {
+            kind: "data".to_owned(),
+            bytes: Some(Buffer::from(bytes)),
+            reason: None,
+        }
+    }
+    fn error(reason: String) -> Self {
+        Self {
+            kind: "error".to_owned(),
+            bytes: None,
+            reason: Some(reason),
+        }
+    }
 }
 
 #[napi(object)]
@@ -441,8 +488,18 @@ pub struct NativeProcessExit {
 }
 
 impl NativeProcessExit {
-    fn running() -> Self { Self { kind: "running".to_owned(), code: None } }
-    fn exited(code: Option<i32>) -> Self { Self { kind: "exited".to_owned(), code } }
+    fn running() -> Self {
+        Self {
+            kind: "running".to_owned(),
+            code: None,
+        }
+    }
+    fn exited(code: Option<i32>) -> Self {
+        Self {
+            kind: "exited".to_owned(),
+            code,
+        }
+    }
 }
 
 #[napi(object)]
