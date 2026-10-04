@@ -9,6 +9,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUST_TARGET="${RUST_TARGET:-$(rustc -vV | sed -n 's/^host: //p')}"
 BUILD_DIRECTORY="${BUILD_DIRECTORY:-${RUNNER_TEMP:-$ROOT}/acyclic-embedded-$RUST_TARGET}"
+# Resolve the common relative form before creating anything.  A package run
+# must never put Cargo, CMake, or receipt output into the Rust source checkout.
+if [[ "$BUILD_DIRECTORY" != /* ]]; then
+  BUILD_DIRECTORY="$PWD/$BUILD_DIRECTORY"
+fi
+case "$BUILD_DIRECTORY" in
+  "$ROOT"|"$ROOT"/*)
+    echo "embedded package output must be outside the source checkout: $BUILD_DIRECTORY" >&2
+    exit 2
+    ;;
+esac
 CXX="${CXX:-c++}"
 CC="${CC:-cc}"
 
@@ -40,6 +51,13 @@ command -v ninja >/dev/null
 command -v "$CXX" >/dev/null
 command -v "$CC" >/dev/null
 command -v python3 >/dev/null
+if command -v rustup >/dev/null 2>&1; then
+  rustup target list --installed | grep -Fx "$RUST_TARGET" >/dev/null || {
+    echo "Rust target is not installed: $RUST_TARGET" >&2
+    exit 2
+  }
+fi
+test -f "$MANIFEST"
 
 cargo build --locked --offline --release --target "$RUST_TARGET" \
   --target-dir "$TARGET_DIRECTORY" --manifest-path "$MANIFEST"
