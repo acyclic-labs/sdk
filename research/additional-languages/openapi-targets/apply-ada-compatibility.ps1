@@ -23,6 +23,7 @@ foreach ($family in @('actors', 'workers', 'stream', 'objects', 'inference')) {
     $rootSpec = @"
 with Ada.Containers.Vectors;
 with Ada.Strings.Unbounded;
+use Ada.Strings.Unbounded;
 package $rootUnit is
    subtype UString is Ada.Strings.Unbounded.Unbounded_String;
    function To_UString (Value : String) return UString;
@@ -34,6 +35,8 @@ package $rootUnit is
    type Nullable_Boolean is record Value : Boolean := False; Present : Boolean := False; end record;
    function Is_Null (Value : Nullable_Boolean) return Boolean;
    subtype ByteArray is UString;
+   package ByteArray_Vectors is new Ada.Containers.Vectors (Positive, ByteArray);
+   package UString_Vectors is new Ada.Containers.Vectors (Positive, UString);
    type One_Of_String_Integer is new Ada.Strings.Unbounded.Unbounded_String;
    type Value_Type is null record;
    package Value_Vectors is new Ada.Containers.Vectors (Positive, Value_Type);
@@ -54,6 +57,7 @@ package $rootUnit is
    Mime_Json : constant Integer := 1;
    type URI_Type is record Path : UString; end record;
    procedure Set_Path (URI : in out URI_Type; Value : String);
+   procedure Set_Path_Param (URI : in out URI_Type; Name : String; Value : UString);
    type Request_Type is record Stream : Output_Stream; end record;
    type Client_Base_Type is tagged null record;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List);
@@ -86,6 +90,7 @@ package body $rootUnit is
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Integer) is begin null; end;
    procedure Write_Entity (Into : in out Output_Stream; Name : String; Value : Nullable_Boolean) is begin null; end;
    procedure Set_Path (URI : in out URI_Type; Value : String) is begin URI.Path := To_UString (Value); end;
+   procedure Set_Path_Param (URI : in out URI_Type; Name : String; Value : UString) is begin null; end;
    procedure Set_Accept (Client : in out Client_Base_Type; Value : Mime_List) is begin null; end;
    procedure Initialize (Client : in out Client_Base_Type; Request : in out Request_Type; Accepted : Mime_List) is begin null; end;
    procedure Call (Client : in out Client_Base_Type; Verb : Integer; URI : URI_Type; Request : Request_Type; Reply : out Value_Type) is begin null; end;
@@ -136,6 +141,7 @@ end $rootUnit.Streams;
         $text = Get-Content -LiteralPath $_.FullName -Raw
         $text = $text.Replace("oneOf<string,integer>", "$rootUnit.One_Of_String_Integer")
         $text = $text.Replace("$rootUnit.Models.swagger::ByteArray", "$rootUnit.ByteArray")
+        $text = $text.Replace('swagger::ByteArray_Vectors.Vector', "$rootUnit.ByteArray_Vectors.Vector")
         if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-clients.ads')) {
             $text = [regex]::Replace($text, "(?m)^with $rootUnit\.Clients;\r?\n", '')
             $text = $text.Replace("new $rootUnit.Clients.Client_Type", "new $rootUnit.Client_Base_Type")
@@ -153,7 +159,62 @@ end $rootUnit.Streams;
         if ($text -notmatch [regex]::Escape("$rootUnit.Set_Path (")) {
             $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path \(", "$rootUnit.Set_Path (`$1,")
         }
+        if ($text -notmatch [regex]::Escape("$rootUnit.Set_Path_Param (")) {
+            $text = [regex]::Replace($text, "([A-Za-z][A-Za-z0-9_]*)\.Set_Path_Param \(([^,]+), ([^)]+)\)", "$rootUnit.Set_Path_Param (`$1, `$2, `$3)")
+        }
         Set-Content -LiteralPath $_.FullName -Value $text -Encoding utf8NoBOM
+    }
+
+    if ($_.Name -eq (($rootUnit.ToLowerInvariant()) + '-models.adb')) {
+        $bodyText = Get-Content -LiteralPath $_.FullName -Raw
+        if ($bodyText -notmatch "use $rootUnit\.Streams;") {
+            $bodyText = $bodyText.Replace("package body $rootUnit.Models is", "use $rootUnit.Streams;`npackage body $rootUnit.Models is")
+            Set-Content -LiteralPath $_.FullName -Value $bodyText -Encoding utf8NoBOM
+        }
+    }
+
+    # The Ada template can emit a response model after a record that contains
+    # it. Ada requires complete record declarations before by-value use, so
+    # move this one generated dependency ahead of JobObservation.
+    if ($family -eq 'workers') {
+        $modelSpec = Join-Path $model (($rootUnit.ToLowerInvariant()) + '-models.ads')
+        if (Test-Path -LiteralPath $modelSpec -PathType Leaf) {
+            $modelText = Get-Content -LiteralPath $modelSpec -Raw
+            $resultBlock = [regex]::Match($modelText, '(?ms)^\s*type AcyclicWorkersV1JobResult_Type is.*?(?=^\s*type AcyclicWorkersV1JobTarget_Type is)').Value
+            if (-not [string]::IsNullOrWhiteSpace($resultBlock) -and $modelText.IndexOf('type AcyclicWorkersV1JobObservation_Type is') -lt $modelText.IndexOf('type AcyclicWorkersV1JobResult_Type is')) {
+                $modelText = $modelText.Replace($resultBlock, '')
+                $modelText = $modelText.Replace('   type AcyclicWorkersV1JobObservation_Type is', "$resultBlock`n   type AcyclicWorkersV1JobObservation_Type is")
+                Set-Content -LiteralPath $modelSpec -Value $modelText -Encoding utf8NoBOM
+            }
+        }
+    }
+    if ($family -eq 'stream') {
+        $modelSpec = Join-Path $model (($rootUnit.ToLowerInvariant()) + '-models.ads')
+        if (Test-Path -LiteralPath $modelSpec -PathType Leaf) {
+            $modelText = Get-Content -LiteralPath $modelSpec -Raw
+            $anchor = '   type AcyclicStreamV2IdempotencyObservation_Type is'
+            $blocks = @()
+            foreach ($typeName in @('AcyclicStreamV2AppendResponse_Type', 'AcyclicStreamV2CommitResponse_Type')) {
+                $match = [regex]::Match($modelText, "(?ms)^\s*type $typeName is.*?(?=^\s*type AcyclicStreamV2[A-Za-z0-9_]+_Type is)")
+                if ($match.Success) { $blocks += $match.Value; $modelText = $modelText.Replace($match.Value, '') }
+            }
+            if ($blocks.Count -gt 0 -and $modelText.Contains($anchor)) {
+                $modelText = $modelText.Replace($anchor, (($blocks -join "`n") + "`n" + $anchor))
+                Set-Content -LiteralPath $modelSpec -Value $modelText -Encoding utf8NoBOM
+            }
+        }
+    }
+
+    # The generated main unit imports credentials from its own source tree.
+    # Keep that directory in the project emitted by the Rust-owned adapter so
+    # an installed consumer compiles without manual project edits.
+    $adaProject = Get-ChildItem -LiteralPath $package -Filter '*_ada.gpr' -File | Select-Object -First 1
+    if ($null -ne $adaProject) {
+        $adaProjectText = Get-Content -LiteralPath $adaProject.FullName -Raw
+        if ($adaProjectText -notmatch 'src/credentials') {
+            $adaProjectText = $adaProjectText.Replace('"src/client");', '"src/client", "src/credentials");')
+            Set-Content -LiteralPath $adaProject.FullName -Value $adaProjectText -Encoding utf8NoBOM
+        }
     }
 
     $project = Join-Path $package "$projectName.gpr"
