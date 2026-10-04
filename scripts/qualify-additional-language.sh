@@ -26,6 +26,28 @@ streaming_proto="$product_root/objects/v2/objects.proto"
   echo 'Rust product output is missing Actors or Objects protobuf sources' >&2
   exit 1
 }
+descriptor_set="$output_root/rust-contracts.pb"
+contract_proto_count=0
+rpc_count=0
+# LuaJIT invokes its own Rust/C ABI qualification script. Keep this wrapper
+# free of a protoc host dependency for that lane while retaining the complete
+# descriptor inventory for the source-generating targets below.
+if [[ "$language" != "lua-remote" ]]; then
+  mapfile -t contract_protos < <(find "$product_root" -type f -name '*.proto' \
+    ! -path '*/validation/*' | LC_ALL=C sort)
+  [[ "${#contract_protos[@]}" -eq 9 ]] || {
+    echo "Rust product output has ${#contract_protos[@]} contract protobufs; expected 9" >&2
+    exit 1
+  }
+  contract_proto_count=${#contract_protos[@]}
+  rpc_count=$(rg -h '^[[:space:]]*rpc[[:space:]]+' "${contract_protos[@]}" | wc -l | tr -d ' ')
+  [[ "$rpc_count" == 106 ]] || {
+    echo "Rust product output has $rpc_count RPC methods; expected 106" >&2
+    exit 1
+  }
+  protoc -I "$product_root" --descriptor_set_out="$descriptor_set" --include_imports "${contract_protos[@]}"
+  [[ -s "$descriptor_set" ]] || { echo 'Rust contract descriptor bundle is missing' >&2; exit 1; }
+fi
 proto_relative=${proto#"$product_root/"}
 source_revision=$(git -C "$source_root" rev-parse HEAD 2>/dev/null || printf 'local')
 product_manifest="$product_root/rust-authority.json"
@@ -45,7 +67,7 @@ write_receipt() {
   local manifest_digest
   manifest_digest=$(hash_file "$product_manifest")
   cat >"$output_root/qualification.json" <<EOF
-{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"$source_revision","rust_product_root":"generated-products","rust_authority_manifest_sha256":"$manifest_digest","proto":"$proto_relative","proto_sha256":"$proto_digest","streaming_proto":"objects/v2/objects.proto","artifact_root":"$output_root"}
+{"schema":"acyclic.additional-language-qualification.v1","language":"$language","status":"$status","source_revision":"$source_revision","rust_product_root":"generated-products","rust_authority_manifest_sha256":"$manifest_digest","proto":"$proto_relative","proto_sha256":"$proto_digest","contract_proto_count":$contract_proto_count,"rpc_count":$rpc_count,"descriptor_set":"rust-contracts.pb","streaming_proto":"objects/v2/objects.proto","artifact_root":"$output_root"}
 EOF
 }
 
@@ -68,7 +90,7 @@ PY
     test -x "$plugin"
     mkdir -p lib/generated
     protoc -I "$proto_root" -I "$output_root" --plugin="$plugin" \
-      --elixir_out=plugins=grpc:"$project/lib/generated" "$proto" "$streaming_proto"
+      --elixir_out=plugins=grpc:"$project/lib/generated" "${contract_protos[@]}"
     mix format --check-formatted
     mix compile --warnings-as-errors
     test -n "$(find lib/generated -type f -name '*.ex' -print -quit)"
@@ -85,7 +107,11 @@ PY
   erlang)
     project="$output_root/erlang"
     mkdir -p "$project/proto" "$project/src" "$project/include"
-    cp "$proto" "$project/proto/actors.proto"
+    while IFS= read -r contract_proto; do
+      relative=${contract_proto#"$product_root/"}
+      mkdir -p "$project/proto/$(dirname "$relative")"
+      cp "$contract_proto" "$project/proto/$relative"
+    done < <(printf '%s\n' "${contract_protos[@]}")
     cat >"$project/rebar.config" <<'EOF'
 {erl_opts, [debug_info]}.
 {deps, [{grpcbox, "0.18.0"}]}.
@@ -95,7 +121,6 @@ EOF
     cat >"$project/src/acyclic_qualification.app.src" <<'EOF'
 {application, acyclic_qualification, [{description, "Rust-derived Acyclic qualification"}, {vsn, "0.0.0"}, {applications, [kernel, stdlib, grpcbox]}]}.
 EOF
-    cp "$streaming_proto" "$project/proto/streaming_probe.proto"
     pushd "$project" >/dev/null
     rebar3 grpc gen
     rebar3 compile
@@ -112,26 +137,25 @@ EOF
   ocaml)
     project="$output_root/ocaml"
     mkdir -p "$project/proto" "$project/lib"
-    cp "$proto" "$project/proto/actors.proto"
     opam install --yes ocaml-protoc-plugin.6.2.0 grpc.0.2.0
     plugin="$(command -v protoc-gen-ocaml || true)"
     test -n "$plugin"
-    protoc -I "$proto_root" -I "$output_root" --plugin="$plugin" --ocaml_out="$project/lib" "$proto" "$streaming_proto"
+    protoc -I "$proto_root" -I "$output_root" --plugin="$plugin" --ocaml_opt=prefix_output_with_package=true --ocaml_out="$project/lib" "${contract_protos[@]}"
     cat >"$project/dune-project" <<'EOF'
 (lang dune 3.7)
 (name acyclic_qualification)
 EOF
     cat >"$project/lib/dune" <<'EOF'
 (library (name acyclic_qualification) (wrapped false)
- (libraries ocaml-protoc-plugin))
+ (libraries ocaml-protoc-plugin ocaml-protoc-plugin.google_types))
 
-(executable (name serialization_smoke) (libraries acyclic_qualification ocaml-protoc-plugin))
+(executable (name serialization_smoke) (libraries acyclic_qualification ocaml-protoc-plugin ocaml-protoc-plugin.google_types))
 EOF
     cat >"$project/lib/serialization_smoke.ml" <<'EOF'
 let () =
-  let value = ProbeFrame.make ~payload:"rust-owned" () in
-  let encoded = ProbeFrame.to_proto value |> Protobuf.Writer.contents in
-  match ProbeFrame.from_proto (Protobuf.Reader.create encoded) with
+  let value = Acyclic.Objects.V2.MutationIdentity.make ~idempotency_key:"rust-owned" () in
+  let encoded = Acyclic.Objects.V2.MutationIdentity.to_proto value |> Protobuf.Writer.contents in
+  match Acyclic.Objects.V2.MutationIdentity.from_proto (Protobuf.Reader.create encoded) with
   | Ok decoded when decoded = value -> print_endline "protobuf round trip passed"
   | Ok _ -> failwith "protobuf round trip changed the message"
   | Error _ -> failwith "protobuf round trip could not decode"
@@ -149,15 +173,20 @@ EOF
     (cd "$project" && ocicl install)
     make -C "$project" cli
     mkdir -p "$project/generated"
-    "$project/ag-protoc" -o "$project/generated/actors.lisp" "$proto"
-    "$project/ag-protoc" -o "$project/generated/streaming_probe.lisp" "$streaming_proto"
-    test -s "$project/generated/actors.lisp"
-    test -s "$project/generated/streaming_probe.lisp"
-    sbcl --non-interactive --load "$project/generated/actors.lisp" \
-      --load "$project/generated/streaming_probe.lisp" \
+    while IFS= read -r contract_proto; do
+      relative=${contract_proto#"$product_root/"}
+      generated="$project/generated/${relative%.proto}.lisp"
+      mkdir -p "$(dirname "$generated")"
+      "$project/ag-protoc" -o "$generated" "$contract_proto"
+    done < <(printf '%s\n' "${contract_protos[@]}")
+    generated_sources=$(find "$project/generated" -type f -name '*.lisp' -print | LC_ALL=C sort)
+    test -n "$generated_sources"
+    generated_args=()
+    while IFS= read -r generated_source; do generated_args+=(--load "$generated_source"); done <<< "$generated_sources"
+    sbcl --non-interactive "${generated_args[@]}" \
       --eval '(unless (find-package :acyclic.actors.v1) (error "generated Actors package missing"))' \
       --eval '(format t "generated Common Lisp package loaded~%")'
-    test -n "$(rg -i 'stream|exchange' "$project/generated/streaming_probe.lisp" | head -n 1)"
+    test -n "$(rg -i 'stream|upload|put_object' "$project/generated" --glob '*.lisp' | head -n 1)"
     archive_project "$project" acyclic_sdk_common_lisp.tar.gz
     ;;
   lua-remote)
